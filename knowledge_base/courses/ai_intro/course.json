@@ -1,0 +1,66 @@
+{
+  "course_id": "ai_intro",
+  "course_name": "人工智能导论",
+  "target_students": ["人工智能", "计算机", "电子信息", "自动化", "跨专业学习者"],
+  "difficulty": "introductory",
+  "description": "面向高校低年级学生的人工智能入门课程，覆盖人工智能概述、搜索算法、机器学习、神经网络、自然语言处理、计算机视觉、强化学习和人工智能伦理。",
+  "chapters": [
+    {
+      "chapter_id": "01",
+      "title": "人工智能概述与发展历史",
+      "file": "chapters/01-ai-overview.md",
+      "difficulty": "easy",
+      "prerequisites": []
+    },
+    {
+      "chapter_id": "02",
+      "title": "搜索算法与问题求解",
+      "file": "chapters/02-search-algorithms.md",
+      "difficulty": "medium",
+      "prerequisites": ["人工智能概述"]
+    },
+    {
+      "chapter_id": "03",
+      "title": "机器学习基础",
+      "file": "chapters/03-machine-learning-basics.md",
+      "difficulty": "medium",
+      "prerequisites": ["Python 基础", "概率统计基础"]
+    },
+    {
+      "chapter_id": "04",
+      "title": "神经网络基础",
+      "file": "chapters/04-neural-networks.md",
+      "difficulty": "medium",
+      "prerequisites": ["机器学习基础", "线性代数基础"]
+    },
+    {
+      "chapter_id": "05",
+      "title": "自然语言处理入门",
+      "file": "chapters/05-nlp-intro.md",
+      "difficulty": "medium",
+      "prerequisites": ["机器学习基础", "神经网络基础"]
+    },
+    {
+      "chapter_id": "06",
+      "title": "计算机视觉入门",
+      "file": "chapters/06-computer-vision-intro.md",
+      "difficulty": "medium",
+      "prerequisites": ["机器学习基础", "神经网络基础"]
+    },
+    {
+      "chapter_id": "07",
+      "title": "强化学习基础",
+      "file": "chapters/07-reinforcement-learning.md",
+      "difficulty": "hard",
+      "prerequisites": ["机器学习基础", "概率统计基础"]
+    },
+    {
+      "chapter_id": "08",
+      "title": "人工智能伦理与安全",
+      "file": "chapters/08-ai-ethics.md",
+      "difficulty": "easy",
+      "prerequisites": ["人工智能概述"]
+    }
+  ]
+}
+

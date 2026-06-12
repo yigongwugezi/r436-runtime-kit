@@ -1,0 +1,315 @@
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "session_id": "demo_session_001",
+    "course_id": "ai_intro",
+    "profile": {
+      "major_background": {
+        "label": "专业背景",
+        "value": "电子信息专业大二学生",
+        "confidence": 0.95,
+        "source": "user_input",
+        "evidence": "我是电子信息专业大二学生"
+      },
+      "knowledge_base": {
+        "label": "知识基础",
+        "value": "Python 基础中等，机器学习基础薄弱",
+        "confidence": 0.9,
+        "source": "user_input",
+        "evidence": "学过 Python，但机器学习基础比较薄弱"
+      },
+      "learning_goal": {
+        "label": "学习目标",
+        "value": "两周入门人工智能，重点理解神经网络和自然语言处理",
+        "confidence": 0.95,
+        "source": "user_input",
+        "evidence": "想用两周时间入门人工智能"
+      },
+      "cognitive_style": {
+        "label": "认知风格",
+        "value": "偏好图解、代码案例和练习题",
+        "confidence": 0.9,
+        "source": "user_input",
+        "evidence": "希望多给我一些图解、代码案例和练习题"
+      },
+      "weak_points": {
+        "label": "易错点",
+        "value": "机器学习基本概念、神经网络训练流程、NLP 基础概念",
+        "confidence": 0.75,
+        "source": "inferred",
+        "evidence": "由知识基础和学习目标推断"
+      },
+      "programming_ability": {
+        "label": "编程能力",
+        "value": "具备 Python 基础，适合从可运行小案例入手",
+        "confidence": 0.85,
+        "source": "user_input",
+        "evidence": "学过 Python"
+      },
+      "learning_progress": {
+        "label": "学习进度",
+        "value": "准备开始系统学习人工智能导论",
+        "confidence": 0.75,
+        "source": "inferred",
+        "evidence": "希望两周入门"
+      },
+      "interests": {
+        "label": "兴趣方向",
+        "value": "神经网络、自然语言处理",
+        "confidence": 0.95,
+        "source": "user_input",
+        "evidence": "重点理解神经网络和自然语言处理"
+      }
+    },
+    "diagnosis": {
+      "summary": "学生具备 Python 基础，但机器学习和神经网络先修概念不足。建议先补机器学习基本概念，再学习神经网络，最后通过 NLP 小项目完成综合应用。",
+      "weak_knowledge_points": [
+        {
+          "point_id": "ml_basic",
+          "name": "机器学习基本概念",
+          "reason": "后续神经网络和 NLP 学习需要先理解监督学习、特征、损失函数和训练流程。",
+          "priority": "high"
+        },
+        {
+          "point_id": "neural_training",
+          "name": "神经网络训练流程",
+          "reason": "学生希望重点理解神经网络，需要掌握前向传播、损失函数和反向传播。",
+          "priority": "high"
+        },
+        {
+          "point_id": "nlp_intro",
+          "name": "自然语言处理基础",
+          "reason": "学生对 NLP 感兴趣，但需要先建立文本表示和语言模型基础。",
+          "priority": "medium"
+        }
+      ],
+      "recommended_strategy": "采用先概念、再图解、再代码实验的学习策略，降低抽象理论带来的理解门槛。"
+    },
+    "learning_path": [
+      {
+        "stage_id": "stage_1",
+        "title": "补齐机器学习基础",
+        "duration": "第 1-3 天",
+        "goal": "理解监督学习、无监督学习、特征、标签、损失函数和模型训练流程。",
+        "tasks": [
+          "阅读机器学习基础讲义",
+          "完成概念辨析练习",
+          "运行鸢尾花分类案例"
+        ],
+        "resource_types": ["lecture", "quiz", "practice"]
+      },
+      {
+        "stage_id": "stage_2",
+        "title": "学习神经网络核心概念",
+        "duration": "第 4-8 天",
+        "goal": "理解神经元、激活函数、前向传播、反向传播和模型训练过程。",
+        "tasks": [
+          "阅读神经网络基础讲义",
+          "查看神经网络结构思维导图",
+          "运行一个 PyTorch 前向传播示例"
+        ],
+        "resource_types": ["lecture", "mindmap", "practice"]
+      },
+      {
+        "stage_id": "stage_3",
+        "title": "进入 NLP 入门应用",
+        "duration": "第 9-12 天",
+        "goal": "理解文本分类、词向量和语言模型的基本思想。",
+        "tasks": [
+          "阅读 NLP 入门材料",
+          "完成文本分类相关练习",
+          "尝试一个简单情感分类案例"
+        ],
+        "resource_types": ["reading", "quiz", "practice"]
+      },
+      {
+        "stage_id": "stage_4",
+        "title": "复盘与综合练习",
+        "duration": "第 13-14 天",
+        "goal": "通过练习题和项目复盘巩固机器学习、神经网络和 NLP 的基础知识。",
+        "tasks": [
+          "完成综合练习题",
+          "整理易错知识点",
+          "根据反馈调整下一阶段学习计划"
+        ],
+        "resource_types": ["quiz", "reading"]
+      }
+    ],
+    "resources": [
+      {
+        "resource_id": "res_lecture_001",
+        "type": "lecture",
+        "title": "机器学习与神经网络入门讲义",
+        "description": "面向具备 Python 基础但机器学习较薄弱的学生。",
+        "content_format": "markdown",
+        "content": "## 1. 为什么先学机器学习基础\n\n神经网络属于机器学习的重要方法。如果直接学习神经网络，容易被参数、梯度和网络结构绕晕。因此建议先理解机器学习的基本流程：数据输入、特征表示、模型预测、损失计算和参数更新。\n\n## 2. 监督学习的基本流程\n\n监督学习使用带标签的数据训练模型。例如，在鸢尾花分类任务中，输入是花瓣长度、花瓣宽度等特征，输出是花的类别。\n\n典型流程：\n\n1. 准备数据。\n2. 划分训练集和测试集。\n3. 选择模型。\n4. 训练模型。\n5. 在测试集上评估效果。\n\n## 3. 神经网络如何学习\n\n神经网络通过多层神经元组合表达复杂函数。训练时，模型先进行前向传播得到预测结果，再计算预测和真实标签之间的损失，最后通过反向传播更新参数。\n\n可以把神经网络理解为一个可学习的函数：\n\n```text\noutput = model(input)\n```\n\n训练的目标就是让这个函数在新数据上也能给出合理结果。\n",
+        "related_stage_id": "stage_1",
+        "source": "mock",
+        "quality_status": "passed"
+      },
+      {
+        "resource_id": "res_mindmap_001",
+        "type": "mindmap",
+        "title": "人工智能入门知识结构图",
+        "description": "帮助学生建立机器学习、神经网络和 NLP 的关系。",
+        "content_format": "mermaid",
+        "content": "mindmap\n  root((人工智能导论))\n    人工智能概述\n      智能行为\n      典型应用\n      发展历史\n    机器学习基础\n      监督学习\n        分类\n        回归\n      无监督学习\n        聚类\n        降维\n      训练流程\n        数据\n        模型\n        损失函数\n        评估\n    神经网络基础\n      神经元\n      激活函数\n      前向传播\n      反向传播\n    NLP 入门\n      文本分类\n      词向量\n      语言模型",
+        "related_stage_id": "stage_2",
+        "source": "mock",
+        "quality_status": "passed"
+      },
+      {
+        "resource_id": "res_quiz_001",
+        "type": "quiz",
+        "title": "机器学习与神经网络基础练习题",
+        "description": "针对学生机器学习基础薄弱的问题设计。",
+        "content_format": "json",
+        "items": [
+          {
+            "question_id": "q_001",
+            "question_type": "single_choice",
+            "stem": "以下哪一项属于监督学习任务？",
+            "options": ["聚类", "分类", "降维", "关联规则挖掘"],
+            "answer": "分类",
+            "explanation": "监督学习使用带标签数据训练模型，分类是典型监督学习任务。",
+            "difficulty": "easy",
+            "knowledge_point": "监督学习"
+          },
+          {
+            "question_id": "q_002",
+            "question_type": "true_false",
+            "stem": "神经网络中的激活函数可以引入非线性表达能力。",
+            "options": ["正确", "错误"],
+            "answer": "正确",
+            "explanation": "没有激活函数时，多层线性变换仍然等价于线性模型。",
+            "difficulty": "easy",
+            "knowledge_point": "激活函数"
+          },
+          {
+            "question_id": "q_003",
+            "question_type": "short_answer",
+            "stem": "请用自己的话解释训练集和测试集的区别。",
+            "options": [],
+            "answer": "训练集用于训练模型，测试集用于评估模型在未见数据上的表现。",
+            "explanation": "区分训练集和测试集可以帮助判断模型是否具备泛化能力。",
+            "difficulty": "medium",
+            "knowledge_point": "模型评估"
+          }
+        ],
+        "related_stage_id": "stage_1",
+        "source": "mock",
+        "quality_status": "passed"
+      },
+      {
+        "resource_id": "res_reading_001",
+        "type": "reading",
+        "title": "拓展阅读建议",
+        "description": "为后续学习神经网络和 NLP 提供阅读方向。",
+        "content_format": "markdown",
+        "content": "## 推荐阅读路线\n\n1. 先阅读机器学习入门材料，重点关注监督学习、损失函数和模型评估。\n2. 再阅读神经网络入门材料，重点关注神经元、激活函数、前向传播和反向传播。\n3. 最后阅读 NLP 入门材料，理解文本分类、词向量和语言模型。\n\n## 阅读建议\n\n- 如果遇到公式困难，先看图解和代码案例，再回到公式。\n- 如果代码能运行但不理解结果，重点查看输入数据形状和输出含义。\n- 每学完一个概念，尝试用一句话解释它解决了什么问题。",
+        "related_stage_id": "stage_3",
+        "source": "mock",
+        "quality_status": "passed"
+      },
+      {
+        "resource_id": "res_practice_001",
+        "type": "practice",
+        "title": "Python 实操案例：鸢尾花分类",
+        "description": "通过可运行代码理解监督学习训练流程。",
+        "content_format": "markdown",
+        "content": "## 实验目标\n\n使用 Python 完成一个简单的鸢尾花分类任务，理解数据划分、模型训练和模型评估。\n\n## 示例代码\n\n```python\nfrom sklearn.datasets import load_iris\nfrom sklearn.model_selection import train_test_split\nfrom sklearn.tree import DecisionTreeClassifier\n\niris = load_iris()\nX_train, X_test, y_train, y_test = train_test_split(\n    iris.data, iris.target, test_size=0.2, random_state=42\n)\n\nmodel = DecisionTreeClassifier()\nmodel.fit(X_train, y_train)\n\naccuracy = model.score(X_test, y_test)\nprint('accuracy:', accuracy)\n```\n\n## 思考问题\n\n1. `X_train` 和 `y_train` 分别代表什么？\n2. 为什么不能只在训练集上评估模型？\n3. 如果更换模型，训练流程会发生哪些变化？",
+        "related_stage_id": "stage_1",
+        "source": "mock",
+        "quality_status": "passed"
+      },
+      {
+        "resource_id": "res_multimodal_001",
+        "type": "multimodal",
+        "title": "多模态教学视频脚本：神经网络如何学习",
+        "description": "第一阶段先生成视频脚本，后续可接入 SeeDance 等多模态工具。",
+        "content_format": "markdown",
+        "content": "## 视频标题\n\n3 分钟理解神经网络如何学习\n\n## 分镜脚本\n\n1. 画面：输入一朵花的特征数据。旁白：模型首先接收输入特征。\n2. 画面：数据穿过多层节点。旁白：神经网络通过多层神经元计算预测结果。\n3. 画面：预测类别和真实类别对比。旁白：损失函数衡量模型错得有多远。\n4. 画面：箭头反向传播。旁白：反向传播会告诉每个参数应该如何调整。\n5. 画面：多次训练后预测变准。旁白：经过反复训练，模型逐渐学会数据中的规律。",
+        "related_stage_id": "stage_2",
+        "source": "mock",
+        "quality_status": "passed"
+      }
+    ],
+    "agent_steps": [
+      {
+        "agent_id": "profile_agent",
+        "agent_name": "画像智能体",
+        "status": "completed",
+        "summary": "已完成 8 个维度学生画像抽取。",
+        "started_at": "2026-06-12T10:00:00+08:00",
+        "finished_at": "2026-06-12T10:00:02+08:00"
+      },
+      {
+        "agent_id": "knowledge_agent",
+        "agent_name": "知识库智能体",
+        "status": "completed",
+        "summary": "已定位人工智能导论中机器学习、神经网络和 NLP 相关知识点。",
+        "started_at": "2026-06-12T10:00:02+08:00",
+        "finished_at": "2026-06-12T10:00:03+08:00"
+      },
+      {
+        "agent_id": "diagnosis_agent",
+        "agent_name": "学习诊断智能体",
+        "status": "completed",
+        "summary": "已识别机器学习基础和神经网络训练流程为高优先级短板。",
+        "started_at": "2026-06-12T10:00:03+08:00",
+        "finished_at": "2026-06-12T10:00:05+08:00"
+      },
+      {
+        "agent_id": "planner_agent",
+        "agent_name": "路径规划智能体",
+        "status": "completed",
+        "summary": "已生成 4 阶段两周学习路径。",
+        "started_at": "2026-06-12T10:00:05+08:00",
+        "finished_at": "2026-06-12T10:00:06+08:00"
+      },
+      {
+        "agent_id": "resource_agent",
+        "agent_name": "资源生成智能体",
+        "status": "completed",
+        "summary": "已生成讲义、思维导图、练习题、拓展阅读和实操案例。",
+        "started_at": "2026-06-12T10:00:06+08:00",
+        "finished_at": "2026-06-12T10:00:10+08:00"
+      },
+      {
+        "agent_id": "review_agent",
+        "agent_name": "质量检查智能体",
+        "status": "completed",
+        "summary": "已完成格式完整性、资源覆盖度和内容安全检查。",
+        "started_at": "2026-06-12T10:00:10+08:00",
+        "finished_at": "2026-06-12T10:00:11+08:00"
+      }
+    ],
+    "review": {
+      "quality_status": "passed",
+      "checks": [
+        {
+          "check_id": "format_check",
+          "name": "格式完整性检查",
+          "status": "passed",
+          "message": "画像、诊断、路径、资源和智能体状态字段完整。"
+        },
+        {
+          "check_id": "resource_coverage_check",
+          "name": "资源覆盖度检查",
+          "status": "passed",
+          "message": "已覆盖讲义、思维导图、练习题、拓展阅读和 Python 实操案例。"
+        },
+        {
+          "check_id": "safety_check",
+          "name": "内容安全检查",
+          "status": "passed",
+          "message": "未发现敏感违规内容。"
+        }
+      ],
+      "summary": "生成结果结构完整，资源类型满足第一阶段演示要求。"
+    }
+  },
+  "request_id": "req_demo_001"
+}
+
