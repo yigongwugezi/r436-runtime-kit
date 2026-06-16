@@ -15,10 +15,10 @@ import { formatDuration } from '../utils/format';
  * 节点状态常量
  * =================================================================== */
 const STATUS_CONFIG = {
-  locked:      { icon: Lock,       label: '未解锁',  bg: 'bg-gray-50 border-gray-100',    iconColor: 'text-gray-300' },
-  available:   { icon: Play,       label: '可开始',  bg: 'bg-white border-brand-200',      iconColor: 'text-brand-500' },
-  in_progress: { icon: 'spinner',  label: '学习中',  bg: 'bg-brand-50 border-brand-200',   iconColor: 'text-brand-500' },
-  mastered:    { icon: CheckCircle,label: '已掌握',  bg: 'bg-green-50/70 border-green-200', iconColor: 'text-green-500' },
+  locked:      { icon: Lock,        label: '未解锁',  bg: 'bg-gray-50 border-gray-100',    iconColor: 'text-gray-300' },
+  available:   { icon: Play,        label: '可开始',  bg: 'bg-white border-brand-200',      iconColor: 'text-brand-500' },
+  in_progress: { icon: Sparkles,    label: '学习中',  bg: 'bg-brand-50 border-brand-200',   iconColor: 'text-brand-500' },
+  mastered:    { icon: CheckCircle, label: '已掌握',  bg: 'bg-green-50/70 border-green-200', iconColor: 'text-green-500' },
 } as const;
 
 /* ===================================================================

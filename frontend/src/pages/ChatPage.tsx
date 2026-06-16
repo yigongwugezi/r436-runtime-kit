@@ -231,14 +231,17 @@ type AgentProgressInfo = GenerationProgress | null;
 export default function ChatPage() {
   const location = useLocation();
   const initialMessage = (location.state as { initialMessage?: string })?.initialMessage;
-  const { messages, isStreaming, agentProgress } = useChatStore() as {
+  const { messages, isStreaming, agentProgress, currentSessionId, setLoading } = useChatStore() as {
     messages: ChatMessage[];
     isStreaming: boolean;
     agentProgress: AgentProgressInfo;
+    currentSessionId: string;
+    setLoading: (v: boolean) => void;
   };
   const { send, abort } = useStreamChat();
   const [input, setInput] = useState('');
   const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const [messagesLoaded, setMessagesLoaded] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
