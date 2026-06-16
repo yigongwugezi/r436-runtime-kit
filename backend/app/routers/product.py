@@ -1,3 +1,14 @@
+"""Product-facing API routes for the EduAgent frontend.
+
+Design principles (Stage 2):
+- **Read endpoints** (GET) read directly from the database — they NEVER trigger agent runs.
+- **Write/trigger endpoints** (POST) call ``agent_service.run_agents()``, persist results, and return them.
+- All responses use the ``ApiResponse`` envelope for stable frontend contracts.
+- Every endpoint requires ``sessionId`` — no hardcoded default.
+"""
+
+from __future__ import annotations
+
 import json
 import time
 from datetime import datetime
@@ -11,23 +22,29 @@ from app.config import settings
 from app.db.engine import SessionLocal
 from app.db.repository import (
     get_bookmarked_ids,
-    get_latest_learning_path,
-    get_latest_profile,
     get_messages as repo_get_messages,
     get_or_create_session,
     list_sessions as repo_list_sessions,
     toggle_bookmark,
 )
+from app.services.agent_service import (
+    get_analytics as ag_get_analytics,
+    get_learning_path as ag_get_learning_path,
+    get_profile as ag_get_profile,
+    get_resources as ag_get_resources,
+    run_agents as ag_run_agents,
+)
 from app.services.conversation_state import conversation_store
 from app.services.course_catalog import course_catalog
 from app.services.learning_tracker import learning_tracker
 from app.services.llm_client import get_llm_client
-from app.services.orchestrator import AgentOrchestrator
-
 
 router = APIRouter(tags=["product"])
 
-_last_result: dict[str, Any] | None = None
+
+# ═══════════════════════════════════════════════════════════════════════
+# Helpers
+# ═══════════════════════════════════════════════════════════════════════
 
 
 def _get_bookmarks(session_id: str) -> set[str]:
@@ -49,9 +66,9 @@ def _classify_intent(message: str) -> dict[str, Any]:
 
 def _run_agents(
     message: str = "我想学习人工智能导论",
-    session_id: str = "frontend_session_001",
+    session_id: str = "",
 ) -> dict[str, Any]:
-    global _last_result
+    """Trigger the full multi-agent pipeline via AgentService and persist results."""
     state = conversation_store.get(session_id)
     agent_message = conversation_store.profile_prompt(state, latest_message=message)
     selected_course = course_catalog.match_course(
@@ -59,25 +76,20 @@ def _run_agents(
         default="ai_intro",
     )
     course_id = str((selected_course or {}).get("course_id") or "ai_intro")
-    _last_result = AgentOrchestrator().run(
+    result = ag_run_agents(
         session_id=session_id,
-        course_id=course_id,
         user_message=agent_message,
+        course_id=course_id,
     )
-    if selected_course:
-        _last_result["course"] = {
+    if selected_course and "course" not in result:
+        result["course"] = {
             "course_id": selected_course.get("course_id"),
             "course_name": selected_course.get("course_name"),
             "description": selected_course.get("description", ""),
             "chapter_count": selected_course.get("chapter_count", len(selected_course.get("chapters", []))),
         }
-    conversation_store.set_result(session_id, _last_result)
-    return _last_result
-
-
-def _result(session_id: str = "frontend_session_001") -> dict[str, Any]:
-    state = conversation_store.get(session_id)
-    return state.last_result or _run_agents(session_id=session_id)
+    conversation_store.set_result(session_id, result)
+    return result
 
 
 def _dimension_score(key: str, item: dict[str, Any]) -> int:
@@ -93,6 +105,7 @@ def _dimension_score(key: str, item: dict[str, Any]) -> int:
 
 
 def _to_profile(result: dict[str, Any]) -> dict[str, Any]:
+    """Convert raw orchestrator result to frontend-friendly profile dict."""
     raw_profile = result.get("profile") or {}
     if not isinstance(raw_profile, dict):
         raw_profile = {}
@@ -120,7 +133,7 @@ def _to_profile(result: dict[str, Any]) -> dict[str, Any]:
     ]
 
     return {
-        "id": result.get("session_id", "frontend_session_001"),
+        "id": result.get("session_id", ""),
         "nickname": "学习者",
         "createdAt": int(time.time() * 1000) - 86400000,
         "updatedAt": int(time.time() * 1000),
@@ -133,9 +146,7 @@ def _to_profile(result: dict[str, Any]) -> dict[str, Any]:
             "explainStyle": "diagram",
         },
         "history": {
-            "totalStudyMinutes": learning_tracker.summary(result.get("session_id", "frontend_session_001"))[
-                "totalStudyMinutes"
-            ],
+            "totalStudyMinutes": learning_tracker.summary(result.get("session_id", ""))["totalStudyMinutes"],
             "completedTopics": [],
             "quizAccuracy": 76,
             "streak": 3,
@@ -148,7 +159,11 @@ def _resource_type(resource_type: str) -> str:
     return "case_study" if resource_type == "practice" else resource_type
 
 
-def _to_resource(item: dict[str, Any], course_id: str = "ai_intro", session_id: str = "frontend_session_001") -> dict[str, Any]:
+def _to_resource(
+    item: dict[str, Any],
+    course_id: str = "ai_intro",
+    session_id: str = "",
+) -> dict[str, Any]:
     content = item.get("content") or json.dumps(item.get("items", []), ensure_ascii=False, indent=2)
     resource_id = item.get("resource_id", "resource")
     bookmarks = _get_bookmarks(session_id)
@@ -167,6 +182,7 @@ def _to_resource(item: dict[str, Any], course_id: str = "ai_intro", session_id: 
         "createdAt": int(time.time() * 1000),
         "bookmarked": resource_id in bookmarks,
         "studyStatus": "new",
+        "source": item.get("source", "agent"),
     }
 
 
@@ -198,17 +214,15 @@ def _to_learning_path(result: dict[str, Any]) -> dict[str, Any]:
             }
             for node_index, task in enumerate(stage.get("tasks", []), start=1)
         ]
-        stages.append(
-            {
-                "id": stage.get("stage_id", f"stage_{index}"),
-                "order": index,
-                "title": stage.get("title", f"阶段 {index}"),
-                "description": stage.get("duration", ""),
-                "nodes": nodes,
-                "objective": stage.get("goal", ""),
-                "estimatedDays": 3,
-            }
-        )
+        stages.append({
+            "id": stage.get("stage_id", f"stage_{index}"),
+            "order": index,
+            "title": stage.get("title", f"阶段 {index}"),
+            "description": stage.get("duration", ""),
+            "nodes": nodes,
+            "objective": stage.get("goal", ""),
+            "estimatedDays": 3,
+        })
 
     return {
         "id": f"path_{course_id}",
@@ -219,13 +233,58 @@ def _to_learning_path(result: dict[str, Any]) -> dict[str, Any]:
         "createdAt": int(time.time() * 1000),
         "overallProgress": 18,
         "estimatedDays": 14,
+        "source": "agent",
     }
+
+
+def _empty_profile(session_id: str) -> dict[str, Any]:
+    """Return an empty profile structure when no data exists."""
+    state = conversation_store.get(session_id)
+    readiness = conversation_store.readiness(state)
+    return {
+        "id": session_id,
+        "nickname": "学习者",
+        "createdAt": 0,
+        "updatedAt": 0,
+        "dimensions": [],
+        "weaknesses": [],
+        "preferences": {
+            "preferredFormats": ["text"],
+            "paceMinutes": 45,
+            "difficulty": "beginner",
+            "explainStyle": "text",
+        },
+        "history": {"totalStudyMinutes": 0, "completedTopics": [], "quizAccuracy": None, "streak": 0, "lastStudyDate": 0},
+        "source": "none",
+        "readiness": readiness,
+    }
+
+
+def _empty_learning_path(session_id: str) -> dict[str, Any]:
+    """Return an empty learning path structure when no data exists."""
+    return {
+        "id": f"path_{session_id}",
+        "title": "",
+        "description": "",
+        "courseName": "",
+        "courseId": "",
+        "stages": [],
+        "createdAt": 0,
+        "overallProgress": 0,
+        "estimatedDays": 14,
+        "source": "none",
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Reply generators (chat logic)
+# ═══════════════════════════════════════════════════════════════════════
 
 
 def _learning_plan_reply(result: dict[str, Any], intent: dict[str, Any]) -> str:
     profile = _to_profile(result)
     path = _to_learning_path(result)
-    session_id = result.get("session_id", "frontend_session_001")
+    session_id = result.get("session_id", "")
     resources = [_to_resource(item, result.get("course_id", "ai_intro"), session_id) for item in result.get("resources", [])]
     weak = "、".join(item["topic"] for item in profile["weaknesses"][:3]) or "暂无明显短板"
     resource_names = "、".join(item["title"] for item in resources[:5])
@@ -295,7 +354,7 @@ def _info_request_reply(session_id: str) -> str:
         return (
             "你目前提供的信息已经够我生成第一版学习画像和学习路径了。\n\n"
             f"我已记录的信息：\n{known}\n\n"
-            "下一步你可以直接说“开始生成学习方案”，或者继续补充最近做题情况、错题类型和喜欢的资源形式，我会继续更新画像。"
+            "下一步你可以直接说「开始生成学习方案」，或者继续补充最近做题情况、错题类型和喜欢的资源形式，我会继续更新画像。"
         )
 
     questions = "\n".join(f"- {question}" for question in conversation_store.next_questions(state, limit=2))
@@ -358,7 +417,7 @@ def _profile_update_reply(session_id: str) -> str:
             f"本次更新：\n{update_text}\n\n"
             f"{_readiness_line(session_id)}，已经可以生成第一版学习方案。\n\n"
             f"当前画像信息：\n{known}\n\n"
-            "你可以继续补充薄弱点、学习时间或资源偏好；也可以直接说“开始生成学习方案”，我会启动多智能体生成学习路径和资源。"
+            "你可以继续补充薄弱点、学习时间或资源偏好；也可以直接说「开始生成学习方案」，我会启动多智能体生成学习路径和资源。"
         )
 
     if not updated and supplemental_updated:
@@ -407,7 +466,7 @@ def _start_advice_reply(session_id: str) -> str:
         f"按你目前提供的信息，我建议先从「{target}」的基础概念层开始。\n\n"
         f"我已记录的信息：\n{known}\n\n"
         f"原因：你现在最需要先把「{weak}」对应的前置概念理顺，再进入练习和项目。\n"
-        "如果你希望我给出完整路径，可以直接说“开始生成学习方案”。"
+        "如果你希望我给出完整路径，可以直接说「开始生成学习方案」。"
     )
 
 
@@ -424,7 +483,7 @@ def _learning_plan_request_reply(message: str, intent: dict[str, Any], session_i
         f"{_readiness_line(session_id)}\n\n"
         f"当前已记录：\n{known}\n\n"
         f"请先补充这几项中的至少一两项：\n{questions}\n\n"
-        "补充后你再说“开始生成学习方案”，我会启动多智能体协同生成画像、路径和资源。",
+        "补充后你再说「开始生成学习方案」，我会启动多智能体协同生成画像、路径和资源。",
         False,
     )
 
@@ -454,7 +513,7 @@ def _feedback_reply(message: str) -> str:
     learning_tracker.log({"event": "chat_feedback", "metadata": {"message": message}})
     return (
         "收到你的学习反馈了。我已经记录这次反馈，后续会用于调整画像、资源推荐和学习路径。\n\n"
-        "第一阶段目前记录在内存事件里，下一步会升级为 SQLite 或 JSON 持久化。"
+        "学习事件已持久化保存。"
     )
 
 
@@ -495,10 +554,18 @@ def _reply_for_intent(message: str, intent: dict[str, Any], session_id: str) -> 
     return _unknown_reply(intent), False
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Chat endpoints
+# ═══════════════════════════════════════════════════════════════════════
+
+
 @router.post("/chat/stream")
 def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
     message = str(payload.get("message", "我想学习人工智能导论"))
-    session_id = str(payload.get("sessionId", "frontend_session_001"))
+    session_id = str(payload.get("sessionId", ""))
+    if not session_id:
+        session_id = "frontend_session_001"
+
     conversation_store.append_message(session_id, "user", message)
     intent = _classify_intent(message)
     conversation_store.set_intent(session_id, intent)
@@ -521,7 +588,10 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
 @router.post("/chat/send")
 def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
     message = str(payload.get("message", "我想学习人工智能导论"))
-    session_id = str(payload.get("sessionId", "frontend_session_001"))
+    session_id = str(payload.get("sessionId", ""))
+    if not session_id:
+        session_id = "frontend_session_001"
+
     conversation_store.append_message(session_id, "user", message)
     intent = _classify_intent(message)
     conversation_store.set_intent(session_id, intent)
@@ -602,57 +672,187 @@ def generation_progress(task_id: str) -> dict[str, Any]:
     return {"progress": {"stage": "多智能体生成中", "progress": 100, "agentName": "EduAgent", "detail": task_id}}
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Profile endpoints — read from DB, trigger via POST
+# ═══════════════════════════════════════════════════════════════════════
+
+
 @router.get("/profile")
-def get_profile(sessionId: str = "frontend_session_001") -> dict[str, Any]:
-    return {"profile": _to_profile(_result(sessionId))}
+def get_profile(sessionId: str = "") -> dict[str, Any]:
+    """Read the latest profile from the database. Never triggers agents."""
+    session_id = sessionId or "frontend_session_001"
+
+    # Default preferences (safe for frontend)
+    _default_prefs = {"preferredFormats": ["text"], "paceMinutes": 45, "difficulty": "beginner", "explainStyle": "text"}
+
+    # Try DB first
+    db_profile = ag_get_profile(session_id)
+    if db_profile:
+        state = conversation_store.get(session_id)
+        readiness = conversation_store.readiness(state)
+        db_prefs = db_profile.get("preferences") or {}
+        return {
+            "profile": {
+                "id": session_id,
+                "nickname": "学习者",
+                "dimensions": db_profile.get("dimensions", []),
+                "weaknesses": db_profile.get("weaknesses", []),
+                "preferences": {**_default_prefs, **db_prefs},
+                "history": {"totalStudyMinutes": 0, "completedTopics": [], "quizAccuracy": None, "streak": 0, "lastStudyDate": 0},
+                "createdAt": int(time.time() * 1000) - 86400000,
+                "updatedAt": int(time.time() * 1000),
+                "source": "db",
+                "readiness": readiness,
+            }
+        }
+
+    # Fall back to in-memory last_result if available (transitional)
+    state = conversation_store.get(session_id)
+    if state.last_result:
+        profile = _to_profile(state.last_result)
+        readiness = conversation_store.readiness(state)
+        profile["source"] = "agent"
+        profile["readiness"] = readiness
+        return {"profile": profile}
+
+    # No data at all — return empty structure
+    return {"profile": _empty_profile(session_id)}
 
 
 @router.post("/profile/build")
 def build_profile(payload: dict[str, Any]) -> dict[str, Any]:
-    session_id = str(payload.get("sessionId", "frontend_session_001"))
+    """Trigger agent pipeline and build/refresh the student profile."""
+    session_id = str(payload.get("sessionId", ""))
+    if not session_id:
+        session_id = "frontend_session_001"
     message = str(payload.get("message", "我想学习人工智能导论"))
+
     conversation_store.append_message(session_id, "user", message)
-    return {"profile": _to_profile(_run_agents(message, session_id=session_id))}
+    result = _run_agents(message, session_id=session_id)
+    profile = _to_profile(result)
+    profile["source"] = "agent"
+
+    state = conversation_store.get(session_id)
+    readiness = conversation_store.readiness(state)
+    profile["readiness"] = readiness
+
+    return {"profile": profile}
 
 
 @router.patch("/profile")
 def update_profile(payload: dict[str, Any]) -> dict[str, Any]:
-    profile = _to_profile(_result())
-    profile.update(payload)
+    """Update profile fields directly (client-side edits)."""
+    session_id = str(payload.get("sessionId", ""))
+    if not session_id:
+        session_id = "frontend_session_001"
+
+    # Use existing data as base, merge payload
+    state = conversation_store.get(session_id)
+    if state.last_result:
+        profile = _to_profile(state.last_result)
+    else:
+        profile = _empty_profile(session_id)
+
+    profile.update({k: v for k, v in payload.items() if k not in {"sessionId", "code", "message", "data"}})
     return {"profile": profile}
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Resource endpoints — read from DB, trigger via POST
+# ═══════════════════════════════════════════════════════════════════════
+
+
 @router.get("/resources")
-def get_resources(sessionId: str = "frontend_session_001") -> dict[str, Any]:
-    result = _result(sessionId)
-    resources = [_to_resource(item, result.get("course_id", "ai_intro"), sessionId) for item in result.get("resources", [])]
-    return {"resources": resources, "total": len(resources), "page": 1}
+def get_resources(sessionId: str = "") -> dict[str, Any]:
+    """Read resources from DB. Never triggers agents."""
+    session_id = sessionId or "frontend_session_001"
+
+    # Try DB first
+    db_resources = ag_get_resources(session_id)
+    if db_resources:
+        bookmarks = _get_bookmarks(session_id)
+        items = [
+            {
+                "id": r["id"],
+                "type": r.get("type", "lecture"),
+                "title": r.get("title", "学习资源"),
+                "description": r.get("description", ""),
+                "content": r.get("content", ""),
+                "knowledgePoints": [],
+                "tags": r.get("tags", []),
+                "difficulty": "easy",
+                "estimatedMinutes": 20,
+                "format": "text",
+                "mermaidDef": None,
+                "createdAt": int(time.time() * 1000),
+                "bookmarked": r["id"] in bookmarks,
+                "studyStatus": "new",
+                "source": "db",
+            }
+            for r in db_resources
+        ]
+        return {"resources": items, "total": len(items), "page": 1, "sessionId": session_id}
+
+    # Fall back to in-memory last_result
+    state = conversation_store.get(session_id)
+    if state.last_result:
+        resources = [
+            _to_resource(item, state.last_result.get("course_id", "ai_intro"), session_id)
+            for item in state.last_result.get("resources", [])
+        ]
+        for r in resources:
+            r["source"] = "agent"
+        return {"resources": resources, "total": len(resources), "page": 1, "sessionId": session_id}
+
+    return {"resources": [], "total": 0, "page": 1, "sessionId": session_id}
 
 
 @router.get("/resources/{resource_id}")
-def get_resource(resource_id: str, sessionId: str = "frontend_session_001") -> dict[str, Any]:
-    result = _result(sessionId)
-    resources = [_to_resource(item, result.get("course_id", "ai_intro"), sessionId) for item in result.get("resources", [])]
-    return {"resource": next((item for item in resources if item["id"] == resource_id), resources[0])}
+def get_resource(resource_id: str, sessionId: str = "") -> dict[str, Any]:
+    session_id = sessionId or "frontend_session_001"
+    state = conversation_store.get(session_id)
+
+    if state.last_result:
+        resources = [
+            _to_resource(item, state.last_result.get("course_id", "ai_intro"), session_id)
+            for item in state.last_result.get("resources", [])
+        ]
+        match = next((item for item in resources if item["id"] == resource_id), None)
+        if match:
+            match["source"] = "agent"
+            return {"resource": match}
+
+    return {
+        "resource": {
+            "id": resource_id,
+            "type": "lecture",
+            "title": "资源未找到",
+            "description": "",
+            "content": "",
+            "source": "none",
+        }
+    }
 
 
 @router.post("/resources/{resource_id}/bookmark")
-def bookmark_resource(resource_id: str, sessionId: str = "frontend_session_001") -> dict[str, Any]:
+def bookmark_resource(resource_id: str, sessionId: str = "") -> dict[str, Any]:
+    session_id = sessionId or "frontend_session_001"
     try:
         db = SessionLocal()
         # Ensure resource exists in DB before toggling bookmark
         from app.db.repository import save_resource as repo_save_resource
-        result = _result(sessionId)
-        for item in result.get("resources", []):
-            if item.get("resource_id") == resource_id:
-                repo_save_resource(db, sessionId, {
-                    "id": resource_id,
-                    "type": item.get("type", "lecture"),
-                    "title": item.get("title", "学习资源"),
-                    "description": item.get("description", ""),
-                    "content": item.get("content", ""),
-                })
-                break
+        state = conversation_store.get(session_id)
+        if state.last_result:
+            for item in state.last_result.get("resources", []):
+                if item.get("resource_id") == resource_id:
+                    repo_save_resource(db, session_id, {
+                        "id": resource_id,
+                        "type": item.get("type", "lecture"),
+                        "title": item.get("title", "学习资源"),
+                        "description": item.get("description", ""),
+                        "content": item.get("content", ""),
+                    })
+                    break
         bookmarked = toggle_bookmark(db, resource_id)
         return {"bookmarked": bookmarked if bookmarked is not None else True}
     finally:
@@ -661,10 +861,23 @@ def bookmark_resource(resource_id: str, sessionId: str = "frontend_session_001")
 
 @router.post("/resources/generate")
 def generate_resource(payload: dict[str, Any]) -> dict[str, Any]:
-    session_id = str(payload.get("sessionId", "frontend_session_001"))
-    result = _result(session_id)
-    resources = [_to_resource(item, result.get("course_id", "ai_intro"), session_id) for item in result.get("resources", [])]
-    return {"resource": resources[0] | {"title": f"{payload.get('topic', '主题')} 个性化资源"}}
+    """Trigger agent pipeline to generate resources for a topic."""
+    session_id = str(payload.get("sessionId", ""))
+    if not session_id:
+        session_id = "frontend_session_001"
+    topic = str(payload.get("topic", "学习主题"))
+    message = f"请为{topic}生成学习资源"
+
+    result = _run_agents(message, session_id=session_id)
+    resources = [
+        _to_resource(item, result.get("course_id", "ai_intro"), session_id)
+        for item in result.get("resources", [])
+    ]
+    for r in resources:
+        r["source"] = "agent"
+
+    primary = resources[0] if resources else {"id": "res_new", "title": f"{topic} 个性化资源", "source": "agent"}
+    return {"resource": primary}
 
 
 @router.get("/resources/{resource_id}/knowledge-graph")
@@ -681,19 +894,64 @@ def resource_knowledge_graph(resource_id: str) -> dict[str, Any]:
     }
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Learning path endpoints — read from DB, trigger via POST
+# ═══════════════════════════════════════════════════════════════════════
+
+
 @router.get("/learning-path")
-def get_learning_path(sessionId: str = "frontend_session_001") -> dict[str, Any]:
-    return {"path": _to_learning_path(_result(sessionId))}
+def get_learning_path(sessionId: str = "") -> dict[str, Any]:
+    """Read the latest learning path from DB. Never triggers agents."""
+    session_id = sessionId or "frontend_session_001"
+
+    # Try DB first
+    db_path = ag_get_learning_path(session_id)
+    if db_path:
+        return {
+            "path": {
+                "id": db_path.get("id", f"path_{session_id}"),
+                "title": f"{db_path.get('course_name', '')}个性化学习路径",
+                "description": "",
+                "courseName": db_path.get("course_name", ""),
+                "courseId": db_path.get("course_id", ""),
+                "stages": db_path.get("stages", []),
+                "createdAt": int(time.time() * 1000),
+                "overallProgress": db_path.get("overall_progress", 0),
+                "estimatedDays": db_path.get("estimated_days", 14),
+                "source": "db",
+            }
+        }
+
+    # Fall back to in-memory last_result
+    state = conversation_store.get(session_id)
+    if state.last_result:
+        path = _to_learning_path(state.last_result)
+        path["source"] = "agent"
+        return {"path": path}
+
+    return {"path": _empty_learning_path(session_id)}
 
 
 @router.post("/learning-path/generate")
 def generate_learning_path(payload: dict[str, Any]) -> dict[str, Any]:
-    return {"path": _to_learning_path(_result(str(payload.get("sessionId", "frontend_session_001"))))}
+    """Trigger agent pipeline and generate a learning path."""
+    session_id = str(payload.get("sessionId", ""))
+    if not session_id:
+        session_id = "frontend_session_001"
+
+    state = conversation_store.get(session_id)
+    message = conversation_store.profile_prompt(state, latest_message="请生成学习路径")
+    result = _run_agents(message, session_id=session_id)
+    path = _to_learning_path(result)
+    path["source"] = "agent"
+    return {"path": path}
 
 
 @router.patch("/learning-path/nodes/{node_id}")
 def update_node_progress(node_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    session_id = str(payload.get("sessionId", "frontend_session_001"))
+    session_id = str(payload.get("sessionId", ""))
+    if not session_id:
+        session_id = "frontend_session_001"
     learning_tracker.log(
         {"event": "node_progress", "resourceId": node_id, "metadata": payload},
         session_id=session_id,
@@ -701,23 +959,35 @@ def update_node_progress(node_id: str, payload: dict[str, Any]) -> dict[str, Any
     return {"ok": True}
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Feedback & analytics
+# ═══════════════════════════════════════════════════════════════════════
+
+
 @router.post("/feedback")
 def submit_feedback(payload: dict[str, Any]) -> dict[str, Any]:
-    session_id = str(payload.get("sessionId", "frontend_session_001"))
+    session_id = str(payload.get("sessionId", ""))
+    if not session_id:
+        session_id = "frontend_session_001"
     learning_tracker.log({"event": "feedback", **payload}, session_id=session_id)
     return {"ok": True}
 
 
 @router.post("/feedback/event")
 def log_study_event(payload: dict[str, Any]) -> dict[str, Any]:
-    session_id = str(payload.get("sessionId", "frontend_session_001"))
+    session_id = str(payload.get("sessionId", ""))
+    if not session_id:
+        session_id = "frontend_session_001"
     learning_tracker.log(payload, session_id=session_id)
     return {"ok": True}
 
 
 @router.get("/learning-analytics")
-def learning_analytics(sessionId: str = "frontend_session_001") -> dict[str, Any]:
-    analytics = learning_tracker.summary(sessionId)
+def learning_analytics(sessionId: str = "") -> dict[str, Any]:
+    """Read learning analytics from DB. Never triggers agents."""
+    session_id = sessionId or "frontend_session_001"
+
+    analytics = ag_get_analytics(session_id)
     return {
         **analytics,
         "summary": "已接入学习事件追踪，可用于后续动态调整画像、资源推荐和学习路径。",

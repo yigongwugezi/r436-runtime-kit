@@ -219,10 +219,17 @@ class ConversationStore:
         finally:
             db.close()
 
-    # ── Public API (unchanged signatures) ─────────────────────────────
+    # ── Public API ────────────────────────────────────────────────────
+
+    _DEFAULT_SESSION = "frontend_session_001"
 
     def get(self, session_id: str | None) -> ConversationState:
-        sid = (session_id or "frontend_session_001").strip() or "frontend_session_001"
+        """Get or create the conversation state for *session_id*.
+
+        Falls back to ``frontend_session_001`` when *session_id* is empty
+        (backwards-compatible default for the single-user dev flow).
+        """
+        sid = (session_id or self._DEFAULT_SESSION).strip() or self._DEFAULT_SESSION
         if sid not in self._sessions:
             state = ConversationState(session_id=sid)
             self._sessions[sid] = state
@@ -230,8 +237,32 @@ class ConversationStore:
                 self._hydrate_from_db(state)
         return self._sessions[sid]
 
+    def get_state_or_none(self, session_id: str) -> ConversationState | None:
+        """Return the state for *session_id* if it exists, otherwise *None*.
+
+        Unlike ``get()``, this does **not** create a new state on demand.
+        Use this when you want to check whether a session already has data
+        without creating phantom sessions.
+        """
+        sid = session_id.strip()
+        if not sid:
+            return None
+        if sid in self._sessions:
+            return self._sessions[sid]
+        if self._db_enabled:
+            state = ConversationState(session_id=sid)
+            self._sessions[sid] = state
+            self._hydrate_from_db(state)
+            # If hydration produced no data, treat as non-existent
+            if not state.messages and not state.last_result:
+                del self._sessions[sid]
+                return None
+            return state
+        return None
+
     def reset(self, session_id: str | None) -> ConversationState:
-        sid = (session_id or "frontend_session_001").strip() or "frontend_session_001"
+        """Reset all state for a session (in-memory + DB)."""
+        sid = (session_id or self._DEFAULT_SESSION).strip() or self._DEFAULT_SESSION
         self._sessions[sid] = ConversationState(session_id=sid)
         if self._db_enabled:
             try:
@@ -294,10 +325,19 @@ class ConversationStore:
                     for point in result.get("diagnosis", {}).get("weak_knowledge_points", [])
                 ]
                 readiness = self.readiness(state)
+                # Extract preferences from profile data or result
+                prefs = result.get("preferences") or {}
+                if not prefs:
+                    # Build from conversation state facts as fallback
+                    pref_fact = state.facts.get("preference", "")
+                    if pref_fact:
+                        prefs = {"preferredFormats": [pref_fact], "paceMinutes": 45, "difficulty": "beginner", "explainStyle": "diagram"}
+
                 save_profile_snapshot(
                     db, state.session_id,
                     dimensions=dimensions_list,
                     weaknesses=weaknesses_list,
+                    preferences=prefs if prefs else None,
                     readiness_score=readiness.get("score"),
                 )
 

@@ -400,7 +400,7 @@ export default function ProfilePage() {
         </h3>
         <div className="flex flex-wrap gap-3">
           <span className="px-3 py-1.5 bg-brand-50 text-brand-600 rounded-xl text-xs font-medium border border-brand-100">
-            📚 偏好格式：{profile.preferences.preferredFormats.join(' / ')}
+            📚 偏好格式：{(profile.preferences.preferredFormats || ['文本']).join(' / ')}
           </span>
           <span className="px-3 py-1.5 bg-green-50 text-green-600 rounded-xl text-xs font-medium border border-green-100">
             ⏱ 学习节奏：{formatDuration(profile.preferences.paceMinutes)} / 次
