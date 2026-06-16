@@ -234,7 +234,7 @@ function StageSection({ stage, defaultExpanded }: { stage: LearningStage; defaul
  * =================================================================== */
 export default function LearningPathPage() {
   const navigate = useNavigate();
-  const { path, loading, error } = useLearningPath();
+  const { path, loading, error, fetchPath } = useLearningPath();
   const dataVersion = useChatStore((state) => state.dataVersion);
 
   if (loading && !path) return <Loading fullScreen text="加载学习路径..." />;
@@ -245,6 +245,23 @@ export default function LearningPathPage() {
         icon={<AlertTriangle className="w-8 h-8" />}
         title="路径加载失败"
         description={error}
+        action={
+          <div className="flex items-center gap-3 mt-3">
+            <button
+              onClick={fetchPath}
+              className="px-4 py-2 bg-gray-900 text-white rounded-xl text-sm font-semibold hover:bg-gray-800 transition-all inline-flex items-center gap-2"
+            >
+              <RefreshCw className="w-4 h-4" />
+              重试
+            </button>
+            <button
+              onClick={() => navigate('/chat')}
+              className="px-4 py-2 bg-white border border-gray-200 text-gray-600 rounded-xl text-sm font-semibold hover:bg-gray-50 transition-all"
+            >
+              去对话页生成路径
+            </button>
+          </div>
+        }
       />
     );
   }

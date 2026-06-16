@@ -21,11 +21,17 @@ const ALL_DIMENSION_KEYS: DimensionKey[] = [
   'learning_rhythm', 'self_efficacy',
 ];
 
-const SOURCE_LABELS: Record<string, { label: string; color: string }> = {
-  user_input: { label: '用户提供', color: 'bg-blue-50 text-blue-600 border-blue-200' },
-  inferred:    { label: '系统推断', color: 'bg-amber-50 text-amber-600 border-amber-200' },
-  diagnosis:   { label: '诊断分析', color: 'bg-purple-50 text-purple-600 border-purple-200' },
-  feedback:    { label: '学习反馈', color: 'bg-green-50 text-green-600 border-green-200' },
+const MISSING_DIMENSION_TIPS: Record<DimensionKey, string> = {
+  major_background: '你可以说："我是软件工程大三学生" 或 "我工作是前端开发"',
+  knowledge_base: '你可以说："我学过 Python 基础，会一点 React"',
+  learning_goal: '你可以说："我想两周内通过数据结构考试" 或 "我想入门机器学习"',
+  cognitive_style: '你可以说："我更喜欢先看整体框架再深入细节"',
+  error_patterns: '你可以说："我递归和动态规划总是出错"',
+  coding_ability: '你可以说："我能写 LeetCode 中等题" 或 "我基本不会编程"',
+  learning_progress: '你可以说："Tree 和 Graph 章节已学完"',
+  interest_direction: '你可以说："我想做 NLP 方向" 或 "我感兴趣的是后端开发"',
+  learning_rhythm: '你可以说："我每天能学 2 小时" 或 "我只有周末有空"',
+  self_efficacy: '你可以说："我觉得自己学得还行" 或 "我有点没信心"',
 };
 
 /* ===================================================================
@@ -315,11 +321,19 @@ export default function ProfilePage() {
               <p className="text-xs text-amber-600 mb-2">
                 缺少 {missingDimensions.length} 个维度，回到对话页补充你的信息。
               </p>
-              <div className="flex flex-wrap gap-1.5">
+              <div className="space-y-2">
                 {missingDimensions.map((key) => (
-                  <span key={key} className="px-2 py-1 bg-white border border-amber-200 rounded-lg text-[10px] text-amber-700 font-medium">
-                    {DIMENSION_LABELS[key]}
-                  </span>
+                  <div key={key} className="flex items-start gap-2 bg-white border border-amber-200 rounded-xl p-2.5">
+                    <div className="flex-shrink-0 mt-0.5">
+                      <span className="w-5 h-5 rounded-lg bg-amber-100 flex items-center justify-center text-[10px] font-bold text-amber-600">
+                        {DIMENSION_LABELS[key].slice(0, 1)}
+                      </span>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-semibold text-amber-800">缺少 {DIMENSION_LABELS[key]}</p>
+                      <p className="text-[10px] text-amber-600 mt-0.5">{MISSING_DIMENSION_TIPS[key]}</p>
+                    </div>
+                  </div>
                 ))}
               </div>
             </div>

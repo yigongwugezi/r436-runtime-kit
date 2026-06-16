@@ -5,7 +5,14 @@ import {
   Users, TrendingUp, Zap, Star,
   CheckCircle2, Bot, Cpu, Target, GitFork, BookOpen,
   Menu, X, ChevronRight, Shield,
+  Clock, Play, AlertCircle,
 } from 'lucide-react';
+import { useProfileStore } from '../store/profileStore';
+import { useChatStore } from '../store/chatStore';
+import { useLearningPath } from '../hooks/useLearningPath';
+import { useResources } from '../hooks/useResources';
+import { RESOURCE_TYPE_LABELS } from '../utils/constants';
+import { timeAgo, formatDuration } from '../utils/format';
 
 /* ===================================================================
  * 数据定义
@@ -211,6 +218,189 @@ function ReviewCard({ name, role, text, stars }: typeof reviews[0]) {
 }
 
 /* ===================================================================
+ * 🎯 学习工作台
+ * =================================================================== */
+function Dashboard() {
+  const navigate = useNavigate();
+  const profile = useProfileStore((s) => s.profile);
+  const messages = useChatStore((s) => s.messages);
+  const { path } = useLearningPath();
+  const { resources } = useResources();
+
+  const hasChatted = messages.length > 0;
+  const completeness = profile
+    ? Math.round(
+        (profile.dimensions.length / 10) * 100,
+      )
+    : 0;
+
+  // 当前学习阶段
+  const currentStage = path?.stages?.find((s) =>
+    s.nodes.some((n) => n.status === 'in_progress' || n.status === 'available'),
+  );
+
+  // 今日推荐资源（前三个）
+  const recommended = resources?.slice(0, 3) || [];
+
+  if (!hasChatted) {
+    return (
+      <section className="bg-gradient-to-b from-gray-50 to-white">
+        <div className="max-w-5xl mx-auto px-6 py-16">
+          <div className="bg-white border border-gray-100 rounded-2xl p-8 text-center shadow-sm">
+            <div className="w-16 h-16 rounded-2xl bg-gray-50 flex items-center justify-center mx-auto mb-4">
+              <Cpu className="w-8 h-8 text-gray-300" />
+            </div>
+            <h3 className="text-lg font-bold text-gray-700 mb-2">尚无学习数据</h3>
+            <p className="text-sm text-gray-400 max-w-sm mx-auto mb-6">
+              去 AI 对话页开始你的第一次对话，系统会自动为你构建学习画像和工作台。
+            </p>
+            <button
+              onClick={() => navigate('/chat')}
+              className="px-6 py-3 bg-gray-900 text-white rounded-xl text-sm font-semibold hover:bg-gray-800 transition-all inline-flex items-center gap-2"
+            >
+              <MessageSquare className="w-4 h-4" />
+              开始对话
+            </button>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="bg-gradient-to-b from-gray-50 to-white">
+      <div className="max-w-5xl mx-auto px-6 py-16">
+        <div className="text-center mb-8">
+          <span className="inline-block text-xs font-bold text-brand-500 uppercase tracking-[0.2em] bg-brand-50 px-4 py-1.5 rounded-full mb-3">
+            My Workspace
+          </span>
+          <h2 className="text-2xl font-extrabold text-gray-900">我的学习工作台</h2>
+        </div>
+
+        {/* 顶层卡片 */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          {/* 当前课程 */}
+          <div className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm hover:shadow-md transition-all cursor-pointer"
+            onClick={() => navigate('/learning-path')}>
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center">
+                <BookOpen className="w-5 h-5 text-blue-500" />
+              </div>
+              <div>
+                <p className="text-[10px] text-gray-400 uppercase tracking-wider">当前课程</p>
+                <p className="text-sm font-bold text-gray-900 truncate max-w-[120px]">
+                  {path?.courseName || profile?.dimensions?.find(d => d.key === 'knowledge_base')?.description || '待选择'}
+                </p>
+              </div>
+            </div>
+            {path && (
+              <p className="text-[10px] text-brand-500">进度 {path.overallProgress}% · {path.estimatedDays} 天</p>
+            )}
+          </div>
+
+          {/* 画像完整度 */}
+          <div className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm hover:shadow-md transition-all cursor-pointer"
+            onClick={() => navigate('/profile')}>
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-xl bg-purple-50 flex items-center justify-center">
+                <Target className="w-5 h-5 text-purple-500" />
+              </div>
+              <div>
+                <p className="text-[10px] text-gray-400 uppercase tracking-wider">画像完整度</p>
+                <p className="text-sm font-bold text-gray-900">{completeness}%</p>
+              </div>
+            </div>
+            <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all duration-700 ${
+                  completeness >= 80 ? 'bg-green-500' : completeness >= 50 ? 'bg-amber-500' : 'bg-red-400'
+                }`}
+                style={{ width: `${completeness}%` }}
+              />
+            </div>
+          </div>
+
+          {/* 当前学习阶段 */}
+          <div className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm hover:shadow-md transition-all cursor-pointer"
+            onClick={() => navigate('/learning-path')}>
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-xl bg-green-50 flex items-center justify-center">
+                <Play className="w-5 h-5 text-green-500" />
+              </div>
+              <div>
+                <p className="text-[10px] text-gray-400 uppercase tracking-wider">当前阶段</p>
+                <p className="text-sm font-bold text-gray-900 truncate max-w-[120px]">
+                  {currentStage?.title || '待生成'}
+                </p>
+              </div>
+            </div>
+            {currentStage && (
+              <p className="text-[10px] text-green-600">
+                约 {currentStage.estimatedDays} 天 · {currentStage.nodes.filter(n => n.status === 'mastered').length}/{currentStage.nodes.length} 节点
+              </p>
+            )}
+          </div>
+
+          {/* 继续学习 */}
+          <div className="bg-white border border-brand-100 rounded-2xl p-5 shadow-sm hover:shadow-md transition-all cursor-pointer bg-gradient-to-br from-brand-50/30"
+            onClick={() => navigate('/chat')}>
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-xl bg-brand-100 flex items-center justify-center">
+                <Sparkles className="w-5 h-5 text-brand-600" />
+              </div>
+              <div>
+                <p className="text-[10px] text-gray-400 uppercase tracking-wider">继续学习</p>
+                <p className="text-sm font-bold text-brand-700">进入对话</p>
+              </div>
+            </div>
+            <p className="text-[10px] text-brand-500">
+              {messages.filter(m => m.role === 'user').length} 轮对话 · {timeAgo(messages[messages.length - 1]?.timestamp || Date.now())}
+            </p>
+          </div>
+        </div>
+
+        {/* 今日推荐资源 */}
+        {recommended.length > 0 && (
+          <div className="bg-white border border-gray-100 rounded-2xl p-6 shadow-sm">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-bold text-gray-700 flex items-center gap-2">
+                <Star className="w-4 h-4 text-amber-400" />
+                今日推荐资源
+              </h3>
+              <button
+                onClick={() => navigate('/resources')}
+                className="text-xs text-brand-500 hover:underline inline-flex items-center gap-1"
+              >
+                查看全部 <ChevronRight className="w-3 h-3" />
+              </button>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {recommended.map((r) => (
+                <div
+                  key={r.id}
+                  className="flex items-start gap-3 p-3.5 bg-gray-50 rounded-xl hover:bg-gray-100 transition-colors cursor-pointer"
+                  onClick={() => navigate('/resources')}
+                >
+                  <div className="w-9 h-9 rounded-lg bg-white flex items-center justify-center flex-shrink-0 shadow-sm">
+                    <BookOpen className="w-4 h-4 text-brand-500" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-semibold text-gray-800 truncate">{r.title}</p>
+                    <p className="text-[10px] text-gray-400 mt-0.5">
+                      {RESOURCE_TYPE_LABELS[r.type] || r.type} · {formatDuration(r.estimatedMinutes)}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/* ===================================================================
  * 主页面
  * =================================================================== */
 
@@ -363,6 +553,11 @@ export default function Home() {
           </div>
         </div>
       </section>
+
+      {/* ================================================================ */}
+      {/* 🎯 我的学习工作台 — 赛级工作台                                    */}
+      {/* ================================================================ */}
+      <Dashboard />
 
       {/* ================================================================ */}
       {/* 数据统计                                                         */}
