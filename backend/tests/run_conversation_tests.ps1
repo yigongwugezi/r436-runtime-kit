@@ -12,6 +12,7 @@ try {
     & $python "tests\conversation_eval.py"
     & $python "tests\conversation_regression.py"
     & $python "tests\course_catalog_test.py"
+    & $python "tests\import_app_test.py"
     & $python "tests\learning_tracker_test.py"
     & $python -m compileall app tests
 }
