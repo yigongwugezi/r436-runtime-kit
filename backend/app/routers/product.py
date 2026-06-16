@@ -484,14 +484,16 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
     reply, ran_agents = _reply_for_intent(message, intent, session_id)
     conversation_store.append_message(session_id, "assistant", reply)
 
+    NL = "\n"
+
     def event_stream():
         if ran_agents:
-            yield f"data: {json.dumps({'content': '正在启动多智能体协同流程...\n', 'done': False}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'content': '正在启动多智能体协同流程...' + NL, 'done': False}, ensure_ascii=False)}{NL}{NL}"
         else:
-            intent_line = f"意图识别：{intent['intent']}（{intent['confidence']:.0%}）\n\n"
-            yield f"data: {json.dumps({'content': intent_line, 'done': False}, ensure_ascii=False)}\n\n"
+            intent_line = f"意图识别：{intent['intent']}（{intent['confidence']:.0%}）{NL}{NL}"
+            yield f"data: {json.dumps({'content': intent_line, 'done': False}, ensure_ascii=False)}{NL}{NL}"
         for chunk in reply.splitlines(keepends=True):
-            yield f"data: {json.dumps({'content': chunk, 'done': False}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'content': chunk, 'done': False}, ensure_ascii=False)}{NL}{NL}"
         yield 'data: {"done":true}\n\n'
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
