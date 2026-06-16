@@ -26,6 +26,8 @@ export interface Resource {
   /** PPT 大纲 */
   pptOutline?: PptSlide[];
   createdAt: number;
+  /** 数据来源 */
+  source?: 'user_input' | 'agent_generated' | 'system_inferred' | 'mock_fallback';
   /** 是否已收藏 */
   bookmarked?: boolean;
   /** 学习状态 */

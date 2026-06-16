@@ -4,9 +4,11 @@ import {
   Search, Filter, BookOpen, Brain, Code, FileText, Lightbulb,
   Play, Presentation, Clock, Star, ChevronRight, BookmarkPlus,
   BookmarkCheck, CheckCircle2, MessageSquare, X, Send, Sparkles,
-  HelpCircle, Check, XCircle,
+  HelpCircle, Check, XCircle, Wrench, RefreshCw, AlertCircle,
 } from 'lucide-react';
 import { useResources } from '../hooks/useResources';
+import { useChatStore } from '../store/chatStore';
+import { useProfileStore } from '../store/profileStore';
 import type { Resource } from '../types/resource';
 import type { ResourceType } from '../types/chat';
 import { RESOURCE_TYPE_LABELS } from '../utils/constants';
@@ -17,6 +19,7 @@ import Modal from '../components/common/Modal';
 import Markdown from '../utils/markdown';
 import MermaidDiagram from '../utils/mermaid';
 import { submitFeedback, logStudyEvent } from '../api/feedback';
+import SourceBadge, { UpdateTimeRow, type DataSource } from '../components/common/SourceBadge';
 
 /* ===================================================================
  * 常量定义
@@ -97,6 +100,7 @@ function ResourceCard({ resource, onClick }: { resource: Resource; onClick: () =
         </span>
         <div className="flex items-center gap-2">
           {resource.bookmarked && <BookmarkCheck className="w-3 h-3 text-brand-500" />}
+          <SourceBadge source={resource.source || 'mock_fallback'} size="xs" />
           <span className="flex items-center gap-1 text-brand-500 group-hover:translate-x-0.5 transition-transform">
             查看详情 <ChevronRight className="w-3 h-3" />
           </span>
@@ -110,12 +114,14 @@ function ResourceCard({ resource, onClick }: { resource: Resource; onClick: () =
  * 筛选栏
  * =================================================================== */
 function FilterBar({
-  active, onFilter, onSelectDifficulty, activeDifficulty,
+  active, onFilter, onSelectDifficulty, activeDifficulty, dataSource, onSelectSource,
 }: {
   active: ResourceType | undefined;
   onFilter: (type: ResourceType | undefined) => void;
   onSelectDifficulty: (level: string | undefined) => void;
   activeDifficulty: string | undefined;
+  dataSource?: DataSource | undefined;
+  onSelectSource: (s: DataSource | undefined) => void;
 }) {
   return (
     <div className="space-y-2">
@@ -137,22 +143,40 @@ function FilterBar({
         ))}
       </div>
 
-      {/* 难度筛选 */}
-      <div className="flex items-center gap-1.5">
-        <span className="text-[10px] text-gray-400 flex-shrink-0">难度：</span>
-        {[undefined, 'easy', 'medium', 'hard'].map((level) => (
-          <button
-            key={level || 'all-diff'}
-            onClick={() => onSelectDifficulty(level)}
-            className={`px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all ${
-              activeDifficulty === level
-                ? 'bg-gray-800 text-white'
-                : 'bg-gray-50 text-gray-500 hover:bg-gray-100'
-            }`}
-          >
-            {level ? difficultyLabel[level] : '不限'}
-          </button>
-        ))}
+      {/* 难度 + 数据来源 */}
+      <div className="flex items-center gap-4 flex-wrap">
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] text-gray-400 flex-shrink-0">难度：</span>
+          {[undefined, 'easy', 'medium', 'hard'].map((level) => (
+            <button
+              key={level || 'all-diff'}
+              onClick={() => onSelectDifficulty(level)}
+              className={`px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all ${
+                activeDifficulty === level
+                  ? 'bg-gray-800 text-white'
+                  : 'bg-gray-50 text-gray-500 hover:bg-gray-100'
+              }`}
+            >
+              {level ? difficultyLabel[level] : '不限'}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] text-gray-400 flex-shrink-0">来源：</span>
+          {([undefined, 'agent_generated', 'mock_fallback'] as (DataSource | undefined)[]).map((s) => (
+            <button
+              key={s || 'all-src'}
+              onClick={() => onSelectSource(s)}
+              className={`px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all ${
+                dataSource === s
+                  ? 'bg-gray-800 text-white'
+                  : 'bg-gray-50 text-gray-500 hover:bg-gray-100'
+              }`}
+            >
+              {s ? (s === 'agent_generated' ? '智能体生成' : '示例数据') : '不限'}
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -406,11 +430,15 @@ function QuizAnswerer({ questions, resourceId }: {
  * =================================================================== */
 export default function ResourceLibrary() {
   const navigate = useNavigate();
-  const { resources, total, loading, applyFilter, toggleBookmark } = useResources();
+  const { resources, total, loading, error, applyFilter, toggleBookmark, refetch } = useResources();
+  const dataVersion = useChatStore((state) => state.dataVersion);
+  const profile = useProfileStore((state) => state.profile);
+  const hasCourse = profile?.dimensions?.some(d => d.key === 'knowledge_base');
   const [selected, setSelected] = useState<Resource | null>(null);
   const [search, setSearch] = useState('');
   const [activeType, setActiveType] = useState<ResourceType | undefined>();
   const [activeDifficulty, setActiveDifficulty] = useState<string | undefined>();
+  const [activeSource, setActiveSource] = useState<DataSource | undefined>();
   const [showFeedback, setShowFeedback] = useState(false);
   const [showThanks, setShowThanks] = useState(false);
 
@@ -445,6 +473,9 @@ export default function ResourceLibrary() {
     });
   }, []);
 
+  // 获取 refetch 方法
+
+
   return (
     <div className="max-w-7xl mx-auto px-4 py-6 md:py-8">
       {/* ========== 头部 ========== */}
@@ -474,12 +505,37 @@ export default function ResourceLibrary() {
           onFilter={(type) => { setActiveType(type); applyFilter({ type }); }}
           onSelectDifficulty={(d) => { setActiveDifficulty(d); applyFilter({ difficulty: d }); }}
           activeDifficulty={activeDifficulty}
+          dataSource={activeSource}
+          onSelectSource={(s) => { setActiveSource(s); }}
         />
       </div>
 
       {/* ========== 列表 ========== */}
       {loading ? (
         <Loading text="加载资源中…" />
+      ) : error ? (
+        <EmptyState
+          icon={<AlertCircle className="w-8 h-8 text-red-400" />}
+          title="资源加载失败"
+          description={error}
+          action={
+            <div className="flex items-center gap-3 mt-3">
+              <button
+                onClick={refetch}
+                className="px-4 py-2 bg-gray-900 text-white rounded-xl text-sm font-semibold hover:bg-gray-800 transition-all inline-flex items-center gap-2"
+              >
+                <RefreshCw className="w-4 h-4" />
+                重试
+              </button>
+              <button
+                onClick={() => navigate('/chat')}
+                className="px-4 py-2 bg-white border border-gray-200 text-gray-600 rounded-xl text-sm font-semibold hover:bg-gray-50 transition-all"
+              >
+                去对话页
+              </button>
+            </div>
+          }
+        />
       ) : !resources || resources.length === 0 ? (
         <EmptyState
           icon={<BookOpen className="w-8 h-8" />}
@@ -487,7 +543,9 @@ export default function ResourceLibrary() {
           description={
             search || activeType || activeDifficulty
               ? '尝试调整筛选条件或搜索关键词'
-              : '在 AI 对话中描述学习需求，多智能体将为你生成个性化学习资源'
+              : hasCourse
+                ? '当前课程暂无资源，在 AI 对话中说"生成学习资源"来获得个性化材料'
+                : '在 AI 对话中描述你的学习需求，多智能体将为你生成个性化学习资源'
           }
           action={
             !search && !activeType && !activeDifficulty ? (
@@ -523,6 +581,7 @@ export default function ResourceLibrary() {
               </span>
               <span className="text-xs text-gray-400">· {formatDuration(selected.estimatedMinutes)}</span>
               <span className="text-xs text-gray-400">· {timeAgo(selected.createdAt)}</span>
+              <SourceBadge source={selected.source || 'mock_fallback'} size="sm" />
               {selected.studyStatus === 'completed' && (
                 <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-green-50 text-green-600 border border-green-200">
                   ✅ 已完成
@@ -533,14 +592,34 @@ export default function ResourceLibrary() {
             {/* 描述 */}
             <p className="text-sm text-gray-500">{selected.description}</p>
 
+            {/* 推荐理由 */}
+            {(selected.source === 'agent_generated' || selected.source === 'system_inferred') && (
+              <div className="p-3 bg-green-50/70 border border-green-100 rounded-xl">
+                <p className="text-xs text-green-600 font-medium mb-0.5">💡 推荐理由</p>
+                <p className="text-[10px] text-green-500">
+                  此资源基于你的学习画像和当前知识短板由 PlannerAgent 智能体生成，
+                  与你的学习路径「{selected.knowledgePoints?.[0] || '当前课程'}」直接关联。
+                </p>
+              </div>
+            )}
+
+            {/* Mock 数据标记 */}
+            {(selected.source === 'mock_fallback' || !selected.source) && (
+              <div className="p-3 bg-gray-50 border border-gray-200 rounded-xl">
+                <p className="text-xs text-gray-500 font-medium mb-0.5">⚠️ 示例数据</p>
+                <p className="text-[10px] text-gray-400">
+                  此资源为预置示例，非 AI 实时生成。在 AI 对话中说出"开始生成学习方案"可获得真实智能体生成的个性化资源。
+                </p>
+              </div>
+            )}
+
             {/* 知识点标签 */}
             <div className="flex flex-wrap gap-1.5">
               {selected.knowledgePoints.map((kp) => (
                 <span key={kp} className="px-2 py-0.5 bg-brand-50 text-brand-600 rounded-md text-[10px] font-medium">
                   {kp}
                 </span>
-              ))}
-            </div>
+              ))}</div>
 
             {/* 操作按钮组 */}
             <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -663,6 +742,17 @@ export default function ResourceLibrary() {
           </div>
         )}
       </Modal>
+
+      {/* ========== 底部说明 ========== */}
+      <div className="text-center py-6 mt-6 border-t border-gray-50">
+        <div className="flex items-center justify-center gap-3 mb-2">
+          <SourceBadge source="agent_generated" size="xs" />
+          <SourceBadge source="mock_fallback" size="xs" />
+        </div>
+        <p className="text-xs text-gray-400">
+          {dataVersion > 0 ? '已同步最新对话数据' : '等待新对话生成资源'} · 支持按来源筛选真实数据
+        </p>
+      </div>
     </div>
   );
 }

@@ -7,9 +7,11 @@ import type { StudentProfile } from '../types/profile';
 export function useProfile() {
   const store = useProfileStore();
   const currentSessionId = useChatStore((state) => state.currentSessionId);
+  const dataVersion = useChatStore((state) => state.dataVersion);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const fetchedSessionRef = useRef<string | null>(null);
+  const lastVersionRef = useRef<number>(0);
 
   const fetchProfile = useCallback(async () => {
     setLoading(true);
@@ -58,6 +60,14 @@ export function useProfile() {
       fetchProfile();
     }
   }, [currentSessionId, fetchProfile]);
+
+  // 对话完成后自动刷新画像
+  useEffect(() => {
+    if (dataVersion > 0 && dataVersion !== lastVersionRef.current) {
+      lastVersionRef.current = dataVersion;
+      fetchProfile();
+    }
+  }, [dataVersion, fetchProfile]);
 
   return { ...store, loading, error, fetchProfile, buildProfile };
 }

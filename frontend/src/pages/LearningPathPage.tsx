@@ -1,15 +1,17 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLearningPath } from '../hooks/useLearningPath';
+import { useChatStore } from '../store/chatStore';
 import type { PathNode, LearningStage } from '../types/learningPath';
 import { RESOURCE_TYPE_LABELS } from '../utils/constants';
 import {
   CheckCircle, Lock, Play, ArrowRight, Clock, GitFork, Target, AlertTriangle,
-  BookOpen, ChevronDown, ChevronRight, Sparkles, Star, ExternalLink,
+  BookOpen, ChevronDown, ChevronRight, Sparkles, Star, ExternalLink, RefreshCw,
 } from 'lucide-react';
 import Loading from '../components/common/Loading';
 import EmptyState from '../components/common/EmptyState';
-import { formatDuration } from '../utils/format';
+import SourceBadge, { UpdateTimeRow } from '../components/common/SourceBadge';
+import { formatDuration, timeAgo } from '../utils/format';
 
 /* ===================================================================
  * 节点状态常量
@@ -232,7 +234,8 @@ function StageSection({ stage, defaultExpanded }: { stage: LearningStage; defaul
  * =================================================================== */
 export default function LearningPathPage() {
   const navigate = useNavigate();
-  const { path, loading, error } = useLearningPath();
+  const { path, loading, error, fetchPath } = useLearningPath();
+  const dataVersion = useChatStore((state) => state.dataVersion);
 
   if (loading && !path) return <Loading fullScreen text="加载学习路径..." />;
 
@@ -242,6 +245,23 @@ export default function LearningPathPage() {
         icon={<AlertTriangle className="w-8 h-8" />}
         title="路径加载失败"
         description={error}
+        action={
+          <div className="flex items-center gap-3 mt-3">
+            <button
+              onClick={fetchPath}
+              className="px-4 py-2 bg-gray-900 text-white rounded-xl text-sm font-semibold hover:bg-gray-800 transition-all inline-flex items-center gap-2"
+            >
+              <RefreshCw className="w-4 h-4" />
+              重试
+            </button>
+            <button
+              onClick={() => navigate('/chat')}
+              className="px-4 py-2 bg-white border border-gray-200 text-gray-600 rounded-xl text-sm font-semibold hover:bg-gray-50 transition-all"
+            >
+              去对话页生成路径
+            </button>
+          </div>
+        }
       />
     );
   }
@@ -280,7 +300,18 @@ export default function LearningPathPage() {
           <span className="text-xs font-bold text-brand-500 uppercase tracking-wider">Personalized Learning Path</span>
         </div>
         <h1 className="text-2xl md:text-3xl font-extrabold text-gray-900 mb-1">{path.title}</h1>
-        <p className="text-sm text-gray-500 mb-4">{path.description}</p>
+        <p className="text-sm text-gray-500 mb-2">{path.description}</p>
+        <div className="flex flex-wrap items-center gap-3 text-xs text-gray-400 mb-2">
+          <span className="flex items-center gap-1">
+            <Clock className="w-3 h-3" />
+            路径生成：{timeAgo(path.createdAt)}
+          </span>
+          <span className="flex items-center gap-1 text-brand-600">
+            <RefreshCw className="w-3 h-3" />
+            {dataVersion > 0 ? '基于最新对话' : '基于初始画像'}
+          </span>
+          <SourceBadge source="agent_generated" size="xs" />
+        </div>
 
         {/* 总体进度卡片 */}
         <div className="flex flex-col sm:flex-row items-stretch gap-3 p-4 bg-white border border-gray-100 rounded-2xl shadow-sm">
@@ -367,6 +398,10 @@ export default function LearningPathPage() {
         <p className="text-xs text-gray-400">
           学习路径根据你的画像和进度动态调整 · 每完成一个知识点后自动更新规划
         </p>
+        <div className="flex items-center justify-center gap-2 mt-3">
+          <SourceBadge source="agent_generated" size="xs" />
+          <span className="text-[10px] text-gray-300">路径由 PlannerAgent 智能体基于当前画像生成</span>
+        </div>
       </div>
     </div>
   );

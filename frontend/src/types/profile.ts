@@ -24,6 +24,8 @@ export interface ProfileDimension {
   confidence: number;  // 0-1 置信度
   description: string;
   updatedAt: number;
+  /** 数据来源 */
+  source?: 'user_input' | 'agent_generated' | 'system_inferred' | 'mock_fallback';
 }
 
 export type DimensionKey =

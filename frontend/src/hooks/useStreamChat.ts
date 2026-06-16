@@ -12,6 +12,7 @@ export function useStreamChat() {
     setStreaming,
     setAgentProgress,
     isStreaming,
+    bumpDataVersion,
   } = useChatStore();
   const abortRef = useRef<AbortController | null>(null);
 
@@ -90,6 +91,8 @@ export function useStreamChat() {
 
         updateLastAssistant((m) => ({ ...m, streaming: false }));
         setAgentProgress(null);
+        // 对话完成，触发画像/路径/资源页面刷新
+        bumpDataVersion();
       } catch (err) {
         updateLastAssistant((m) => ({
           ...m,
@@ -101,7 +104,7 @@ export function useStreamChat() {
         setStreaming(false);
       }
     },
-    [addMessage, appendToLastAssistant, updateLastAssistant, setStreaming, setAgentProgress, isStreaming],
+    [addMessage, appendToLastAssistant, updateLastAssistant, setStreaming, setAgentProgress, isStreaming, bumpDataVersion],
   );
 
   const abort = useCallback(() => {

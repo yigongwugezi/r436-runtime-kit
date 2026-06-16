@@ -33,6 +33,8 @@ interface ChatStore {
   isStreaming: boolean;
   loading: boolean;
   agentProgress: GenerationProgress | null;
+  /** 数据版本号：每次对话完成后 +1，页面监听此值触发自动刷新 */
+  dataVersion: number;
 
   setCurrentSession: (id: string) => void;
   addMessage: (msg: ChatMessage) => void;
@@ -46,6 +48,8 @@ interface ChatStore {
   clearMessages: () => void;
   newSession: () => void;
   removeLastMessage: () => void;
+  /** 对话完成后调用，触发画像/路径/资源页面刷新 */
+  bumpDataVersion: () => void;
 }
 
 export const useChatStore = create<ChatStore>((set) => ({
@@ -56,6 +60,7 @@ export const useChatStore = create<ChatStore>((set) => ({
   isStreaming: false,
   loading: false,
   agentProgress: null,
+  dataVersion: 0,
 
   setCurrentSession: (id) => {
     persistSessionId(id);
@@ -98,4 +103,7 @@ export const useChatStore = create<ChatStore>((set) => ({
   },
   removeLastMessage: () =>
     set((s) => ({ messages: s.messages.slice(0, -1) })),
+
+  bumpDataVersion: () =>
+    set((s) => ({ dataVersion: s.dataVersion + 1 })),
 }));
