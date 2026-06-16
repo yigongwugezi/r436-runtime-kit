@@ -10,6 +10,7 @@ export function useStreamChat() {
     appendToLastAssistant,
     updateLastAssistant,
     setStreaming,
+    setAgentProgress,
     isStreaming,
   } = useChatStore();
   const abortRef = useRef<AbortController | null>(null);
@@ -38,6 +39,7 @@ export function useStreamChat() {
       addMessage(aiMsg);
 
       setStreaming(true);
+      setAgentProgress(null);
 
       try {
         const reader = await streamRequest('/chat/stream', {
@@ -53,7 +55,6 @@ export function useStreamChat() {
           if (done) break;
 
           buffer += decoder.decode(value, { stream: true });
-          // 处理 SSE 格式: data: {...}\n\n
           const lines = buffer.split('\n');
           buffer = lines.pop() || '';
 
@@ -61,11 +62,23 @@ export function useStreamChat() {
             if (line.startsWith('data: ')) {
               try {
                 const payload = JSON.parse(line.slice(6));
+                // 处理进度消息
+                if (payload.stage || payload.agentName) {
+                  setAgentProgress({
+                    stage: payload.stage || payload.agentName,
+                    progress: payload.progress || 0,
+                    agentName: payload.agentName,
+                    detail: payload.detail,
+                  });
+                }
+                // 处理内容消息
                 if (payload.content) {
                   appendToLastAssistant(payload.content);
                 }
+                // 处理完成标记
                 if (payload.done) {
                   updateLastAssistant((m) => ({ ...m, streaming: false }));
+                  setAgentProgress(null);
                 }
               } catch {
                 // 非 JSON 片段直接拼接
@@ -76,24 +89,27 @@ export function useStreamChat() {
         }
 
         updateLastAssistant((m) => ({ ...m, streaming: false }));
+        setAgentProgress(null);
       } catch (err) {
         updateLastAssistant((m) => ({
           ...m,
           streaming: false,
           error: err instanceof Error ? err.message : '请求失败',
         }));
+        setAgentProgress(null);
       } finally {
         setStreaming(false);
       }
     },
-    [addMessage, appendToLastAssistant, updateLastAssistant, setStreaming, isStreaming],
+    [addMessage, appendToLastAssistant, updateLastAssistant, setStreaming, setAgentProgress, isStreaming],
   );
 
   const abort = useCallback(() => {
     abortRef.current?.abort();
     updateLastAssistant((m) => ({ ...m, streaming: false }));
+    setAgentProgress(null);
     setStreaming(false);
-  }, [updateLastAssistant, setStreaming]);
+  }, [updateLastAssistant, setStreaming, setAgentProgress]);
 
   return { send, abort, isStreaming };
 }

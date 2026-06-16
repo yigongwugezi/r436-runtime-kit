@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { ChatMessage, ChatSession, QuickCommand } from '../types/chat';
+import type { ChatMessage, ChatSession, QuickCommand, GenerationProgress } from '../types/chat';
 
 const createSessionId = () => {
   const randomPart =
@@ -8,28 +8,25 @@ const createSessionId = () => {
 };
 
 interface ChatStore {
-  /** 当前会话 */
   currentSessionId: string;
   sessions: ChatSession[];
   messages: ChatMessage[];
-  /** 快捷指令 */
   quickCommands: QuickCommand[];
-  /** 是否正在流式生成 */
   isStreaming: boolean;
-  /** 加载状态 */
   loading: boolean;
+  agentProgress: GenerationProgress | null;
 
   setCurrentSession: (id: string) => void;
   addMessage: (msg: ChatMessage) => void;
   updateLastAssistant: (updater: (msg: ChatMessage) => ChatMessage) => void;
   appendToLastAssistant: (chunk: string) => void;
   setStreaming: (v: boolean) => void;
+  setAgentProgress: (p: GenerationProgress | null) => void;
   setSessions: (sessions: ChatSession[]) => void;
   setQuickCommands: (cmds: QuickCommand[]) => void;
   setLoading: (v: boolean) => void;
   clearMessages: () => void;
   newSession: () => void;
-  /** 从消息末尾移除最后一条（用于撤回） */
   removeLastMessage: () => void;
 }
 
@@ -40,6 +37,7 @@ export const useChatStore = create<ChatStore>((set) => ({
   quickCommands: [],
   isStreaming: false,
   loading: false,
+  agentProgress: null,
 
   setCurrentSession: (id) => set({ currentSessionId: id }),
 
@@ -67,11 +65,12 @@ export const useChatStore = create<ChatStore>((set) => ({
     }),
 
   setStreaming: (v) => set({ isStreaming: v }),
+  setAgentProgress: (p) => set({ agentProgress: p }),
   setSessions: (sessions) => set({ sessions }),
   setQuickCommands: (cmds) => set({ quickCommands: cmds }),
   setLoading: (v) => set({ loading: v }),
   clearMessages: () => set({ messages: [] }),
-  newSession: () => set({ currentSessionId: createSessionId(), messages: [] }),
+  newSession: () => set({ currentSessionId: createSessionId(), messages: [], agentProgress: null }),
   removeLastMessage: () =>
     set((s) => ({ messages: s.messages.slice(0, -1) })),
 }));
