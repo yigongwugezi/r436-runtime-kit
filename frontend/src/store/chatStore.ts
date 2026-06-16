@@ -1,10 +1,28 @@
 import { create } from 'zustand';
 import type { ChatMessage, ChatSession, QuickCommand } from '../types/chat';
 
+const STORAGE_KEY = 'eduagent_current_session_id';
+
 const createSessionId = () => {
   const randomPart =
     globalThis.crypto?.randomUUID?.() ?? Math.random().toString(16).slice(2);
   return `session_${Date.now()}_${randomPart}`;
+};
+
+/** 从 localStorage 恢复或创建新的 sessionId */
+const loadSessionId = (): string => {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored) return stored;
+  } catch { /* 无痕模式等环境 */ }
+  const id = createSessionId();
+  try { localStorage.setItem(STORAGE_KEY, id); } catch { /* noop */ }
+  return id;
+};
+
+/** 将 sessionId 写入 localStorage */
+const persistSessionId = (id: string) => {
+  try { localStorage.setItem(STORAGE_KEY, id); } catch { /* noop */ }
 };
 
 interface ChatStore {
@@ -34,14 +52,17 @@ interface ChatStore {
 }
 
 export const useChatStore = create<ChatStore>((set) => ({
-  currentSessionId: createSessionId(),
+  currentSessionId: loadSessionId(),
   sessions: [],
   messages: [],
   quickCommands: [],
   isStreaming: false,
   loading: false,
 
-  setCurrentSession: (id) => set({ currentSessionId: id }),
+  setCurrentSession: (id) => {
+    persistSessionId(id);
+    set({ currentSessionId: id });
+  },
 
   addMessage: (msg) =>
     set((s) => ({ messages: [...s.messages, msg] })),
@@ -71,7 +92,11 @@ export const useChatStore = create<ChatStore>((set) => ({
   setQuickCommands: (cmds) => set({ quickCommands: cmds }),
   setLoading: (v) => set({ loading: v }),
   clearMessages: () => set({ messages: [] }),
-  newSession: () => set({ currentSessionId: createSessionId(), messages: [] }),
+  newSession: () => {
+    const id = createSessionId();
+    persistSessionId(id);
+    set({ currentSessionId: id, messages: [] });
+  },
   removeLastMessage: () =>
     set((s) => ({ messages: s.messages.slice(0, -1) })),
 }));

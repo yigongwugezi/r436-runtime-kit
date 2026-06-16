@@ -6,13 +6,21 @@ import type { LearningPath } from '../types/learningPath';
 export function useLearningPath() {
   const currentSessionId = useChatStore((state) => state.currentSessionId);
   const [path, setPath] = useState<LearningPath | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const fetchPath = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const res = await knowledgeApi.getLearningPath(currentSessionId);
-      setPath(res.path);
+      if (res?.path) {
+        setPath(res.path);
+      } else {
+        setError('学习路径数据为空');
+      }
+    } catch {
+      setError('加载学习路径失败，请稍后重试');
     } finally {
       setLoading(false);
     }
@@ -24,6 +32,9 @@ export function useLearningPath() {
       const res = await knowledgeApi.generateLearningPath({ ...params, sessionId: params.sessionId || currentSessionId });
       setPath(res.path);
       return res.path;
+    } catch {
+      setError('路径生成失败');
+      return null;
     } finally {
       setLoading(false);
     }
@@ -43,5 +54,5 @@ export function useLearningPath() {
 
   useEffect(() => { fetchPath(); }, [fetchPath]);
 
-  return { path, loading, fetchPath, generatePath, updateNode };
+  return { path, loading, error, fetchPath, generatePath, updateNode };
 }

@@ -8,6 +8,16 @@ from fastapi.responses import StreamingResponse
 
 from app.agents.intent_agent import IntentAgent
 from app.config import settings
+from app.db.engine import SessionLocal
+from app.db.repository import (
+    get_bookmarked_ids,
+    get_latest_learning_path,
+    get_latest_profile,
+    get_messages as repo_get_messages,
+    get_or_create_session,
+    list_sessions as repo_list_sessions,
+    toggle_bookmark,
+)
 from app.services.conversation_state import conversation_store
 from app.services.course_catalog import course_catalog
 from app.services.learning_tracker import learning_tracker
@@ -18,8 +28,15 @@ from app.services.orchestrator import AgentOrchestrator
 router = APIRouter(tags=["product"])
 
 _last_result: dict[str, Any] | None = None
-_bookmarks: set[str] = set()
-_study_events: list[dict[str, Any]] = []
+
+
+def _get_bookmarks(session_id: str) -> set[str]:
+    """Get bookmarked resource IDs from DB for a session."""
+    try:
+        db = SessionLocal()
+        return get_bookmarked_ids(db, session_id)
+    finally:
+        db.close()
 
 
 def _llm_client():
@@ -76,14 +93,16 @@ def _dimension_score(key: str, item: dict[str, Any]) -> int:
 
 
 def _to_profile(result: dict[str, Any]) -> dict[str, Any]:
-    raw_profile = result.get("profile", {})
+    raw_profile = result.get("profile") or {}
+    if not isinstance(raw_profile, dict):
+        raw_profile = {}
     dimensions = [
         {
             "key": key,
-            "label": item.get("label", key),
-            "value": _dimension_score(key, item),
-            "confidence": item.get("confidence", 0.75),
-            "description": item.get("value", ""),
+            "label": item.get("label", key) if isinstance(item, dict) else key,
+            "value": _dimension_score(key, item) if isinstance(item, dict) else 50,
+            "confidence": item.get("confidence", 0.75) if isinstance(item, dict) else 0.5,
+            "description": item.get("value", "") if isinstance(item, dict) else str(item),
             "updatedAt": int(time.time() * 1000),
         }
         for key, item in raw_profile.items()
@@ -129,9 +148,10 @@ def _resource_type(resource_type: str) -> str:
     return "case_study" if resource_type == "practice" else resource_type
 
 
-def _to_resource(item: dict[str, Any], course_id: str = "ai_intro") -> dict[str, Any]:
+def _to_resource(item: dict[str, Any], course_id: str = "ai_intro", session_id: str = "frontend_session_001") -> dict[str, Any]:
     content = item.get("content") or json.dumps(item.get("items", []), ensure_ascii=False, indent=2)
     resource_id = item.get("resource_id", "resource")
+    bookmarks = _get_bookmarks(session_id)
     return {
         "id": resource_id,
         "type": _resource_type(item.get("type", "lecture")),
@@ -145,7 +165,7 @@ def _to_resource(item: dict[str, Any], course_id: str = "ai_intro") -> dict[str,
         "format": "diagram" if item.get("type") == "mindmap" else "text",
         "mermaidDef": content if item.get("content_format") == "mermaid" else None,
         "createdAt": int(time.time() * 1000),
-        "bookmarked": resource_id in _bookmarks,
+        "bookmarked": resource_id in bookmarks,
         "studyStatus": "new",
     }
 
@@ -205,7 +225,8 @@ def _to_learning_path(result: dict[str, Any]) -> dict[str, Any]:
 def _learning_plan_reply(result: dict[str, Any], intent: dict[str, Any]) -> str:
     profile = _to_profile(result)
     path = _to_learning_path(result)
-    resources = [_to_resource(item, result.get("course_id", "ai_intro")) for item in result.get("resources", [])]
+    session_id = result.get("session_id", "frontend_session_001")
+    resources = [_to_resource(item, result.get("course_id", "ai_intro"), session_id) for item in result.get("resources", [])]
     weak = "、".join(item["topic"] for item in profile["weaknesses"][:3]) or "暂无明显短板"
     resource_names = "、".join(item["title"] for item in resources[:5])
     return (
@@ -420,7 +441,7 @@ def _tutoring_reply(message: str) -> str:
 
 def _resource_request_reply(message: str, session_id: str) -> str:
     result = _run_agents(message, session_id=session_id)
-    resources = [_to_resource(item, result.get("course_id", "ai_intro")) for item in result.get("resources", [])]
+    resources = [_to_resource(item, result.get("course_id", "ai_intro"), session_id) for item in result.get("resources", [])]
     names = "、".join(item["title"] for item in resources[:5])
     return (
         "我识别到你在请求学习资源。\n\n"
@@ -519,7 +540,44 @@ def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
 
 @router.get("/chat/sessions")
 def list_sessions() -> dict[str, Any]:
-    return {"sessions": []}
+    try:
+        db = SessionLocal()
+        sessions = repo_list_sessions(db)
+        return {
+            "sessions": [
+                {
+                    "id": sess.id,
+                    "title": sess.title,
+                    "status": sess.status,
+                    "createdAt": int(sess.created_at.timestamp() * 1000) if sess.created_at else 0,
+                    "updatedAt": int(sess.updated_at.timestamp() * 1000) if sess.updated_at else 0,
+                }
+                for sess in sessions
+            ]
+        }
+    finally:
+        db.close()
+
+
+@router.get("/chat/sessions/{session_id}")
+def get_chat_session(session_id: str) -> dict[str, Any]:
+    try:
+        db = SessionLocal()
+        messages = repo_get_messages(db, session_id)
+        return {
+            "sessionId": session_id,
+            "messages": [
+                {
+                    "id": f"msg_{msg.id}",
+                    "role": msg.role,
+                    "content": msg.content,
+                    "timestamp": int(msg.created_at.timestamp() * 1000) if msg.created_at else 0,
+                }
+                for msg in messages
+            ],
+        }
+    finally:
+        db.close()
 
 
 @router.post("/chat/sessions/{session_id}/reset")
@@ -567,30 +625,45 @@ def update_profile(payload: dict[str, Any]) -> dict[str, Any]:
 @router.get("/resources")
 def get_resources(sessionId: str = "frontend_session_001") -> dict[str, Any]:
     result = _result(sessionId)
-    resources = [_to_resource(item, result.get("course_id", "ai_intro")) for item in result.get("resources", [])]
+    resources = [_to_resource(item, result.get("course_id", "ai_intro"), sessionId) for item in result.get("resources", [])]
     return {"resources": resources, "total": len(resources), "page": 1}
 
 
 @router.get("/resources/{resource_id}")
 def get_resource(resource_id: str, sessionId: str = "frontend_session_001") -> dict[str, Any]:
     result = _result(sessionId)
-    resources = [_to_resource(item, result.get("course_id", "ai_intro")) for item in result.get("resources", [])]
+    resources = [_to_resource(item, result.get("course_id", "ai_intro"), sessionId) for item in result.get("resources", [])]
     return {"resource": next((item for item in resources if item["id"] == resource_id), resources[0])}
 
 
 @router.post("/resources/{resource_id}/bookmark")
-def bookmark_resource(resource_id: str) -> dict[str, Any]:
-    if resource_id in _bookmarks:
-        _bookmarks.remove(resource_id)
-        return {"bookmarked": False}
-    _bookmarks.add(resource_id)
-    return {"bookmarked": True}
+def bookmark_resource(resource_id: str, sessionId: str = "frontend_session_001") -> dict[str, Any]:
+    try:
+        db = SessionLocal()
+        # Ensure resource exists in DB before toggling bookmark
+        from app.db.repository import save_resource as repo_save_resource
+        result = _result(sessionId)
+        for item in result.get("resources", []):
+            if item.get("resource_id") == resource_id:
+                repo_save_resource(db, sessionId, {
+                    "id": resource_id,
+                    "type": item.get("type", "lecture"),
+                    "title": item.get("title", "学习资源"),
+                    "description": item.get("description", ""),
+                    "content": item.get("content", ""),
+                })
+                break
+        bookmarked = toggle_bookmark(db, resource_id)
+        return {"bookmarked": bookmarked if bookmarked is not None else True}
+    finally:
+        db.close()
 
 
 @router.post("/resources/generate")
 def generate_resource(payload: dict[str, Any]) -> dict[str, Any]:
-    result = _result(str(payload.get("sessionId", "frontend_session_001")))
-    resources = [_to_resource(item, result.get("course_id", "ai_intro")) for item in result.get("resources", [])]
+    session_id = str(payload.get("sessionId", "frontend_session_001"))
+    result = _result(session_id)
+    resources = [_to_resource(item, result.get("course_id", "ai_intro"), session_id) for item in result.get("resources", [])]
     return {"resource": resources[0] | {"title": f"{payload.get('topic', '主题')} 个性化资源"}}
 
 

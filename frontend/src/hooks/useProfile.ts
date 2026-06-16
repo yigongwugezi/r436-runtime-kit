@@ -7,19 +7,26 @@ import type { StudentProfile } from '../types/profile';
 export function useProfile() {
   const store = useProfileStore();
   const currentSessionId = useChatStore((state) => state.currentSessionId);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const fetchedSessionRef = useRef<string | null>(null);
 
   const fetchProfile = useCallback(async () => {
     setLoading(true);
+    setError(null);
     store.setLoading(true);
     try {
       const res = await profileApi.getProfile(currentSessionId);
       if (res?.profile) {
         store.setProfile(res.profile);
+      } else {
+        store.setError('画像数据为空');
+        setError('画像数据为空');
       }
     } catch {
-      store.setError('加载画像失败，请稍后重试');
+      const msg = '加载画像失败，请稍后重试';
+      store.setError(msg);
+      setError(msg);
     } finally {
       setLoading(false);
       store.setLoading(false);
@@ -52,5 +59,5 @@ export function useProfile() {
     }
   }, [currentSessionId, fetchProfile]);
 
-  return { ...store, loading, fetchProfile, buildProfile };
+  return { ...store, loading, error, fetchProfile, buildProfile };
 }

@@ -3,6 +3,23 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from sqlalchemy.orm import Session
+
+from app.db.engine import SessionLocal
+from app.db.repository import (
+    delete_session,
+    get_last_intent,
+    get_messages,
+    get_or_create_session,
+    save_message,
+    save_profile_snapshot,
+    save_learning_path,
+    save_resource,
+    get_latest_profile,
+    get_latest_learning_path,
+    get_resources as repo_get_resources,
+)
+
 
 PROFILE_FIELD_DEFS: dict[str, dict[str, Any]] = {
     "background": {
@@ -107,18 +124,123 @@ class ConversationState:
 
 
 class ConversationStore:
+    """Session state manager with in-memory cache and DB persistence.
+
+    When ``_db_enabled`` is True, session data is loaded from / saved to
+    the database.  The in-memory cache serves as a fast-access layer;
+    all mutating methods flush to DB immediately.
+    """
+
     def __init__(self) -> None:
         self._sessions: dict[str, ConversationState] = {}
+        self._db_enabled: bool = False
+
+    # ── DB lifecycle ─────────────────────────────────────────────────
+
+    def enable_db(self) -> None:
+        """Enable database persistence.
+
+        Called once at application startup.  After this call every
+        ``get``, ``append_message``, ``set_intent``, ``set_result`` and
+        ``reset`` will read from / write to the database.
+        """
+        self._db_enabled = True
+
+    def _db_session(self) -> Session:
+        """Create a new short-lived DB session."""
+        return SessionLocal()
+
+    # ── Hydration helpers ─────────────────────────────────────────────
+
+    def _hydrate_from_db(self, state: ConversationState) -> None:
+        """Load messages, intent and last_result from the database into *state*."""
+        try:
+            db = self._db_session()
+            # Messages
+            db_messages = get_messages(db, state.session_id)
+            state.messages = [
+                {
+                    "role": m.role,
+                    "content": m.content,
+                    "timestamp": int(m.created_at.timestamp() * 1000) if m.created_at else int(time.time() * 1000),
+                }
+                for m in db_messages
+            ]
+            # Last intent
+            state.last_intent = get_last_intent(db, state.session_id)
+            # Last result (reconstruct from latest snapshots)
+            profile = get_latest_profile(db, state.session_id)
+            path = get_latest_learning_path(db, state.session_id)
+            db_resources = repo_get_resources(db, state.session_id)
+            if profile or path or db_resources:
+                result: dict[str, Any] = {}
+                if profile:
+                    # Reconstruct dict format from list-of-dict rows
+                    raw_dims = profile.dimensions or {}
+                    if isinstance(raw_dims, list):
+                        result["profile"] = {
+                            dim.get("key", f"dim_{idx}"): {
+                                "label": dim.get("label", ""),
+                                "value": dim.get("value", ""),
+                                "confidence": dim.get("confidence", 0.75),
+                            }
+                            for idx, dim in enumerate(raw_dims)
+                        }
+                    else:
+                        result["profile"] = raw_dims
+                    result["diagnosis"] = {"weak_knowledge_points": profile.weaknesses or []}
+                    result["session_id"] = state.session_id
+                    result["preferences"] = profile.preferences or {}
+                if path:
+                    result["learning_path"] = path.stages or []
+                    result["course_id"] = path.course_id
+                    result["course"] = {"course_id": path.course_id, "course_name": path.course_name}
+                if db_resources:
+                    result["resources"] = [
+                        {
+                            "resource_id": r.id,
+                            "type": r.type,
+                            "title": r.title,
+                            "description": r.description or "",
+                            "content": r.content or "",
+                            "content_format": "markdown",
+                            "source": "db",
+                            "related_stage_id": r.session_id,
+                        }
+                        for r in db_resources
+                    ]
+                state.last_result = result if result else None
+            # Re-extract facts by replaying user messages through extract_facts
+            state.facts.clear()
+            state.supplemental_facts.clear()
+            for msg in state.messages:
+                if msg.get("role") == "user":
+                    self.extract_facts(state, str(msg.get("content", "")))
+        finally:
+            db.close()
+
+    # ── Public API (unchanged signatures) ─────────────────────────────
 
     def get(self, session_id: str | None) -> ConversationState:
         sid = (session_id or "frontend_session_001").strip() or "frontend_session_001"
         if sid not in self._sessions:
-            self._sessions[sid] = ConversationState(session_id=sid)
+            state = ConversationState(session_id=sid)
+            self._sessions[sid] = state
+            if self._db_enabled:
+                self._hydrate_from_db(state)
         return self._sessions[sid]
 
     def reset(self, session_id: str | None) -> ConversationState:
         sid = (session_id or "frontend_session_001").strip() or "frontend_session_001"
         self._sessions[sid] = ConversationState(session_id=sid)
+        if self._db_enabled:
+            try:
+                db = self._db_session()
+                delete_session(db, sid)
+                # Re-create empty session row
+                get_or_create_session(db, sid)
+            finally:
+                db.close()
         return self._sessions[sid]
 
     def append_message(self, session_id: str | None, role: str, content: str) -> ConversationState:
@@ -133,6 +255,13 @@ class ConversationStore:
         state.updated_at = time.time()
         if role == "user":
             self.extract_facts(state, content)
+
+        if self._db_enabled:
+            try:
+                db = self._db_session()
+                save_message(db, state.session_id, role, content)
+            finally:
+                db.close()
         return state
 
     def set_intent(self, session_id: str | None, intent: dict[str, Any]) -> None:
@@ -145,6 +274,59 @@ class ConversationStore:
         state.last_result = result
         self.merge_result_profile(state, result)
         state.updated_at = time.time()
+
+        if self._db_enabled:
+            try:
+                db = self._db_session()
+                # Save profile snapshot
+                profile_data = result.get("profile", {})
+                dimensions_list = [
+                    {
+                        "key": key,
+                        "label": item.get("label", key) if isinstance(item, dict) else key,
+                        "value": str(item.get("value", "")) if isinstance(item, dict) else str(item),
+                        "confidence": item.get("confidence", 0.75) if isinstance(item, dict) else 0.75,
+                    }
+                    for key, item in profile_data.items()
+                ]
+                weaknesses_list = [
+                    {"name": point.get("name", ""), "priority": point.get("priority", "medium")}
+                    for point in result.get("diagnosis", {}).get("weak_knowledge_points", [])
+                ]
+                readiness = self.readiness(state)
+                save_profile_snapshot(
+                    db, state.session_id,
+                    dimensions=dimensions_list,
+                    weaknesses=weaknesses_list,
+                    readiness_score=readiness.get("score"),
+                )
+
+                # Save learning path if present
+                if result.get("learning_path"):
+                    path_data = {
+                        "id": f"path_{result.get('course_id', state.session_id)}",
+                        "course_id": result.get("course_id", ""),
+                        "course_name": (result.get("course") or {}).get("course_name", ""),
+                        "stages": result.get("learning_path"),
+                        "overallProgress": 18,
+                        "estimatedDays": 14,
+                    }
+                    save_learning_path(db, state.session_id, path_data)
+
+                # Save resources if present
+                for item in result.get("resources", []):
+                    save_resource(db, state.session_id, {
+                        "id": item.get("resource_id", f"res_{time.time()}"),
+                        "type": item.get("type", "lecture"),
+                        "title": item.get("title", "学习资源"),
+                        "description": item.get("description", ""),
+                        "content": item.get("content", ""),
+                        "tags": [item.get("content_format", "markdown"), item.get("source", "mock")],
+                    })
+            finally:
+                db.close()
+
+    # ── Fact extraction (unchanged, pure processing logic) ─────────────
 
     def extract_facts(self, state: ConversationState, message: str) -> None:
         text = message.strip()
@@ -211,7 +393,7 @@ class ConversationStore:
         if exam_review_match:
             set_fact("target_course", exam_review_match.group(1))
 
-        zero_base_course_match = re.search(r"([A-Za-z+#\u4e00-\u9fff]{2,20})零基础", text)
+        zero_base_course_match = re.search(r"([A-Za-z+#一-鿿]{2,20})零基础", text)
         if zero_base_course_match:
             set_fact("target_course", zero_base_course_match.group(1))
 
@@ -277,6 +459,8 @@ class ConversationStore:
             names = [str(point.get("name", "")) for point in weak_points if point.get("name")]
             if names:
                 state.facts["weak_points"] = "、".join(names)
+
+    # ── Read helpers (unchanged) ──────────────────────────────────────
 
     def missing_fields(self, state: ConversationState, limit: int | None = None) -> list[dict[str, str]]:
         missing = [
@@ -344,6 +528,8 @@ class ConversationStore:
             return f"用户最新输入：{latest_message}\n\n当前已记录学习画像：\n{known}"
         return f"当前已记录学习画像：\n{known}"
 
+    # ── Internal helpers (unchanged) ──────────────────────────────────
+
     def _clean_fact_value(self, value: str) -> str:
         cleaned = value.strip(" ：:，。,.!?！？；;")
         cleaned = re.sub(r"^(一下|一下子|这个|这门|这方面)", "", cleaned).strip()
@@ -372,17 +558,17 @@ class ConversationStore:
 
         segments = [segment.strip() for segment in re.split(r"[，。,.!?！？；;、]", text) if segment.strip()]
         for segment in segments:
-            weak_match = re.search(r"(?:不会|不懂|没学过|没有学过|不太会|不熟)([A-Za-z+#\u4e00-\u9fff]{2,20})", segment)
+            weak_match = re.search(r"(?:不会|不懂|没学过|没有学过|不太会|不熟)([A-Za-z+#一-鿿]{2,20})", segment)
             if weak_match:
                 weaknesses.append(f"{weak_match.group(1)}：不会/不熟")
                 continue
 
-            front_weak_match = re.search(r"([A-Za-z+#\u4e00-\u9fff]{2,20})(?:比较|很|有点)?(?:薄弱|较弱|弱|差|一般|零基础)", segment)
+            front_weak_match = re.search(r"([A-Za-z+#一-鿿]{2,20})(?:比较|很|有点)?(?:薄弱|较弱|弱|差|一般|零基础)", segment)
             if front_weak_match:
                 weaknesses.append(f"{front_weak_match.group(1)}：薄弱")
                 continue
 
-            strength_match = re.search(r"([A-Za-z+#\u4e00-\u9fff]{2,20}?)(?:还可以|可以|较好|不错|熟悉|会)", segment)
+            strength_match = re.search(r"([A-Za-z+#一-鿿]{2,20}?)(?:还可以|可以|较好|不错|熟悉|会)", segment)
             if strength_match:
                 topic = strength_match.group(1).rstrip("还也都很较比较")
                 strengths.append(f"{topic}：{self._level_label(segment)}")
@@ -397,4 +583,5 @@ class ConversationStore:
         return "会"
 
 
+# Module-level singleton — DB must be enabled via enable_db() at startup.
 conversation_store = ConversationStore()

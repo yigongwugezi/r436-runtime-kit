@@ -1,17 +1,38 @@
+"""Learning event tracker with DB persistence.
+
+Wraps the same public API as the original in-memory tracker but delegates
+storage and analytics queries to the database when ``enable_db()`` has been
+called.
+"""
+
 import time
-from collections import Counter, defaultdict
 from typing import Any
+
+from sqlalchemy.orm import Session
+
+from app.db.engine import SessionLocal
+from app.db.repository import get_event_analytics, get_events, log_event, delete_session
 
 
 class LearningTracker:
-    """In-memory learning analytics for the stage-1 demo.
+    """Tracks learning events with optional DB persistence.
 
-    This keeps the first version lightweight while exposing a clear boundary
-    for a later database implementation.
+    Call ``enable_db()`` once at application startup to persist events
+    across restarts.  Without it the tracker falls back to in-memory
+    operation (useful for tests).
     """
 
     def __init__(self) -> None:
         self._events: list[dict[str, Any]] = []
+        self._db_enabled: bool = False
+
+    def enable_db(self) -> None:
+        self._db_enabled = True
+
+    def _db_session(self) -> Session:
+        return SessionLocal()
+
+    # ── Public API ────────────────────────────────────────────────────
 
     def log(self, event: dict[str, Any], session_id: str | None = None) -> dict[str, Any]:
         normalized = {
@@ -19,17 +40,58 @@ class LearningTracker:
             "sessionId": session_id or event.get("sessionId") or "frontend_session_001",
             "timestamp": event.get("timestamp") or time.time(),
         }
+
+        if self._db_enabled:
+            try:
+                db = self._db_session()
+                log_event(
+                    db,
+                    session_id=normalized["sessionId"],
+                    event_type=str(event.get("event", "generic")),
+                    resource_id=event.get("resourceId"),
+                    metadata=event.get("metadata", event),
+                )
+            finally:
+                db.close()
+
+        # Always keep in-memory cache for backward compat
         self._events.append(normalized)
         return normalized
 
     def recent(self, session_id: str | None = None, limit: int = 10) -> list[dict[str, Any]]:
-        events = self._filter(session_id)
-        return events[-limit:]
+        if self._db_enabled:
+            try:
+                db = self._db_session()
+                events = get_events(db, session_id, limit=limit)
+                return [
+                    {
+                        "event": evt.event_type,
+                        "resourceId": evt.resource_id,
+                        "metadata": evt.metadata_ or {},
+                        "sessionId": evt.session_id,
+                        "timestamp": evt.created_at.timestamp() if evt.created_at else time.time(),
+                    }
+                    for evt in events
+                ]
+            finally:
+                db.close()
+
+        filtered = self._filter(session_id)
+        return filtered[-limit:]
 
     def summary(self, session_id: str | None = None) -> dict[str, Any]:
+        if self._db_enabled:
+            try:
+                db = self._db_session()
+                return get_event_analytics(db, session_id or "frontend_session_001")
+            finally:
+                db.close()
+
+        # In-memory fallback (original logic)
         events = self._filter(session_id)
         total_minutes = sum(self._duration_minutes(event) for event in events)
         resource_events = [event for event in events if event.get("resourceId")]
+        from collections import Counter
         resource_counter = Counter(str(event.get("resourceId")) for event in resource_events)
         event_counter = Counter(str(event.get("event", "unknown")) for event in events)
 
@@ -59,11 +121,21 @@ class LearningTracker:
         }
 
     def reset(self, session_id: str | None = None) -> None:
+        if self._db_enabled:
+            try:
+                db = self._db_session()
+                sid = session_id or "frontend_session_001"
+                delete_session(db, sid)
+            finally:
+                db.close()
+
         if session_id is None:
             self._events.clear()
             return
         sid = session_id or "frontend_session_001"
         self._events = [event for event in self._events if event.get("sessionId") != sid]
+
+    # ── Internal helpers ──────────────────────────────────────────────
 
     def _filter(self, session_id: str | None = None) -> list[dict[str, Any]]:
         if session_id is None:
@@ -112,6 +184,7 @@ class LearningTracker:
         return None
 
     def _weak_topics(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        from collections import defaultdict
         topic_stats: dict[str, dict[str, int]] = defaultdict(lambda: {"wrong": 0, "total": 0})
         for event in events:
             metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}

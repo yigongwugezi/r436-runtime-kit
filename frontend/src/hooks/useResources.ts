@@ -7,7 +7,7 @@ export function useResources() {
   const currentSessionId = useChatStore((state) => state.currentSessionId);
   const [resources, setResources] = useState<Resource[]>([]);
   const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<ResourceFilter>({});
 
   const fetchResources = useCallback(async (f?: ResourceFilter) => {

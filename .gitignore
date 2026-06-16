@@ -32,3 +32,7 @@ yarn-error.log*
 
 # Local runtime state
 work/
+
+# Database files (local SQLite)
+backend/data/*.db
+!backend/data/.gitkeep

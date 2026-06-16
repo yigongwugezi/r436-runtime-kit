@@ -3,7 +3,7 @@ import { DIMENSION_LABELS, type ProfileDimension } from '../types/profile';
 import { DIMENSION_COLORS } from '../utils/constants';
 import { formatDuration, timeAgo } from '../utils/format';
 import {
-  User, Clock, Target, TrendingUp, Zap, BookOpen, Shield, Brain,
+  User, Clock, Target, TrendingUp, Zap, BookOpen, Shield, Brain, AlertTriangle,
 } from 'lucide-react';
 import Loading from '../components/common/Loading';
 import EmptyState from '../components/common/EmptyState';
@@ -113,7 +113,17 @@ function DimensionBar({ dim, index }: { dim: ProfileDimension; index: number }) 
 export default function ProfilePage() {
   const { profile, loading, error } = useProfile();
 
-  if (loading) return <Loading fullScreen text="加载画像..." />;
+  if (loading && !profile) return <Loading fullScreen text="加载画像..." />;
+
+  if (error && !profile) {
+    return (
+      <EmptyState
+        icon={<AlertTriangle className="w-8 h-8" />}
+        title="画像加载失败"
+        description={error}
+      />
+    );
+  }
 
   if (!profile) {
     return (

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useChatStore } from '../store/chatStore';
 import { useStreamChat } from '../hooks/useStreamChat';
+import { getSessionMessages } from '../api/chat';
 import { DEFAULT_QUICK_COMMANDS } from '../utils/constants';
 import type { ChatMessage } from '../types/chat';
 import { Send, Sparkles, Square } from 'lucide-react';
@@ -93,9 +94,10 @@ function QuickCommands({ onSelect }: { onSelect: (prompt: string) => void }) {
 export default function ChatPage() {
   const location = useLocation();
   const initialMessage = (location.state as { initialMessage?: string })?.initialMessage;
-  const { messages, isStreaming } = useChatStore();
+  const { messages, isStreaming, currentSessionId, setLoading } = useChatStore();
   const { send, abort } = useStreamChat();
   const [input, setInput] = useState('');
+  const [messagesLoaded, setMessagesLoaded] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -104,12 +106,40 @@ export default function ChatPage() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
   }, [messages]);
 
-  // 从 Home 页跳转来的初始消息
+  // 挂载时从后端恢复已有消息（页面刷新后保留对话）
   useEffect(() => {
-    if (initialMessage) {
+    let cancelled = false;
+    async function restore() {
+      setLoading(true);
+      try {
+        const res = await getSessionMessages(currentSessionId);
+        if (cancelled) return;
+        if (res.messages && res.messages.length > 0) {
+          useChatStore.setState((s) => {
+            // 避免重复加载（流式消息可能已在此 session 中）
+            if (s.messages.length > 0) return {};
+            return { messages: res.messages };
+          });
+        }
+      } catch {
+        // 新 session 或网络错误，静默处理
+      } finally {
+        if (!cancelled) {
+          setMessagesLoaded(true);
+          setLoading(false);
+        }
+      }
+    }
+    restore();
+    return () => { cancelled = true; };
+  }, [currentSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 从 Home 页跳转来的初始消息（仅在无历史消息时触发）
+  useEffect(() => {
+    if (initialMessage && messages.length === 0 && messagesLoaded) {
       send(initialMessage);
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [initialMessage, messagesLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSend = () => {
     if (!input.trim() || isStreaming) return;
@@ -129,7 +159,7 @@ export default function ChatPage() {
     <div className="flex flex-col h-[calc(100vh-8rem)] md:h-[calc(100vh-4rem)]">
       {/* 消息区域 */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-6 space-y-4">
-        {messages.length === 0 && (
+        {messages.length === 0 && messagesLoaded && (
           <div className="flex flex-col items-center justify-center h-full text-center px-4">
             <div className="w-20 h-20 rounded-3xl bg-gradient-to-br from-brand-100 to-brand-200 flex items-center justify-center mb-6">
               <Sparkles className="w-10 h-10 text-brand-600" />
@@ -139,6 +169,15 @@ export default function ChatPage() {
               告诉 EduAgent 你的专业、基础和目标，AI 智能体会为你量身定制学习方案。
             </p>
             <QuickCommands onSelect={(prompt) => { setInput(prompt); inputRef.current?.focus(); }} />
+          </div>
+        )}
+
+        {messages.length === 0 && !messagesLoaded && (
+          <div className="flex items-center justify-center h-full">
+            <div className="flex flex-col items-center gap-3">
+              <div className="w-8 h-8 rounded-full border-2 border-brand-500 border-t-transparent animate-spin" />
+              <p className="text-sm text-gray-400">恢复对话记录…</p>
+            </div>
           </div>
         )}
 

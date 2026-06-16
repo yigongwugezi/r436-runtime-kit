@@ -1,7 +1,7 @@
 import { useLearningPath } from '../hooks/useLearningPath';
 import type { PathNode, LearningStage } from '../types/learningPath';
 import {
-  CheckCircle, Lock, Play, ArrowRight, Clock, GitFork, Target, BookOpen,
+  CheckCircle, Lock, Play, ArrowRight, Clock, GitFork, Target, BookOpen, AlertTriangle,
 } from 'lucide-react';
 import Loading from '../components/common/Loading';
 import EmptyState from '../components/common/EmptyState';
@@ -127,9 +127,19 @@ function StageSection({ stage }: { stage: LearningStage }) {
  * =================================================================== */
 
 export default function LearningPathPage() {
-  const { path, loading } = useLearningPath();
+  const { path, loading, error } = useLearningPath();
 
-  if (loading) return <Loading fullScreen text="加载学习路径..." />;
+  if (loading && !path) return <Loading fullScreen text="加载学习路径..." />;
+
+  if (error && !path) {
+    return (
+      <EmptyState
+        icon={<AlertTriangle className="w-8 h-8" />}
+        title="路径加载失败"
+        description={error}
+      />
+    );
+  }
 
   if (!path) {
     return (
