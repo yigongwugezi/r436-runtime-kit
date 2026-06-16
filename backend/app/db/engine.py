@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
@@ -46,10 +46,19 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 def init_db() -> None:
-    """Create all tables if they don't exist."""
+    """Create all tables if they don't exist, and migrate existing ones."""
     from app.db.models import Base  # noqa: PLC0415
 
     Base.metadata.create_all(bind=engine)
+
+    # SQLite does not auto-add new columns to existing tables.
+    # Add learner_id to sessions if it was created before the LearnerModel migration.
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE sessions ADD COLUMN learner_id VARCHAR(64)"))
+            conn.commit()
+    except Exception:
+        pass  # Column already exists
 
 
 def get_db():

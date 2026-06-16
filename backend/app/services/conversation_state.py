@@ -19,6 +19,7 @@ from app.db.repository import (
     get_latest_learning_path,
     get_resources as repo_get_resources,
 )
+from app.utils.profile_normalizer import normalize_profile_dimensions
 
 
 PROFILE_FIELD_DEFS: dict[str, dict[str, Any]] = {
@@ -175,19 +176,16 @@ class ConversationStore:
             if profile or path or db_resources:
                 result: dict[str, Any] = {}
                 if profile:
-                    # Reconstruct dict format from list-of-dict rows
-                    raw_dims = profile.dimensions or {}
-                    if isinstance(raw_dims, list):
-                        result["profile"] = {
-                            dim.get("key", f"dim_{idx}"): {
-                                "label": dim.get("label", ""),
-                                "value": dim.get("value", ""),
-                                "confidence": dim.get("confidence", 0.75),
-                            }
-                            for idx, dim in enumerate(raw_dims)
+                    # Normalize dimensions (handles old 8-dim and new 10-dim snapshots)
+                    normalized_dims = normalize_profile_dimensions(profile.dimensions)
+                    result["profile"] = {
+                        dim.get("key", f"dim_{idx}"): {
+                            "label": dim.get("label", ""),
+                            "value": dim.get("value", ""),
+                            "confidence": dim.get("confidence", 0.75),
                         }
-                    else:
-                        result["profile"] = raw_dims
+                        for idx, dim in enumerate(normalized_dims)
+                    }
                     result["diagnosis"] = {"weak_knowledge_points": profile.weaknesses or []}
                     result["session_id"] = state.session_id
                     result["preferences"] = profile.preferences or {}
@@ -353,15 +351,34 @@ class ConversationStore:
                     }
                     save_learning_path(db, state.session_id, path_data)
 
-                # Save resources if present
+                # Save resources if present — persist full structured data
                 for item in result.get("resources", []):
+                    # Determine format from content_format field
+                    content_fmt = item.get("content_format", "markdown")
+                    # Determine difficulty from item or default
+                    difficulty = item.get("difficulty", "easy")
+                    # Estimate minutes from content length
+                    content_text = item.get("content", "")
+                    estimated = max(10, len(content_text) // 200 * 5) if content_text else 20
+
                     save_resource(db, state.session_id, {
                         "id": item.get("resource_id", f"res_{time.time()}"),
                         "type": item.get("type", "lecture"),
                         "title": item.get("title", "学习资源"),
                         "description": item.get("description", ""),
-                        "content": item.get("content", ""),
-                        "tags": [item.get("content_format", "markdown"), item.get("source", "mock")],
+                        "content": content_text,
+                        "knowledge_points": [item.get("related_stage_id", "")] if item.get("related_stage_id") else [],
+                        "tags": [content_fmt, item.get("source", "mock")],
+                        "difficulty": difficulty,
+                        "estimated_minutes": estimated,
+                        "format": "diagram" if content_fmt == "mermaid" else ("code" if item.get("type") == "practice" else "text"),
+                        "mermaid_def": content_text if content_fmt == "mermaid" else None,
+                        "code_blocks": item.get("code_blocks"),
+                        "questions": item.get("items"),  # quiz items
+                        "ppt_outline": item.get("ppt_outline"),
+                        "bookmarked": item.get("bookmarked", False),
+                        "study_status": item.get("study_status", "new"),
+                        "source": item.get("source", "mock"),
                     })
             finally:
                 db.close()
@@ -482,11 +499,15 @@ class ConversationStore:
     def merge_result_profile(self, state: ConversationState, result: dict[str, Any]) -> None:
         profile = result.get("profile", {})
         mapping = {
-            "major": "background",
+            "major_background": "background",
             "knowledge_base": "knowledge_base",
             "learning_goal": "learning_goal",
             "cognitive_style": "preference",
-            "interests": "target_course",
+            "error_patterns": "weak_points",
+            "coding_ability": "knowledge_base",
+            "interest_direction": "target_course",
+            "learning_rhythm": "time_budget",
+            "self_efficacy": "preference",
         }
         for source_key, fact_key in mapping.items():
             item = profile.get(source_key)

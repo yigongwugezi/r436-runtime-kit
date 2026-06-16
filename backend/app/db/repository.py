@@ -7,11 +7,13 @@ transaction boundaries.
 
 from datetime import datetime, timezone
 from typing import Any
+import uuid
 
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from app.db.models import (
+    LearnerModel,
     LearningEventModel,
     LearningPathModel,
     MessageModel,
@@ -30,7 +32,8 @@ def _utcnow() -> datetime:
 def get_or_create_session(db: Session, session_id: str) -> SessionModel:
     sess = db.get(SessionModel, session_id)
     if sess is None:
-        sess = SessionModel(id=session_id)
+        learner = get_or_create_learner(db)
+        sess = SessionModel(id=session_id, learner_id=learner.id)
         db.add(sess)
         db.commit()
         db.refresh(sess)
@@ -60,6 +63,86 @@ def touch_session(db: Session, session_id: str) -> None:
     if sess:
         sess.updated_at = _utcnow()
         db.commit()
+
+
+# ── Learners ─────────────────────────────────────────────────────────────
+
+
+def get_or_create_learner(db: Session, learner_id: str | None = None) -> LearnerModel:
+    """Get an existing learner by ID, or create a new one."""
+    if learner_id:
+        learner = db.get(LearnerModel, learner_id)
+        if learner:
+            return learner
+    learner = LearnerModel(
+        id=learner_id or str(uuid.uuid4()),
+        nickname="学习者",
+    )
+    db.add(learner)
+    db.commit()
+    db.refresh(learner)
+    return learner
+
+
+def get_learner(db: Session, learner_id: str) -> LearnerModel | None:
+    """Get a learner by ID, or None."""
+    return db.get(LearnerModel, learner_id)
+
+
+def get_learner_sessions(db: Session, learner_id: str) -> list[SessionModel]:
+    """List all sessions belonging to a learner, newest first."""
+    return (
+        db.query(SessionModel)
+        .filter(SessionModel.learner_id == learner_id)
+        .order_by(desc(SessionModel.updated_at))
+        .all()
+    )
+
+
+def get_learner_aggregated_profile(db: Session, learner_id: str) -> dict[str, Any] | None:
+    """Merge the latest profile snapshot across all of a learner's sessions.
+
+    Uses the most recent snapshot as the base, then fills in any missing
+    dimensions from older snapshots across the learner's other sessions.
+    """
+    sessions = get_learner_sessions(db, learner_id)
+    if not sessions:
+        return None
+
+    session_ids = [s.id for s in sessions]
+    snapshots = (
+        db.query(ProfileSnapshotModel)
+        .filter(ProfileSnapshotModel.session_id.in_(session_ids))
+        .order_by(desc(ProfileSnapshotModel.created_at))
+        .all()
+    )
+    if not snapshots:
+        return None
+
+    # Merge dimensions: newest snapshot wins per key, older fill gaps
+    merged_dims: dict[str, Any] = {}
+    seen_keys: set[str] = set()
+    for snap in snapshots:
+        dims = snap.dimensions or []
+        if isinstance(dims, list):
+            for dim in dims:
+                key = dim.get("key") if isinstance(dim, dict) else None
+                if key and key not in seen_keys:
+                    merged_dims[key] = dim
+                    seen_keys.add(key)
+        elif isinstance(dims, dict):
+            for key, value in dims.items():
+                if key not in seen_keys:
+                    merged_dims[key] = value
+                    seen_keys.add(key)
+
+    return {
+        "dimensions": list(merged_dims.values()),
+        "weaknesses": snapshots[0].weaknesses or [],
+        "preferences": snapshots[0].preferences or {},
+        "readiness_score": snapshots[0].readiness_score or 0.0,
+        "session_count": len(sessions),
+    }
 
 
 # ── Messages ─────────────────────────────────────────────────────────────
@@ -191,6 +274,17 @@ def save_resource(
     resource_data: dict[str, Any],
 ) -> ResourceModel:
     get_or_create_session(db, session_id)
+
+    def _json_list(value: Any) -> list | None:
+        """Normalise a value to a JSON-storable list, or None."""
+        if value is None:
+            return None
+        if isinstance(value, list):
+            return value
+        if isinstance(value, str):
+            return [value]
+        return None
+
     res = ResourceModel(
         id=resource_data.get("id", f"res_{_utcnow().timestamp()}"),
         session_id=session_id,
@@ -198,8 +292,18 @@ def save_resource(
         title=resource_data.get("title", "学习资源"),
         description=resource_data.get("description"),
         content=resource_data.get("content"),
+        knowledge_points=resource_data.get("knowledge_points") or resource_data.get("knowledgePoints"),
         tags=resource_data.get("tags"),
+        difficulty=resource_data.get("difficulty", "easy"),
+        estimated_minutes=resource_data.get("estimated_minutes") or resource_data.get("estimatedMinutes", 20),
+        format=resource_data.get("format", "text"),
+        mermaid_def=resource_data.get("mermaid_def") or resource_data.get("mermaidDef"),
+        code_blocks=resource_data.get("code_blocks") or resource_data.get("codeBlocks"),
+        questions=resource_data.get("questions"),
+        ppt_outline=resource_data.get("ppt_outline") or resource_data.get("pptOutline"),
         bookmarked=resource_data.get("bookmarked", False),
+        study_status=resource_data.get("study_status") or resource_data.get("studyStatus", "new"),
+        source=resource_data.get("source", "mock"),
     )
     existing = db.get(ResourceModel, res.id)
     if existing:
@@ -207,8 +311,18 @@ def save_resource(
         existing.title = res.title
         existing.description = res.description
         existing.content = res.content
+        existing.knowledge_points = res.knowledge_points
         existing.tags = res.tags
+        existing.difficulty = res.difficulty
+        existing.estimated_minutes = res.estimated_minutes
+        existing.format = res.format
+        existing.mermaid_def = res.mermaid_def
+        existing.code_blocks = res.code_blocks
+        existing.questions = res.questions
+        existing.ppt_outline = res.ppt_outline
         existing.bookmarked = res.bookmarked
+        existing.study_status = res.study_status
+        existing.source = res.source
     else:
         db.add(res)
     db.commit()

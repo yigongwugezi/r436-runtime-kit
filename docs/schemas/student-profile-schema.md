@@ -4,17 +4,19 @@
 
 The student profile is used by EduAgent to understand the learner and generate personalized learning paths and resources.
 
-Stage 1 must include 8 dimensions:
+The profile includes 10 dimensions (aligned with frontend `DimensionKey` type):
 
 ```text
 major_background
 knowledge_base
 learning_goal
 cognitive_style
-weak_points
-programming_ability
+error_patterns
+coding_ability
 learning_progress
-interests
+interest_direction
+learning_rhythm
+self_efficacy
 ```
 
 ## 2. Dimension Structure
@@ -82,14 +84,14 @@ feedback
     "source": "user_input",
     "evidence": "希望多给我一些图解、代码案例和练习题"
   },
-  "weak_points": {
-    "label": "易错点",
+  "error_patterns": {
+    "label": "易错模式",
     "value": "机器学习概念、神经网络训练流程、NLP 基础概念",
     "confidence": 0.75,
     "source": "inferred",
     "evidence": "由知识基础和学习目标推断"
   },
-  "programming_ability": {
+  "coding_ability": {
     "label": "编程能力",
     "value": "具备 Python 基础，适合从可运行小案例入手",
     "confidence": 0.85,
@@ -103,12 +105,26 @@ feedback
     "source": "inferred",
     "evidence": "希望两周入门"
   },
-  "interests": {
+  "interest_direction": {
     "label": "兴趣方向",
     "value": "神经网络、自然语言处理",
     "confidence": 0.95,
     "source": "user_input",
     "evidence": "重点理解神经网络和自然语言处理"
+  },
+  "learning_rhythm": {
+    "label": "学习节奏",
+    "value": "适合每周 3-4 次学习，每次 45 分钟左右",
+    "confidence": 0.6,
+    "source": "inferred",
+    "evidence": "由学习目标和时间安排推断"
+  },
+  "self_efficacy": {
+    "label": "学习效能感",
+    "value": "中等，需要阶段性反馈来维持动力",
+    "confidence": 0.5,
+    "source": "inferred",
+    "evidence": "由学习目标和已有基础推断"
   }
 }
 ```
@@ -123,7 +139,7 @@ feedback
 
 ## 5. Backend Rules
 
-- All 8 dimensions must exist in the response.
+- All 10 dimensions must exist in the response.
 - If a dimension cannot be extracted directly, fill it using inference and set `source` to `inferred`.
 - `confidence` must be between 0 and 1.
 - Do not return mixed field names such as `learningGoal` or `major`; use the fixed snake_case names.

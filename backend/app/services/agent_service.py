@@ -24,6 +24,7 @@ from app.db.repository import (
 from app.services.conversation_state import conversation_store
 from app.services.course_catalog import course_catalog
 from app.services.orchestrator import AgentOrchestrator
+from app.utils.profile_normalizer import normalize_profile_dimensions
 
 
 # ── Trigger: run the full agent pipeline ──────────────────────────────
@@ -107,12 +108,7 @@ def get_profile(session_id: str) -> dict[str, Any] | None:
         if snapshot is None:
             return None
 
-        dimensions = snapshot.dimensions or []
-        if isinstance(dimensions, dict):
-            dimensions = [
-                {"key": key, **value} if isinstance(value, dict) else {"key": key, "value": str(value)}
-                for key, value in dimensions.items()
-            ]
+        dimensions = normalize_profile_dimensions(snapshot.dimensions)
 
         weaknesses = snapshot.weaknesses or []
         preferences = snapshot.preferences or {}
@@ -162,7 +158,7 @@ def get_learning_path(session_id: str) -> dict[str, Any] | None:
 
 
 def get_resources(session_id: str) -> list[dict[str, Any]]:
-    """Read all resources for a session from the database."""
+    """Read all resources for a session from the database with full metadata."""
     try:
         db = SessionLocal()
         rows = repo_get_resources(db, session_id)
@@ -173,9 +169,20 @@ def get_resources(session_id: str) -> list[dict[str, Any]]:
                 "title": r.title or "学习资源",
                 "description": r.description or "",
                 "content": r.content or "",
+                "knowledge_points": r.knowledge_points or [],
                 "tags": r.tags or [],
+                "difficulty": r.difficulty or "easy",
+                "estimated_minutes": r.estimated_minutes or 20,
+                "format": r.format or "text",
+                "mermaid_def": r.mermaid_def,
+                "code_blocks": r.code_blocks,
+                "questions": r.questions,
+                "ppt_outline": r.ppt_outline,
                 "bookmarked": r.bookmarked or False,
+                "study_status": r.study_status or "new",
+                "source": r.source or "mock",
                 "created_at": r.created_at.isoformat() if r.created_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
             }
             for r in rows
         ]

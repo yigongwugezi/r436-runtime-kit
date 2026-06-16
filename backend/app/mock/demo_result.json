@@ -33,14 +33,14 @@
         "source": "user_input",
         "evidence": "希望多给我一些图解、代码案例和练习题"
       },
-      "weak_points": {
-        "label": "易错点",
+      "error_patterns": {
+        "label": "易错模式",
         "value": "机器学习基本概念、神经网络训练流程、NLP 基础概念",
         "confidence": 0.75,
         "source": "inferred",
         "evidence": "由知识基础和学习目标推断"
       },
-      "programming_ability": {
+      "coding_ability": {
         "label": "编程能力",
         "value": "具备 Python 基础，适合从可运行小案例入手",
         "confidence": 0.85,
@@ -54,12 +54,26 @@
         "source": "inferred",
         "evidence": "希望两周入门"
       },
-      "interests": {
+      "interest_direction": {
         "label": "兴趣方向",
         "value": "神经网络、自然语言处理",
         "confidence": 0.95,
         "source": "user_input",
         "evidence": "重点理解神经网络和自然语言处理"
+      },
+      "learning_rhythm": {
+        "label": "学习节奏",
+        "value": "适合每周 3-4 次学习，每次 45 分钟左右",
+        "confidence": 0.6,
+        "source": "inferred",
+        "evidence": "由学习目标和时间安排推断"
+      },
+      "self_efficacy": {
+        "label": "学习效能感",
+        "value": "中等，需要阶段性反馈来维持学习动力",
+        "confidence": 0.5,
+        "source": "inferred",
+        "evidence": "由学习目标和已有基础推断"
       }
     },
     "diagnosis": {
@@ -240,7 +254,7 @@
         "agent_id": "profile_agent",
         "agent_name": "画像智能体",
         "status": "completed",
-        "summary": "已完成 8 个维度学生画像抽取。",
+        "summary": "已完成 10 个维度学生画像抽取。",
         "started_at": "2026-06-12T10:00:00+08:00",
         "finished_at": "2026-06-12T10:00:02+08:00"
       },

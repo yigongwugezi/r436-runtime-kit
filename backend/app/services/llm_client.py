@@ -100,14 +100,14 @@ class MockLLMClient(BaseLLMClient):
                     "source": "inferred",
                     "evidence": "无明确信息",
                 },
-                "weak_points": {
-                    "label": "薄弱点",
+                "error_patterns": {
+                    "label": "易错模式",
                     "value": "未提及",
                     "confidence": 0.5,
                     "source": "inferred",
                     "evidence": "无明确信息",
                 },
-                "programming_ability": {
+                "coding_ability": {
                     "label": "编程能力",
                     "value": "基础水平",
                     "confidence": 0.6,
@@ -121,12 +121,26 @@ class MockLLMClient(BaseLLMClient):
                     "source": "inferred",
                     "evidence": "首次对话",
                 },
-                "interests": {
+                "interest_direction": {
                     "label": "兴趣方向",
                     "value": "未提及",
                     "confidence": 0.5,
                     "source": "inferred",
                     "evidence": "无明确信息",
+                },
+                "learning_rhythm": {
+                    "label": "学习节奏",
+                    "value": "暂未确定",
+                    "confidence": 0.5,
+                    "source": "inferred",
+                    "evidence": "暂无数据",
+                },
+                "self_efficacy": {
+                    "label": "学习效能感",
+                    "value": "暂未确定",
+                    "confidence": 0.5,
+                    "source": "inferred",
+                    "evidence": "暂无数据",
                 },
             },
             ensure_ascii=False,
