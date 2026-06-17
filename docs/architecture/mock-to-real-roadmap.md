@@ -15,17 +15,24 @@
 | sessionId 贯通 | 真实 | 对话、画像、路径、资源、反馈使用同一会话 |
 | 学习行为追踪 | 真实 | 可记录学习事件、学习时长、正确率、薄弱知识点和调整建议 |
 | 测试体系 | 真实 | 已有对话评估、课程目录、学习追踪测试 |
+| **DB 持久化** | **真实 (Stage 2)** | SQLite 保存 session/chat/profile/path/resources/events，刷新不丢数据 |
+| **AgentOrchestrator 错误处理** | **真实 (Stage 2)** | 逐 agent 错误隔离、超时控制 (ThreadPoolExecutor)、部分结果聚合 |
+| **API 接口化** | **真实 (Stage 2)** | GET 端点只读 DB 不触发 agent，POST 端点触发 agent 并持久化，22 个完整端点 |
+| **资源库 Schema** | **真实 (Stage 2)** | ResourceModel 扩展至 18 字段 (difficulty/format/mermaid/code_blocks/questions 等) |
+| **LLM 客户端** | **真实 (Stage 2)** | DeepSeek + Mock 双 Provider，内置重试逻辑，可配置超时 |
 
 ## 仍然是 mock 或半 mock 的部分
 
 | 模块 | 当前状态 | 替换优先级 |
 | --- | --- | --- |
-| 学习路径具体内容 | 半 mock | 最高 |
-| 资源库具体内容 | 半 mock | 最高 |
+| 学习路径具体内容 | 半 mock（DB 持久化已完成） | 最高 |
+| 资源库具体内容 | 半 mock（DB schema 已完成，18 字段完整存储） | 最高 |
 | 画像页 8 维分数 | 半 mock | 高 |
 | 诊断报告 | 半 mock | 高 |
-| 多智能体每一步详细产出 | 半 mock | 中 |
+| 多智能体每一步详细产出 | 半 mock（步骤追踪已实现，内容待真实生成） | 中 |
 | ReviewAgent 防幻觉审核 | 雏形 | 中 |
+
+> **Stage 2 进展**: 资源库 DB 已支持完整字段存储（difficulty、estimatedMinutes、format、mermaidDef、codeBlocks、questions、pptOutline、studyStatus、source），GET/POST 端点均可读写。Agent 管线已具备 per-agent 错误隔离和超时处理能力。
 
 ## 推荐替换顺序
 

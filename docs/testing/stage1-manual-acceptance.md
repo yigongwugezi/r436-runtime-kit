@@ -193,13 +193,16 @@ http://localhost:8001/api/learning-analytics?sessionId=manual_acceptance
 
 后端：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File backend\tests\run_conversation_tests.ps1
+```bash
+cd backend
+python tests/import_app_test.py
+python tests/course_catalog_test.py
+python tests/learning_tracker_test.py
 ```
 
 前端：
 
-```powershell
+```bash
 cd frontend
 npm run build
 ```
@@ -213,10 +216,11 @@ npm run build
 
 以下不是验收失败，而是当前阶段边界：
 
-- 学习路径具体任务仍有 mock 成分。
-- 资源库具体讲义、题库、代码案例仍有 mock 成分。
+- 学习路径具体任务仍有 mock 成分（DB 持久化已完成，内容待真实生成）。
+- 资源库具体讲义、题库、代码案例仍有 mock 成分（DB schema 已完成，含 difficulty/format/mermaid/questions/code_blocks 等完整字段）。
 - 画像页雷达图分数仍有 mock 成分。
 - 防幻觉审核还只是雏形。
+- **已实现**: DB 持久化（profile/path/resources 快照 + 学习事件追踪 + 聊天记录），session 隔离，AgentOrchestrator 错误隔离与超时处理，完整 API 端点集。
 
 下一阶段优先替换：
 

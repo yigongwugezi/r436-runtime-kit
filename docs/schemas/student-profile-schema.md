@@ -4,19 +4,19 @@
 
 The student profile is used by EduAgent to understand the learner and generate personalized learning paths and resources.
 
-The profile includes 10 dimensions (aligned with frontend `DimensionKey` type):
+The profile includes 10 dimensions extracted by `ProfileAgent` (aligned with frontend `DimensionKey` type):
 
 ```text
-major_background
-knowledge_base
-learning_goal
-cognitive_style
-error_patterns
-coding_ability
-learning_progress
-interest_direction
-learning_rhythm
-self_efficacy
+major_background     — 专业背景
+knowledge_base       — 知识基础
+learning_goal        — 学习目标
+cognitive_style      — 认知风格
+error_patterns       — 易错模式
+coding_ability       — 编程能力
+learning_progress    — 学习进度
+interest_direction   — 兴趣方向
+learning_rhythm      — 学习节奏
+self_efficacy        — 学习效能感
 ```
 
 ## 2. Dimension Structure
@@ -48,6 +48,7 @@ Allowed `source` values:
 ```text
 user_input
 inferred
+llm
 diagnosis
 feedback
 ```
@@ -139,8 +140,9 @@ feedback
 
 ## 5. Backend Rules
 
-- All 10 dimensions must exist in the response.
+- All 10 dimensions must exist in the response (as defined by `ProfileAgent.profile_dimensions`).
 - If a dimension cannot be extracted directly, fill it using inference and set `source` to `inferred`.
+- When the LLM generates the profile, set `source` to `llm`.
 - `confidence` must be between 0 and 1.
 - Do not return mixed field names such as `learningGoal` or `major`; use the fixed snake_case names.
 

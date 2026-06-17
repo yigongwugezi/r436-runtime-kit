@@ -1,18 +1,19 @@
-﻿# EduAgent 多智能体协作流程
+# EduAgent 多智能体协作流程
 
-## 1. Stage 1 Agent List
+## 1. Agent Pipeline (6 agents)
 
-第一阶段采用轻量多智能体流程。智能体属于后端模块，由 `AgentOrchestrator` 统一调度。
+智能体属于后端模块，由 `AgentOrchestrator` 统一调度。管线依次运行，每个智能体的输出会合并进共享上下文。
 
-| Agent | Chinese Name | Responsibility |
-| --- | --- | --- |
-| `ProfileAgent` | 画像智能体 | 从用户输入中提取 8 个维度学生画像 |
-| `KnowledgeAgent` | 知识库智能体 | 根据 `course_id` 定位课程知识点和章节内容 |
-| `DiagnosisAgent` | 学习诊断智能体 | 根据画像和课程要求识别知识短板 |
-| `PlannerAgent` | 路径规划智能体 | 生成阶段化个性化学习路径 |
-| `ResourceAgent` | 资源生成智能体 | 生成讲义、题库、拓展阅读和实操案例 |
-| `MindMapAgent` | 思维导图智能体 | 生成 Mermaid 思维导图 |
-| `ReviewAgent` | 质量检查智能体 | 检查格式完整性、资源覆盖度和内容安全 |
+| Agent | Chinese Name | Responsibility | Status |
+| --- | --- | --- | --- |
+| `ProfileAgent` | 画像智能体 | 从用户输入中提取 8 个维度学生画像 | Real (DeepSeek) |
+| `KnowledgeAgent` | 知识库智能体 | 根据 `course_id` 定位课程知识点和章节内容 | Mock |
+| `DiagnosisAgent` | 学习诊断智能体 | 根据画像和课程要求识别知识短板 | Mock |
+| `PlannerAgent` | 路径规划智能体 | 生成阶段化个性化学习路径 | Mock |
+| `ResourceAgent` | 资源生成智能体 | 生成讲义、题库、拓展阅读、实操案例、思维导图、视频脚本等 6 类资源 | Mock (schema ready) |
+| `ReviewAgent` | 质量检查智能体 | 检查格式完整性、资源覆盖度和内容安全 | Mock |
+
+> **注意**: 思维导图 (Mermaid) 由 `ResourceAgent` 作为 `mindmap` 类型资源生成，不作为独立 Agent 存在。
 
 ## 2. Main Flow
 
@@ -27,7 +28,6 @@ sequenceDiagram
   participant Diagnosis as DiagnosisAgent
   participant Planner as PlannerAgent
   participant Resource as ResourceAgent
-  participant MindMap as MindMapAgent
   participant Review as ReviewAgent
 
   User->>Frontend: 输入学习情况
@@ -41,10 +41,8 @@ sequenceDiagram
   Diagnosis-->>Orchestrator: diagnosis
   Orchestrator->>Planner: 生成学习路径
   Planner-->>Orchestrator: learning_path
-  Orchestrator->>Resource: 生成讲义、题库、阅读、实操
+  Orchestrator->>Resource: 生成讲义/题库/思维导图/代码案例等
   Resource-->>Orchestrator: resources
-  Orchestrator->>MindMap: 生成思维导图
-  MindMap-->>Orchestrator: mindmap resource
   Orchestrator->>Review: 质量检查
   Review-->>Orchestrator: review
   Orchestrator-->>API: unified result
@@ -52,63 +50,56 @@ sequenceDiagram
   Frontend-->>User: 展示画像、路径、资源和智能体状态
 ```
 
-## 3. Stage 1 Implementation Strategy
-
-第一阶段不直接追求复杂 Agent 框架，先使用 Python 类或函数实现。
-
-统一接口：
+## 3. BaseAgent 统一接口
 
 ```python
-class BaseAgent:
-    def run(self, context: dict) -> dict:
-        raise NotImplementedError
+class BaseAgent(ABC):
+    agent_id: str
+    agent_name: str
+
+    def __init__(self, mock_data=None, llm_client=None): ...
+
+    @abstractmethod
+    def run(self, context: dict) -> dict: ...
+
+    def validate_result(self, result: dict) -> None: ...
+    def get_fallback(self, context=None) -> dict: ...
 ```
 
-统一上下文：
+每个 agent 从 `context` 读取输入，返回包含 `agent_step` 元数据和领域输出键（如 `profile`、`diagnosis`、`learning_path`、`resources` 等）的字典。
 
-```json
-{
-  "session_id": "demo_session_001",
-  "course_id": "ai_intro",
-  "user_message": "...",
-  "profile": {},
-  "diagnosis": {},
-  "learning_path": [],
-  "resources": [],
-  "knowledge_context": []
-}
-```
+## 4. Stage 2 编排特性
 
-## 4. LLM Replacement Rule
+第二阶段新增以下机制：
+
+- **逐 agent 错误隔离**: 单个 agent 失败（`status: "failed"`）不会导致整个编排器崩溃。管线继续执行后续 agent，最终返回 `overall_status: "partial"` 并附带成功的部分结果。
+- **逐 agent 超时**: 通过 `ThreadPoolExecutor` + `future.result(timeout=N)` 实现。默认超时 60 秒 (`settings.agent_timeout`)。
+- **结构化步骤追踪**: 每个 agent 步骤记录 `agent_id`、`agent_name`、`status`、`summary`、`error`、`duration_ms`、`started_at`、`finished_at`。
+- **部分结果聚合**: 成功的 agent 输出合并到最终结果；失败的 agent 提供空回退结构。
+
+## 5. LLM 客户端规则
 
 智能体不能直接写死某个大模型 API。所有模型调用必须通过统一客户端：
 
 ```python
-self.llm.chat(messages)
+self.llm_client.chat(messages, timeout=60)
 ```
 
-第一阶段默认：
+当前支持的 Provider：
 
-```text
-MockLLMClient
-```
+| Provider | 类 | 说明 |
+| --- | --- | --- |
+| `mock` | `MockLLMClient` | 返回确定性 mock 响应（开发/测试默认） |
+| `deepseek` | `DeepSeekLLMClient` | OpenAI 兼容 HTTP 客户端，内置重试逻辑 |
 
-第二阶段可切换：
+通过环境变量 `LLM_PROVIDER` 切换。DeepSeek 客户端支持配置重试次数 (`llm_retry_count`) 和请求超时 (`llm_request_timeout`)。
 
-```text
-SparkClient
-DeepSeekClient
-QwenClient
-```
-
-## 5. Quality Control
+## 6. 质量控制 (ReviewAgent)
 
 质量检查智能体至少检查：
 
 - 响应字段是否完整。
-- 是否覆盖 5 类学习资源。
+- 是否覆盖至少 5 类学习资源。
 - 资源是否与学生画像匹配。
 - 是否存在明显敏感或不适合学习场景的内容。
 - 当知识库证据不足时，是否提示内容来源不充分。
-
-
