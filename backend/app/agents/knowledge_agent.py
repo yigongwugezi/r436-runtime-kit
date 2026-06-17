@@ -1,13 +1,7 @@
-"""Knowledge agent — retrieves knowledge points from the course knowledge base.
-
-Stage 2: Falls back to empty context when mock_data is not available.
-"""
-
-from __future__ import annotations
-
 from typing import Any
 
 from app.agents.base import BaseAgent
+from app.services.course_catalog import course_catalog
 
 
 class KnowledgeAgent(BaseAgent):
@@ -15,38 +9,73 @@ class KnowledgeAgent(BaseAgent):
     agent_name = "知识库检索智能体"
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
-        # Try mock_data first (backward compatible)
-        mock_diagnosis = self.mock_data.get("diagnosis", {}) if self.mock_data else {}
-        weak_points = mock_diagnosis.get("weak_knowledge_points", [])
-        retrieved_points = [
-            {
-                "point_id": item.get("point_id"),
-                "name": item.get("name"),
-                "priority": item.get("priority"),
-            }
-            for item in weak_points
-        ]
+        course_id = str(context.get("course_id") or self.mock_data.get("course_id") or "ai_intro")
+        course = course_catalog.get_course(course_id) or course_catalog.get_course("ai_intro") or {}
+
+        message = str(context.get("user_message", ""))
+        profile = context.get("profile", {})
+        query = " ".join(
+            [
+                message,
+                str(profile.get("knowledge_base", {}).get("value", "")),
+                str(profile.get("weak_points", {}).get("value", "")),
+                str(profile.get("learning_goal", {}).get("value", "")),
+                str(profile.get("interests", {}).get("value", "")),
+            ]
+        ).lower()
+
+        chapters = list(course.get("chapters", []))
+        scored = sorted(
+            ((self._score_chapter(query, chapter), chapter) for chapter in chapters),
+            key=lambda item: item[0],
+            reverse=True,
+        )
+        selected = [chapter for score, chapter in scored if score > 0][:4] or chapters[:4]
+
+        retrieved_points = []
+        for index, chapter in enumerate(selected, start=1):
+            chapter_id = str(chapter.get("chapter_id", index)).zfill(2)
+            detail = course_catalog.load_chapter(str(course.get("course_id", course_id)), chapter_id) or chapter
+            retrieved_points.append(
+                {
+                    "point_id": f"{course.get('course_id', course_id)}_{chapter_id}",
+                    "chapter_id": chapter_id,
+                    "name": chapter.get("title", f"第 {index} 章"),
+                    "priority": "high" if index <= 2 else "medium",
+                    "difficulty": chapter.get("difficulty", "medium"),
+                    "prerequisites": chapter.get("prerequisites", []),
+                    "content_excerpt": self._excerpt(str(detail.get("content", ""))),
+                }
+            )
 
         return {
             "knowledge_context": {
-                "course_id": context.get("course_id", ""),
+                "course_id": course.get("course_id", course_id),
+                "course_name": course.get("course_name", course_id),
                 "retrieved_points": retrieved_points,
-                "source": "mock" if retrieved_points else "empty",
+                "source": "course_knowledge_base",
             },
             "agent_step": self.agent_step(),
         }
 
-    def get_fallback(self, context: dict[str, Any] | None = None) -> dict[str, Any]:
-        return {
-            "knowledge_context": {
-                "course_id": (context or {}).get("course_id", ""),
-                "retrieved_points": [],
-                "source": "fallback",
-            },
-            "agent_step": {
-                "agent_id": self.agent_id,
-                "agent_name": self.agent_name,
-                "status": "failed",
-                "summary": f"KnowledgeAgent fell back to empty context.",
-            },
-        }
+    def _score_chapter(self, query: str, chapter: dict[str, Any]) -> int:
+        title = str(chapter.get("title", "")).lower()
+        prerequisites = " ".join(str(item).lower() for item in chapter.get("prerequisites", []))
+        text = f"{title} {prerequisites}"
+        score = 0
+
+        for token in query.replace("，", " ").replace("。", " ").split():
+            if len(token) >= 2 and token in text:
+                score += 3
+
+        if any(word in query for word in ["零基础", "不会", "入门"]) and chapter.get("difficulty") == "easy":
+            score += 3
+        if any(word in query for word in ["考试", "复习"]) and chapter.get("difficulty") in {"easy", "medium"}:
+            score += 2
+        if any(word in query for word in ["代码", "实验", "实操"]) and chapter.get("difficulty") == "medium":
+            score += 1
+        return score
+
+    def _excerpt(self, content: str, limit: int = 220) -> str:
+        compact = " ".join(line.strip() for line in content.splitlines() if line.strip())
+        return compact[:limit]

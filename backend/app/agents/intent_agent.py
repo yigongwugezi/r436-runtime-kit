@@ -99,6 +99,12 @@ class IntentAgent(BaseAgent):
             "制定学习计划",
             "生成学习路径",
             "开始生成",
+            "先生成",
+            "直接生成",
+            "生成看看",
+            "生成看一下",
+            "看看效果",
+            "不用在意准不准",
         ]
         if any(trigger in text for trigger in utf8_plan_triggers):
             return self._result("learning_plan", 0.95, True, "用户明确要求生成学习方案或学习路径。")
@@ -139,6 +145,20 @@ class IntentAgent(BaseAgent):
         ]
         if any(trigger in text for trigger in plan_triggers):
             return self._result("learning_plan", 0.95, True, "用户明确要求生成学习方案或学习路径。")
+
+        time_only_pattern = (
+            r"(?:我有|我想|希望|打算|计划|每天能学|每天学|每天)?"
+            r"(?:\d+|一|两|二|三|四|五|六|七|八|九|十|半)\s*"
+            r"(?:分钟|小时|天|周|星期|个月)"
+            r"(?:时间|完成|学完|左右|以内|以上)?"
+        )
+        if re.fullmatch(time_only_pattern, compact):
+            return self._result(
+                "profile_update",
+                0.9,
+                False,
+                "用户正在补充学习时间安排，属于画像更新。",
+            )
 
         # Clean UTF-8 rules for normal Chinese profile sentences. Keep this
         # before example routing so rich profile updates are never mistaken for
@@ -258,6 +278,21 @@ class IntentAgent(BaseAgent):
                 0.9,
                 False,
                 "用户正在补充画像字段，先记录信息并追问缺失项。",
+            )
+
+        fragments = [segment for segment in re.split(r"[，。,.!?！？；;、\s]+", text) if segment]
+        has_grade = any(segment in {"大一", "大二", "大三", "大四", "研一", "研二", "研三"} for segment in fragments)
+        has_major = any(
+            any(hint in segment for hint in ["软件", "计算机", "人工智能", "电子", "信息", "自动化", "数学", "统计", "工程"])
+            for segment in fragments
+        )
+        has_student_role = any(segment in {"学生", "本科生", "研究生", "大学生", "高职学生"} for segment in fragments)
+        if has_major and (has_grade or has_student_role):
+            return self._result(
+                "profile_update",
+                0.9,
+                False,
+                "用户用碎片化短语补充年级、专业或身份背景。",
             )
 
         return None

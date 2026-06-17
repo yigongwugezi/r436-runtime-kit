@@ -19,6 +19,7 @@ from app.db.repository import (
     get_latest_learning_path,
     get_resources as repo_get_resources,
 )
+from app.services.profile_extractor import extract_profile_facts
 from app.utils.profile_normalizer import normalize_profile_dimensions
 
 
@@ -69,7 +70,7 @@ SUPPLEMENTAL_FIELD_DEFS: dict[str, dict[str, str]] = {
 }
 
 CORE_FIELDS = {"background", "target_course", "knowledge_base"}
-PLAN_READY_FIELDS = {"background", "target_course", "knowledge_base"}
+PLAN_READY_FIELDS = {"background", "target_course"}
 LOW_VALUE_BACKGROUND_WORDS = {
     "男生",
     "女生",
@@ -496,6 +497,13 @@ class ConversationStore:
                     formats.append(label)
             set_fact("preference", "、".join(dict.fromkeys(formats)) or text)
 
+        extracted_profile_facts = extract_profile_facts(text)
+        for key, value in extracted_profile_facts.facts.items():
+            set_fact(key, value)
+        for key, values in extracted_profile_facts.supplemental.items():
+            for value in values:
+                add_supplemental(key, value)
+
     def merge_result_profile(self, state: ConversationState, result: dict[str, Any]) -> None:
         profile = result.get("profile", {})
         mapping = {
@@ -534,7 +542,9 @@ class ConversationStore:
     def readiness(self, state: ConversationState) -> dict[str, Any]:
         filled = set(state.facts)
         missing_core = [key for key in CORE_FIELDS if key not in filled]
-        ready_to_plan = PLAN_READY_FIELDS.issubset(filled)
+        ready_to_plan = PLAN_READY_FIELDS.issubset(filled) and bool(
+            state.facts.get("knowledge_base") or state.facts.get("learning_goal")
+        )
         score = round(len(filled) / len(PROFILE_FIELD_DEFS), 2)
         return {
             "filledCount": len(filled),

@@ -10,6 +10,7 @@ Design principles (Stage 2):
 from __future__ import annotations
 
 import json
+import re
 import time
 from datetime import datetime
 from typing import Any
@@ -52,6 +53,41 @@ router = APIRouter(tags=["product"])
 # ═══════════════════════════════════════════════════════════════════════
 
 
+def _profile_item(label: str, value: str, source: str = "user_input", confidence: float = 1.0) -> dict[str, Any]:
+    return {
+        "label": label,
+        "value": value,
+        "confidence": confidence,
+        "source": source,
+        "evidence": value,
+    }
+
+
+def _apply_state_facts_to_result(result: dict[str, Any], state, course: dict[str, Any] | None = None) -> None:
+    profile = result.setdefault("profile", {})
+    course_name = str((course or {}).get("course_name") or state.facts.get("target_course") or "").strip()
+    overrides = {
+        "major_background": ("Background", state.facts.get("background", "")),
+        "knowledge_base": ("Knowledge Base", state.facts.get("knowledge_base", "")),
+        "learning_goal": ("Learning Goal", state.facts.get("learning_goal", "")),
+        "cognitive_style": ("Learning Preference", state.facts.get("preference", "")),
+        "weak_points": ("Weak Points", state.facts.get("weak_points", "")),
+        "programming_ability": ("Programming Ability", state.facts.get("programming_ability", "")),
+        "interests": ("Target Course", state.facts.get("target_course", "")),
+        "learning_rhythm": ("Learning Rhythm", state.facts.get("time_budget", "")),
+    }
+    for key, (label, value) in overrides.items():
+        if value:
+            profile[key] = _profile_item(label, str(value))
+
+    if course_name:
+        profile["interests"] = _profile_item("Target Course", course_name, source="course_match", confidence=0.9)
+        profile.setdefault(
+            "learning_progress",
+            _profile_item("Learning Progress", f"Starting {course_name}", source="course_match", confidence=0.8),
+        )
+
+
 def _get_bookmarks(session_id: str) -> set[str]:
     """Get bookmarked resource IDs from DB for a session."""
     try:
@@ -71,7 +107,7 @@ def _classify_intent(message: str) -> dict[str, Any]:
 
 def _run_agents(
     message: str = "我想学习人工智能导论",
-    session_id: str = "",
+    session_id: str = "frontend_session_001",
 ) -> dict[str, Any]:
     """Trigger the full multi-agent pipeline via AgentService and persist results."""
     state = conversation_store.get(session_id)
@@ -93,6 +129,7 @@ def _run_agents(
             "description": selected_course.get("description", ""),
             "chapter_count": selected_course.get("chapter_count", len(selected_course.get("chapters", []))),
         }
+    _apply_state_facts_to_result(result, state, selected_course)
     conversation_store.set_result(session_id, result)
     return result
 
@@ -287,11 +324,22 @@ def _raw_stages_to_nodes(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+def _estimated_path_days(stages: list[dict[str, Any]]) -> int:
+    max_day = 0
+    for stage in stages:
+        duration = str(stage.get("duration", ""))
+        for value in re.findall(r"\d+", duration):
+            max_day = max(max_day, int(value))
+    return max_day or 14
+
+
 def _to_learning_path(result: dict[str, Any]) -> dict[str, Any]:
     course = result.get("course") or {}
     course_id = result.get("course_id", "ai_intro")
     course_name = course.get("course_name") or ("人工智能导论" if course_id == "ai_intro" else str(course_id))
-    stages = _raw_stages_to_nodes(result.get("learning_path", []))
+    raw_stages = result.get("learning_path", [])
+    stages = _raw_stages_to_nodes(raw_stages)
+    estimated_days = _estimated_path_days(raw_stages)
 
     return {
         "id": f"path_{course_id}",
@@ -301,7 +349,7 @@ def _to_learning_path(result: dict[str, Any]) -> dict[str, Any]:
         "stages": stages,
         "createdAt": int(time.time() * 1000),
         "overallProgress": 18,
-        "estimatedDays": 14,
+        "estimatedDays": estimated_days,
         "source": "agent",
     }
 
@@ -368,7 +416,20 @@ def _learning_plan_reply(result: dict[str, Any], intent: dict[str, Any]) -> str:
     )
 
 
-def _casual_reply() -> str:
+def _casual_reply(session_id: str = "frontend_session_001") -> str:
+    state = conversation_store.get(session_id)
+    known = "\n".join(conversation_store.known_lines(state))
+    if known:
+        return (
+            "\u4f60\u597d\uff0c\u6211\u662f EduAgent\u3002"
+            "\u4f60\u521a\u624d\u63d0\u4f9b\u7684\u4fe1\u606f\u6211\u5df2\u7ecf\u8bb0\u5f55\u4e86\uff0c"
+            "\u4e0d\u7528\u91cd\u65b0\u586b\u8868\u3002\n\n"
+            "\u6211\u76ee\u524d\u5df2\u8bb0\u5f55\uff1a\n"
+            f"{known}\n\n"
+            "\u4f60\u53ef\u4ee5\u7ee7\u7eed\u8865\u5145\u60f3\u5b66\u7684\u8bfe\u7a0b\u3001"
+            "\u5df2\u6709\u57fa\u7840\u3001\u76ee\u6807\u6216\u504f\u597d\uff1b"
+            "\u4e5f\u53ef\u4ee5\u76f4\u63a5\u8bf4\u300c\u5f00\u59cb\u751f\u6210\u5b66\u4e60\u65b9\u6848\u300d\u3002"
+        )
     return (
         "你好，我是 EduAgent。你可以告诉我你的专业、学习基础、目标和偏好的学习方式，"
         "我会帮你生成学习画像、学习路径和个性化资源。\n\n"
@@ -542,7 +603,20 @@ def _start_advice_reply(session_id: str) -> str:
 def _learning_plan_request_reply(message: str, intent: dict[str, Any], session_id: str) -> tuple[str, bool]:
     state = conversation_store.get(session_id)
     readiness = conversation_store.readiness(state)
-    if readiness["readyToPlan"]:
+    force_generate_words = [
+        "\u76f4\u63a5\u751f\u6210",
+        "\u5148\u751f\u6210",
+        "\u751f\u6210\u770b\u770b",
+        "\u4e0d\u7528\u5728\u610f",
+        "\u4e0d\u5728\u610f\u51c6\u4e0d\u51c6",
+        "\u5148\u770b\u6548\u679c",
+    ]
+    force_generate = any(word in message for word in force_generate_words)
+    if readiness["readyToPlan"] or force_generate:
+        if force_generate and not readiness["readyToPlan"]:
+            result = _run_agents(message, session_id=session_id)
+            content = _learning_plan_reply(result, intent)
+            return f"{content}\n\n低画像完整度生成：当前信息较少，本方案作为第一版草稿，后续可随画像更新继续调整。", True
         return _learning_plan_reply(_run_agents(message, session_id=session_id), intent), True
 
     questions = "\n".join(f"- {question}" for question in conversation_store.next_questions(state, limit=3))
@@ -597,7 +671,7 @@ def _unknown_reply(intent: dict[str, Any]) -> str:
 def _reply_for_intent(message: str, intent: dict[str, Any], session_id: str) -> tuple[str, bool]:
     name = intent["intent"]
     if name == "casual_chat":
-        return _casual_reply(), False
+        return _casual_reply(session_id), False
     if name == "date_query":
         return _date_query_reply(), False
     if name == "clarification":

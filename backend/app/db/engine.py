@@ -61,6 +61,11 @@ def init_db() -> None:
         pass  # Column already exists
 
 
+# Keep direct route imports and test scripts usable even when FastAPI lifespan
+# is not executed. create_all is idempotent for SQLite and harmless on startup.
+init_db()
+
+
 def get_db():
     """FastAPI dependency: yields a DB session and closes it after use."""
     db = SessionLocal()

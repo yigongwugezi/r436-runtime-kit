@@ -34,6 +34,10 @@ def assert_not_contains(text: str, unexpected: str) -> None:
         raise AssertionError(f"Did not expect {unexpected!r} in:\n{text}")
 
 
+def zh(escaped: str) -> str:
+    return escaped.encode("ascii").decode("unicode_escape")
+
+
 def test_fresh_start_has_no_fake_profile() -> None:
     sid = "regression_fresh_start"
     conversation_store.reset(sid)
@@ -123,6 +127,70 @@ def test_real_dialogue_extracts_time_and_learning_levels() -> None:
     assert conversation_store.readiness(state)["readyToPlan"]
 
 
+def test_fragment_background_is_profile_update() -> None:
+    sid = "regression_fragment_background"
+    conversation_store.reset(sid)
+    intent = classify("大一，软件工程，学生")
+    assert intent["intent"] == "profile_update"
+    content = reply(sid, "大一，软件工程，学生")
+    state = conversation_store.get(sid)
+    assert state.facts["background"] == "软件工程大一学生"
+    assert_contains(content, "身份/专业背景：软件工程大一学生")
+    assert_not_contains(content, "我是 EduAgent")
+
+
+def test_force_generate_bypasses_profile_guard() -> None:
+    sid = "regression_force_generate"
+    conversation_store.reset(sid)
+    reply(sid, "为我规划一个两周的机器学习学习路径")
+    state = conversation_store.get(sid)
+    assert state.facts["target_course"] == "机器学习"
+    content = reply(sid, "不用在意准不准，直接生成看看效果")
+    assert_contains(content, "个性化学习方案已生成")
+    assert_contains(content, "低画像完整度")
+
+
+def test_casual_chat_uses_existing_context() -> None:
+    sid = "regression_contextual_casual"
+    conversation_store.reset(sid)
+    reply(sid, "我是软件工程学生")
+    content = reply(sid, "你好")
+    assert_contains(content, "不用重新填表")
+    assert_contains(content, "我目前已记录")
+    assert_contains(content, "身份/专业背景：软件工程学生")
+    assert_not_contains(content, "例如：我是软件工程大三学生")
+
+
+def test_data_structure_two_day_plan_uses_correct_course_and_duration() -> None:
+    sid = "regression_data_structure_two_day_plan"
+    conversation_store.reset(sid)
+
+    reply(
+        sid,
+        zh(
+            r"\u6211\u662f\u8f6f\u4ef6\u5de5\u7a0b\u5927\u4e8c\u5b66\u751f"
+            r"\uff0c\u60f3\u5b66\u4e60\u6570\u636e\u7ed3\u6784"
+            r"\uff0c\u4e3a\u4e86\u8003\u8bd5\u901a\u8fc7"
+        ),
+    )
+
+    time_message = zh(r"\u6211\u6709\u4e24\u5929\u65f6\u95f4")
+    time_intent = classify(time_message)
+    assert time_intent["intent"] == "profile_update"
+    reply(sid, time_message)
+
+    content = reply(sid, zh(r"\u5f00\u59cb\u751f\u6210\u5b66\u4e60\u65b9\u6848"))
+    state = conversation_store.get(sid)
+    assert state.last_result is not None
+    assert state.last_result["course_id"] == "data_structures"
+
+    path = product._to_learning_path(state.last_result)
+    assert path["courseName"] == zh(r"\u6570\u636e\u7ed3\u6784")
+    assert path["estimatedDays"] == 2
+    assert_contains(content, zh(r"\u6570\u636e\u7ed3\u6784"))
+    assert_contains(content, "2")
+
+
 if __name__ == "__main__":
     tests = [
         test_fresh_start_has_no_fake_profile,
@@ -132,6 +200,10 @@ if __name__ == "__main__":
         test_low_value_background_does_not_fill_core_profile,
         test_major_background_fills_core_profile,
         test_real_dialogue_extracts_time_and_learning_levels,
+        test_fragment_background_is_profile_update,
+        test_force_generate_bypasses_profile_guard,
+        test_casual_chat_uses_existing_context,
+        test_data_structure_two_day_plan_uses_correct_course_and_duration,
     ]
     for test in tests:
         test()

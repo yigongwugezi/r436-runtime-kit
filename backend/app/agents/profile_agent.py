@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Any
 
 from app.agents.base import BaseAgent
@@ -13,12 +14,10 @@ class ProfileAgent(BaseAgent):
         "knowledge_base",
         "learning_goal",
         "cognitive_style",
-        "error_patterns",
-        "coding_ability",
+        "weak_points",
+        "programming_ability",
         "learning_progress",
-        "interest_direction",
-        "learning_rhythm",
-        "self_efficacy",
+        "interests",
     ]
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
@@ -29,7 +28,7 @@ class ProfileAgent(BaseAgent):
 
     def _build_profile(self, context: dict[str, Any]) -> dict[str, Any]:
         if self.llm_client is None:
-            return self._safe_fallback()
+            return self._profile_from_prompt(context["user_message"])
 
         try:
             content = self.llm_client.chat(
@@ -52,23 +51,87 @@ class ProfileAgent(BaseAgent):
             parsed = self._load_json(content)
             return self._normalize_profile(parsed)
         except Exception:
-            return self._safe_fallback()
+            return self._profile_from_prompt(context["user_message"])
 
-    def _safe_fallback(self) -> dict[str, Any]:
-        """Return mock profile data, or a minimal empty profile if mock is unavailable."""
-        mock_profile = self.mock_data.get("profile") if isinstance(self.mock_data, dict) else None
-        if isinstance(mock_profile, dict) and mock_profile:
-            return mock_profile
-        # Absolute last resort — minimal profile so downstream agents don't crash
+    def _profile_from_prompt(self, prompt: str) -> dict[str, Any]:
+        background = self._extract_value(prompt, "身份/专业背景")
+        target_course = self._extract_value(prompt, "目标课程/知识方向")
+        knowledge_base = self._extract_value(prompt, "已有基础")
+        weak_points = self._extract_value(prompt, "薄弱点")
+        learning_goal = self._extract_value(prompt, "学习目标")
+        preference = self._extract_value(prompt, "学习偏好")
+
+        if not background:
+            background_match = re.search(r"我是([^，。,.!?！？\n]{2,30}(?:学生|本科生|研究生|大一|大二|大三|大四))", prompt)
+            background = background_match.group(1) if background_match else ""
+        if not target_course:
+            course_match = re.search(r"想学(?:习)?([^，。,.!?！？\n]{2,24})", prompt)
+            target_course = course_match.group(1) if course_match else ""
+        if not target_course:
+            target_course = self._course_from_text(prompt)
+        if not learning_goal and "考试" in prompt:
+            learning_goal = "考试通过"
+
         return {
-            key: {
-                "label": key,
-                "value": "未提取",
-                "confidence": 0.5,
-                "source": "inferred",
-                "evidence": "fallback",
+            "major_background": self._dimension("专业背景", background),
+            "knowledge_base": self._dimension("知识基础", knowledge_base or target_course),
+            "learning_goal": self._dimension("学习目标", learning_goal or target_course),
+            "cognitive_style": self._dimension("认知风格", preference),
+            "weak_points": self._dimension("薄弱点", weak_points),
+            "programming_ability": self._dimension("编程能力", self._programming_value(prompt)),
+            "learning_progress": self._dimension(
+                "学习进度",
+                f"刚开始学习{target_course}" if target_course else "",
+            ),
+            "interests": self._dimension("兴趣偏好", target_course or preference),
+        }
+
+    def _extract_value(self, prompt: str, label: str) -> str:
+        pattern = rf"{re.escape(label)}[：:]\s*([^\n]+)"
+        match = re.search(pattern, prompt)
+        return match.group(1).strip(" -") if match else ""
+
+    def _programming_value(self, prompt: str) -> str:
+        items = []
+        for keyword in ["Python", "PYTHON", "Java", "C++", "代码", "编程"]:
+            if keyword in prompt:
+                items.append(keyword)
+        return "、".join(dict.fromkeys(items))
+
+    def _course_from_text(self, prompt: str) -> str:
+        for course in [
+            "数据结构",
+            "机器学习",
+            "人工智能导论",
+            "人工智能",
+            "深度学习",
+            "神经网络",
+            "Python",
+            "线性代数",
+            "计算机网络",
+            "操作系统",
+            "数据库",
+        ]:
+            if course in prompt:
+                return course
+        return ""
+
+    def _dimension(self, label: str, value: str) -> dict[str, Any]:
+        value = value.strip()
+        if not value:
+            return {
+                "label": label,
+                "value": "未知",
+                "confidence": 0.0,
+                "source": "unknown",
+                "evidence": "",
             }
-            for key in self.profile_dimensions
+        return {
+            "label": label,
+            "value": value,
+            "confidence": 1.0,
+            "source": "user_input",
+            "evidence": value,
         }
 
     def _profile_prompt(self, user_message: str) -> str:
@@ -91,59 +154,34 @@ class ProfileAgent(BaseAgent):
 
     def _load_json(self, content: str) -> dict[str, Any]:
         text = content.strip()
-
-        # Strip markdown code fences (handle ```json, ```JSON, ```, etc.)
         if text.startswith("```"):
-            # Find the first newline to strip the opening fence line
-            fence_end = text.find("\n")
-            if fence_end != -1:
-                text = text[fence_end + 1:]
-            # Strip closing fence
-            if text.rstrip().endswith("```"):
-                text = text.rstrip()[:-3].strip()
+            text = text.strip("`")
+            if text.startswith("json"):
+                text = text[4:].strip()
 
-        # Try to find a JSON object in the text
         start = text.find("{")
         end = text.rfind("}") + 1
         if start == -1 or end <= start:
             raise ValueError("LLM response does not contain a JSON object.")
 
-        try:
-            return json.loads(text[start:end])
-        except json.JSONDecodeError as exc:
-            # Last resort: try to fix common LLM JSON issues
-            candidate = text[start:end]
-            # Remove trailing commas before closing braces/brackets
-            import re
-            candidate = re.sub(r",\s*([}\]])", r"\1", candidate)
-            try:
-                return json.loads(candidate)
-            except json.JSONDecodeError:
-                raise ValueError(
-                    f"Failed to parse LLM JSON response: {exc}. "
-                    f"Raw snippet: {candidate[:200]}..."
-                ) from exc
+        return json.loads(text[start:end])
 
     def _normalize_profile(self, profile: dict[str, Any]) -> dict[str, Any]:
         normalized = {}
-        fallback = self.mock_data.get("profile") if isinstance(self.mock_data, dict) else {}
-        if not isinstance(fallback, dict):
-            fallback = {}
+        fallback = self.mock_data["profile"]
 
         for key in self.profile_dimensions:
             item = profile.get(key)
-            fallback_item = fallback.get(key, {}) if isinstance(fallback, dict) else {}
             if not isinstance(item, dict):
-                item = {}
-            if not isinstance(fallback_item, dict):
-                fallback_item = {}
+                normalized[key] = fallback[key]
+                continue
 
             normalized[key] = {
-                "label": item.get("label") or fallback_item.get("label", key),
-                "value": item.get("value") or fallback_item.get("value", ""),
-                "confidence": float(item.get("confidence", fallback_item.get("confidence", 0.5))),
+                "label": item.get("label") or fallback[key]["label"],
+                "value": item.get("value") or fallback[key]["value"],
+                "confidence": float(item.get("confidence", fallback[key]["confidence"])),
                 "source": item.get("source") or "llm",
-                "evidence": item.get("evidence") or fallback_item.get("evidence", ""),
+                "evidence": item.get("evidence") or fallback[key]["evidence"],
             }
 
         return normalized
