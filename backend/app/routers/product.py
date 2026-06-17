@@ -208,8 +208,22 @@ def _to_profile(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ── Resource type & source mapping ───────────────────────────────────
+
+_TYPE_MAP: dict[str, str] = {"practice": "case_study", "multimodal": "video"}
+
+_SOURCE_MAP: dict[str, str] = {"mock": "mock_fallback", "agent": "agent_generated"}
+
+
 def _resource_type(resource_type: str) -> str:
-    return "case_study" if resource_type == "practice" else resource_type
+    return _TYPE_MAP.get(resource_type, resource_type)
+
+
+def _source_label(source: str) -> str:
+    """Map internal source labels to frontend-compatible labels."""
+    if not source:
+        return "mock_fallback"
+    return _SOURCE_MAP.get(source, source)
 
 
 def _to_resource(
@@ -239,7 +253,7 @@ def _to_resource(
         "createdAt": int(time.time() * 1000),
         "bookmarked": resource_id in bookmarks,
         "studyStatus": item.get("studyStatus", "new"),
-        "source": item.get("source", "agent"),
+        "source": _source_label(item.get("source", "")),
     }
 
 
@@ -915,7 +929,7 @@ def get_resources(sessionId: str = "") -> dict[str, Any]:
         items = [
             {
                 "id": r["id"],
-                "type": r.get("type", "lecture"),
+                "type": _resource_type(r.get("type", "lecture")),
                 "title": r.get("title", "学习资源"),
                 "description": r.get("description", ""),
                 "content": r.get("content", ""),
@@ -928,10 +942,10 @@ def get_resources(sessionId: str = "") -> dict[str, Any]:
                 "codeBlocks": r.get("code_blocks"),
                 "questions": r.get("questions"),
                 "pptOutline": r.get("ppt_outline"),
-                "createdAt": int(time.time() * 1000),
+                "createdAt": int(datetime.fromisoformat(r["created_at"]).timestamp() * 1000) if r.get("created_at") else int(time.time() * 1000),
                 "bookmarked": r["id"] in bookmarks,
                 "studyStatus": r.get("study_status", "new"),
-                "source": "db",
+                "source": _source_label(r.get("source", "")),
             }
             for r in db_resources
         ]
@@ -963,7 +977,7 @@ def get_resource(resource_id: str, sessionId: str = "") -> dict[str, Any]:
         bookmarks = _get_bookmarks(session_id)
         return {"resource": {
             "id": db_match["id"],
-            "type": db_match.get("type", "lecture"),
+            "type": _resource_type(db_match.get("type", "lecture")),
             "title": db_match.get("title", "学习资源"),
             "description": db_match.get("description", ""),
             "content": db_match.get("content", ""),
@@ -976,10 +990,10 @@ def get_resource(resource_id: str, sessionId: str = "") -> dict[str, Any]:
             "codeBlocks": db_match.get("code_blocks"),
             "questions": db_match.get("questions"),
             "pptOutline": db_match.get("ppt_outline"),
-            "createdAt": int(time.time() * 1000),
+            "createdAt": int(datetime.fromisoformat(db_match["created_at"]).timestamp() * 1000) if db_match.get("created_at") else int(time.time() * 1000),
             "bookmarked": db_match["id"] in bookmarks,
             "studyStatus": db_match.get("study_status", "new"),
-            "source": "db",
+            "source": _source_label(db_match.get("source", "")),
         }}
 
     # Fall back to in-memory last_result
