@@ -19,7 +19,7 @@ from app.db.repository import (
     get_latest_learning_path,
     get_resources as repo_get_resources,
 )
-from app.services.profile_extractor import extract_profile_facts
+from app.services.profile_extractor import GRADE_PATTERNS, MAJOR_ALIASES, extract_profile_facts
 from app.utils.profile_normalizer import normalize_profile_dimensions
 
 
@@ -112,6 +112,15 @@ COURSE_STOPWORDS = {
 }
 
 
+def _estimated_path_days(stages: list[dict[str, Any]]) -> int:
+    max_day = 0
+    for stage in stages:
+        duration = str(stage.get("duration", ""))
+        for value in re.findall(r"\d+", duration):
+            max_day = max(max_day, int(value))
+    return max_day or 14
+
+
 @dataclass
 class ConversationState:
     session_id: str
@@ -120,6 +129,7 @@ class ConversationState:
     supplemental_facts: dict[str, list[str]] = field(default_factory=dict)
     last_updated_fields: list[str] = field(default_factory=list)
     last_updated_supplemental_fields: list[str] = field(default_factory=list)
+    last_conflicts: list[dict[str, str]] = field(default_factory=list)
     last_intent: dict[str, Any] | None = None
     last_result: dict[str, Any] | None = None
     updated_at: float = field(default_factory=time.time)
@@ -347,14 +357,15 @@ class ConversationStore:
 
                 # Save learning path if present
                 if result.get("learning_path"):
+                    stages = result.get("learning_path") or []
                     path_data = {
                         "id": f"path_{result.get('course_id', state.session_id)}",
                         "course_id": result.get("course_id", ""),
                         "course_name": (result.get("course") or {}).get("course_name", ""),
                         "description": result.get("diagnosis", {}).get("recommended_strategy", ""),
-                        "stages": result.get("learning_path"),
+                        "stages": stages,
                         "overallProgress": result.get("overallProgress", 0),
-                        "estimatedDays": result.get("estimatedDays", 14),
+                        "estimatedDays": result.get("estimatedDays", _estimated_path_days(stages)),
                     }
                     save_learning_path(db, state.session_id, path_data)
 
@@ -375,7 +386,7 @@ class ConversationStore:
                         "description": item.get("description", ""),
                         "content": content_text,
                         "knowledge_points": [item.get("related_stage_id", "")] if item.get("related_stage_id") else [],
-                        "tags": [content_fmt, item.get("source", "mock")],
+                        "tags": [content_fmt, item.get("source", "agent_generated")],
                         "difficulty": difficulty,
                         "estimated_minutes": estimated,
                         "format": "diagram" if content_fmt == "mermaid" else ("code" if item.get("type") == "practice" else "text"),
@@ -385,7 +396,7 @@ class ConversationStore:
                         "ppt_outline": item.get("ppt_outline"),
                         "bookmarked": item.get("bookmarked", False),
                         "study_status": item.get("study_status", "new"),
-                        "source": item.get("source", "mock"),
+                        "source": item.get("source", "agent_generated"),
                     })
             except Exception:
                 # Log but don't crash — in-memory state is already updated
@@ -404,6 +415,7 @@ class ConversationStore:
         text = message.strip()
         state.last_updated_fields = []
         state.last_updated_supplemental_fields = []
+        state.last_conflicts = []
         if not text:
             return
 
@@ -413,7 +425,19 @@ class ConversationStore:
             cleaned = self._clean_time_value(value) if key == "time_budget" else self._clean_fact_value(value)
             if not cleaned:
                 return
-            if state.facts.get(key) != cleaned:
+            old_value = state.facts.get(key, "")
+            if old_value != cleaned:
+                conflict_reason = self._fact_conflict_reason(key, old_value, cleaned)
+                if conflict_reason:
+                    state.last_conflicts.append(
+                        {
+                            "key": key,
+                            "label": PROFILE_FIELD_DEFS.get(key, {}).get("label", key),
+                            "old": old_value,
+                            "new": cleaned,
+                            "reason": conflict_reason,
+                        }
+                    )
                 state.facts[key] = cleaned
                 state.last_updated_fields.append(key)
 
@@ -604,6 +628,13 @@ class ConversationStore:
             if key in SUPPLEMENTAL_FIELD_DEFS and state.supplemental_facts.get(key)
         ]
 
+    def conflict_lines(self, state: ConversationState) -> list[str]:
+        return [
+            f"- {item['label']}：已从「{item['old']}」更新为「{item['new']}」"
+            for item in state.last_conflicts
+            if item.get("old") and item.get("new")
+        ]
+
     def profile_prompt(self, state: ConversationState, latest_message: str = "") -> str:
         known = "\n".join(self.known_lines(state)) or "- 暂无已记录画像"
         supplemental = "\n".join(self.supplemental_lines(state))
@@ -636,6 +667,27 @@ class ConversationStore:
         if len(cleaned) <= 2 and not any(hint in cleaned for hint in BACKGROUND_VALUE_HINTS):
             return False
         return any(hint in cleaned for hint in BACKGROUND_VALUE_HINTS)
+
+    def _fact_conflict_reason(self, key: str, old_value: str, new_value: str) -> str:
+        if not old_value or old_value == new_value:
+            return ""
+        if key == "background":
+            old_grade, new_grade = self._matched_grade(old_value), self._matched_grade(new_value)
+            old_major, new_major = self._matched_major(old_value), self._matched_major(new_value)
+            if old_grade and new_grade and old_grade != new_grade:
+                return "grade_changed"
+            if old_major and new_major and old_major != new_major:
+                return "major_changed"
+            return ""
+        if key in {"target_course", "time_budget"}:
+            return f"{key}_changed"
+        return ""
+
+    def _matched_grade(self, value: str) -> str:
+        return next((normalized for raw, normalized in GRADE_PATTERNS if raw in value or normalized in value), "")
+
+    def _matched_major(self, value: str) -> str:
+        return next((normalized for raw, normalized in MAJOR_ALIASES if raw in value or normalized in value), "")
 
     def _extract_knowledge_levels(self, text: str) -> tuple[list[str], list[str]]:
         strengths: list[str] = []

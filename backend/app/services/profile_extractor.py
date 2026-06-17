@@ -68,6 +68,7 @@ GRADE_PATTERNS: tuple[tuple[str, str], ...] = (
 
 MAJOR_ALIASES: tuple[tuple[str, str], ...] = (
     (SOFTWARE, SOFTWARE),
+    (zh("8f6f 4ef6"), SOFTWARE),
     (zh("8f6f 5de5"), SOFTWARE),
     (COMPUTER_SCIENCE, COMPUTER_SCIENCE),
     (zh("8ba1 79d1"), COMPUTER_SCIENCE),

@@ -305,7 +305,7 @@ def save_resource(
         ppt_outline=resource_data.get("ppt_outline") or resource_data.get("pptOutline"),
         bookmarked=resource_data.get("bookmarked", False),
         study_status=resource_data.get("study_status") or resource_data.get("studyStatus", "new"),
-        source=resource_data.get("source", "mock"),
+        source=resource_data.get("source", "agent_generated"),
     )
     existing = db.get(ResourceModel, res.id)
     if existing:

@@ -13,6 +13,7 @@ export interface LearningPath {
   overallProgress: number; // 0-100
   /** 预计完成天数 */
   estimatedDays: number;
+  source?: 'db' | 'agent' | 'agent_generated' | 'system_inferred' | 'none';
 }
 
 export interface LearningStage {

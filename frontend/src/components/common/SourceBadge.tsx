@@ -42,7 +42,7 @@ export default function SourceBadge({
   source: DataSource;
   size?: 'sm' | 'xs';
 }) {
-  const cfg = SOURCE_CONFIG[source] || SOURCE_CONFIG.mock_fallback;
+  const cfg = SOURCE_CONFIG[source] || SOURCE_CONFIG.system_inferred;
   return (
     <span
       className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border font-medium whitespace-nowrap ${

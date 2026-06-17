@@ -285,6 +285,25 @@ export default function LearningPathPage() {
     );
   }
 
+  if (!path.stages || path.stages.length === 0 || path.source === 'none') {
+    return (
+      <EmptyState
+        icon={<GitFork className="w-8 h-8" />}
+        title="暂无学习路径"
+        description="当前会话还没有真实生成的学习路径。请先在 AI 对话中补充学习目标、基础和时间安排，然后说“开始生成学习方案”。"
+        action={
+          <button
+            onClick={() => navigate('/chat')}
+            className="mt-3 px-5 py-2.5 bg-gray-900 text-white rounded-xl text-sm font-semibold hover:bg-gray-800 transition-all inline-flex items-center gap-2"
+          >
+            <Sparkles className="w-4 h-4" />
+            去对话页生成学习路径
+          </button>
+        }
+      />
+    );
+  }
+
   // 找到当前应该开始/继续的阶段和节点
   const currentStageIdx = path.stages.findIndex((s) =>
     s.nodes.some((n) => n.status === 'in_progress' || n.status === 'available')

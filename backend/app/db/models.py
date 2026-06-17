@@ -170,7 +170,7 @@ class ResourceModel(Base):
     # ── State & provenance ────────────────────────────────────────────
     bookmarked: Mapped[bool] = mapped_column(Boolean, default=False)
     study_status: Mapped[str] = mapped_column(String(16), default="new")  # new|in_progress|completed
-    source: Mapped[str] = mapped_column(String(16), default="mock")   # db|agent|mock
+    source: Mapped[str] = mapped_column(String(16), default="agent_generated")   # db|agent_generated|system_inferred
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 

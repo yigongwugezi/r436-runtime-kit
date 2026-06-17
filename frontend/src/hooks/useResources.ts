@@ -1,21 +1,17 @@
-import { useCallback, useEffect, useState, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import * as resourcesApi from '../api/resources';
-import * as knowledgeApi from '../api/knowledge';
 import { useChatStore } from '../store/chatStore';
-import { useProfileStore } from '../store/profileStore';
 import type { Resource, ResourceFilter } from '../types/resource';
 
 export function useResources() {
   const currentSessionId = useChatStore((state) => state.currentSessionId);
   const dataVersion = useChatStore((state) => state.dataVersion);
-  const profile = useProfileStore((state) => state.profile);
   const [resources, setResources] = useState<Resource[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<ResourceFilter>({});
   const lastVersionRef = useRef<number>(0);
-  const lastRegenRef = useRef<string>('');
 
   const fetchResources = useCallback(async (f?: ResourceFilter) => {
     setLoading(true);
@@ -45,7 +41,7 @@ export function useResources() {
   const toggleBookmark = useCallback(async (id: string) => {
     const res = await resourcesApi.toggleBookmark(id);
     setResources((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, bookmarked: res.bookmarked } : r)),
+      prev.map((resource) => (resource.id === id ? { ...resource, bookmarked: res.bookmarked } : resource)),
     );
   }, []);
 
@@ -53,24 +49,21 @@ export function useResources() {
     fetchResources(filter);
   }, [fetchResources, filter]);
 
-  // 对话完成后：检查课程变更，自动触发资源生成
+  // Chat generation updates dataVersion; pages should refresh only, not silently generate data.
   useEffect(() => {
     if (dataVersion <= 0 || dataVersion === lastVersionRef.current) return;
     lastVersionRef.current = dataVersion;
+    fetchResources(filter);
+  }, [dataVersion, filter, fetchResources]);
 
-    const courseDim = profile?.dimensions?.find(d => d.key === 'knowledge_base');
-    const courseKey = courseDim?.description || courseDim?.label || '';
-    if (!courseKey || courseKey === lastRegenRef.current) {
-      fetchResources(filter);
-      return;
-    }
-
-    // 课程变了 → 生成新资源
-    lastRegenRef.current = courseKey;
-    resourcesApi.generateResource({ type: 'lecture', topic: courseKey, sessionId: currentSessionId })
-      .catch(() => {})
-      .finally(() => fetchResources(filter));
-  }, [dataVersion, profile, filter, fetchResources, currentSessionId]);
-
-  return { resources, total, loading, error, filter, applyFilter, toggleBookmark, refetch: () => fetchResources(filter) };
+  return {
+    resources,
+    total,
+    loading,
+    error,
+    filter,
+    applyFilter,
+    toggleBookmark,
+    refetch: () => fetchResources(filter),
+  };
 }

@@ -1,6 +1,7 @@
 import { useCallback, useRef } from 'react';
 import { useChatStore } from '../store/chatStore';
 import { streamRequest } from '../api/client';
+import { sendMessage } from '../api/chat';
 import type { ChatMessage } from '../types/chat';
 import { uid } from '../utils/format';
 
@@ -20,7 +21,6 @@ export function useStreamChat() {
     async (content: string) => {
       if (isStreaming || !content.trim()) return;
 
-      // 添加用户消息
       const userMsg: ChatMessage = {
         id: uid(),
         role: 'user',
@@ -29,7 +29,6 @@ export function useStreamChat() {
       };
       addMessage(userMsg);
 
-      // 添加 AI 占位消息
       const aiMsg: ChatMessage = {
         id: uid(),
         role: 'assistant',
@@ -63,7 +62,6 @@ export function useStreamChat() {
             if (line.startsWith('data: ')) {
               try {
                 const payload = JSON.parse(line.slice(6));
-                // 处理进度消息
                 if (payload.stage || payload.agentName) {
                   setAgentProgress({
                     stage: payload.stage || payload.agentName,
@@ -72,17 +70,14 @@ export function useStreamChat() {
                     detail: payload.detail,
                   });
                 }
-                // 处理内容消息
                 if (payload.content) {
                   appendToLastAssistant(payload.content);
                 }
-                // 处理完成标记
                 if (payload.done) {
                   updateLastAssistant((m) => ({ ...m, streaming: false }));
                   setAgentProgress(null);
                 }
               } catch {
-                // 非 JSON 片段直接拼接
                 appendToLastAssistant(line.slice(6));
               }
             }
@@ -91,15 +86,35 @@ export function useStreamChat() {
 
         updateLastAssistant((m) => ({ ...m, streaming: false }));
         setAgentProgress(null);
-        // 对话完成，触发画像/路径/资源页面刷新
         bumpDataVersion();
       } catch (err) {
-        updateLastAssistant((m) => ({
-          ...m,
-          streaming: false,
-          error: err instanceof Error ? err.message : '请求失败',
-        }));
-        setAgentProgress(null);
+        try {
+          const fallback = await sendMessage({
+            message: content.trim(),
+            sessionId: useChatStore.getState().currentSessionId,
+          });
+          updateLastAssistant((m) => ({
+            ...m,
+            content: fallback.reply.content,
+            timestamp: fallback.reply.timestamp,
+            streaming: false,
+            error: undefined,
+          }));
+          bumpDataVersion();
+        } catch (fallbackErr) {
+          updateLastAssistant((m) => ({
+            ...m,
+            streaming: false,
+            error:
+              fallbackErr instanceof Error
+                ? fallbackErr.message
+                : err instanceof Error
+                  ? err.message
+                  : 'request failed',
+          }));
+        } finally {
+          setAgentProgress(null);
+        }
       } finally {
         setStreaming(false);
       }
