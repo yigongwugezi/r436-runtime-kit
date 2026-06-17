@@ -1,14 +1,11 @@
 import { useCallback, useEffect, useState, useRef } from 'react';
 import * as knowledgeApi from '../api/knowledge';
 import { useChatStore } from '../store/chatStore';
-import { useProfileStore } from '../store/profileStore';
 import type { LearningPath } from '../types/learningPath';
 
 export function useLearningPath() {
   const currentSessionId = useChatStore((state) => state.currentSessionId);
   const dataVersion = useChatStore((state) => state.dataVersion);
-  const bumpDataVersion = useChatStore((state) => state.bumpDataVersion);
-  const profile = useProfileStore((state) => state.profile);
   const [path, setPath] = useState<LearningPath | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -59,26 +56,13 @@ export function useLearningPath() {
 
   useEffect(() => { fetchPath(); }, [fetchPath]);
 
-  // 对话完成后：先检查是否需要重新生成，再刷新
+  // 对话完成后：直接刷新路径（后端已在对话中完成生成和持久化）
   useEffect(() => {
     if (dataVersion <= 0 || dataVersion === lastVersionRef.current) return;
     lastVersionRef.current = dataVersion;
-
-    const courseDim = profile?.dimensions?.find(d => d.key === 'knowledge_base');
-    const hasCourse = !!(courseDim?.description || courseDim?.label);
-    const profileNewer = profile && path ? profile.updatedAt > path.createdAt : false;
-
-    if (hasCourse && (!path || profileNewer)) {
-      // 有课程但路径不存在或已过时 → 自动生成
-      generatePath({}).then(() => {
-        // 生成后再获取最新数据
-        fetchPath();
-      });
-    } else {
-      // 直接刷新
-      fetchPath();
-    }
-  }, [dataVersion, profile, path, fetchPath, generatePath]);
+    // Just refresh — agents already ran and persisted results on the server side
+    fetchPath();
+  }, [dataVersion, fetchPath]);
 
   return { path, loading, error, fetchPath, generatePath, updateNode };
 }

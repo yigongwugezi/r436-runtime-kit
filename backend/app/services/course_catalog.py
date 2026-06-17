@@ -49,7 +49,10 @@ class CourseCatalog:
                 best_score = score
                 best_course = detail
 
-        return best_course or self.get_course(default)
+        # Only return a course if we actually matched — no silent fallback
+        if best_score > 0:
+            return best_course
+        return None
 
     def load_chapter(self, course_id: str, chapter_id: str) -> dict[str, Any] | None:
         course = self.get_course(course_id)
@@ -109,7 +112,9 @@ class CourseCatalog:
                 continue
             if query == normalized:
                 score += 100
-            elif query in normalized or normalized in query:
+            # Only allow substring match for longer queries (>= 4 chars)
+            # to prevent short words like "历史" from matching "发展历史"
+            elif len(query) >= 4 and (query in normalized or normalized in query):
                 score += 30
 
         token_aliases = {

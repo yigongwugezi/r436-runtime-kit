@@ -10,7 +10,13 @@ class KnowledgeAgent(BaseAgent):
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         course_id = str(context.get("course_id") or self.mock_data.get("course_id") or "ai_intro")
-        course = course_catalog.get_course(course_id) or course_catalog.get_course("ai_intro") or {}
+        # Only fall back to ai_intro if the course_id itself isn't already a catalog course;
+        # for custom/unknown courses we build the virtual context below
+        course = course_catalog.get_course(course_id)
+        if course is None and not course_id.startswith("custom_"):
+            course = course_catalog.get_course("ai_intro") or {}
+        if course is None:
+            course = {}
 
         message = str(context.get("user_message", ""))
         profile = context.get("profile", {})
@@ -25,6 +31,38 @@ class KnowledgeAgent(BaseAgent):
         ).lower()
 
         chapters = list(course.get("chapters", []))
+
+        # If no chapters (virtual/custom course), generate a generic knowledge point from the course name
+        if not chapters:
+            # Extract the actual topic name from profile or user message
+            course_name = (
+                course.get("course_name")
+                or profile.get("interests", {}).get("value", "")
+                or profile.get("learning_goal", {}).get("value", "")
+                or course_id
+            )
+            retrieved_points = [
+                {
+                    "point_id": f"{course_id}_topic_1",
+                    "chapter_id": "01",
+                    "name": str(course_name).strip(),
+                    "priority": "high",
+                    "difficulty": "medium",
+                    "prerequisites": [],
+                    "content_excerpt": f"用户自选学习主题：{course_name}",
+                }
+            ]
+            return {
+                "knowledge_context": {
+                    "course_id": course_id,
+                    "course_name": course_name,
+                    "retrieved_points": retrieved_points,
+                    "source": "user_provided_topic",
+                },
+                "agent_step": self.agent_step(),
+            }
+
+        # Normal flow: score and select chapters from the course catalog
         scored = sorted(
             ((self._score_chapter(query, chapter), chapter) for chapter in chapters),
             key=lambda item: item[0],

@@ -310,6 +310,7 @@ class ConversationStore:
         state.updated_at = time.time()
 
         if self._db_enabled:
+            db = None
             try:
                 db = self._db_session()
                 # Save profile snapshot
@@ -386,8 +387,16 @@ class ConversationStore:
                         "study_status": item.get("study_status", "new"),
                         "source": item.get("source", "mock"),
                     })
+            except Exception:
+                # Log but don't crash — in-memory state is already updated
+                import logging
+                logging.getLogger(__name__).exception(
+                    "Failed to persist result to DB for session %s. In-memory state is preserved.",
+                    session_id,
+                )
             finally:
-                db.close()
+                if db is not None:
+                    db.close()
 
     # ── Fact extraction (unchanged, pure processing logic) ─────────────
 

@@ -112,11 +112,20 @@ def _run_agents(
     """Trigger the full multi-agent pipeline via AgentService and persist results."""
     state = conversation_store.get(session_id)
     agent_message = conversation_store.profile_prompt(state, latest_message=message)
-    selected_course = course_catalog.match_course(
-        state.facts.get("target_course") or message,
-        default="ai_intro",
-    )
-    course_id = str((selected_course or {}).get("course_id") or "ai_intro")
+    user_topic = state.facts.get("target_course") or message
+    selected_course = course_catalog.match_course(user_topic)
+
+    if selected_course is None:
+        # No matching course in catalog — build a virtual course from the user's stated topic
+        selected_course = {
+            "course_id": f"custom_{abs(hash(user_topic)) % 10000:04d}",
+            "course_name": user_topic.strip(),
+            "description": f"用户自定义学习主题：{user_topic.strip()}",
+            "chapters": [],
+            "chapter_count": 0,
+        }
+
+    course_id = str(selected_course.get("course_id") or "ai_intro")
     result = ag_run_agents(
         session_id=session_id,
         user_message=agent_message,
@@ -130,7 +139,7 @@ def _run_agents(
             "chapter_count": selected_course.get("chapter_count", len(selected_course.get("chapters", []))),
         }
     _apply_state_facts_to_result(result, state, selected_course)
-    conversation_store.set_result(session_id, result)
+    # Persistence is handled by agent_service.run_agents() — no duplicate set_result here.
     return result
 
 
@@ -419,6 +428,36 @@ def _learning_plan_reply(result: dict[str, Any], intent: dict[str, Any]) -> str:
     resources = [_to_resource(item, result.get("course_id", "ai_intro"), session_id) for item in result.get("resources", [])]
     weak = "、".join(item["topic"] for item in profile["weaknesses"][:3]) or "暂无明显短板"
     resource_names = "、".join(item["title"] for item in resources[:5])
+
+    # Check if this is a custom (non-catalog) topic — no matching course in knowledge base
+    course_id = result.get("course_id", "")
+    knowledge_source = result.get("knowledge_context", {}).get("source", "")
+    is_custom_course = course_id.startswith("custom_") or knowledge_source == "user_provided_topic"
+
+    # Check if the learning path is empty (no stages) — no real data was generated
+    if not path.get("stages") or len(path.get("stages", [])) == 0:
+        return (
+            "## 学习方案生成说明\n\n"
+            "当前画像信息尚不足以生成完整的个性化学习路径。\n\n"
+            f"- 意图识别：{intent['intent']}，置信度 {intent['confidence']:.0%}\n\n"
+            "请补充你的专业背景、学习基础、薄弱点和学习目标等信息，"
+            "我会重新生成针对性更强的学习路径。\n\n"
+            "你可以直接告诉我：年级专业、已学过的课程、想学的方向、薄弱环节等。"
+        )
+
+    if is_custom_course:
+        course_name = (result.get("course") or {}).get("course_name", "你的学习主题")
+        return (
+            f"## 学习方案已生成（通用框架）\n\n"
+            f"⚠️ 当前知识库中没有「{course_name}」的课程资料，"
+            "以下为基于你画像信息生成的通用学习路径框架。\n\n"
+            f"- 意图识别：{intent['intent']}，置信度 {intent['confidence']:.0%}\n"
+            f"- 已构建 {len(profile['dimensions'])} 维学生画像\n"
+            f"- 识别的重点薄弱点：{weak}\n"
+            f"- 学习路径：{path['estimatedDays']} 天，{len(path['stages'])} 个阶段\n\n"
+            "你可以切换到「学习画像」「学习路径」和「资源库」页面查看结果。"
+        )
+
     return (
         "## 个性化学习方案已生成\n\n"
         f"- 意图识别：{intent['intent']}，置信度 {intent['confidence']:.0%}\n"

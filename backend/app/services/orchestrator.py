@@ -30,7 +30,7 @@ AGENT_OUTPUT_KEYS: dict[str, list[str]] = {
     "profile_agent": ["profile"],
     "knowledge_agent": ["knowledge_context"],
     "diagnosis_agent": ["diagnosis"],
-    "planner_agent": ["learning_path"],
+    "planner_agent": ["learning_path", "estimatedDays"],
     "resource_agent": ["resources"],
     "review_agent": ["review"],
 }
