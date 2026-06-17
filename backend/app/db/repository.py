@@ -238,6 +238,7 @@ def save_learning_path(
         session_id=session_id,
         course_id=path_data.get("course_id", ""),
         course_name=path_data.get("course_name", ""),
+        description=path_data.get("description"),
         stages=path_data.get("stages"),
         overall_progress=path_data.get("overallProgress", 0),
         estimated_days=path_data.get("estimatedDays", 14),
@@ -247,6 +248,7 @@ def save_learning_path(
     if existing:
         existing.course_id = path.course_id
         existing.course_name = path.course_name
+        existing.description = path.description
         existing.stages = path.stages
         existing.overall_progress = path.overall_progress
         existing.estimated_days = path.estimated_days

@@ -193,6 +193,10 @@ class ConversationStore:
                     result["learning_path"] = path.stages or []
                     result["course_id"] = path.course_id
                     result["course"] = {"course_id": path.course_id, "course_name": path.course_name}
+                    # Restore recommended_strategy from path description
+                    if path.description:
+                        result.setdefault("diagnosis", {})
+                        result["diagnosis"]["recommended_strategy"] = path.description
                 if db_resources:
                     result["resources"] = [
                         {
@@ -345,9 +349,10 @@ class ConversationStore:
                         "id": f"path_{result.get('course_id', state.session_id)}",
                         "course_id": result.get("course_id", ""),
                         "course_name": (result.get("course") or {}).get("course_name", ""),
+                        "description": result.get("diagnosis", {}).get("recommended_strategy", ""),
                         "stages": result.get("learning_path"),
-                        "overallProgress": 18,
-                        "estimatedDays": 14,
+                        "overallProgress": result.get("overallProgress", 0),
+                        "estimatedDays": result.get("estimatedDays", 14),
                     }
                     save_learning_path(db, state.session_id, path_data)
 

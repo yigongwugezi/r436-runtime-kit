@@ -52,13 +52,18 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
 
     # SQLite does not auto-add new columns to existing tables.
-    # Add learner_id to sessions if it was created before the LearnerModel migration.
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("ALTER TABLE sessions ADD COLUMN learner_id VARCHAR(64)"))
-            conn.commit()
-    except Exception:
-        pass  # Column already exists
+    # Add columns that were introduced in later migrations.
+    _migrations = [
+        ("sessions", "learner_id", "VARCHAR(64)"),
+        ("learning_paths", "description", "TEXT"),
+    ]
+    for table, column, col_type in _migrations:
+        try:
+            with engine.connect() as conn:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
+                conn.commit()
+        except Exception:
+            pass  # Column already exists
 
 
 def get_db():

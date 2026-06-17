@@ -144,6 +144,7 @@ def get_learning_path(session_id: str) -> dict[str, Any] | None:
             "id": path.id,
             "course_id": path.course_id,
             "course_name": path.course_name,
+            "description": path.description or "",
             "stages": path.stages or [],
             "overall_progress": path.overall_progress or 0,
             "estimated_days": path.estimated_days or 14,

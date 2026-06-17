@@ -123,6 +123,7 @@ class LearningPathModel(Base):
     )
     course_id: Mapped[str] = mapped_column(String(64), default="")
     course_name: Mapped[str] = mapped_column(String(256), default="")
+    description: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     stages: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     overall_progress: Mapped[int] = mapped_column(Integer, default=0)
     estimated_days: Mapped[int] = mapped_column(Integer, default=14)

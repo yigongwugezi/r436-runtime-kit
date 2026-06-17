@@ -314,9 +314,9 @@ def _to_learning_path(result: dict[str, Any]) -> dict[str, Any]:
         "courseName": course_name,
         "stages": stages,
         "createdAt": int(time.time() * 1000),
-        "overallProgress": 18,
-        "estimatedDays": 14,
-        "source": "agent",
+        "overallProgress": result.get("overallProgress", 18),
+        "estimatedDays": result.get("estimatedDays", 14),
+        "source": "agent_generated",
     }
 
 
@@ -1103,14 +1103,14 @@ def get_learning_path(sessionId: str = "") -> dict[str, Any]:
             "path": {
                 "id": db_path.get("id", f"path_{session_id}"),
                 "title": f"{db_path.get('course_name', '')}个性化学习路径",
-                "description": "",
+                "description": db_path.get("description", ""),
                 "courseName": db_path.get("course_name", ""),
                 "courseId": db_path.get("course_id", ""),
                 "stages": stages,
-                "createdAt": int(time.time() * 1000),
+                "createdAt": int(datetime.fromisoformat(db_path["created_at"]).timestamp() * 1000) if db_path.get("created_at") else int(time.time() * 1000),
                 "overallProgress": db_path.get("overall_progress", 0),
                 "estimatedDays": db_path.get("estimated_days", 14),
-                "source": "db",
+                "source": "agent_generated",
             }
         }
 
@@ -1135,7 +1135,6 @@ def generate_learning_path(payload: dict[str, Any]) -> dict[str, Any]:
     message = conversation_store.profile_prompt(state, latest_message="请生成学习路径")
     result = _run_agents(message, session_id=session_id)
     path = _to_learning_path(result)
-    path["source"] = "agent"
     return {"path": path}
 
 
