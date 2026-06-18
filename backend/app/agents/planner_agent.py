@@ -11,14 +11,16 @@ class PlannerAgent(BaseAgent):
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         weak_points = list(context.get("diagnosis", {}).get("weak_knowledge_points", []))
+        profile = context.get("profile", {})
+        total_days = self._infer_days(str(context.get("user_message", "")), profile)
+
         if not weak_points:
             return {
-                "learning_path": self.mock_data["learning_path"],
+                "learning_path": [],
+                "estimatedDays": total_days,
                 "agent_step": self.agent_step(),
             }
 
-        profile = context.get("profile", {})
-        total_days = self._infer_days(str(context.get("user_message", "")), profile)
         stage_count = min(4, len(weak_points), max(1, total_days))
         days_per_stage = max(1, ceil(total_days / stage_count))
 
@@ -53,19 +55,25 @@ class PlannerAgent(BaseAgent):
 
         return {
             "learning_path": learning_path,
+            "estimatedDays": total_days,
             "agent_step": self.agent_step(),
         }
 
     def _infer_days(self, message: str, profile: dict[str, Any]) -> int:
-        text = " ".join(
-            str(part)
-            for part in [
-                message,
-                profile.get("learning_goal", {}).get("value", ""),
-                profile.get("learning_progress", {}).get("value", ""),
-            ]
-        )
+        # Collect time-relevant text from the agent prompt and ALL profile dimensions,
+        # not just learning_goal / learning_progress.  This catches time_budget stored
+        # in learning_rhythm as well as free-form day counts anywhere in the profile.
+        profile_texts = [message]
+        for key in ("learning_goal", "learning_progress", "learning_rhythm",
+                     "knowledge_base", "learning_goal_knowledge", "interests"):
+            val = profile.get(key, {}).get("value", "")
+            if isinstance(val, str) and val.strip():
+                profile_texts.append(str(val))
+
+        text = " ".join(profile_texts)
         text = self._normalize_cn_number_time(text)
+
+        # --- Arabic-digit patterns (already normalised from Chinese) ---
         hour_match = re.search(r"(\d+)\s*(?:小时|h|H)", text)
         if hour_match and "每天" not in text:
             return max(1, ceil(int(hour_match.group(1)) / 24))
@@ -75,6 +83,36 @@ class PlannerAgent(BaseAgent):
         week_match = re.search(r"(\d+)\s*(?:周|星期)", text)
         if week_match:
             return max(1, min(60, int(week_match.group(1)) * 7))
+
+        # --- Compound Chinese numbers that _normalize_cn_number_time can't handle ---
+        # e.g. "十二天" (12), "二十五天" (25), "二十天" (20)
+        cn_compound_match = re.search(
+            r"([一二两三四五六七八九])?十([一二三四五六七八九])?\s*(天|日|周|星期)",
+            text,
+        )
+        if cn_compound_match:
+            tens = cn_compound_match.group(1)
+            ones = cn_compound_match.group(2)
+            unit = cn_compound_match.group(3)
+            cn_map = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+                       "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+            total = (cn_map.get(tens, 1) * 10 if tens else 10) + cn_map.get(ones, 0)
+            if unit in ("周", "星期"):
+                return max(1, min(60, total * 7))
+            return max(1, min(60, total))
+
+        # --- Simple Chinese number + time unit (fallback, already handled above normally) ---
+        cn_simple_match = re.search(
+            r"([一二两三四五六七八九])\s*(天|日|周|星期)", text
+        )
+        if cn_simple_match:
+            cn_map = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+                       "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+            total = cn_map.get(cn_simple_match.group(1), 7)
+            if cn_simple_match.group(2) in ("周", "星期"):
+                return max(1, min(60, total * 7))
+            return max(1, min(60, total))
+
         if "两周" in text or "二周" in text:
             return 14
         if "一周" in text:
@@ -82,22 +120,52 @@ class PlannerAgent(BaseAgent):
         return 14
 
     def _normalize_cn_number_time(self, text: str) -> str:
-        number_map = {
-            "半": "0",
-            "一": "1",
-            "二": "2",
-            "两": "2",
-            "三": "3",
-            "四": "4",
-            "五": "5",
-            "六": "6",
-            "七": "7",
-            "八": "8",
-            "九": "9",
-            "十": "10",
-        }
-        for cn, digit in number_map.items():
-            text = re.sub(rf"{cn}\s*(天|日|周|星期|个月|小时|分钟)", rf"{digit}\1", text)
+        cn_all = "一二两三四五六七八九"
+        cn_digits = {"一": "1", "二": "2", "两": "2", "三": "3", "四": "4",
+                      "五": "5", "六": "6", "七": "7", "八": "8", "九": "9"}
+        time_units = r"(?:天|日|周|星期|个小时|小时|个月|分钟)"
+        tu = time_units  # shorthand
+
+        # Order matters: most-specific patterns first to avoid partial matches.
+        #
+        # 1. Y十Z → YZ  (e.g. 二十五天 → 25天) — Chinese 21-99
+        for tens_char, tens_val in cn_digits.items():
+            for ones_char, ones_val in cn_digits.items():
+                text = re.sub(
+                    rf"{tens_char}十{ones_char}\s*({tu})",
+                    rf"{tens_val}{ones_val}\1",
+                    text,
+                )
+
+        # 2. Y十 → Y0  (e.g. 二十天 → 20天, 三十天 → 30天)
+        #    Must run AFTER Y十Z so "二十五" isn't partially consumed.
+        for tens_char, tens_val in cn_digits.items():
+            text = re.sub(
+                rf"{tens_char}十\s*({tu})",
+                rf"{tens_val}0\1",
+                text,
+            )
+
+        # 3. 十X → 1X  (e.g. 十二天 → 12天) — Chinese 11-19
+        #    Negative lookbehind: NOT preceded by another CN digit (prevents
+        #    matching "十五" inside "二十五").
+        for ones_char, ones_val in cn_digits.items():
+            text = re.sub(
+                rf"(?<![{cn_all}])十{ones_char}\s*({tu})",
+                rf"1{ones_val}\1",
+                text,
+            )
+
+        # 4. 十 → 10  (bare 十天 → 10天; negative lookbehind prevents matching
+        #    "十" inside "二十" or "十二")
+        text = re.sub(rf"(?<![{cn_all}])十\s*({tu})", rf"10\1", text)
+
+        # 5. Simple single-digit Chinese numbers (三天 → 3天, 七天 → 7天)
+        for cn, digit in cn_digits.items():
+            text = re.sub(rf"{cn}\s*({tu})", rf"{digit}\1", text)
+        # 半
+        text = re.sub(rf"半\s*({tu})", rf"0\1", text)
+
         return text
 
     def _stage_title(self, index: int, point_name: str) -> str:

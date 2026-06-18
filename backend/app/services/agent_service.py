@@ -60,14 +60,18 @@ def run_agents(
     # Build enriched prompt from conversation state
     agent_message = conversation_store.profile_prompt(state, latest_message=user_message)
 
-    # Match course
-    selected_course = course_catalog.match_course(
-        state.facts.get("target_course") or user_message,
-        default="ai_intro",
-    )
-    resolved_course_id = course_id or str(
-        (selected_course or {}).get("course_id") or "ai_intro"
-    )
+    # Match course — only if caller hasn't already supplied one
+    selected_course = None
+    if course_id and course_id.startswith("custom_"):
+        # Caller passed a virtual course — use it directly, don't re-match
+        resolved_course_id = course_id
+    else:
+        selected_course = course_catalog.match_course(
+            state.facts.get("target_course") or user_message,
+        )
+        resolved_course_id = course_id or str(
+            (selected_course or {}).get("course_id") or "ai_intro"
+        )
 
     # Run orchestrator
     orchestrator = AgentOrchestrator()
@@ -181,7 +185,7 @@ def get_resources(session_id: str) -> list[dict[str, Any]]:
                 "ppt_outline": r.ppt_outline,
                 "bookmarked": r.bookmarked or False,
                 "study_status": r.study_status or "new",
-                "source": r.source or "mock",
+                "source": r.source or "system_inferred",
                 "created_at": r.created_at.isoformat() if r.created_at else None,
                 "updated_at": r.updated_at.isoformat() if r.updated_at else None,
             }

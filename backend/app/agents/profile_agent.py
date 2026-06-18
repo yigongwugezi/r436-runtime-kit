@@ -168,20 +168,26 @@ class ProfileAgent(BaseAgent):
 
     def _normalize_profile(self, profile: dict[str, Any]) -> dict[str, Any]:
         normalized = {}
-        fallback = self.mock_data["profile"]
 
         for key in self.profile_dimensions:
             item = profile.get(key)
-            if not isinstance(item, dict):
-                normalized[key] = fallback[key]
+            if not isinstance(item, dict) or not str(item.get("value", "")).strip():
+                # Missing or empty dimension — use a neutral sentinel, never mock data
+                normalized[key] = {
+                    "label": key,
+                    "value": "未知",
+                    "confidence": 0.0,
+                    "source": "unknown",
+                    "evidence": "",
+                }
                 continue
 
             normalized[key] = {
-                "label": item.get("label") or fallback[key]["label"],
-                "value": item.get("value") or fallback[key]["value"],
-                "confidence": float(item.get("confidence", fallback[key]["confidence"])),
-                "source": item.get("source") or "llm",
-                "evidence": item.get("evidence") or fallback[key]["evidence"],
+                "label": item.get("label", key),
+                "value": str(item.get("value", "")),
+                "confidence": float(item.get("confidence", 0.5)),
+                "source": item.get("source", "llm"),
+                "evidence": str(item.get("evidence", "")),
             }
 
         return normalized

@@ -112,11 +112,20 @@ def _run_agents(
     """Trigger the full multi-agent pipeline via AgentService and persist results."""
     state = conversation_store.get(session_id)
     agent_message = conversation_store.profile_prompt(state, latest_message=message)
-    selected_course = course_catalog.match_course(
-        state.facts.get("target_course") or message,
-        default="ai_intro",
-    )
-    course_id = str((selected_course or {}).get("course_id") or "ai_intro")
+    user_topic = state.facts.get("target_course") or message
+    selected_course = course_catalog.match_course(user_topic)
+
+    if selected_course is None:
+        # No matching course in catalog — build a virtual course from the user's stated topic
+        selected_course = {
+            "course_id": f"custom_{abs(hash(user_topic)) % 10000:04d}",
+            "course_name": user_topic.strip(),
+            "description": f"用户自定义学习主题：{user_topic.strip()}",
+            "chapters": [],
+            "chapter_count": 0,
+        }
+
+    course_id = str(selected_course.get("course_id") or "ai_intro")
     result = ag_run_agents(
         session_id=session_id,
         user_message=agent_message,
@@ -130,7 +139,7 @@ def _run_agents(
             "chapter_count": selected_course.get("chapter_count", len(selected_course.get("chapters", []))),
         }
     _apply_state_facts_to_result(result, state, selected_course)
-    conversation_store.set_result(session_id, result)
+    # Persistence is handled by agent_service.run_agents() — no duplicate set_result here.
     return result
 
 
@@ -198,7 +207,7 @@ def _to_profile(result: dict[str, Any]) -> dict[str, Any]:
             "topic": point.get("name", "待补齐知识点"),
             "mastery": 42 if point.get("priority") == "high" else 58,
             "priority": 9 if point.get("priority") == "high" else 6,
-            "suggestedResources": ["res_lecture_001", "res_quiz_001"],
+            "suggestedResources": [],
         }
         for point in weak_points
     ]
@@ -221,6 +230,8 @@ def _to_profile(result: dict[str, Any]) -> dict[str, Any]:
         finally:
             db.close()
 
+    tracker_summary = learning_tracker.summary(result.get("session_id", ""))
+
     return {
         "id": result.get("session_id", ""),
         "learnerId": learner_id,
@@ -236,11 +247,11 @@ def _to_profile(result: dict[str, Any]) -> dict[str, Any]:
             "explainStyle": "diagram",
         },
         "history": {
-            "totalStudyMinutes": learning_tracker.summary(result.get("session_id", ""))["totalStudyMinutes"],
-            "completedTopics": [],
-            "quizAccuracy": 76,
-            "streak": 3,
-            "lastStudyDate": int(time.time() * 1000),
+            "totalStudyMinutes": tracker_summary.get("totalStudyMinutes", 0),
+            "completedTopics": tracker_summary.get("completedTopics", []),
+            "quizAccuracy": tracker_summary.get("quizAccuracy"),
+            "streak": tracker_summary.get("streak", 0),
+            "lastStudyDate": tracker_summary.get("lastStudyDate", 0),
         },
     }
 
@@ -249,7 +260,7 @@ def _to_profile(result: dict[str, Any]) -> dict[str, Any]:
 
 _TYPE_MAP: dict[str, str] = {"practice": "case_study", "multimodal": "video"}
 
-_SOURCE_MAP: dict[str, str] = {"mock": "mock_fallback", "agent": "agent_generated"}
+_SOURCE_MAP: dict[str, str] = {"mock": "system_inferred", "agent": "agent_generated"}
 
 
 def _resource_type(resource_type: str) -> str:
@@ -259,7 +270,7 @@ def _resource_type(resource_type: str) -> str:
 def _source_label(source: str) -> str:
     """Map internal source labels to frontend-compatible labels."""
     if not source:
-        return "mock_fallback"
+        return "system_inferred"
     return _SOURCE_MAP.get(source, source)
 
 
@@ -279,7 +290,7 @@ def _to_resource(
         "description": item.get("description", ""),
         "content": content,
         "knowledgePoints": [item.get("related_stage_id", course_id)],
-        "tags": [content_fmt, item.get("source", "mock")],
+        "tags": [content_fmt, item.get("source", "agent_generated")],
         "difficulty": item.get("difficulty", "easy"),
         "estimatedMinutes": item.get("estimatedMinutes", 20),
         "format": "diagram" if content_fmt == "mermaid" else ("code" if item.get("type") == "practice" else "text"),
@@ -362,8 +373,8 @@ def _to_learning_path(result: dict[str, Any]) -> dict[str, Any]:
         "courseName": course_name,
         "stages": stages,
         "createdAt": int(time.time() * 1000),
-        "overallProgress": result.get("overallProgress", 18),
-        "estimatedDays": result.get("estimatedDays", 14),
+        "overallProgress": result.get("overallProgress", 0),
+        "estimatedDays": result.get("estimatedDays", estimated_days),
         "source": "agent_generated",
     }
 
@@ -419,6 +430,36 @@ def _learning_plan_reply(result: dict[str, Any], intent: dict[str, Any]) -> str:
     resources = [_to_resource(item, result.get("course_id", "ai_intro"), session_id) for item in result.get("resources", [])]
     weak = "、".join(item["topic"] for item in profile["weaknesses"][:3]) or "暂无明显短板"
     resource_names = "、".join(item["title"] for item in resources[:5])
+
+    # Check if this is a custom (non-catalog) topic — no matching course in knowledge base
+    course_id = result.get("course_id", "")
+    knowledge_source = result.get("knowledge_context", {}).get("source", "")
+    is_custom_course = course_id.startswith("custom_") or knowledge_source == "user_provided_topic"
+
+    # Check if the learning path is empty (no stages) — no real data was generated
+    if not path.get("stages") or len(path.get("stages", [])) == 0:
+        return (
+            "## 学习方案生成说明\n\n"
+            "当前画像信息尚不足以生成完整的个性化学习路径。\n\n"
+            f"- 意图识别：{intent['intent']}，置信度 {intent['confidence']:.0%}\n\n"
+            "请补充你的专业背景、学习基础、薄弱点和学习目标等信息，"
+            "我会重新生成针对性更强的学习路径。\n\n"
+            "你可以直接告诉我：年级专业、已学过的课程、想学的方向、薄弱环节等。"
+        )
+
+    if is_custom_course:
+        course_name = (result.get("course") or {}).get("course_name", "你的学习主题")
+        return (
+            f"## 学习方案已生成（通用框架）\n\n"
+            f"⚠️ 当前知识库中没有「{course_name}」的课程资料，"
+            "以下为基于你画像信息生成的通用学习路径框架。\n\n"
+            f"- 意图识别：{intent['intent']}，置信度 {intent['confidence']:.0%}\n"
+            f"- 已构建 {len(profile['dimensions'])} 维学生画像\n"
+            f"- 识别的重点薄弱点：{weak}\n"
+            f"- 学习路径：{path['estimatedDays']} 天，{len(path['stages'])} 个阶段\n\n"
+            "你可以切换到「学习画像」「学习路径」和「资源库」页面查看结果。"
+        )
+
     return (
         "## 个性化学习方案已生成\n\n"
         f"- 意图识别：{intent['intent']}，置信度 {intent['confidence']:.0%}\n"
@@ -551,14 +592,16 @@ def _profile_update_reply(session_id: str) -> str:
     known, missing = _format_known_and_missing(session_id)
     updated = "\n".join(conversation_store.updated_lines(state))
     supplemental_updated = "\n".join(conversation_store.updated_supplemental_lines(state))
+    conflicts = "\n".join(conversation_store.conflict_lines(state))
     update_text = "\n".join(part for part in [updated, supplemental_updated] if part) or "- 已记录你的补充信息"
     missing_questions = "\n".join(f"- {question}" for question in conversation_store.next_questions(state, limit=2))
     readiness = conversation_store.readiness(state)
+    conflict_notice = f"\n\n检测到和之前画像不一致的信息，已按你最新说法更新：\n{conflicts}" if conflicts else ""
 
     if readiness["readyToPlan"]:
         return (
             "收到，我已经把这条信息更新进你的学习画像了。\n\n"
-            f"本次更新：\n{update_text}\n\n"
+            f"本次更新：\n{update_text}{conflict_notice}\n\n"
             f"{_readiness_line(session_id)}，已经可以生成第一版学习方案。\n\n"
             f"当前画像信息：\n{known}\n\n"
             "你可以继续补充薄弱点、学习时间或资源偏好；也可以直接说「开始生成学习方案」，我会启动多智能体生成学习路径和资源。"
@@ -567,14 +610,14 @@ def _profile_update_reply(session_id: str) -> str:
     if not updated and supplemental_updated:
         return (
             "收到，这条信息我会作为补充背景保留，但它还不足以决定学习路径。\n\n"
-            f"本次记录：\n{supplemental_updated}\n\n"
+            f"本次记录：\n{supplemental_updated}{conflict_notice}\n\n"
             f"{_readiness_line(session_id)}\n\n"
             f"为了真正生成个性化学习方案，接下来更需要补充：\n{missing_questions}"
         )
 
     return (
         "收到，我已经把这条信息记进你的学习画像了。\n\n"
-        f"本次更新：\n{update_text}\n\n"
+        f"本次更新：\n{update_text}{conflict_notice}\n\n"
         f"{_readiness_line(session_id)}\n\n当前已记录：\n{known or '- 暂时还没有稳定画像信息'}\n\n"
         f"为了更准确地规划，接下来建议你补充：\n{missing_questions}"
     )
@@ -1173,6 +1216,8 @@ def get_learning_path(sessionId: str = "") -> dict[str, Any]:
             stages = _raw_stages_to_nodes(raw_stages)
         else:
             stages = []
+        if not stages:
+            return {"path": _empty_learning_path(session_id)}
         return {
             "path": {
                 "id": db_path.get("id", f"path_{session_id}"),
@@ -1182,7 +1227,7 @@ def get_learning_path(sessionId: str = "") -> dict[str, Any]:
                 "courseId": db_path.get("course_id", ""),
                 "stages": stages,
                 "createdAt": int(datetime.fromisoformat(db_path["created_at"]).timestamp() * 1000) if db_path.get("created_at") else int(time.time() * 1000),
-                "overallProgress": db_path.get("overall_progress", 0),
+                "overallProgress": 0,
                 "estimatedDays": db_path.get("estimated_days", 14),
                 "source": "agent_generated",
             }
@@ -1192,6 +1237,8 @@ def get_learning_path(sessionId: str = "") -> dict[str, Any]:
     state = conversation_store.get(session_id)
     if state.last_result:
         path = _to_learning_path(state.last_result)
+        if not path.get("stages"):
+            return {"path": _empty_learning_path(session_id)}
         path["source"] = "agent"
         return {"path": path}
 

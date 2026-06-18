@@ -51,19 +51,51 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
 
+    if "sqlite" not in _db_url:
+        return
+
+    def add_column_if_missing(table: str, column: str, definition: str) -> None:
+        with engine.connect() as conn:
+            existing = {
+                row[1]
+                for row in conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+            }
+            if column not in existing:
+                try:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {definition}"))
+                    conn.commit()
+                except Exception:
+                    # Existing local SQLite files may already contain the column
+                    # while reporting stale PRAGMA metadata on a reused connection.
+                    conn.rollback()
+
     # SQLite does not auto-add new columns to existing tables.
-    # Add columns that were introduced in later migrations.
-    _migrations = [
-        ("sessions", "learner_id", "VARCHAR(64)"),
-        ("learning_paths", "description", "TEXT"),
-    ]
-    for table, column, col_type in _migrations:
-        try:
-            with engine.connect() as conn:
-                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
-                conn.commit()
-        except Exception:
-            pass  # Column already exists
+    migrations = {
+        "sessions": {
+            "learner_id": "VARCHAR(64)",
+        },
+        "learning_paths": {
+            "description": "TEXT",
+        },
+        "resources": {
+            "knowledge_points": "JSON",
+            "tags": "JSON",
+            "difficulty": "VARCHAR(16) DEFAULT 'easy'",
+            "estimated_minutes": "INTEGER DEFAULT 20",
+            "format": "VARCHAR(16) DEFAULT 'text'",
+            "mermaid_def": "TEXT",
+            "code_blocks": "JSON",
+            "questions": "JSON",
+            "ppt_outline": "JSON",
+            "bookmarked": "BOOLEAN DEFAULT 0",
+            "study_status": "VARCHAR(16) DEFAULT 'new'",
+            "source": "VARCHAR(16) DEFAULT 'agent_generated'",
+            "updated_at": "DATETIME",
+        },
+    }
+    for table, columns in migrations.items():
+        for column, definition in columns.items():
+            add_column_if_missing(table, column, definition)
 
 
 # Keep direct route imports and test scripts usable even when FastAPI lifespan

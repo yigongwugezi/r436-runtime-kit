@@ -15,7 +15,7 @@ class ResourceAgent(BaseAgent):
 
         if not path or not points:
             return {
-                "resources": self.mock_data["resources"],
+                "resources": [],
                 "agent_step": self.agent_step(),
             }
 

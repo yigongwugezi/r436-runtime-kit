@@ -261,11 +261,11 @@ export default function ProfilePage() {
               </span>
               <span className="flex items-center gap-1">
                 <TrendingUp className="w-3.5 h-3.5" />
-                正确率 {profile.history.quizAccuracy}%
+                {profile.history.quizAccuracy == null ? '暂无正确率' : `正确率 ${profile.history.quizAccuracy}%`}
               </span>
               <span className="flex items-center gap-1">
                 <Zap className="w-3.5 h-3.5" />
-                连续 {profile.history.streak} 天
+                {profile.history.streak > 0 ? `连续 ${profile.history.streak} 天` : '暂无连续记录'}
               </span>
             </div>
           </div>

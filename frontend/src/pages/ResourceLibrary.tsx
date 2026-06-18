@@ -124,7 +124,7 @@ function ResourceCard({ resource, onClick }: { resource: Resource; onClick: () =
                 <BookmarkCheck className="w-3 h-3" />
               </span>
             )}
-            <SourceBadge source={resource.source || 'mock_fallback'} size="xs" />
+            <SourceBadge source={resource.source || 'system_inferred'} size="xs" />
             <span className="flex items-center gap-0.5 text-brand-500 opacity-0 group-hover:opacity-100 transition-opacity">
               查看详情 <ChevronRight className="w-3 h-3" />
             </span>
@@ -188,7 +188,7 @@ function FilterBar({
         </div>
         <div className="flex items-center gap-1.5">
           <span className="text-[10px] text-gray-400 flex-shrink-0">来源：</span>
-          {([undefined, 'agent_generated', 'mock_fallback'] as (DataSource | undefined)[]).map((s) => (
+          {([undefined, 'agent_generated', 'system_inferred', 'user_input'] as (DataSource | undefined)[]).map((s) => (
             <button
               key={s || 'all-src'}
               onClick={() => onSelectSource(s)}
@@ -198,7 +198,7 @@ function FilterBar({
                   : 'bg-gray-50 text-gray-500 hover:bg-gray-100'
               }`}
             >
-              {s ? (s === 'agent_generated' ? '智能体生成' : '示例数据') : '不限'}
+              {s ? (s === 'agent_generated' ? '智能体生成' : s === 'system_inferred' ? '系统推断' : '用户输入') : '不限'}
             </button>
           ))}
         </div>
@@ -606,7 +606,7 @@ export default function ResourceLibrary() {
               </span>
               <span className="text-xs text-gray-400">· {formatDuration(selected.estimatedMinutes)}</span>
               <span className="text-xs text-gray-400">· {timeAgo(selected.createdAt)}</span>
-              <SourceBadge source={selected.source || 'mock_fallback'} size="sm" />
+              <SourceBadge source={selected.source || 'system_inferred'} size="sm" />
               {selected.studyStatus === 'completed' && (
                 <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-green-50 text-green-600 border border-green-200">
                   ✅ 已完成
@@ -628,15 +628,6 @@ export default function ResourceLibrary() {
               </div>
             )}
 
-            {/* Mock 数据标记 */}
-            {(selected.source === 'mock_fallback' || !selected.source) && (
-              <div className="p-3 bg-gray-50 border border-gray-200 rounded-xl">
-                <p className="text-xs text-gray-500 font-medium mb-0.5">⚠️ 示例数据</p>
-                <p className="text-[10px] text-gray-400">
-                  此资源为预置示例，非 AI 实时生成。在 AI 对话中说出"开始生成学习方案"可获得真实智能体生成的个性化资源。
-                </p>
-              </div>
-            )}
 
             {/* 知识点标签 */}
             <div className="flex flex-wrap gap-1.5">
@@ -772,7 +763,7 @@ export default function ResourceLibrary() {
       <div className="text-center py-6 mt-6 border-t border-gray-50">
         <div className="flex items-center justify-center gap-3 mb-2">
           <SourceBadge source="agent_generated" size="xs" />
-          <SourceBadge source="mock_fallback" size="xs" />
+          <SourceBadge source="system_inferred" size="xs" />
         </div>
         <p className="text-xs text-gray-400">
           {dataVersion > 0 ? '已同步最新对话数据' : '等待新对话生成资源'} · 支持按来源筛选真实数据

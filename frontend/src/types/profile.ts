@@ -74,7 +74,7 @@ export type DifficultyLevel = 'beginner' | 'intermediate' | 'advanced';
 export interface StudyHistory {
   totalStudyMinutes: number;
   completedTopics: string[];
-  quizAccuracy: number;     // 0-100
+  quizAccuracy: number | null;     // 0-100, null when no quiz events exist
   streak: number;            // 连续学习天数
   lastStudyDate: number;
 }
