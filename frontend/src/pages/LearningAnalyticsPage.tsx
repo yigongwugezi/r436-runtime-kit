@@ -103,7 +103,24 @@ export default function LearningAnalyticsPage() {
       lastSubjectRef.current = subjectId;
       fetchAnalytics();
     }
+    // 无科目时立即结束加载
+    if (!subjectId) {
+      setLoading(false);
+      setError(null);
+      setAnalytics(null);
+    }
   }, [subjectId, fetchAnalytics]);
+
+  // 无科目
+  if (!subjectId) {
+    return (
+      <EmptyState
+        icon={<TrendingUp className="w-8 h-8" />}
+        title="请先选择科目"
+        description="在左侧边栏或个人中心选择一个科目后查看学习分析"
+      />
+    );
+  }
 
   // 空状态
   if (!loading && !error && analytics && analytics.eventCount === 0) {

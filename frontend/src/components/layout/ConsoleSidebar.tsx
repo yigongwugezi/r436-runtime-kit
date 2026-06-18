@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useChatStore } from '../../store/chatStore';
 import { useSubjectStore } from '../../store/subjectStore';
 import { getCurrentLearner, logoutLearner } from '../../pages/LoginPage';
+import SettingsModal from '../common/SettingsModal';
 import {
   Brain, MessageSquare, Library, GitFork, User, Home, TrendingUp,
   LogOut, ChevronLeft, ChevronRight, Edit3, Check, X,
@@ -45,6 +46,7 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
   const [nameInput, setNameInput] = useState('');
   const [profileOpen, setProfileOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const profileRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -88,8 +90,12 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
         </button>
         <div className="w-8 border-t border-gray-800/30 my-1" />
         <button onClick={() => navigate('/resources')}
-          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/resources' || location.pathname === '/path' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}>
+          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/resources' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}>
           <Library className="w-4.5 h-4.5" />
+        </button>
+        <button onClick={() => navigate('/path')}
+          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/path' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}>
+          <GitFork className="w-4.5 h-4.5" />
         </button>
         <button onClick={() => navigate('/chat')}
           className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/chat' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}>
@@ -103,6 +109,11 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
           className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/analytics' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}>
           <TrendingUp className="w-4.5 h-4.5" />
         </button>
+        <div className="w-8 border-t border-gray-800/30 my-1" />
+        <button onClick={() => setSettingsOpen(true)}
+          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all text-gray-500 hover:text-gray-300 hover:bg-gray-800`}>
+          <Settings className="w-4.5 h-4.5" />
+        </button>
         <div className="flex-1" />
         <button onClick={onToggle} className="w-9 h-9 rounded-xl flex items-center justify-center text-gray-500 hover:text-gray-300 hover:bg-gray-800">
           <ChevronRight className="w-4 h-4" />
@@ -112,6 +123,7 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
   }
 
   return (
+    <>
     <div className="fixed left-0 top-0 bottom-0 z-50 w-72 bg-gray-900 border-r border-gray-800 flex flex-col">
       {/* ===== Logo + 折叠 ===== */}
       <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
@@ -256,7 +268,10 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
       <div className="flex items-center justify-between px-3 py-2 border-t border-gray-800">
         <div className="flex items-center gap-1">
           <IconBtn icon={Gift} title="购买" />
-          <IconBtn icon={Settings} title="设置" />
+          <button onClick={() => setSettingsOpen(true)}
+            className="w-7 h-7 rounded-lg bg-gray-800/50 flex items-center justify-center text-gray-500 hover:text-gray-200 hover:bg-gray-700 transition-all" title="设置">
+            <Settings className="w-3.5 h-3.5" />
+          </button>
           <IconBtn icon={GraduationCap} title="新手教学" />
           <IconBtn icon={HelpCircle} title="问题与帮助" />
         </div>
@@ -276,7 +291,7 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
               </div>
               <MenuItem icon={User} label="完善资料" onClick={() => { navigate('/profile'); setProfileOpen(false); }} />
               <MenuItem icon={Gift} label="套餐购买" />
-              <MenuItem icon={Settings} label="设置" />
+              <MenuItem icon={Settings} label="设置" onClick={() => { setSettingsOpen(true); setProfileOpen(false); }} />
               <MenuItem icon={Share2} label="邀请好友" />
               <MenuItem icon={LogOut} label="切换账号" onClick={() => { logoutLearner(); useChatStore.getState().newSession(); window.location.href = '/login'; }} />
 
@@ -304,6 +319,9 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
         </div>
       </div>
     </div>
+
+    <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+    </>
   );
 }
 

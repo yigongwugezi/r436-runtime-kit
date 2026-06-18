@@ -1,10 +1,10 @@
-import { useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useCallback, useEffect } from 'react';
+import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import {
   Search, Filter, BookOpen, Brain, Code, FileText, Lightbulb,
   Play, Presentation, Clock, Star, ChevronRight, BookmarkPlus,
   BookmarkCheck, CheckCircle2, MessageSquare, X, Send, Sparkles,
-  HelpCircle, Check, XCircle, Wrench, RefreshCw, AlertCircle,
+  HelpCircle, Check, XCircle, RefreshCw, AlertCircle,
 } from 'lucide-react';
 import { useResources } from '../hooks/useResources';
 import { useChatStore } from '../store/chatStore';
@@ -456,6 +456,7 @@ function QuizAnswerer({ questions, resourceId }: {
  * =================================================================== */
 export default function ResourceLibrary() {
   const navigate = useNavigate();
+  const params = useParams<{ id: string }>();
   const { resources, total, loading, error, applyFilter, toggleBookmark, refetch } = useResources();
   const dataVersion = useChatStore((state) => state.dataVersion);
   const subjectId = useSubjectStore((s) => s.activeSubject?.id);
@@ -468,6 +469,7 @@ export default function ResourceLibrary() {
   const [activeSource, setActiveSource] = useState<DataSource | undefined>();
   const [showFeedback, setShowFeedback] = useState(false);
   const [showThanks, setShowThanks] = useState(false);
+  const [prevResourceIds, setPrevResourceIds] = useState<string>('');
 
   // 收藏切换
   const handleBookmark = useCallback(async (id: string) => {
@@ -500,7 +502,15 @@ export default function ResourceLibrary() {
     });
   }, []);
 
-  // 获取 refetch 方法
+  // 当资源列表加载完成且 URL 有 :id 参数时自动打开详情
+  useEffect(() => {
+    if (!params.id || loading || resources.length === 0) return;
+    const ids = resources.map(r => r.id).join(',');
+    if (ids === prevResourceIds) return;
+    setPrevResourceIds(ids);
+    const found = resources.find(r => r.id === params.id);
+    if (found) openDetail(found);
+  }, [params.id, resources, loading, openDetail, prevResourceIds]);
 
 
   return (
@@ -533,7 +543,7 @@ export default function ResourceLibrary() {
           onSelectDifficulty={(d) => { setActiveDifficulty(d); applyFilter({ difficulty: d }); }}
           activeDifficulty={activeDifficulty}
           dataSource={activeSource}
-          onSelectSource={(s) => { setActiveSource(s); }}
+          onSelectSource={(s) => { setActiveSource(s); applyFilter({ source: s }); }}
         />
       </div>
 

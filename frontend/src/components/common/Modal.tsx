@@ -7,9 +7,10 @@ interface ModalProps {
   title?: string;
   children: React.ReactNode;
   wide?: boolean;
+  xwide?: boolean;
 }
 
-export default function Modal({ open, onClose, title, children, wide }: ModalProps) {
+export default function Modal({ open, onClose, title, children, wide, xwide }: ModalProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -32,12 +33,12 @@ export default function Modal({ open, onClose, title, children, wide }: ModalPro
   return (
     <div
       ref={overlayRef}
-      className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm"
+      className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/40 backdrop-blur-sm"
       onClick={(e) => { if (e.target === overlayRef.current) onClose(); }}
     >
       <div
         className={`bg-white rounded-2xl shadow-xl w-full max-h-[90vh] overflow-y-auto animate-fade-in-up ${
-          wide ? 'max-w-3xl' : 'max-w-lg'
+          xwide ? 'max-w-6xl' : wide ? 'max-w-3xl' : 'max-w-lg'
         }`}
       >
         {title && (

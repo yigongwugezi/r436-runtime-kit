@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Brain, Sparkles, User, ArrowRight, Check, LogOut, Trash2, Plus, Bug } from 'lucide-react';
-import DebugPanel from '../components/common/DebugPanel';
+import { Brain, Sparkles, User, ArrowRight, Check, Trash2, Plus } from 'lucide-react';
 
 /* ===================================================================
  * 多学习者管理
@@ -326,7 +325,6 @@ export default function LoginPage() {
           学习数据保存在本地 · 切换学习者自动切换 session
         </p>
       </div>
-      <DebugPanel />
     </div>
   );
 }

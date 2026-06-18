@@ -14,9 +14,12 @@ export function useResources() {
   const [filter, setFilter] = useState<ResourceFilter>({});
   const lastSubjectRef = useRef<string | undefined>(undefined);
   const lastVersionRef = useRef<number>(0);
+  const fetchingRef = useRef(false);
 
-  const fetchResources = useCallback(async (f?: ResourceFilter) => {
+  const doFetch = useCallback(async (f: ResourceFilter) => {
     if (!subjectId) return;
+    if (fetchingRef.current) return; // 防止并发请求
+    fetchingRef.current = true;
     setLoading(true);
     setError(null);
     try {
@@ -29,16 +32,38 @@ export function useResources() {
       setError('资源加载失败，请确认后端已启动');
     } finally {
       setLoading(false);
+      fetchingRef.current = false;
     }
   }, [subjectId]);
 
+  // 科目切换 → 重置筛选并重新加载
+  useEffect(() => {
+    if (subjectId && lastSubjectRef.current !== subjectId) {
+      lastSubjectRef.current = subjectId;
+      setFilter({});
+      doFetch({});
+    }
+  }, [subjectId, doFetch]);
+
+  // 对话完成后自动刷新（使用当前 filter）
+  useEffect(() => {
+    if (dataVersion <= 0 || dataVersion === lastVersionRef.current) return;
+    lastVersionRef.current = dataVersion;
+    setFilter(prev => {
+      doFetch(prev);
+      return prev;
+    });
+  }, [dataVersion, doFetch]);
+
   const applyFilter = useCallback(
     (updates: Partial<ResourceFilter>) => {
-      const next = { ...filter, ...updates };
-      setFilter(next);
-      fetchResources(next);
+      setFilter(prev => {
+        const next = { ...prev, ...updates };
+        doFetch(next);
+        return next;
+      });
     },
-    [filter, fetchResources],
+    [doFetch],
   );
 
   const toggleBookmark = useCallback(async (id: string) => {
@@ -48,22 +73,6 @@ export function useResources() {
     );
   }, []);
 
-  // 科目切换时重新获取资源
-  useEffect(() => {
-    if (subjectId && lastSubjectRef.current !== subjectId) {
-      lastSubjectRef.current = subjectId;
-      setFilter({});
-      fetchResources({});
-    }
-  }, [subjectId, fetchResources]);
-
-  // 对话完成后自动刷新资源
-  useEffect(() => {
-    if (dataVersion <= 0 || dataVersion === lastVersionRef.current) return;
-    lastVersionRef.current = dataVersion;
-    fetchResources(filter);
-  }, [dataVersion, filter, fetchResources]);
-
   return {
     resources,
     total,
@@ -72,6 +81,6 @@ export function useResources() {
     filter,
     applyFilter,
     toggleBookmark,
-    refetch: () => fetchResources(filter),
+    refetch: () => doFetch(filter),
   };
 }

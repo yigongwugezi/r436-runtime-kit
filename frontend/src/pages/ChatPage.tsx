@@ -276,6 +276,7 @@ export default function ChatPage() {
 
   // 切换 session 时加载对应消息
   useEffect(() => {
+    setMessagesLoaded(false);
     let cancelled = false;
     async function load() {
       setLoading(true);
@@ -294,7 +295,6 @@ export default function ChatPage() {
         }
       }
     }
-    // 只在 user 主动切换 session 时加载（从 sidebar 点击触发）
     if (useChatStore.getState().messages.length === 0) {
       load();
     } else {

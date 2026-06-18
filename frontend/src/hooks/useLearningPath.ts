@@ -2,7 +2,25 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import * as knowledgeApi from '../api/knowledge';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
-import type { LearningPath } from '../types/learningPath';
+import type { LearningPath, PathNodeStatus } from '../types/learningPath';
+
+/** 根据节点状态计算总体进度 */
+function computeOverallProgress(path: LearningPath): number {
+  const allNodes = path.stages.flatMap(s => s.nodes);
+  if (allNodes.length === 0) return 0;
+  const mastered = allNodes.filter(n => n.status === 'mastered').length;
+  return Math.round((mastered / allNodes.length) * 100);
+}
+
+/** 根据节点状态推断掌握度 */
+function statusToMastery(status: PathNodeStatus): number {
+  switch (status) {
+    case 'locked': return 0;
+    case 'available': return 0;
+    case 'in_progress': return 40;
+    case 'mastered': return 100;
+  }
+}
 
 export function useLearningPath() {
   const subjectId = useSubjectStore((s) => s.activeSubject?.id);
@@ -65,6 +83,25 @@ export function useLearningPath() {
     });
   }, [subjectId]);
 
+  /** 本地切换节点状态并同步掌握度，同时更新总体进度 */
+  const updateNodeStatus = useCallback((nodeId: string, status: PathNodeStatus) => {
+    setPath((current) => {
+      if (!current) return current;
+      const mastery = statusToMastery(status);
+      const next: LearningPath = {
+        ...current,
+        stages: current.stages.map((stage) => ({
+          ...stage,
+          nodes: stage.nodes.map((node) =>
+            node.id === nodeId ? { ...node, status, mastery } : node
+          ),
+        })),
+      };
+      next.overallProgress = computeOverallProgress(next);
+      return next;
+    });
+  }, []);
+
   // 科目切换时重新获取学习路径
   useEffect(() => {
     if (subjectId && lastSubjectRef.current !== subjectId) {
@@ -80,5 +117,5 @@ export function useLearningPath() {
     fetchPath();
   }, [dataVersion, fetchPath]);
 
-  return { path, loading, error, fetchPath, generatePath, updateNode };
+  return { path, loading, error, fetchPath, generatePath, updateNode, updateNodeStatus };
 }

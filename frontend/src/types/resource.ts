@@ -60,6 +60,7 @@ export interface PptSlide {
 export interface ResourceFilter {
   type?: ResourceType;
   difficulty?: string;
+  source?: string;
   knowledgePoint?: string;
   format?: ResourceFormat;
   search?: string;

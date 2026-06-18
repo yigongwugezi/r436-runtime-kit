@@ -2,11 +2,12 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLearningPath } from '../hooks/useLearningPath';
 import { useChatStore } from '../store/chatStore';
-import type { PathNode, LearningStage } from '../types/learningPath';
+import type { PathNode, LearningStage, PathNodeStatus } from '../types/learningPath';
 import { RESOURCE_TYPE_LABELS } from '../utils/constants';
 import {
   CheckCircle, Lock, Play, ArrowRight, Clock, GitFork, Target, AlertTriangle,
   BookOpen, ChevronDown, ChevronRight, Sparkles, Star, ExternalLink, RefreshCw,
+  Circle, CheckCircle2, MoreHorizontal,
 } from 'lucide-react';
 import Loading from '../components/common/Loading';
 import EmptyState from '../components/common/EmptyState';
@@ -16,24 +17,51 @@ import { formatDuration, timeAgo } from '../utils/format';
 /* ===================================================================
  * 节点状态常量
  * =================================================================== */
-const STATUS_CONFIG = {
+const STATUS_CONFIG: Record<PathNodeStatus, { icon: any; label: string; bg: string; iconColor: string }> = {
   locked:      { icon: Lock,        label: '未解锁',  bg: 'bg-gray-50 border-gray-100',    iconColor: 'text-gray-300' },
-  available:   { icon: Play,        label: '可开始',  bg: 'bg-white border-brand-200',      iconColor: 'text-brand-500' },
-  in_progress: { icon: Sparkles,    label: '学习中',  bg: 'bg-brand-50 border-brand-200',   iconColor: 'text-brand-500' },
-  mastered:    { icon: CheckCircle, label: '已掌握',  bg: 'bg-green-50/70 border-green-200', iconColor: 'text-green-500' },
-} as const;
+  available:   { icon: Circle,      label: '未开始',  bg: 'bg-white border-gray-200',      iconColor: 'text-gray-400' },
+  in_progress: { icon: Play,        label: '进行中',  bg: 'bg-brand-50 border-brand-200',  iconColor: 'text-brand-500' },
+  mastered:    { icon: CheckCircle2, label: '已完成',  bg: 'bg-green-50/70 border-green-200', iconColor: 'text-green-500' },
+};
+
+/** 可切换的状态列表（排除 locked） */
+const TOGGLEABLE_STATUSES: PathNodeStatus[] = ['available', 'in_progress', 'mastered'];
+
+/** 状态切换顺序 */
+const NEXT_STATUS: Record<PathNodeStatus, PathNodeStatus> = {
+  available: 'in_progress',
+  in_progress: 'mastered',
+  mastered: 'available',
+  locked: 'available',
+};
 
 /* ===================================================================
- * 节点卡片 — 带资源点击跳转
+ * 节点卡片 — 带状态切换 + 资源跳转
  * =================================================================== */
-function NodeCard({ node, isLast, isRecommended }: {
+function NodeCard({ node, isLast, isRecommended, onStatusChange }: {
   node: PathNode;
   isLast: boolean;
   isRecommended: boolean;
+  onStatusChange: (nodeId: string, status: PathNodeStatus) => void;
 }) {
   const navigate = useNavigate();
   const cfg = STATUS_CONFIG[node.status];
   const isLocked = node.status === 'locked';
+
+  // 点击节点体 → 跳转到第一个必要资源
+  const handleNodeClick = () => {
+    if (isLocked) return;
+    const target = node.resources.find(r => r.essential) || node.resources[0];
+    if (target) navigate(`/resources/${target.resourceId}`);
+  };
+
+  // 循环切换状态
+  const cycleStatus = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (isLocked) return;
+    const next = NEXT_STATUS[node.status];
+    onStatusChange(node.id, next);
+  };
 
   const statusIcon = node.status === 'in_progress' ? (
     <div className="w-4 h-4 rounded-full border-2 border-brand-500 border-t-transparent animate-spin" />
@@ -45,18 +73,22 @@ function NodeCard({ node, isLast, isRecommended }: {
     <div className="flex gap-3 group">
       {/* 时间线 */}
       <div className="flex flex-col items-center flex-shrink-0">
-        {/* 推荐标记 */}
         {isRecommended && (
           <div className="relative mb-1">
             <div className="absolute -top-1 -left-1 w-5 h-5 bg-amber-400 rounded-full animate-ping opacity-30" />
             <Star className="w-4 h-4 text-amber-500 relative z-10" />
           </div>
         )}
-        <div className={`w-9 h-9 rounded-xl flex items-center justify-center border-2 transition-all ${
-          isLocked ? 'bg-gray-100 border-gray-200' : 'bg-white border-brand-200 shadow-sm'
-        } ${isRecommended ? 'ring-2 ring-amber-300 ring-offset-2' : ''}`}>
+        <button
+          onClick={cycleStatus}
+          disabled={isLocked}
+          title={isLocked ? '未解锁' : `当前：${cfg.label}，点击切换`}
+          className={`w-9 h-9 rounded-xl flex items-center justify-center border-2 transition-all ${
+            isLocked ? 'bg-gray-100 border-gray-200 cursor-not-allowed' : 'bg-white border-brand-200 shadow-sm hover:shadow-md hover:scale-110 cursor-pointer'
+          } ${isRecommended ? 'ring-2 ring-amber-300 ring-offset-2' : ''}`}
+        >
           {statusIcon}
-        </div>
+        </button>
         {!isLast && (
           <div className={`w-0.5 flex-1 min-h-[24px] my-1 transition-colors ${
             node.status === 'mastered' ? 'bg-green-300' : 'bg-gray-200'
@@ -64,13 +96,16 @@ function NodeCard({ node, isLast, isRecommended }: {
         )}
       </div>
 
-      {/* 内容 */}
-      <div className={`flex-1 rounded-xl border p-4 mb-3 transition-all duration-200 ${
-        cfg.bg
-      } ${!isLocked ? 'hover:shadow-md cursor-pointer' : 'opacity-70'}`}>
+      {/* 内容 — 点击跳转资源 */}
+      <div
+        onClick={handleNodeClick}
+        className={`flex-1 rounded-xl border p-4 mb-3 transition-all duration-200 ${cfg.bg} ${
+          isLocked ? 'opacity-70' : 'cursor-pointer hover:shadow-md hover:border-gray-300'
+        }`}
+      >
         <div className="flex items-start justify-between">
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-1">
+            <div className="flex items-center gap-2 mb-1 flex-wrap">
               <h4 className={`text-sm font-semibold ${isLocked ? 'text-gray-400' : 'text-gray-900'}`}>
                 {node.topic}
               </h4>
@@ -82,6 +117,18 @@ function NodeCard({ node, isLast, isRecommended }: {
                   推荐起点
                 </span>
               )}
+              {/* 状态标记（可点击切换） */}
+              <button onClick={cycleStatus} disabled={isLocked}
+                className={`ml-auto text-[10px] font-semibold px-2 py-0.5 rounded-md border transition-all ${
+                  isLocked ? 'text-gray-300 border-gray-100' :
+                  node.status === 'mastered' ? 'text-green-600 border-green-200 bg-green-50 hover:bg-green-100' :
+                  node.status === 'in_progress' ? 'text-brand-600 border-brand-200 bg-brand-50 hover:bg-brand-100' :
+                  'text-gray-400 border-gray-200 bg-white hover:bg-gray-50'
+                }`}
+                title="点击切换状态"
+              >
+                {cfg.label}
+              </button>
             </div>
             <p className="text-xs text-gray-400 line-clamp-2">{node.description}</p>
           </div>
@@ -155,7 +202,11 @@ function NodeCard({ node, isLast, isRecommended }: {
 /* ===================================================================
  * 阶段组件
  * =================================================================== */
-function StageSection({ stage, defaultExpanded }: { stage: LearningStage; defaultExpanded: boolean }) {
+function StageSection({ stage, defaultExpanded, onStatusChange }: {
+  stage: LearningStage;
+  defaultExpanded: boolean;
+  onStatusChange: (nodeId: string, status: PathNodeStatus) => void;
+}) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const completed = stage.nodes.filter((n) => n.status === 'mastered').length;
   const progress = Math.round((completed / stage.nodes.length) * 100);
@@ -221,6 +272,7 @@ function StageSection({ stage, defaultExpanded }: { stage: LearningStage; defaul
               node={node}
               isLast={i === stage.nodes.length - 1}
               isRecommended={i === recommendedIdx}
+              onStatusChange={onStatusChange}
             />
           ))}
         </div>
@@ -234,7 +286,7 @@ function StageSection({ stage, defaultExpanded }: { stage: LearningStage; defaul
  * =================================================================== */
 export default function LearningPathPage() {
   const navigate = useNavigate();
-  const { path, loading, error, fetchPath } = useLearningPath();
+  const { path, loading, error, fetchPath, updateNodeStatus } = useLearningPath();
   const dataVersion = useChatStore((state) => state.dataVersion);
 
   if (loading && !path) return <Loading fullScreen text="加载学习路径..." />;
@@ -397,6 +449,7 @@ export default function LearningPathPage() {
             key={stage.id}
             stage={stage}
             defaultExpanded={idx === 0 || idx === firstAvailableStage}
+            onStatusChange={updateNodeStatus}
           />
         ))}
       </div>
