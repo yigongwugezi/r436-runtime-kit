@@ -4,6 +4,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.services.orchestrator import AgentOrchestrator
+from app.agents.diagnosis_agent import DiagnosisAgent
+from app.config import settings
 
 
 def assert_true(condition: bool, message: str) -> None:
@@ -42,6 +44,32 @@ def test_agents_generate_from_course_knowledge_base() -> None:
     )
 
 
+def test_demo_mock_fallback_is_not_product_default() -> None:
+    assert_true(settings.enable_mock_fallback is False, "demo_result fallback should be opt-in")
+
+
+def test_diagnosis_does_not_read_demo_when_knowledge_is_empty() -> None:
+    agent = DiagnosisAgent(
+        mock_data={
+            "diagnosis": {
+                "weak_knowledge_points": [
+                    {"name": "DEMO_POINT_SHOULD_NOT_APPEAR", "priority": "high"}
+                ]
+            }
+        }
+    )
+    result = agent.run({"knowledge_context": {"retrieved_points": []}, "profile": {}})
+    diagnosis = result["diagnosis"]
+
+    assert_true(diagnosis["weak_knowledge_points"] == [], "empty knowledge should not use demo weak points")
+    assert_true(
+        "DEMO_POINT_SHOULD_NOT_APPEAR" not in str(diagnosis),
+        "demo point must not leak into product diagnosis",
+    )
+
+
 if __name__ == "__main__":
     test_agents_generate_from_course_knowledge_base()
+    test_demo_mock_fallback_is_not_product_default()
+    test_diagnosis_does_not_read_demo_when_knowledge_is_empty()
     print("PASS agent_generation_test")

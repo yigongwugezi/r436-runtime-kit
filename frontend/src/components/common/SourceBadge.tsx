@@ -1,13 +1,11 @@
-import { Clock, User, Sparkles, Cpu, Database, AlertTriangle } from 'lucide-react';
+import { Clock, Cpu, Sparkles, User } from 'lucide-react';
+import type { ReactNode } from 'react';
 
-/* ===================================================================
- * 数据来源类型
- * =================================================================== */
-export type DataSource = 'user_input' | 'agent_generated' | 'system_inferred' | 'mock_fallback';
+export type DataSource = 'user_input' | 'agent_generated' | 'system_inferred';
 
 const SOURCE_CONFIG: Record<DataSource, {
   label: string;
-  icon: React.ReactNode;
+  icon: ReactNode;
   className: string;
 }> = {
   user_input: {
@@ -25,16 +23,8 @@ const SOURCE_CONFIG: Record<DataSource, {
     icon: <Cpu className="w-2.5 h-2.5" />,
     className: 'bg-amber-50 text-amber-600 border-amber-200',
   },
-  mock_fallback: {
-    label: '示例数据',
-    icon: <Database className="w-2.5 h-2.5" />,
-    className: 'bg-gray-50 text-gray-400 border-gray-200',
-  },
 };
 
-/* ===================================================================
- * 来源徽章
- * =================================================================== */
 export default function SourceBadge({
   source,
   size = 'sm',
@@ -56,9 +46,6 @@ export default function SourceBadge({
   );
 }
 
-/* ===================================================================
- * 时间戳行
- * =================================================================== */
 export function UpdateTimeRow({
   label,
   timestamp,
@@ -77,7 +64,6 @@ export function UpdateTimeRow({
   );
 }
 
-/** 短版相对时间 */
 function timeAgoShort(ts: number): string {
   const diff = Date.now() - ts;
   if (diff < 60000) return '刚刚';

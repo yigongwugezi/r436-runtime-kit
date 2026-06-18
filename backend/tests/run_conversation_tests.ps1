@@ -16,6 +16,7 @@ try {
     & $python "tests\course_catalog_test.py"
     & $python "tests\import_app_test.py"
     & $python "tests\learning_tracker_test.py"
+    & $python "tests\product_routes_test.py"
     & $python -m compileall app tests
 }
 finally {

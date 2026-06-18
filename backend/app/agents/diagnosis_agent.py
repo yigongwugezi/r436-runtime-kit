@@ -10,7 +10,14 @@ class DiagnosisAgent(BaseAgent):
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         points = list(context.get("knowledge_context", {}).get("retrieved_points", []))
         if not points:
-            points = self.mock_data["diagnosis"].get("weak_knowledge_points", [])
+            return {
+                "diagnosis": {
+                    "summary": "未检索到可用课程知识点，暂不生成诊断结论。",
+                    "weak_knowledge_points": [],
+                    "recommended_strategy": "请先补充课程知识库或明确学习主题，再生成学习诊断。",
+                },
+                "agent_step": self.agent_step(),
+            }
 
         profile = context.get("profile", {})
         knowledge_base = str(profile.get("knowledge_base", {}).get("value", ""))

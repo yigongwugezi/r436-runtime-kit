@@ -62,7 +62,13 @@ class AgentOrchestrator:
 
     # ── Public API ─────────────────────────────────────────────────────
 
-    def run(self, session_id: str, course_id: str, user_message: str) -> dict[str, Any]:
+    def run(
+        self,
+        session_id: str,
+        course_id: str,
+        user_message: str,
+        profile_facts: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         """Execute the full multi-agent pipeline.
 
         Args:
@@ -79,6 +85,7 @@ class AgentOrchestrator:
             "session_id": session_id,
             "course_id": course_id,
             "user_message": user_message,
+            "profile_facts": profile_facts or {},
         }
 
         result: dict[str, Any] = {

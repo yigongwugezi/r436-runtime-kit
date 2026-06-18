@@ -82,7 +82,7 @@ class ProfileData(BaseModel):
     history: dict[str, Any] = Field(default_factory=dict)
     createdAt: int = 0
     updatedAt: int = 0
-    source: str = "none"  # db | agent | mock | none
+    source: str = "none"  # agent_generated | system_inferred | none
     readiness: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -107,7 +107,7 @@ class LearningPathData(BaseModel):
     createdAt: int = 0
     overallProgress: int = 0
     estimatedDays: int = 14
-    source: str = "none"  # db | agent | mock | none
+    source: str = "none"  # agent_generated | system_inferred | none
 
 
 class LearningPathResponse(BaseModel):
@@ -139,7 +139,7 @@ class ResourceItemData(BaseModel):
     createdAt: int = 0
     bookmarked: bool = False
     studyStatus: str = "new"
-    source: str = "none"  # db | agent | mock | none
+    source: str = "none"  # agent_generated | system_inferred | none
 
 
 class ResourceListData(BaseModel):

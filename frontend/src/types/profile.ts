@@ -25,7 +25,7 @@ export interface ProfileDimension {
   description: string;
   updatedAt: number;
   /** 数据来源 */
-  source?: 'user_input' | 'agent_generated' | 'system_inferred' | 'mock_fallback';
+  source?: 'user_input' | 'agent_generated' | 'system_inferred';
 }
 
 export type DimensionKey =
@@ -63,8 +63,8 @@ export interface KnowledgeGap {
 export interface LearningPreferences {
   preferredFormats: ResourceFormat[];
   paceMinutes: number;        // 单次理想学习时长(分钟)
-  difficulty: DifficultyLevel;
-  explainStyle: 'diagram' | 'code' | 'case' | 'theory';
+  difficulty: DifficultyLevel | 'unknown';
+  explainStyle: 'diagram' | 'code' | 'case' | 'theory' | 'unknown';
 }
 
 export type ResourceFormat = 'text' | 'diagram' | 'video' | 'code' | 'quiz';

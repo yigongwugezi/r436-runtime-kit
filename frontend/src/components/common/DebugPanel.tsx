@@ -88,8 +88,8 @@ export default function DebugPanel() {
                 const p = sid ? useProfileStore.getState().profiles[sid] : null;
                 return (
                   <>
-                    <DebugSource label="Profile" source={p ? 'agent' : 'none'} />
-                    <DebugSource label="Resources" source={p?.dimensions?.length ? 'agent' : 'none'} />
+                    <DebugSource label="Profile" source={p ? 'agent_generated' : 'none'} />
+                    <DebugSource label="Resources" source={p?.dimensions?.length ? 'agent_generated' : 'none'} />
                   </>
                 );
               })()}
@@ -143,14 +143,13 @@ function DebugRow({ label, value, mono }: { label: string; value: string; mono?:
   );
 }
 
-function DebugSource({ label, source }: { label: string; source: 'db' | 'agent' | 'mock' | 'none' }) {
+function DebugSource({ label, source }: { label: string; source: 'agent_generated' | 'system_inferred' | 'none' }) {
   const colorMap = {
-    db: 'text-green-400 bg-green-500/10 border-green-500/30',
-    agent: 'text-purple-400 bg-purple-500/10 border-purple-500/30',
-    mock: 'text-yellow-400 bg-yellow-500/10 border-yellow-500/30',
+    agent_generated: 'text-purple-400 bg-purple-500/10 border-purple-500/30',
+    system_inferred: 'text-amber-400 bg-amber-500/10 border-amber-500/30',
     none: 'text-gray-500 bg-gray-500/10 border-gray-500/30',
   };
-  const labelMap = { db: 'DB', agent: 'Agent', mock: 'Mock', none: 'None' };
+  const labelMap = { agent_generated: 'Agent', system_inferred: 'Inferred', none: 'None' };
 
   return (
     <div className="flex items-center justify-between">
