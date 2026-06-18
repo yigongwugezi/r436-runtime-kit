@@ -246,6 +246,7 @@ def save_learning_path(
     # Merge existing if same id
     existing = db.get(LearningPathModel, path.id)
     if existing:
+        existing.session_id = session_id
         existing.course_id = path.course_id
         existing.course_name = path.course_name
         existing.description = path.description
@@ -253,9 +254,11 @@ def save_learning_path(
         existing.overall_progress = path.overall_progress
         existing.estimated_days = path.estimated_days
         existing.updated_at = _utcnow()
+        path = existing
     else:
         db.add(path)
     db.commit()
+    db.refresh(path)
     return path
 
 
@@ -309,6 +312,7 @@ def save_resource(
     )
     existing = db.get(ResourceModel, res.id)
     if existing:
+        existing.session_id = session_id
         existing.type = res.type
         existing.title = res.title
         existing.description = res.description
@@ -325,9 +329,12 @@ def save_resource(
         existing.bookmarked = res.bookmarked
         existing.study_status = res.study_status
         existing.source = res.source
+        existing.updated_at = _utcnow()
+        res = existing
     else:
         db.add(res)
     db.commit()
+    db.refresh(res)
     return res
 
 

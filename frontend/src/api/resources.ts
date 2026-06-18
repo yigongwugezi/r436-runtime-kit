@@ -7,22 +7,29 @@ export interface ResourceListResponse {
   page: number;
 }
 
-export async function getResources(filter?: ResourceFilter & { subjectId?: string }): Promise<ResourceListResponse> {
+export async function getResources(filter?: ResourceFilter & { sessionId: string; subjectId?: string }): Promise<ResourceListResponse> {
   const { data } = await client.get('/resources', { params: filter });
   return data;
 }
 
-export async function getResourceById(id: string, subjectId?: string): Promise<{ resource: Resource }> {
-  const { data } = await client.get(`/resources/${id}`, { params: { subjectId } });
+export async function getResourceById(
+  id: string,
+  params: { sessionId: string; subjectId?: string },
+): Promise<{ resource: Resource }> {
+  const { data } = await client.get(`/resources/${id}`, { params });
   return data;
 }
 
-export async function toggleBookmark(id: string): Promise<{ bookmarked: boolean }> {
-  const { data } = await client.post(`/resources/${id}/bookmark`);
+export async function toggleBookmark(
+  id: string,
+  params: { sessionId: string; subjectId?: string },
+): Promise<{ bookmarked: boolean }> {
+  const { data } = await client.post(`/resources/${id}/bookmark`, null, { params });
   return data;
 }
 
 export async function generateResource(params: {
+  sessionId?: string;
   type: string;
   topic: string;
   difficulty?: string;
@@ -34,10 +41,10 @@ export async function generateResource(params: {
 
 export async function getResourceKnowledgeGraph(
   resourceId: string,
-  subjectId?: string,
+  params: { sessionId: string; subjectId?: string },
 ): Promise<{ mermaidDef: string; source?: string; resourceId?: string }> {
   const { data } = await client.get(`/resources/${resourceId}/knowledge-graph`, {
-    params: { subjectId, sessionId: subjectId },
+    params,
   });
   return data;
 }

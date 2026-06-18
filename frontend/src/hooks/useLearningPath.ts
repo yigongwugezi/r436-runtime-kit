@@ -24,11 +24,12 @@ function statusToMastery(status: PathNodeStatus): number {
 
 export function useLearningPath() {
   const subjectId = useSubjectStore((s) => s.activeSubject?.id);
+  const sessionId = useChatStore((state) => state.currentSessionId);
   const dataVersion = useChatStore((state) => state.dataVersion);
   const [path, setPath] = useState<LearningPath | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const lastSubjectRef = useRef<string | undefined>(undefined);
+  const lastReadKeyRef = useRef<string | undefined>(undefined);
   const lastVersionRef = useRef<number>(0);
 
   const fetchPath = useCallback(async () => {
@@ -36,7 +37,7 @@ export function useLearningPath() {
     setLoading(true);
     setError(null);
     try {
-      const res = await knowledgeApi.getLearningPath(subjectId);
+      const res = await knowledgeApi.getLearningPath({ sessionId, subjectId });
       if (res?.path) {
         setPath(res.path);
       } else {
@@ -49,7 +50,7 @@ export function useLearningPath() {
     } finally {
       setLoading(false);
     }
-  }, [subjectId]);
+  }, [sessionId, subjectId]);
 
   const generatePath = useCallback(async (params: { subjectId?: string; targetTopics?: string[] }) => {
     setLoading(true);
@@ -57,6 +58,7 @@ export function useLearningPath() {
     try {
       const res = await knowledgeApi.generateLearningPath({
         ...params,
+        sessionId,
         subjectId: params.subjectId || subjectId,
       });
       setPath(res.path);
@@ -67,10 +69,10 @@ export function useLearningPath() {
     } finally {
       setLoading(false);
     }
-  }, [subjectId]);
+  }, [sessionId, subjectId]);
 
   const updateNode = useCallback(async (nodeId: string, mastery: number) => {
-    await knowledgeApi.updateNodeProgress(nodeId, mastery, subjectId);
+    await knowledgeApi.updateNodeProgress(nodeId, mastery, { sessionId, subjectId });
     setPath((current) => {
       if (!current) return current;
       return {
@@ -81,7 +83,7 @@ export function useLearningPath() {
         })),
       };
     });
-  }, [subjectId]);
+  }, [sessionId, subjectId]);
 
   /** 本地切换节点状态并同步掌握度，同时更新总体进度 */
   const updateNodeStatus = useCallback((nodeId: string, status: PathNodeStatus) => {
@@ -104,11 +106,12 @@ export function useLearningPath() {
 
   // 科目切换时重新获取学习路径
   useEffect(() => {
-    if (subjectId && lastSubjectRef.current !== subjectId) {
-      lastSubjectRef.current = subjectId;
+    const readKey = subjectId ? `${sessionId}:${subjectId}` : undefined;
+    if (readKey && lastReadKeyRef.current !== readKey) {
+      lastReadKeyRef.current = readKey;
       fetchPath();
     }
-  }, [subjectId, fetchPath]);
+  }, [sessionId, subjectId, fetchPath]);
 
   // 对话完成后自动刷新
   useEffect(() => {

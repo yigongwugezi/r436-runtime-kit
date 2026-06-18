@@ -147,7 +147,7 @@ class AgentOrchestrator:
             ProfileAgent(mock_data=mock_data, llm_client=self.llm_client),
             KnowledgeAgent(mock_data=mock_data),
             DiagnosisAgent(mock_data=mock_data),
-            PlannerAgent(mock_data=mock_data),
+            PlannerAgent(mock_data=mock_data, llm_client=self.llm_client),
             ResourceAgent(mock_data=mock_data, llm_client=self.llm_client),
             ReviewAgent(mock_data=mock_data),
         ]

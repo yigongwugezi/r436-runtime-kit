@@ -358,9 +358,10 @@ class ConversationStore:
                 # Save learning path if present
                 if result.get("learning_path"):
                     stages = result.get("learning_path") or []
+                    course_id = result.get("course_id", "") or state.session_id
                     path_data = {
-                        "id": f"path_{result.get('course_id', state.session_id)}",
-                        "course_id": result.get("course_id", ""),
+                        "id": f"path_{state.session_id}_{course_id}",
+                        "course_id": course_id,
                         "course_name": (result.get("course") or {}).get("course_name", ""),
                         "description": result.get("diagnosis", {}).get("recommended_strategy", ""),
                         "stages": stages,
@@ -371,6 +372,12 @@ class ConversationStore:
 
                 # Save resources if present — persist full structured data
                 for item in result.get("resources", []):
+                    raw_resource_id = str(item.get("resource_id", f"res_{time.time()}"))
+                    resource_id = (
+                        raw_resource_id
+                        if raw_resource_id.startswith(f"{state.session_id}_")
+                        else f"{state.session_id}_{raw_resource_id}"
+                    )
                     # Determine format from content_format field
                     content_fmt = item.get("content_format", "markdown")
                     # Determine difficulty from item or default
@@ -380,7 +387,7 @@ class ConversationStore:
                     estimated = max(10, len(content_text) // 200 * 5) if content_text else 20
 
                     save_resource(db, state.session_id, {
-                        "id": item.get("resource_id", f"res_{time.time()}"),
+                        "id": resource_id,
                         "type": item.get("type", "lecture"),
                         "title": item.get("title", "学习资源"),
                         "description": item.get("description", ""),

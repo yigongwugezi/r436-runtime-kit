@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter
@@ -266,6 +266,15 @@ def _resource_type(resource_type: str) -> str:
     return _TYPE_MAP.get(resource_type, resource_type)
 
 
+def _datetime_to_ms(value: str | None) -> int:
+    if not value:
+        return int(time.time() * 1000)
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp() * 1000)
+
+
 def _source_label(source: str) -> str:
     """Map internal source labels to frontend-compatible labels."""
     if not source:
@@ -302,6 +311,31 @@ def _to_resource(
         "studyStatus": item.get("studyStatus", "new"),
         "source": _source_label(item.get("source", "")),
     }
+
+
+def _stage_estimated_days(duration: Any) -> int:
+    text = str(duration or "").strip()
+    if not text:
+        return 1
+
+    hour_match = re.search(r"(\d+)\s*(?:小时|h|H)", text)
+    if hour_match:
+        return max(1, (int(hour_match.group(1)) + 23) // 24)
+
+    range_match = re.search(r"(\d+)\s*(?:-|~|—|–|至|到)\s*(\d+)\s*(?:天|日)?", text)
+    if range_match:
+        start = int(range_match.group(1))
+        end = int(range_match.group(2))
+        return max(1, abs(end - start) + 1)
+
+    if re.search(r"第\s*\d+\s*(?:天|日)", text):
+        return 1
+
+    day_match = re.search(r"(\d+)\s*(?:天|日)", text)
+    if day_match:
+        return max(1, int(day_match.group(1)))
+
+    return 1
 
 
 def _raw_stages_to_nodes(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -343,7 +377,7 @@ def _raw_stages_to_nodes(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "description": stage.get("duration", ""),
             "nodes": nodes,
             "objective": stage.get("goal", ""),
-            "estimatedDays": 3,
+            "estimatedDays": _stage_estimated_days(stage.get("duration", "")),
         })
     return result
 
@@ -1287,7 +1321,7 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
                 "courseName": db_path.get("course_name", ""),
                 "courseId": db_path.get("course_id", ""),
                 "stages": stages,
-                "createdAt": int(datetime.fromisoformat(db_path["created_at"]).timestamp() * 1000) if db_path.get("created_at") else int(time.time() * 1000),
+                "createdAt": _datetime_to_ms(db_path.get("created_at")),
                 "overallProgress": 0,
                 "estimatedDays": db_path.get("estimated_days", 14),
                 "source": "agent_generated",

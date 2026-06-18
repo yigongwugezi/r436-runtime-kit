@@ -8,10 +8,11 @@ import type { StudentProfile } from '../types/profile';
 export function useProfile() {
   const store = useProfileStore();
   const subjectId = useSubjectStore((s) => s.activeSubject?.id);
+  const sessionId = useChatStore((state) => state.currentSessionId);
   const dataVersion = useChatStore((state) => state.dataVersion);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const lastSubjectRef = useRef<string | undefined>(undefined);
+  const lastReadKeyRef = useRef<string | undefined>(undefined);
   const lastVersionRef = useRef<number>(0);
 
   const fetchProfile = useCallback(async () => {
@@ -20,7 +21,7 @@ export function useProfile() {
     setError(null);
     store.setLoading(subjectId, true);
     try {
-      const res = await profileApi.getProfile(subjectId);
+      const res = await profileApi.getProfile({ sessionId, subjectId });
       if (res?.profile) {
         store.setProfile(subjectId, res.profile);
       } else {
@@ -35,14 +36,14 @@ export function useProfile() {
       setLoading(false);
       store.setLoading(subjectId, false);
     }
-  }, [subjectId, store]);
+  }, [sessionId, subjectId, store]);
 
   const buildProfile = useCallback(
     async (message: string): Promise<StudentProfile | null> => {
       if (!subjectId) return null;
       setLoading(true);
       try {
-        const res = await profileApi.buildProfile({ message, subjectId });
+        const res = await profileApi.buildProfile({ message, sessionId, subjectId });
         if (res?.profile) {
           store.setProfile(subjectId, res.profile);
         }
@@ -54,16 +55,17 @@ export function useProfile() {
         setLoading(false);
       }
     },
-    [subjectId, store],
+    [sessionId, subjectId, store],
   );
 
   // 科目切换时重新获取画像
   useEffect(() => {
-    if (subjectId && lastSubjectRef.current !== subjectId) {
-      lastSubjectRef.current = subjectId;
+    const readKey = subjectId ? `${sessionId}:${subjectId}` : undefined;
+    if (readKey && lastReadKeyRef.current !== readKey) {
+      lastReadKeyRef.current = readKey;
       fetchProfile();
     }
-  }, [subjectId, fetchProfile]);
+  }, [sessionId, subjectId, fetchProfile]);
 
   // 对话完成后自动刷新画像
   useEffect(() => {

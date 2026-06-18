@@ -3,6 +3,7 @@ import type { ChatMessage, ChatSession, GenerationProgress } from '../types/chat
 
 export interface SendMessageParams {
   sessionId?: string;
+  subjectId?: string;
   message: string;
 }
 

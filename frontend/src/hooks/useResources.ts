@@ -6,24 +6,25 @@ import type { Resource, ResourceFilter } from '../types/resource';
 
 export function useResources() {
   const subjectId = useSubjectStore((s) => s.activeSubject?.id);
+  const sessionId = useChatStore((state) => state.currentSessionId);
   const dataVersion = useChatStore((state) => state.dataVersion);
   const [resources, setResources] = useState<Resource[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<ResourceFilter>({});
-  const lastSubjectRef = useRef<string | undefined>(undefined);
+  const lastReadKeyRef = useRef<string | undefined>(undefined);
   const lastVersionRef = useRef<number>(0);
   const fetchingRef = useRef(false);
 
   const doFetch = useCallback(async (f: ResourceFilter) => {
     if (!subjectId) return;
-    if (fetchingRef.current) return; // 防止并发请求
+    if (fetchingRef.current) return;
     fetchingRef.current = true;
     setLoading(true);
     setError(null);
     try {
-      const res = await resourcesApi.getResources({ ...f, subjectId });
+      const res = await resourcesApi.getResources({ ...f, sessionId, subjectId });
       setResources(res?.resources || []);
       setTotal(res?.total || 0);
     } catch {
@@ -34,18 +35,17 @@ export function useResources() {
       setLoading(false);
       fetchingRef.current = false;
     }
-  }, [subjectId]);
+  }, [sessionId, subjectId]);
 
-  // 科目切换 → 重置筛选并重新加载
   useEffect(() => {
-    if (subjectId && lastSubjectRef.current !== subjectId) {
-      lastSubjectRef.current = subjectId;
+    const readKey = subjectId ? `${sessionId}:${subjectId}` : undefined;
+    if (readKey && lastReadKeyRef.current !== readKey) {
+      lastReadKeyRef.current = readKey;
       setFilter({});
       doFetch({});
     }
-  }, [subjectId, doFetch]);
+  }, [sessionId, subjectId, doFetch]);
 
-  // 对话完成后自动刷新（使用当前 filter）
   useEffect(() => {
     if (dataVersion <= 0 || dataVersion === lastVersionRef.current) return;
     lastVersionRef.current = dataVersion;
@@ -67,11 +67,11 @@ export function useResources() {
   );
 
   const toggleBookmark = useCallback(async (id: string) => {
-    const res = await resourcesApi.toggleBookmark(id);
+    const res = await resourcesApi.toggleBookmark(id, { sessionId, subjectId });
     setResources((prev) =>
       prev.map((resource) => (resource.id === id ? { ...resource, bookmarked: res.bookmarked } : resource)),
     );
-  }, []);
+  }, [sessionId, subjectId]);
 
   return {
     resources,

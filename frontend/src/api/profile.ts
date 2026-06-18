@@ -12,8 +12,8 @@ export async function buildProfile(params: BuildProfileParams): Promise<{ profil
   return data;
 }
 
-export async function getProfile(subjectId?: string): Promise<{ profile: StudentProfile }> {
-  const { data } = await client.get('/profile', { params: { subjectId } });
+export async function getProfile(params: { sessionId: string; subjectId?: string }): Promise<{ profile: StudentProfile }> {
+  const { data } = await client.get('/profile', { params });
   return data;
 }
 

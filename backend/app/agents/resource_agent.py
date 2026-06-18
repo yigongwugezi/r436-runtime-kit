@@ -27,11 +27,21 @@ class ResourceAgent(BaseAgent):
             self._practice(points, profile),
             self._video_script(points, course),
         ]
+        resources = self._scope_resource_ids(resources, str(context.get("session_id") or ""))
 
         return {
             "resources": resources,
             "agent_step": self.agent_step(),
         }
+
+    def _scope_resource_ids(self, resources: list[dict[str, Any]], session_id: str) -> list[dict[str, Any]]:
+        if not session_id:
+            return resources
+        for item in resources:
+            resource_id = str(item.get("resource_id", ""))
+            if resource_id and not resource_id.startswith(f"{session_id}_"):
+                item["resource_id"] = f"{session_id}_{resource_id}"
+        return resources
 
     def _lecture(self, points: list[dict[str, Any]], course: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
         first = points[0]

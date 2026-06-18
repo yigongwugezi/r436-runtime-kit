@@ -1,8 +1,11 @@
+import json
 import re
 from math import ceil
 from typing import Any
 
 from app.agents.base import BaseAgent
+from app.services.course_catalog import course_catalog
+from app.services.llm_client import LLMClientError
 
 
 class PlannerAgent(BaseAgent):
@@ -13,34 +16,56 @@ class PlannerAgent(BaseAgent):
         weak_points = list(context.get("diagnosis", {}).get("weak_knowledge_points", []))
         profile = context.get("profile", {})
         total_days = self._infer_days(str(context.get("user_message", "")), profile)
+        planning_points = self._planning_points(context, weak_points)
 
-        if not weak_points:
+        if not planning_points:
             return {
                 "learning_path": [],
                 "estimatedDays": total_days,
                 "agent_step": self.agent_step(),
             }
 
-        stage_count = min(4, len(weak_points), max(1, total_days))
-        days_per_stage = max(1, ceil(total_days / stage_count))
+        llm_path = self._generate_with_llm(context, profile, planning_points, total_days)
+        if llm_path:
+            return {
+                "learning_path": llm_path,
+                "estimatedDays": total_days,
+                "agent_step": self.agent_step(),
+            }
+
+        return {
+            "learning_path": self._build_rule_path(planning_points, profile, total_days),
+            "estimatedDays": total_days,
+            "agent_step": self.agent_step(),
+        }
+
+    def _build_rule_path(
+        self,
+        planning_points: list[dict[str, Any]],
+        profile: dict[str, Any],
+        total_days: int,
+    ) -> list[dict[str, Any]]:
+        stage_count = self._stage_count(planning_points, total_days)
+        grouped_points = self._group_points(planning_points, stage_count)
 
         learning_path = []
-        for index, point in enumerate(weak_points[:stage_count], start=1):
-            start_day = (index - 1) * days_per_stage + 1
-            end_day = min(total_days, index * days_per_stage)
+        for index, point_group in enumerate(grouped_points, start=1):
+            lead_point = point_group[0]
+            names = [str(point.get("name", "重点知识点")) for point in point_group]
             learning_path.append(
                 {
                     "stage_id": f"stage_{index}",
-                    "title": self._stage_title(index, str(point.get("name", "重点知识点"))),
-                    "duration": f"第 {start_day}-{end_day} 天" if start_day != end_day else f"第 {start_day} 天",
-                    "goal": self._goal(point, profile),
-                    "tasks": self._tasks(point, profile, index),
+                    "title": self._stage_title(index, "、".join(names[:2])),
+                    "duration": self._duration_for_index(index, stage_count, total_days),
+                    "goal": self._goal(lead_point, profile, names),
+                    "tasks": self._tasks(lead_point, profile, index, names),
                     "resource_types": self._resource_types(profile, index),
+                    "reason": self._reason(point_group, profile, total_days),
                     "source": "agent_generated",
                 }
             )
 
-        if total_days <= 3:
+        if total_days <= 3 and len(learning_path) < 5:
             learning_path.append(
                 {
                     "stage_id": f"stage_{len(learning_path) + 1}",
@@ -49,15 +74,172 @@ class PlannerAgent(BaseAgent):
                     "goal": "用练习题和错题复盘检查核心概念，保证短周期学习能形成可交付结果。",
                     "tasks": ["完成重点练习题", "整理易错点清单", "回看高优先级章节讲义"],
                     "resource_types": ["quiz", "reading"],
+                    "reason": "学习时间较短，需要把最后阶段压缩为检测和复盘，避免只学不练。",
                     "source": "agent_generated",
                 }
             )
 
-        return {
-            "learning_path": learning_path,
-            "estimatedDays": total_days,
-            "agent_step": self.agent_step(),
+        return learning_path
+
+    def _generate_with_llm(
+        self,
+        context: dict[str, Any],
+        profile: dict[str, Any],
+        planning_points: list[dict[str, Any]],
+        total_days: int,
+    ) -> list[dict[str, Any]]:
+        if not self.llm_client:
+            return []
+
+        course_id = str(context.get("course_id") or "")
+        course = course_catalog.get_course(course_id) or {
+            "course_id": course_id,
+            "course_name": context.get("knowledge_context", {}).get("course_name", course_id),
+            "chapters": planning_points,
         }
+        payload = {
+            "session_id": context.get("session_id"),
+            "course_id": course_id,
+            "estimated_days": total_days,
+            "profile_facts": context.get("profile_facts", {}),
+            "profile": self._compact_profile(profile),
+            "course": {
+                "course_id": course.get("course_id", course_id),
+                "course_name": course.get("course_name", course_id),
+                "chapters": [
+                    {
+                        "chapter_id": item.get("chapter_id", index),
+                        "title": item.get("title") or item.get("name"),
+                        "difficulty": item.get("difficulty", "medium"),
+                        "prerequisites": item.get("prerequisites", []),
+                    }
+                    for index, item in enumerate(course.get("chapters", planning_points), start=1)
+                ],
+            },
+            "candidate_points": planning_points,
+        }
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是 EduAgent 的学习路径规划智能体。你必须根据学生画像、课程知识库和时间安排生成个性化学习路径。\n"
+                    "要求：只输出 JSON；不要输出 Markdown；不要编造课程中不存在的章节；"
+                    "必须体现学生基础、薄弱点、学习目标、时间安排和学习偏好；"
+                    "每个阶段必须包含 stage_id、title、duration、goal、tasks、resource_types、reason。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"下面是规划输入 JSON，请生成 3-5 个阶段，estimated_days 必须等于 {total_days}。\n"
+                    f"{json.dumps(payload, ensure_ascii=False)}"
+                ),
+            },
+        ]
+
+        try:
+            raw = self.llm_client.chat(messages, temperature=0.2, max_tokens=1600)
+            parsed = self._parse_json(raw)
+        except (LLMClientError, json.JSONDecodeError, TypeError, ValueError):
+            return []
+
+        path = parsed.get("learning_path") if isinstance(parsed, dict) else None
+        if not isinstance(path, list):
+            return []
+        return self._normalize_llm_path(path, planning_points, total_days)
+
+    def _parse_json(self, text: str) -> dict[str, Any]:
+        stripped = text.strip()
+        if stripped.startswith("```"):
+            stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
+            stripped = re.sub(r"\s*```$", "", stripped)
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start >= 0 and end >= start:
+            stripped = stripped[start : end + 1]
+        parsed = json.loads(stripped)
+        if not isinstance(parsed, dict):
+            raise ValueError("Planner LLM output must be a JSON object.")
+        return parsed
+
+    def _normalize_llm_path(
+        self,
+        path: list[Any],
+        planning_points: list[dict[str, Any]],
+        total_days: int,
+    ) -> list[dict[str, Any]]:
+        allowed_terms = {
+            str(point.get("name") or point.get("title") or "").strip()
+            for point in planning_points
+            if str(point.get("name") or point.get("title") or "").strip()
+        }
+        normalized = []
+        for index, item in enumerate(path[:5], start=1):
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or f"第 {index} 阶段").strip()
+            tasks = [str(task).strip() for task in item.get("tasks", []) if str(task).strip()]
+            text = " ".join([title, str(item.get("goal", "")), " ".join(tasks)])
+            if allowed_terms and not any(term in text for term in allowed_terms):
+                continue
+            resource_types = self._clean_resource_types(item.get("resource_types", []))
+            normalized.append(
+                {
+                    "stage_id": str(item.get("stage_id") or f"stage_{index}"),
+                    "title": title,
+                    "duration": str(item.get("duration") or self._duration_for_index(index, min(len(path), 5), total_days)),
+                    "goal": str(item.get("goal") or "完成本阶段核心知识学习。"),
+                    "tasks": tasks[:5] or ["阅读课程讲义", "完成配套练习"],
+                    "resource_types": resource_types or ["lecture", "quiz"],
+                    "reason": str(item.get("reason") or "根据学生画像和课程知识库自动规划。"),
+                    "source": "agent_generated",
+                }
+            )
+        return normalized if len(normalized) >= 2 else []
+
+    def _planning_points(self, context: dict[str, Any], weak_points: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        course_id = str(context.get("course_id") or "")
+        course = course_catalog.get_course(course_id) or {}
+        chapters = [
+            {
+                "point_id": f"{course_id}_{chapter.get('chapter_id', index)}",
+                "chapter_id": str(chapter.get("chapter_id", index)).zfill(2),
+                "name": str(chapter.get("title", f"第 {index} 章")),
+                "title": str(chapter.get("title", f"第 {index} 章")),
+                "priority": "high" if index <= 3 else "medium",
+                "difficulty": chapter.get("difficulty", "medium"),
+                "prerequisites": chapter.get("prerequisites", []),
+            }
+            for index, chapter in enumerate(course.get("chapters", []), start=1)
+        ]
+        text = " ".join(
+            [
+                str(context.get("user_message", "")),
+                " ".join(str(value) for value in context.get("profile_facts", {}).values()),
+            ]
+        )
+        if chapters and (self._is_whole_course_request(text) or len(weak_points) < min(5, len(chapters))):
+            return chapters
+        return weak_points or chapters
+
+    def _is_whole_course_request(self, text: str) -> bool:
+        return any(word in text for word in ["考试", "复习", "完整", "系统", "整门", "全", "通过"])
+
+    def _stage_count(self, planning_points: list[dict[str, Any]], total_days: int) -> int:
+        if total_days <= 2:
+            return min(3, len(planning_points))
+        if total_days <= 5:
+            return min(4, len(planning_points))
+        return min(5, len(planning_points))
+
+    def _group_points(self, planning_points: list[dict[str, Any]], stage_count: int) -> list[list[dict[str, Any]]]:
+        groups: list[list[dict[str, Any]]] = []
+        for index in range(stage_count):
+            start = round(index * len(planning_points) / stage_count)
+            end = round((index + 1) * len(planning_points) / stage_count)
+            groups.append(planning_points[start:end] or [planning_points[min(index, len(planning_points) - 1)]])
+        return groups
 
     def _infer_days(self, message: str, profile: dict[str, Any]) -> int:
         # Collect time-relevant text from the agent prompt and ALL profile dimensions,
@@ -172,17 +354,57 @@ class PlannerAgent(BaseAgent):
         prefixes = ["补齐基础", "攻克核心", "专项练习", "综合复盘"]
         return f"{prefixes[min(index - 1, len(prefixes) - 1)]}：{point_name}"
 
-    def _goal(self, point: dict[str, Any], profile: dict[str, Any]) -> str:
+    def _compact_profile(self, profile: dict[str, Any]) -> dict[str, str]:
+        compact = {}
+        for key, item in profile.items():
+            if isinstance(item, dict):
+                value = str(item.get("value", "")).strip()
+                if value and value != "未提及":
+                    compact[key] = value
+        return compact
+
+    def _clean_resource_types(self, value: Any) -> list[str]:
+        aliases = {
+            "case_study": "practice",
+            "code": "practice",
+            "diagram": "mindmap",
+            "text": "lecture",
+            "exercise": "quiz",
+        }
+        allowed = {"lecture", "mindmap", "quiz", "reading", "practice", "multimodal"}
+        if not isinstance(value, list):
+            return []
+        result = []
+        for item in value:
+            normalized = aliases.get(str(item).strip(), str(item).strip())
+            if normalized in allowed and normalized not in result:
+                result.append(normalized)
+        return result
+
+    def _duration_for_index(self, index: int, stage_count: int, total_days: int) -> str:
+        days_per_stage = max(1, ceil(total_days / max(1, stage_count)))
+        start_day = min(total_days, (index - 1) * days_per_stage + 1)
+        end_day = min(total_days, max(start_day, index * days_per_stage))
+        return f"第 {start_day}-{end_day} 天" if start_day != end_day else f"第 {start_day} 天"
+
+    def _goal(self, point: dict[str, Any], profile: dict[str, Any], names: list[str] | None = None) -> str:
         prerequisites = "、".join(str(item) for item in point.get("prerequisites", []) if item)
-        base = f"理解并掌握 {point.get('name', '该知识点')} 的核心概念、典型题型和常见误区。"
+        point_names = "、".join(names or [str(point.get("name", "该知识点"))])
+        base = f"理解并掌握 {point_names} 的核心概念、典型题型和常见误区。"
         if prerequisites:
             base += f" 同时补齐前置要求：{prerequisites}。"
         if "考试" in str(profile.get("learning_goal", {}).get("value", "")):
             base += " 重点服务考试通过和基础题型稳定得分。"
         return base
 
-    def _tasks(self, point: dict[str, Any], profile: dict[str, Any], index: int) -> list[str]:
-        name = str(point.get("name", "知识点"))
+    def _tasks(
+        self,
+        point: dict[str, Any],
+        profile: dict[str, Any],
+        index: int,
+        names: list[str] | None = None,
+    ) -> list[str]:
+        name = "、".join(names or [str(point.get("name", "知识点"))])
         tasks = [
             f"阅读《{name}》个性化讲义",
             f"完成 {name} 的概念辨析练习",
@@ -197,6 +419,15 @@ class PlannerAgent(BaseAgent):
         if index > 1:
             tasks.append("复盘上一阶段错题和未掌握概念")
         return tasks
+
+    def _reason(self, point_group: list[dict[str, Any]], profile: dict[str, Any], total_days: int) -> str:
+        goal = str(profile.get("learning_goal", {}).get("value", ""))
+        base = "、".join(str(point.get("name", "")) for point in point_group if point.get("name"))
+        if total_days <= 3:
+            return f"学习周期只有 {total_days} 天，优先压缩安排 {base} 等高频基础内容。"
+        if "考试" in goal:
+            return f"学生目标偏考试通过，{base} 是课程复习中的基础或高频模块。"
+        return f"根据课程先修关系和学生画像，当前阶段适合集中处理 {base}。"
 
     def _resource_types(self, profile: dict[str, Any], index: int) -> list[str]:
         preference = str(profile.get("cognitive_style", {}).get("value", ""))

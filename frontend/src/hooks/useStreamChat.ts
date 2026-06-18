@@ -1,5 +1,6 @@
 import { useCallback, useRef } from 'react';
 import { useChatStore } from '../store/chatStore';
+import { useSubjectStore } from '../store/subjectStore';
 import { streamRequest } from '../api/client';
 import { sendMessage } from '../api/chat';
 import type { ChatMessage } from '../types/chat';
@@ -45,6 +46,7 @@ export function useStreamChat() {
         const reader = await streamRequest('/chat/stream', {
           message: content.trim(),
           sessionId: useChatStore.getState().currentSessionId,
+          subjectId: useSubjectStore.getState().activeSubject?.id,
         });
 
         const decoder = new TextDecoder();
@@ -92,6 +94,7 @@ export function useStreamChat() {
           const fallback = await sendMessage({
             message: content.trim(),
             sessionId: useChatStore.getState().currentSessionId,
+            subjectId: useSubjectStore.getState().activeSubject?.id,
           });
           updateLastAssistant((m) => ({
             ...m,
