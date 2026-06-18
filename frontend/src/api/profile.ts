@@ -3,6 +3,7 @@ import type { StudentProfile } from '../types/profile';
 
 export interface BuildProfileParams {
   message: string;
+  subjectId?: string;
   sessionId?: string;
 }
 
@@ -11,8 +12,8 @@ export async function buildProfile(params: BuildProfileParams): Promise<{ profil
   return data;
 }
 
-export async function getProfile(sessionId?: string): Promise<{ profile: StudentProfile }> {
-  const { data } = await client.get('/profile', { params: { sessionId } });
+export async function getProfile(subjectId?: string): Promise<{ profile: StudentProfile }> {
+  const { data } = await client.get('/profile', { params: { subjectId } });
   return data;
 }
 

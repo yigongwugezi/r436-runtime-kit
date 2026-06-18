@@ -1,6 +1,5 @@
 import { useNavigate } from 'react-router-dom';
 import { useProfile } from '../hooks/useProfile';
-import { useChatStore } from '../store/chatStore';
 import { getCurrentLearner } from './LoginPage';
 import { DIMENSION_LABELS, type ProfileDimension, type DimensionKey } from '../types/profile';
 import { DIMENSION_COLORS } from '../utils/constants';

@@ -1,38 +1,42 @@
-﻿import { create } from 'zustand';
+import { create } from 'zustand';
 import type { ChatMessage, ChatSession, QuickCommand, GenerationProgress } from '../types/chat';
 import { getCurrentLearner } from '../pages/LoginPage';
+import { useSubjectStore } from './subjectStore';
 
-const storageKey = () => {
+/** 基于 learnerId + subjectId 生成 storage key，实现科目隔离 */
+export const suffix = () => {
   const learner = getCurrentLearner();
-  const suffix = learner?.id || 'anonymous';
-  return 'eduagent_session_' + suffix;
+  const subject = useSubjectStore.getState().activeSubject;
+  const learnerId = learner?.id || 'anonymous';
+  const subjectId = subject?.id || 'default';
+  return `${learnerId}_${subjectId}`;
 };
 
-const sessionsKey = () => {
-  const learner = getCurrentLearner();
-  const suffix = learner?.id || 'anonymous';
-  return 'eduagent_sessions_' + suffix;
-};
+const storageKey = () => `eduagent_session_${suffix()}`;
+const sessionsKey = () => `eduagent_sessions_${suffix()}`;
 
 const createSessionId = () => {
-  const randomPart = globalThis.crypto?.randomUUID?.() ?? Math.random().toString(16).slice(2);
-  return 'session_' + Date.now() + '_' + randomPart;
+  const randomPart =
+    globalThis.crypto?.randomUUID?.() ?? Math.random().toString(16).slice(2);
+  return `session_${Date.now()}_${randomPart}`;
 };
 
+/** 从 localStorage 恢复或创建新的 sessionId */
 const loadSessionId = (): string => {
   try {
     const stored = localStorage.getItem(storageKey());
     if (stored) return stored;
-  } catch {}
+  } catch { /* 无痕模式等环境 */ }
   const id = createSessionId();
-  try { localStorage.setItem(storageKey(), id); } catch {}
+  try { localStorage.setItem(storageKey(), id); } catch { /* noop */ }
   return id;
 };
 
 const persistSessionId = (id: string) => {
-  try { localStorage.setItem(storageKey(), id); } catch {}
+  try { localStorage.setItem(storageKey(), id); } catch { /* noop */ }
 };
 
+/** 加载历史会话列表 */
 const loadSessions = (): ChatSession[] => {
   try {
     const data = localStorage.getItem(sessionsKey());
@@ -41,7 +45,7 @@ const loadSessions = (): ChatSession[] => {
 };
 
 const persistSessions = (sessions: ChatSession[]) => {
-  try { localStorage.setItem(sessionsKey(), JSON.stringify(sessions)); } catch {}
+  try { localStorage.setItem(sessionsKey(), JSON.stringify(sessions)); } catch { /* noop */ }
 };
 
 interface ChatStore {
@@ -53,6 +57,7 @@ interface ChatStore {
   loading: boolean;
   agentProgress: GenerationProgress | null;
   dataVersion: number;
+
   setCurrentSession: (id: string) => void;
   addMessage: (msg: ChatMessage) => void;
   updateLastAssistant: (updater: (msg: ChatMessage) => ChatMessage) => void;
@@ -66,6 +71,8 @@ interface ChatStore {
   newSession: () => void;
   removeLastMessage: () => void;
   bumpDataVersion: () => void;
+  /** 重新加载当前科目的会话 ID 和列表（科目切换后调用） */
+  reloadSession: () => void;
 }
 
 export const useChatStore = create<ChatStore>((set, get) => ({
@@ -86,8 +93,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   addMessage: (msg) =>
     set((s) => {
       const msgs = [...s.messages, msg];
+      // 第一条用户消息 → 保存会话摘要
+      const sessions = loadSessions();
       if (msg.role === 'user' && msgs.filter(m => m.role === 'user').length === 1) {
-        const sessions = loadSessions();
         const existing = sessions.find(ses => ses.id === s.currentSessionId);
         if (!existing) {
           sessions.unshift({
@@ -100,7 +108,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           persistSessions(sessions);
         }
       }
-      const sessions = loadSessions();
+      // 更新会话时间
       const sesIdx = sessions.findIndex(ses => ses.id === s.currentSessionId);
       if (sesIdx >= 0) {
         sessions[sesIdx].updatedAt = msg.timestamp;
@@ -114,7 +122,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set((s) => {
       const msgs = [...s.messages];
       const last = msgs[msgs.length - 1];
-      if (last?.role === 'assistant') msgs[msgs.length - 1] = updater(last);
+      if (last?.role === 'assistant') {
+        msgs[msgs.length - 1] = updater(last);
+      }
       return { messages: msgs };
     }),
 
@@ -122,7 +132,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set((s) => {
       const msgs = [...s.messages];
       const last = msgs[msgs.length - 1];
-      if (last?.role === 'assistant') msgs[msgs.length - 1] = { ...last, content: last.content + chunk };
+      if (last?.role === 'assistant') {
+        msgs[msgs.length - 1] = { ...last, content: last.content + chunk };
+      }
       return { messages: msgs };
     }),
 
@@ -132,9 +144,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   setQuickCommands: (cmds) => set({ quickCommands: cmds }),
   setLoading: (v) => set({ loading: v }),
   clearMessages: () => set({ messages: [] }),
-
   newSession: () => {
     const state = get();
+    // 有消息时保存当前会话摘要
     if (state.messages.length > 0) {
       const sessions = loadSessions();
       const existing = sessions.find(s => s.id === state.currentSessionId);
@@ -155,10 +167,31 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     persistSessionId(id);
     set({ currentSessionId: id, messages: [] });
   },
-
   removeLastMessage: () =>
     set((s) => ({ messages: s.messages.slice(0, -1) })),
 
   bumpDataVersion: () =>
     set((s) => ({ dataVersion: s.dataVersion + 1 })),
+
+  /** 科目切换后重新加载该科目下的会话 ID 和会话列表 */
+  reloadSession: () => {
+    const id = loadSessionId();
+    const sessions = loadSessions();
+    set({ currentSessionId: id, sessions, messages: [] });
+  },
 }));
+
+// ================================================================
+// 自动监听科目切换 → 刷新会话
+// ================================================================
+let prevSubjectId: string | undefined;
+useSubjectStore.subscribe((state) => {
+  const newId = state.activeSubject?.id;
+  if (newId && newId !== prevSubjectId) {
+    prevSubjectId = newId;
+    // 延迟执行，等 store 状态更新完毕
+    setTimeout(() => {
+      useChatStore.getState().reloadSession();
+    }, 0);
+  }
+});

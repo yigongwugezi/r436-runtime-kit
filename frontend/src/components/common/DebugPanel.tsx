@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useChatStore } from '../../store/chatStore';
 import { useProfileStore } from '../../store/profileStore';
+import { useSubjectStore } from '../../store/subjectStore';
 import { Bug, ChevronDown, ChevronUp, X, Activity } from 'lucide-react';
 
 /* ===================================================================
@@ -82,8 +83,16 @@ export default function DebugPanel() {
             {/* 数据来源 */}
             <div className="border-t border-gray-700/50 pt-3 space-y-2">
               <p className="text-[9px] text-gray-500 uppercase tracking-wider font-semibold">数据来源</p>
-              <DebugSource label="Profile" source={useProfileStore.getState().profile ? 'agent' : 'none'} />
-              <DebugSource label="Resources" source={useProfileStore.getState().profile?.dimensions?.length ? 'agent' : 'none'} />
+              {(() => {
+                const sid = useSubjectStore.getState().activeSubject?.id;
+                const p = sid ? useProfileStore.getState().profiles[sid] : null;
+                return (
+                  <>
+                    <DebugSource label="Profile" source={p ? 'agent' : 'none'} />
+                    <DebugSource label="Resources" source={p?.dimensions?.length ? 'agent' : 'none'} />
+                  </>
+                );
+              })()}
             </div>
 
             {/* 最近 API 调用 */}

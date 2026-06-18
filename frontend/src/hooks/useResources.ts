@@ -1,23 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as resourcesApi from '../api/resources';
 import { useChatStore } from '../store/chatStore';
+import { useSubjectStore } from '../store/subjectStore';
 import type { Resource, ResourceFilter } from '../types/resource';
 
 export function useResources() {
-  const currentSessionId = useChatStore((state) => state.currentSessionId);
+  const subjectId = useSubjectStore((s) => s.activeSubject?.id);
   const dataVersion = useChatStore((state) => state.dataVersion);
   const [resources, setResources] = useState<Resource[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<ResourceFilter>({});
+  const lastSubjectRef = useRef<string | undefined>(undefined);
   const lastVersionRef = useRef<number>(0);
 
   const fetchResources = useCallback(async (f?: ResourceFilter) => {
+    if (!subjectId) return;
     setLoading(true);
     setError(null);
     try {
-      const res = await resourcesApi.getResources({ ...f, sessionId: currentSessionId });
+      const res = await resourcesApi.getResources({ ...f, subjectId });
       setResources(res?.resources || []);
       setTotal(res?.total || 0);
     } catch {
@@ -27,7 +30,7 @@ export function useResources() {
     } finally {
       setLoading(false);
     }
-  }, [currentSessionId]);
+  }, [subjectId]);
 
   const applyFilter = useCallback(
     (updates: Partial<ResourceFilter>) => {
@@ -45,11 +48,16 @@ export function useResources() {
     );
   }, []);
 
+  // 科目切换时重新获取资源
   useEffect(() => {
-    fetchResources(filter);
-  }, [fetchResources, filter]);
+    if (subjectId && lastSubjectRef.current !== subjectId) {
+      lastSubjectRef.current = subjectId;
+      setFilter({});
+      fetchResources({});
+    }
+  }, [subjectId, fetchResources]);
 
-  // Chat generation updates dataVersion; pages should refresh only, not silently generate data.
+  // 对话完成后自动刷新资源
   useEffect(() => {
     if (dataVersion <= 0 || dataVersion === lastVersionRef.current) return;
     lastVersionRef.current = dataVersion;

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useChatStore } from '../../store/chatStore';
+import { useSubjectStore } from '../../store/subjectStore';
 import { getCurrentLearner, logoutLearner } from '../../pages/LoginPage';
 import {
   Brain, MessageSquare, Library, GitFork, User, Home, TrendingUp,
@@ -37,6 +38,8 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
   const messages = useChatStore((s) => s.messages);
   const sessions = useChatStore((s) => s.sessions);
   const setCurrentSession = useChatStore((s) => s.setCurrentSession);
+  const newSession = useChatStore((s) => s.newSession);
+  const { activeSubject, subjects, setActive } = useSubjectStore();
   const learner = getCurrentLearner();
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState('');
@@ -74,24 +77,19 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
         <button onClick={onToggle} className="w-9 h-9 rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center shadow-lg mb-4">
           <Brain className="w-5 h-5 text-white" />
         </button>
+        <button onClick={() => navigate('/')}
+          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}>
+          <Home className="w-4.5 h-4.5" />
+        </button>
+        <div className="w-8 border-t border-gray-800/30 my-1" />
         <button onClick={() => { useChatStore.getState().newSession(); navigate('/chat'); }}
-          className="w-9 h-9 rounded-xl flex items-center justify-center text-green-400 hover:text-green-300 hover:bg-gray-800"
-          title="新建对话">
+          className="w-9 h-9 rounded-xl flex items-center justify-center text-green-400 hover:text-green-300 hover:bg-gray-800" title="新建对话">
           <Plus className="w-4.5 h-4.5" />
         </button>
         <div className="w-8 border-t border-gray-800/30 my-1" />
         <button onClick={() => navigate('/resources')}
           className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/resources' || location.pathname === '/path' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}>
           <Library className="w-4.5 h-4.5" />
-        </button>
-        <button onClick={() => { useChatStore.getState().newSession(); navigate('/chat'); }}
-          className="w-9 h-9 rounded-xl flex items-center justify-center text-gray-500 hover:text-gray-300 hover:bg-gray-800">
-          <Plus className="w-4.5 h-4.5" />
-        </button>
-        <div className="w-8 border-t border-gray-800/30 my-1" />
-        <button onClick={() => navigate('/')}
-          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}>
-          <Home className="w-4.5 h-4.5" />
         </button>
         <button onClick={() => navigate('/chat')}
           className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/chat' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}>
@@ -174,7 +172,26 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
         )}
       </div>
 
-      {/* ===== 导航（按组分隔） ===== */}
+      {/* ===== 当前科目 ===== */}
+      <div className="px-4 py-3 border-b border-gray-800/50">
+        <button onClick={() => navigate('/')}
+          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl bg-gray-800/50 hover:bg-gray-800 transition-all mb-2">
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center shadow-sm">
+            <Home className="w-4 h-4 text-white" />
+          </div>
+          <div className="flex-1 text-left">
+            <p className="text-sm font-semibold text-gray-200">个人中心</p>
+            <p className="text-[10px] text-gray-500">科目管理 · 账户设置</p>
+          </div>
+        </button>
+        <div className="flex items-center gap-2 px-1">
+          <div className="w-2 h-2 rounded-full bg-brand-500" />
+          <span className="text-sm font-semibold text-gray-200 truncate">{activeSubject?.name || '选择科目'}</span>
+          <span className="ml-auto text-[10px] text-gray-600 bg-gray-800/30 px-2 py-0.5 rounded-full">{subjects.length} 科</span>
+        </div>
+      </div>
+
+      {/* ===== 导航 */}
       <div className="px-3 py-3 space-y-0.5 border-b border-gray-800/30">
         <button onClick={() => { useChatStore.getState().newSession(); navigate('/chat'); }}
           className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-200 hover:text-white hover:bg-gray-800/50 transition-all border border-dashed border-gray-700/50 mb-2">
@@ -188,7 +205,6 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
 
         <div className="border-t border-gray-800/40 my-2" />
         <p className="text-[9px] text-gray-600 uppercase tracking-wider font-semibold px-3 mb-1">工具台</p>
-        <NavBtn path="/" label="首页" icon={Home} active={location.pathname === '/'} navigate={navigate} />
         <NavBtn path="/chat" label="对话" icon={MessageSquare} active={location.pathname === '/chat'} navigate={navigate} />
         <NavBtn path="/profile" label="画像" icon={User} active={location.pathname === '/profile'} navigate={navigate} />
         <NavBtn path="/analytics" label="分析" icon={TrendingUp} active={location.pathname === '/analytics'} navigate={navigate} />

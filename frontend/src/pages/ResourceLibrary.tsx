@@ -9,6 +9,7 @@ import {
 import { useResources } from '../hooks/useResources';
 import { useChatStore } from '../store/chatStore';
 import { useProfileStore } from '../store/profileStore';
+import { useSubjectStore } from '../store/subjectStore';
 import type { Resource } from '../types/resource';
 import type { ResourceType } from '../types/chat';
 import { RESOURCE_TYPE_LABELS } from '../utils/constants';
@@ -457,7 +458,8 @@ export default function ResourceLibrary() {
   const navigate = useNavigate();
   const { resources, total, loading, error, applyFilter, toggleBookmark, refetch } = useResources();
   const dataVersion = useChatStore((state) => state.dataVersion);
-  const profile = useProfileStore((state) => state.profile);
+  const subjectId = useSubjectStore((s) => s.activeSubject?.id);
+  const profile = useProfileStore((s) => subjectId ? s.profiles[subjectId] ?? null : null);
   const hasCourse = profile?.dimensions?.some(d => d.key === 'knowledge_base');
   const [selected, setSelected] = useState<Resource | null>(null);
   const [search, setSearch] = useState('');

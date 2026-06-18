@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import client from '../api/client';
-import { useChatStore } from '../store/chatStore';
+import { useSubjectStore } from '../store/subjectStore';
 import {
   TrendingUp, Zap, Target, BookOpen, Clock, Brain,
   AlertCircle, Sparkles, ArrowRight, Star,
@@ -76,17 +76,19 @@ function ProgressRing({ pct, size = 80, strokeWidth = 6 }: { pct: number; size?:
  * 主页面
  * =================================================================== */
 export default function LearningAnalyticsPage() {
-  const currentSessionId = useChatStore((s) => s.currentSessionId);
+  const subjectId = useSubjectStore((s) => s.activeSubject?.id);
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const lastSubjectRef = useRef<string | undefined>(undefined);
 
   const fetchAnalytics = useCallback(async () => {
+    if (!subjectId) return;
     setLoading(true);
     setError(null);
     try {
       const { data } = await client.get('/learning-analytics', {
-        params: { sessionId: currentSessionId },
+        params: { subjectId },
       });
       setAnalytics(data);
     } catch {
@@ -94,9 +96,14 @@ export default function LearningAnalyticsPage() {
     } finally {
       setLoading(false);
     }
-  }, [currentSessionId]);
+  }, [subjectId]);
 
-  useEffect(() => { fetchAnalytics(); }, [fetchAnalytics]);
+  useEffect(() => {
+    if (subjectId && lastSubjectRef.current !== subjectId) {
+      lastSubjectRef.current = subjectId;
+      fetchAnalytics();
+    }
+  }, [subjectId, fetchAnalytics]);
 
   // 空状态
   if (!loading && !error && analytics && analytics.eventCount === 0) {
