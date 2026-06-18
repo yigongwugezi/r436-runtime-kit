@@ -27,7 +27,7 @@ export interface Resource {
   pptOutline?: PptSlide[];
   createdAt: number;
   /** 数据来源 */
-  source?: 'user_input' | 'agent_generated' | 'system_inferred' | 'mock_fallback';
+  source?: 'user_input' | 'agent_generated' | 'system_inferred';
   /** 是否已收藏 */
   bookmarked?: boolean;
   /** 学习状态 */

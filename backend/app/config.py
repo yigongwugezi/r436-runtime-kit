@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     llm_retry_count: int = 2  # number of retries for failed LLM calls
     llm_retry_delay: float = 1.0  # seconds between retries
     llm_request_timeout: int = 60  # seconds for a single LLM HTTP request
-    enable_mock_fallback: bool = True  # allow mock data fallback (dev only, disable in prod)
+    enable_mock_fallback: bool = False  # demo_result fallback is opt-in for local demos only
 
     project_root: Path = Field(default_factory=lambda: Path(__file__).resolve().parents[2])
 

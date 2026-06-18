@@ -28,7 +28,7 @@ class ProfileAgent(BaseAgent):
 
     def _build_profile(self, context: dict[str, Any]) -> dict[str, Any]:
         if self.llm_client is None:
-            return self._profile_from_prompt(context["user_message"])
+            return self._merge_profile_facts(self._profile_from_prompt(context["user_message"]), context)
 
         try:
             content = self.llm_client.chat(
@@ -49,9 +49,36 @@ class ProfileAgent(BaseAgent):
                 ],
             )
             parsed = self._load_json(content)
-            return self._normalize_profile(parsed)
+            return self._merge_profile_facts(self._normalize_profile(parsed), context)
         except Exception:
-            return self._profile_from_prompt(context["user_message"])
+            return self._merge_profile_facts(self._profile_from_prompt(context["user_message"]), context)
+
+    def _merge_profile_facts(self, profile: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        facts = context.get("profile_facts") or {}
+        if not isinstance(facts, dict):
+            return profile
+
+        mapping = {
+            "background": ("major_background", "专业背景"),
+            "knowledge_base": ("knowledge_base", "知识基础"),
+            "learning_goal": ("learning_goal", "学习目标"),
+            "preference": ("cognitive_style", "学习偏好"),
+            "weak_points": ("weak_points", "薄弱点"),
+            "programming_ability": ("programming_ability", "编程能力"),
+            "target_course": ("interests", "目标课程"),
+            "time_budget": ("learning_rhythm", "学习节奏"),
+        }
+        for fact_key, (profile_key, label) in mapping.items():
+            value = str(facts.get(fact_key, "")).strip()
+            if value:
+                profile[profile_key] = {
+                    "label": label,
+                    "value": value,
+                    "confidence": 1.0,
+                    "source": "user_input",
+                    "evidence": value,
+                }
+        return profile
 
     def _profile_from_prompt(self, prompt: str) -> dict[str, Any]:
         background = self._extract_value(prompt, "身份/专业背景")

@@ -30,6 +30,41 @@ from app.utils.profile_normalizer import normalize_profile_dimensions
 # ── Trigger: run the full agent pipeline ──────────────────────────────
 
 
+def _profile_item(label: str, value: str, source: str = "user_input", confidence: float = 1.0) -> dict[str, Any]:
+    return {
+        "label": label,
+        "value": value,
+        "confidence": confidence,
+        "source": source,
+        "evidence": value,
+    }
+
+
+def _apply_state_facts_to_result(result: dict[str, Any], facts: dict[str, str], course: dict[str, Any] | None = None) -> None:
+    profile = result.setdefault("profile", {})
+    course_name = str((course or {}).get("course_name") or facts.get("target_course") or "").strip()
+    overrides = {
+        "major_background": ("Background", facts.get("background", "")),
+        "knowledge_base": ("Knowledge Base", facts.get("knowledge_base", "")),
+        "learning_goal": ("Learning Goal", facts.get("learning_goal", "")),
+        "cognitive_style": ("Learning Preference", facts.get("preference", "")),
+        "weak_points": ("Weak Points", facts.get("weak_points", "")),
+        "programming_ability": ("Programming Ability", facts.get("programming_ability", "")),
+        "interests": ("Target Course", facts.get("target_course", "")),
+        "learning_rhythm": ("Learning Rhythm", facts.get("time_budget", "")),
+    }
+    for key, (label, value) in overrides.items():
+        if value:
+            profile[key] = _profile_item(label, str(value))
+
+    if course_name:
+        profile["interests"] = _profile_item("Target Course", course_name, source="course_match", confidence=0.9)
+        profile.setdefault(
+            "learning_progress",
+            _profile_item("Learning Progress", f"Starting {course_name}", source="course_match", confidence=0.8),
+        )
+
+
 def run_agents(
     session_id: str,
     user_message: str,
@@ -65,6 +100,9 @@ def run_agents(
     if course_id and course_id.startswith("custom_"):
         # Caller passed a virtual course — use it directly, don't re-match
         resolved_course_id = course_id
+    elif course_id:
+        selected_course = course_catalog.get_course(course_id)
+        resolved_course_id = course_id
     else:
         selected_course = course_catalog.match_course(
             state.facts.get("target_course") or user_message,
@@ -79,6 +117,7 @@ def run_agents(
         session_id=session_id,
         course_id=resolved_course_id,
         user_message=agent_message,
+        profile_facts=dict(state.facts),
     )
 
     # Attach course metadata
@@ -91,6 +130,8 @@ def run_agents(
                 "chapter_count", len(selected_course.get("chapters", []))
             ),
         }
+
+    _apply_state_facts_to_result(result, state.facts, selected_course)
 
     # Persist to DB + in-memory cache
     conversation_store.set_result(session_id, result)

@@ -32,8 +32,12 @@ export async function generateResource(params: {
   return data;
 }
 
-/** 获取资源关联的知识图谱 */
-export async function getResourceKnowledgeGraph(resourceId: string, subjectId?: string): Promise<{ mermaidDef: string }> {
-  const { data } = await client.get(`/resources/${resourceId}/knowledge-graph`, { params: { subjectId } });
+export async function getResourceKnowledgeGraph(
+  resourceId: string,
+  subjectId?: string,
+): Promise<{ mermaidDef: string; source?: string; resourceId?: string }> {
+  const { data } = await client.get(`/resources/${resourceId}/knowledge-graph`, {
+    params: { subjectId, sessionId: subjectId },
+  });
   return data;
 }

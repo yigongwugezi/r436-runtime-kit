@@ -2,7 +2,7 @@
 
 All stage agents inherit from BaseAgent.  The contract now supports:
 
-- Optional ``mock_data`` for backwards compatibility.
+- Optional ``mock_data`` for explicit local demos only.
 - ``validate_result()`` — override to enforce required output fields.
 - ``get_fallback()`` — safe defaults returned when the agent fails or times out.
 """
@@ -40,8 +40,8 @@ class BaseAgent(ABC):
         """Initialise the agent.
 
         Args:
-            mock_data: Optional mock/fallback data dict.  If *None* the
-                agent should use ``get_fallback()`` when LLM is unavailable.
+            mock_data: Optional demo data dict. If *None* the agent should
+                use ``get_fallback()`` when LLM is unavailable.
             llm_client: Optional LLM client for real generation.
         """
         self.mock_data = mock_data or {}
