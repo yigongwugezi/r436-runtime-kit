@@ -46,8 +46,26 @@ def test_naive_db_datetime_is_treated_as_utc() -> None:
     assert_true(product._datetime_to_ms(naive_utc) == expected, "naive DB timestamps should be interpreted as UTC")
 
 
+def test_resource_source_preserves_rule_fallback_label() -> None:
+    resource = product._to_resource(
+        {
+            "resource_id": "res_fallback_source",
+            "type": "lecture",
+            "title": "Fallback source",
+            "content": "content",
+            "content_format": "markdown",
+            "source": "rule_based_fallback",
+            "related_stage_id": "stage_1",
+        },
+        session_id="product_source_session",
+    )
+
+    assert_true(resource["source"] == "rule_based_fallback", "resource source should not be overwritten as agent_generated")
+
+
 if __name__ == "__main__":
     test_resource_graph_missing_resource_is_empty()
     test_path_stage_estimated_days_come_from_duration()
     test_naive_db_datetime_is_treated_as_utc()
+    test_resource_source_preserves_rule_fallback_label()
     print("PASS product_routes_test")

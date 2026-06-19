@@ -385,6 +385,12 @@ class ConversationStore:
                     # Estimate minutes from content length
                     content_text = item.get("content", "")
                     estimated = max(10, len(content_text) // 200 * 5) if content_text else 20
+                    related_points = list(item.get("related_knowledge_points") or [])
+                    related_chapter = str(item.get("related_chapter") or "").strip()
+                    if related_chapter:
+                        related_points.append(related_chapter)
+                    if item.get("related_stage_id"):
+                        related_points.append(str(item.get("related_stage_id")))
 
                     save_resource(db, state.session_id, {
                         "id": resource_id,
@@ -392,8 +398,8 @@ class ConversationStore:
                         "title": item.get("title", "学习资源"),
                         "description": item.get("description", ""),
                         "content": content_text,
-                        "knowledge_points": [item.get("related_stage_id", "")] if item.get("related_stage_id") else [],
-                        "tags": [content_fmt, item.get("source", "agent_generated")],
+                        "knowledge_points": list(dict.fromkeys(point for point in related_points if point)),
+                        "tags": [content_fmt, item.get("source", "agent_generated"), item.get("quality_status", "")],
                         "difficulty": difficulty,
                         "estimated_minutes": estimated,
                         "format": "diagram" if content_fmt == "mermaid" else ("code" if item.get("type") == "practice" else "text"),

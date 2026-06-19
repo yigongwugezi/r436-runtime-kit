@@ -30,7 +30,14 @@ def test_agents_generate_from_course_knowledge_base() -> None:
         all("3-2" not in stage["duration"] and "4-2" not in stage["duration"] for stage in result["learning_path"]),
         "short timeline should not produce inverted day ranges",
     )
-    assert_true(all(item["source"] == "agent_generated" for item in result["resources"]), "resources should not be mock")
+    assert_true(
+        all(item["source"] in {"llm_generated", "rule_based_fallback"} for item in result["resources"]),
+        "resources should distinguish real LLM generation from rule fallback",
+    )
+    assert_true(
+        all(item.get("related_stage_id") and item.get("related_knowledge_points") for item in result["resources"]),
+        "resources should be bound to stages and knowledge points",
+    )
     assert_true(
         {"lecture", "mindmap", "quiz", "reading", "practice", "multimodal"}.issubset(
             {item["type"] for item in result["resources"]}

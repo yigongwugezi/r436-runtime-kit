@@ -1,6 +1,15 @@
+import json
+import re
 from typing import Any
 
 from app.agents.base import BaseAgent
+from app.services.course_catalog import course_catalog
+from app.services.llm_client import LLMClientError
+
+
+RESOURCE_TYPES = ["lecture", "mindmap", "quiz", "reading", "practice", "multimodal"]
+SOURCE_LLM = "llm_generated"
+SOURCE_FALLBACK = "rule_based_fallback"
 
 
 class ResourceAgent(BaseAgent):
@@ -8,31 +17,432 @@ class ResourceAgent(BaseAgent):
     agent_name = "学习资源生成智能体"
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
-        path = list(context.get("learning_path", []))
-        points = list(context.get("diagnosis", {}).get("weak_knowledge_points", []))
-        course = context.get("knowledge_context", {})
+        stages = self._stages(context)
+        course = self._course_context(context)
+        knowledge_points = self._knowledge_points(context, course, stages)
         profile = context.get("profile", {})
 
-        if not path or not points:
-            return {
-                "resources": [],
-                "agent_step": self.agent_step(),
-            }
+        if not stages or not knowledge_points:
+            return {"resources": [], "agent_step": self.agent_step()}
 
-        resources = [
-            self._lecture(points, course, profile),
-            self._mindmap(points, course),
-            self._quiz(points, profile),
-            self._reading(points, course),
-            self._practice(points, profile),
-            self._video_script(points, course),
-        ]
+        resources = self._generate_with_llm(context, course, stages, knowledge_points, profile)
+        if not resources:
+            resources = self._build_rule_fallback(course, stages, knowledge_points, profile)
+
         resources = self._scope_resource_ids(resources, str(context.get("session_id") or ""))
+        return {"resources": resources, "agent_step": self.agent_step()}
 
-        return {
-            "resources": resources,
-            "agent_step": self.agent_step(),
+    def _generate_with_llm(
+        self,
+        context: dict[str, Any],
+        course: dict[str, Any],
+        stages: list[dict[str, Any]],
+        knowledge_points: list[dict[str, Any]],
+        profile: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        if not self.llm_client:
+            return []
+
+        payload = {
+            "course_id": course.get("course_id") or context.get("course_id"),
+            "course_name": course.get("course_name") or context.get("course_id"),
+            "course_chapters": [
+                {
+                    "chapter_id": item.get("chapter_id"),
+                    "title": item.get("title") or item.get("name"),
+                    "difficulty": item.get("difficulty", "medium"),
+                    "prerequisites": item.get("prerequisites", []),
+                    "content_excerpt": str(item.get("content_excerpt") or item.get("content") or "")[:500],
+                }
+                for item in knowledge_points
+            ],
+            "learning_path_stages": [
+                {
+                    "stage_id": stage.get("stage_id"),
+                    "title": stage.get("title"),
+                    "duration": stage.get("duration"),
+                    "goal": stage.get("goal"),
+                    "tasks": stage.get("tasks", []),
+                    "reason": stage.get("reason", ""),
+                }
+                for stage in stages
+            ],
+            "diagnosis_weak_points": context.get("diagnosis", {}).get("weak_knowledge_points", []),
+            "profile": self._compact_profile(profile),
+            "profile_facts": context.get("profile_facts", {}),
         }
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are EduAgent's ResourceAgent. Generate personalized learning resources grounded only in "
+                    "the provided course knowledge base, learning path stages, diagnosis, and learner profile. "
+                    "Return JSON only, no Markdown fences. The JSON object must be {\"resources\": [...]}. "
+                    "Create at least five resources covering lecture, mindmap, quiz, reading, practice, and optionally "
+                    "multimodal video_script. Every resource must include resource_id, type, title, description, "
+                    "content_format, content or items, related_stage_id, related_chapter, related_knowledge_points, "
+                    "quality_status, and reason. Do not invent external books, papers, links, or chapters."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(payload, ensure_ascii=False),
+            },
+        ]
+
+        try:
+            raw = self.llm_client.chat(messages, temperature=0.2, max_tokens=2200)
+            parsed = self._parse_json(raw)
+        except (LLMClientError, json.JSONDecodeError, TypeError, ValueError):
+            return []
+
+        resources = parsed.get("resources") if isinstance(parsed, dict) else None
+        if not isinstance(resources, list):
+            return []
+        return self._normalize_llm_resources(resources, stages, knowledge_points)
+
+    def _build_rule_fallback(
+        self,
+        course: dict[str, Any],
+        stages: list[dict[str, Any]],
+        knowledge_points: list[dict[str, Any]],
+        profile: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        bindings = self._stage_bindings(stages, knowledge_points)
+        return [
+            self._lecture(course, bindings[0], profile),
+            self._mindmap(course, bindings),
+            self._quiz(course, bindings, profile),
+            self._reading(course, bindings),
+            self._practice(course, bindings[0], profile),
+            self._video_script(course, bindings[min(1, len(bindings) - 1)]),
+        ]
+
+    def _normalize_llm_resources(
+        self,
+        resources: list[Any],
+        stages: list[dict[str, Any]],
+        knowledge_points: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        stage_ids = {str(stage.get("stage_id") or f"stage_{index}") for index, stage in enumerate(stages, start=1)}
+        fallback_bindings = self._stage_bindings(stages, knowledge_points)
+        normalized: list[dict[str, Any]] = []
+        seen_types: set[str] = set()
+
+        for index, item in enumerate(resources[:8], start=1):
+            if not isinstance(item, dict):
+                continue
+            resource_type = self._clean_type(item.get("type"))
+            if resource_type not in RESOURCE_TYPES:
+                continue
+            binding = fallback_bindings[min(index - 1, len(fallback_bindings) - 1)]
+            stage_id = str(item.get("related_stage_id") or binding["stage_id"])
+            if stage_id not in stage_ids:
+                stage_id = binding["stage_id"]
+            knowledge = self._clean_list(item.get("related_knowledge_points")) or binding["knowledge_points"]
+            content_format = str(item.get("content_format") or self._format_for_type(resource_type))
+            content = str(item.get("content") or "").strip()
+            quiz_items = item.get("items") if isinstance(item.get("items"), list) else None
+            if not content and not quiz_items:
+                continue
+
+            normalized.append(
+                {
+                    "resource_id": str(item.get("resource_id") or f"res_{resource_type}_{index:03d}"),
+                    "type": resource_type,
+                    "title": str(item.get("title") or f"{binding['title']} resource").strip(),
+                    "description": str(item.get("description") or "").strip(),
+                    "content_format": content_format,
+                    "content": content,
+                    "items": quiz_items,
+                    "related_stage_id": stage_id,
+                    "related_chapter": str(item.get("related_chapter") or binding["chapter"]),
+                    "related_knowledge_points": knowledge,
+                    "source": SOURCE_LLM,
+                    "quality_status": str(item.get("quality_status") or "passed"),
+                    "reason": str(item.get("reason") or item.get("generation_reason") or binding["reason"]),
+                    "generation_reason": str(item.get("generation_reason") or item.get("reason") or binding["reason"]),
+                    "difficulty": str(item.get("difficulty") or binding["difficulty"]),
+                }
+            )
+            seen_types.add(resource_type)
+
+        return normalized if len(normalized) >= 5 and len(seen_types) >= 5 else []
+
+    def _lecture(self, course: dict[str, Any], binding: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
+        base = self._profile_value(profile, ["knowledge_base", "coding_ability", "programming_ability"], "基础未明确")
+        goal = self._profile_value(profile, ["learning_goal", "interest_direction"], "完成当前阶段学习")
+        names = "、".join(binding["knowledge_points"])
+        content = (
+            f"## {binding['title']} 课程讲义\n\n"
+            f"- 课程：{course.get('course_name', course.get('course_id', '课程'))}\n"
+            f"- 对应阶段：{binding['stage_id']}\n"
+            f"- 关联章节：{binding['chapter']}\n"
+            f"- 学生基础：{base}\n"
+            f"- 学习目标：{goal}\n\n"
+            f"### 核心知识点\n\n{names}\n\n"
+            "### 学习顺序\n\n"
+            "1. 先复述每个概念解决的问题和适用场景。\n"
+            "2. 再结合课程章节中的例题或伪代码手推一遍。\n"
+            "3. 最后用练习题检查边界条件、复杂度和常见误区。\n"
+        )
+        return self._resource(
+            "res_lecture_001",
+            "lecture",
+            f"{binding['title']}讲义",
+            "根据学习路径阶段、课程章节和学生画像生成的阶段讲义。",
+            "markdown",
+            binding,
+            content=content,
+        )
+
+    def _mindmap(self, course: dict[str, Any], bindings: list[dict[str, Any]]) -> dict[str, Any]:
+        root = self._safe_mermaid(str(course.get("course_name") or "学习资源"))
+        lines = ["mindmap", f"  root(({root}))"]
+        for binding in bindings[:6]:
+            lines.append(f"    {self._safe_mermaid(binding['title'])}")
+            for point in binding["knowledge_points"][:4]:
+                lines.append(f"      {self._safe_mermaid(point)}")
+        return self._resource(
+            "res_mindmap_001",
+            "mindmap",
+            f"{course.get('course_name', '课程')}知识结构图",
+            "把学习路径阶段和课程章节组织成 Mermaid 思维导图。",
+            "mermaid",
+            bindings[0],
+            content="\n".join(lines),
+            reason="用于帮助学生先建立章节之间的结构关系，再进入讲义和练习。",
+        )
+
+    def _quiz(self, course: dict[str, Any], bindings: list[dict[str, Any]], profile: dict[str, Any]) -> dict[str, Any]:
+        goal = self._profile_value(profile, ["learning_goal"], "查漏补缺")
+        items = []
+        for index, binding in enumerate(bindings[:5], start=1):
+            point = binding["knowledge_points"][0]
+            items.append(
+                {
+                    "question_id": f"q_{index:03d}",
+                    "question_type": "short_answer" if index % 2 == 0 else "single_choice",
+                    "stem": self._quiz_stem(str(course.get("course_id", "")), point),
+                    "options": self._quiz_options(str(course.get("course_id", "")), point) if index % 2 else [],
+                    "answer": self._quiz_answer(str(course.get("course_id", "")), point),
+                    "explanation": f"本题服务于目标：{goal}；重点检查 {point} 是否能用于真实题目或任务。",
+                    "difficulty": binding["difficulty"],
+                    "knowledge_point": point,
+                }
+            )
+        return self._resource(
+            "res_quiz_001",
+            "quiz",
+            "阶段诊断练习题",
+            "覆盖当前学习路径主要阶段的测验题。",
+            "json",
+            bindings[0],
+            items=items,
+            reason="用分阶段题目检查学生是否真正掌握课程核心知识点。",
+        )
+
+    def _reading(self, course: dict[str, Any], bindings: list[dict[str, Any]]) -> dict[str, Any]:
+        lines = []
+        for index, binding in enumerate(bindings[:6], start=1):
+            lines.append(
+                f"{index}. 建议阅读课程对应章节：{binding['chapter']}。阅读后整理 "
+                f"{'、'.join(binding['knowledge_points'][:3])} 的定义、例题和易错点。"
+            )
+        content = "## 拓展阅读路径\n\n" + "\n".join(lines) + "\n\n不编造外部书籍、论文或链接；没有明确来源时只引用课程对应章节。"
+        return self._resource(
+            "res_reading_001",
+            "reading",
+            "课程章节拓展阅读",
+            "基于课程知识库章节生成的阅读顺序。",
+            "markdown",
+            bindings[min(1, len(bindings) - 1)],
+            content=content,
+            reason="把课程章节转成可执行的阅读和复盘顺序。",
+        )
+
+    def _practice(self, course: dict[str, Any], binding: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
+        point = binding["knowledge_points"][0]
+        content = self._practice_content(str(course.get("course_id", "")), point, profile)
+        return self._resource(
+            "res_practice_001",
+            "practice",
+            f"{point}实操案例",
+            "结合课程主题生成可手推或可运行的实操任务。",
+            "markdown",
+            binding,
+            content=content,
+            reason="用小任务把抽象概念落到代码、伪代码或手算过程。",
+            difficulty=binding["difficulty"],
+        )
+
+    def _video_script(self, course: dict[str, Any], binding: dict[str, Any]) -> dict[str, Any]:
+        point = binding["knowledge_points"][0]
+        content = (
+            f"## 90 秒视频脚本：{point}\n\n"
+            f"1. 画面：显示课程 {course.get('course_name', '')} 与阶段 {binding['stage_id']}。\n"
+            f"2. 旁白：先说明 {point} 要解决的核心问题。\n"
+            "3. 画面：用一个最小例子展示输入、处理过程和输出。\n"
+            "4. 旁白：点出常见误区和本阶段练习任务。\n"
+            "5. 画面：收束到讲义、练习题和实操案例。"
+        )
+        return self._resource(
+            "res_multimodal_001",
+            "multimodal",
+            f"视频脚本：{point}",
+            "可交给多模态工具继续制作的视频讲解脚本。",
+            "markdown",
+            binding,
+            content=content,
+            reason="满足偏好视频/图解的学生，也为后续多模态生成预留结构。",
+        )
+
+    def _resource(
+        self,
+        resource_id: str,
+        resource_type: str,
+        title: str,
+        description: str,
+        content_format: str,
+        binding: dict[str, Any],
+        *,
+        content: str = "",
+        items: list[dict[str, Any]] | None = None,
+        reason: str | None = None,
+        difficulty: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "resource_id": resource_id,
+            "type": resource_type,
+            "title": title,
+            "description": description,
+            "content_format": content_format,
+            "content": content,
+            "items": items,
+            "related_stage_id": binding["stage_id"],
+            "related_chapter": binding["chapter"],
+            "related_knowledge_points": binding["knowledge_points"],
+            "source": SOURCE_FALLBACK,
+            "quality_status": "fallback_passed",
+            "reason": reason or binding["reason"],
+            "generation_reason": reason or binding["reason"],
+            "difficulty": difficulty or binding["difficulty"],
+        }
+
+    def _course_context(self, context: dict[str, Any]) -> dict[str, Any]:
+        course_id = str(context.get("course_id") or context.get("knowledge_context", {}).get("course_id") or "")
+        catalog_course = course_catalog.get_course(course_id) if course_id else None
+        knowledge = context.get("knowledge_context", {})
+        if catalog_course:
+            return catalog_course
+        return {
+            "course_id": knowledge.get("course_id", course_id),
+            "course_name": knowledge.get("course_name", course_id or "课程"),
+            "chapters": knowledge.get("retrieved_points", []),
+        }
+
+    def _knowledge_points(
+        self,
+        context: dict[str, Any],
+        course: dict[str, Any],
+        stages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        points: list[dict[str, Any]] = []
+        course_id = str(course.get("course_id") or context.get("course_id") or "")
+        for index, chapter in enumerate(course.get("chapters", []), start=1):
+            chapter_id = str(chapter.get("chapter_id", index)).zfill(2)
+            detail = course_catalog.load_chapter(course_id, chapter_id) or chapter
+            points.append(
+                {
+                    "chapter_id": chapter_id,
+                    "title": str(chapter.get("title") or chapter.get("name") or f"Chapter {index}"),
+                    "name": str(chapter.get("title") or chapter.get("name") or f"Chapter {index}"),
+                    "difficulty": chapter.get("difficulty", "medium"),
+                    "prerequisites": chapter.get("prerequisites", []),
+                    "content_excerpt": str(detail.get("content", ""))[:600],
+                }
+            )
+
+        retrieved = context.get("knowledge_context", {}).get("retrieved_points", [])
+        for item in retrieved:
+            if isinstance(item, dict):
+                self._append_unique_point(points, item)
+
+        weak_points = context.get("diagnosis", {}).get("weak_knowledge_points", [])
+        for item in weak_points:
+            if isinstance(item, dict):
+                self._append_unique_point(points, item)
+
+        if points:
+            return points
+        return [
+            {
+                "chapter_id": str(index).zfill(2),
+                "title": str(stage.get("title") or f"Stage {index}"),
+                "name": str(stage.get("title") or f"Stage {index}"),
+                "difficulty": "medium",
+                "prerequisites": [],
+            }
+            for index, stage in enumerate(stages, start=1)
+        ]
+
+    def _append_unique_point(self, points: list[dict[str, Any]], item: dict[str, Any]) -> None:
+        name = str(item.get("title") or item.get("name") or "").strip()
+        if not name:
+            return
+        if any(str(point.get("name") or point.get("title")) == name for point in points):
+            return
+        points.append(
+            {
+                "chapter_id": str(item.get("chapter_id") or len(points) + 1).zfill(2),
+                "title": name,
+                "name": name,
+                "difficulty": item.get("difficulty", item.get("priority", "medium")),
+                "prerequisites": item.get("prerequisites", []),
+                "content_excerpt": item.get("content_excerpt", ""),
+            }
+        )
+
+    def _stage_bindings(self, stages: list[dict[str, Any]], knowledge_points: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        result = []
+        stage_count = max(1, len(stages))
+        for index, stage in enumerate(stages, start=1):
+            start = round((index - 1) * len(knowledge_points) / stage_count)
+            end = round(index * len(knowledge_points) / stage_count)
+            group = knowledge_points[start:end] or [knowledge_points[min(index - 1, len(knowledge_points) - 1)]]
+            names = [str(item.get("name") or item.get("title")) for item in group if item.get("name") or item.get("title")]
+            chapter = "、".join(
+                f"{item.get('chapter_id', '')} {item.get('title') or item.get('name')}".strip()
+                for item in group[:3]
+            )
+            result.append(
+                {
+                    "stage_id": str(stage.get("stage_id") or f"stage_{index}"),
+                    "title": str(stage.get("title") or f"阶段 {index}"),
+                    "chapter": chapter or names[0],
+                    "knowledge_points": names[:5] or [str(stage.get("title") or f"阶段 {index}")],
+                    "difficulty": self._difficulty(group),
+                    "reason": str(stage.get("reason") or stage.get("goal") or "根据学习路径阶段和课程章节生成。"),
+                }
+            )
+        return result
+
+    def _stages(self, context: dict[str, Any]) -> list[dict[str, Any]]:
+        stages = [stage for stage in context.get("learning_path", []) if isinstance(stage, dict)]
+        if stages:
+            return stages
+        points = context.get("diagnosis", {}).get("weak_knowledge_points", [])
+        return [
+            {
+                "stage_id": f"stage_{index}",
+                "title": str(point.get("name") or f"阶段 {index}"),
+                "goal": "补齐诊断出的薄弱知识点。",
+                "tasks": [str(point.get("name") or f"知识点 {index}")],
+            }
+            for index, point in enumerate(points[:3], start=1)
+            if isinstance(point, dict)
+        ]
 
     def _scope_resource_ids(self, resources: list[dict[str, Any]], session_id: str) -> list[dict[str, Any]]:
         if not session_id:
@@ -43,148 +453,114 @@ class ResourceAgent(BaseAgent):
                 item["resource_id"] = f"{session_id}_{resource_id}"
         return resources
 
-    def _lecture(self, points: list[dict[str, Any]], course: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
-        first = points[0]
-        names = "、".join(str(point.get("name")) for point in points[:3])
-        learner_base = profile.get("knowledge_base", {}).get("value", "暂未明确")
-        content = (
-            f"## {course.get('course_name', '课程')}个性化讲义\n\n"
-            f"### 学习对象\n\n当前基础：{learner_base}\n\n"
-            f"### 本轮重点\n\n本轮优先学习：{names}。\n\n"
-            "### 学习建议\n\n"
-            "1. 先读概念定义，确认每个术语解决的是什么问题。\n"
-            "2. 再看例子或图解，把抽象概念落到具体场景。\n"
-            "3. 最后做 3-5 道小题，检查是否真的会用。\n\n"
-            f"### 第一个突破口\n\n从“{first.get('name')}”开始，因为它是当前路径中优先级最高的知识点。"
-        )
-        return {
-            "resource_id": "res_lecture_001",
-            "type": "lecture",
-            "title": f"{first.get('name')}入门讲义",
-            "description": f"根据学生画像和课程知识库生成，优先覆盖 {names}。",
-            "content_format": "markdown",
-            "content": content,
-            "related_stage_id": "stage_1",
-            "source": "agent_generated",
-            "quality_status": "passed",
-        }
+    def _parse_json(self, text: str) -> dict[str, Any]:
+        stripped = text.strip()
+        if stripped.startswith("```"):
+            stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
+            stripped = re.sub(r"\s*```$", "", stripped)
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start >= 0 and end >= start:
+            stripped = stripped[start : end + 1]
+        parsed = json.loads(stripped)
+        if not isinstance(parsed, dict):
+            raise ValueError("Resource LLM output must be a JSON object.")
+        return parsed
 
-    def _mindmap(self, points: list[dict[str, Any]], course: dict[str, Any]) -> dict[str, Any]:
-        root = course.get("course_name", "个性化学习路径")
-        lines = ["mindmap", f"  root(({root}))"]
-        for point in points[:5]:
-            lines.append(f"    {self._safe_mermaid(str(point.get('name', '知识点')))}")
-            for prerequisite in point.get("prerequisites", [])[:2]:
-                lines.append(f"      前置：{self._safe_mermaid(str(prerequisite))}")
-            lines.append(f"      优先级：{point.get('priority', 'medium')}")
-        return {
-            "resource_id": "res_mindmap_001",
-            "type": "mindmap",
-            "title": f"{root}知识结构图",
-            "description": "把当前检索到的课程章节、前置依赖和优先级组织成思维导图。",
-            "content_format": "mermaid",
-            "content": "\n".join(lines),
-            "related_stage_id": "stage_1",
-            "source": "agent_generated",
-            "quality_status": "passed",
-        }
+    def _compact_profile(self, profile: dict[str, Any]) -> dict[str, str]:
+        compact = {}
+        for key, item in profile.items():
+            if isinstance(item, dict):
+                value = str(item.get("value", "")).strip()
+                if value:
+                    compact[key] = value
+            elif item:
+                compact[key] = str(item)
+        return compact
 
-    def _quiz(self, points: list[dict[str, Any]], profile: dict[str, Any]) -> dict[str, Any]:
-        goal = str(profile.get("learning_goal", {}).get("value", ""))
-        items = []
-        for index, point in enumerate(points[:4], start=1):
-            name = str(point.get("name", f"知识点 {index}"))
-            items.append(
-                {
-                    "question_id": f"q_{index:03d}",
-                    "question_type": "short_answer" if index % 2 == 0 else "single_choice",
-                    "stem": f"请说明“{name}”主要解决什么问题，并举一个学习或考试中的应用场景。",
-                    "options": [] if index % 2 == 0 else ["概念理解", "机械记忆", "无关内容", "跳过不学"],
-                    "answer": "围绕核心概念、使用场景、常见误区进行回答即可。",
-                    "explanation": f"该题用于检查学生是否真正理解 {name}，而不是只记住名称。",
-                    "difficulty": "medium" if point.get("priority") == "high" else "easy",
-                    "knowledge_point": name,
-                }
+    def _profile_value(self, profile: dict[str, Any], keys: list[str], default: str) -> str:
+        for key in keys:
+            item = profile.get(key)
+            if isinstance(item, dict) and str(item.get("value", "")).strip():
+                return str(item.get("value")).strip()
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+        return default
+
+    def _clean_type(self, value: Any) -> str:
+        aliases = {"video_script": "multimodal", "video": "multimodal", "case_study": "practice"}
+        raw = str(value or "").strip()
+        return aliases.get(raw, raw)
+
+    def _format_for_type(self, resource_type: str) -> str:
+        if resource_type == "mindmap":
+            return "mermaid"
+        if resource_type == "quiz":
+            return "json"
+        return "markdown"
+
+    def _clean_list(self, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item).strip() for item in value if str(item).strip()][:8]
+
+    def _difficulty(self, points: list[dict[str, Any]]) -> str:
+        text = " ".join(str(point.get("difficulty", "")) + " " + str(point.get("priority", "")) for point in points)
+        if "hard" in text or "high" in text:
+            return "hard"
+        if "medium" in text:
+            return "medium"
+        return "easy"
+
+    def _quiz_stem(self, course_id: str, point: str) -> str:
+        if course_id == "data_structures":
+            return f"围绕 {point}，说明它的基本操作、适用场景，并分析一次典型操作的时间复杂度。"
+        if course_id == "ai_intro":
+            return f"围绕 {point}，说明它在人工智能系统中的作用，并给出一个典型应用场景。"
+        return f"围绕 {point}，说明核心概念、适用场景和一个常见误区。"
+
+    def _quiz_options(self, course_id: str, point: str) -> list[str]:
+        if course_id == "data_structures":
+            return ["定义与操作", "复杂度分析", "边界条件", "以上都需要"]
+        if course_id == "ai_intro":
+            return ["问题建模", "训练或搜索过程", "评价指标", "以上都需要"]
+        return ["概念理解", "应用场景", "常见误区", "以上都需要"]
+
+    def _quiz_answer(self, course_id: str, point: str) -> str:
+        if course_id == "data_structures":
+            return f"应从 {point} 的结构特征、操作步骤、边界条件和复杂度四方面作答。"
+        if course_id == "ai_intro":
+            return f"应从 {point} 的任务目标、输入输出、方法流程和评价方式四方面作答。"
+        return f"应结合 {point} 的定义、应用和限制进行回答。"
+
+    def _practice_content(self, course_id: str, point: str, profile: dict[str, Any]) -> str:
+        coding = self._profile_value(profile, ["coding_ability", "programming_ability"], "基础水平")
+        if course_id == "data_structures":
+            return (
+                f"## 实操任务：实现并验证 {point}\n\n"
+                f"编程能力：{coding}\n\n"
+                "### 要求\n\n"
+                "1. 写出核心结构或操作的伪代码。\n"
+                "2. 准备空输入、单元素、重复元素和普通样例。\n"
+                "3. 记录每步操作后的状态，并估算时间复杂度。\n\n"
+                "```python\n"
+                "def run_case(values):\n"
+                "    trace = []\n"
+                "    for value in values:\n"
+                "        trace.append((value, list(values)))\n"
+                "    return trace\n\n"
+                "print(run_case([3, 1, 2]))\n"
+                "```\n"
             )
-        return {
-            "resource_id": "res_quiz_001",
-            "type": "quiz",
-            "title": "个性化基础检测题",
-            "description": f"围绕当前学习目标生成，目标：{goal or '查漏补缺'}。",
-            "content_format": "json",
-            "items": items,
-            "related_stage_id": "stage_1",
-            "source": "agent_generated",
-            "quality_status": "passed",
-        }
-
-    def _reading(self, points: list[dict[str, Any]], course: dict[str, Any]) -> dict[str, Any]:
-        bullet_lines = "\n".join(
-            f"{index}. 复习 {point.get('name')}：先看定义，再看易错点，最后做一道例题。"
-            for index, point in enumerate(points[:5], start=1)
-        )
-        return {
-            "resource_id": "res_reading_001",
-            "type": "reading",
-            "title": "拓展阅读与复盘建议",
-            "description": "把课程知识库中的重点章节转成可执行的阅读顺序。",
-            "content_format": "markdown",
-            "content": f"## 阅读顺序\n\n{bullet_lines}\n\n## 防幻觉提醒\n\n关键定义和公式请回到课程教材或课堂课件核对。",
-            "related_stage_id": "stage_2",
-            "source": "agent_generated",
-            "quality_status": "passed",
-        }
-
-    def _practice(self, points: list[dict[str, Any]], profile: dict[str, Any]) -> dict[str, Any]:
-        first = points[0]
-        target = str(first.get("name", "核心知识点"))
-        content = (
-            f"## 实操任务：用代码或伪代码理解 {target}\n\n"
-            "### 任务目标\n\n"
-            f"把“{target}”转换成一个可以运行、画图或手推的小例子。\n\n"
-            "### 建议步骤\n\n"
-            "1. 写出输入、处理过程和输出。\n"
-            "2. 用最小样例手动跑一遍。\n"
-            "3. 标出最容易出错的边界条件。\n\n"
-            "```python\n"
-            "def learn_step(example):\n"
-            "    # TODO: replace this with the course-specific operation\n"
-            "    return example\n\n"
-            "print(learn_step('demo'))\n"
-            "```\n"
-        )
-        return {
-            "resource_id": "res_practice_001",
-            "type": "practice",
-            "title": f"{target}实操案例",
-            "description": "按学生偏好生成的可执行/可改写实践任务。",
-            "content_format": "markdown",
-            "content": content,
-            "related_stage_id": "stage_1",
-            "source": "agent_generated",
-            "quality_status": "passed",
-        }
-
-    def _video_script(self, points: list[dict[str, Any]], course: dict[str, Any]) -> dict[str, Any]:
-        first = points[0]
-        return {
-            "resource_id": "res_multimodal_001",
-            "type": "multimodal",
-            "title": f"多模态讲解脚本：{first.get('name')}",
-            "description": "先生成视频/动画脚本，后续可接入 SeeDance 等多模态工具。",
-            "content_format": "markdown",
-            "content": (
-                f"## 60 秒讲解脚本：{first.get('name')}\n\n"
-                "1. 画面：展示课程总标题和本节关键词。旁白：今天先解决一个关键问题。\n"
-                f"2. 画面：突出“{first.get('name')}”。旁白：它是当前路径中的优先知识点。\n"
-                "3. 画面：列出前置知识和常见误区。旁白：先补前置，再做练习。\n"
-                "4. 画面：出现一道小题或代码片段。旁白：用一个例子检查是否真正理解。\n"
-                "5. 画面：给出下一步学习任务。旁白：完成讲义、练习和复盘。"
-            ),
-            "related_stage_id": "stage_2",
-            "source": "agent_generated",
-            "quality_status": "passed",
-        }
+        if course_id == "ai_intro":
+            return (
+                f"## 实操任务：拆解 {point} 的 AI 流程\n\n"
+                "1. 写出任务输入、模型/算法、输出和评价指标。\n"
+                "2. 用 5 条样例数据模拟一次预测、搜索或推理流程。\n"
+                "3. 说明可能的数据偏差、过拟合或评价误差。\n"
+            )
+        return f"## 实操任务：{point}\n\n用一个最小样例写出输入、处理过程、输出和检查标准。"
 
     def _safe_mermaid(self, text: str) -> str:
-        return text.replace("(", "（").replace(")", "）").replace(":", "：")
+        cleaned = re.sub(r"[\r\n\t]+", " ", text).strip()
+        return cleaned.replace("(", "（").replace(")", "）").replace(":", "：")[:60] or "resource"

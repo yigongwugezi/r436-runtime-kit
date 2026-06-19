@@ -1112,8 +1112,6 @@ def get_resources(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
             _to_resource(item, state.last_result.get("course_id", "ai_intro"), session_id)
             for item in state.last_result.get("resources", [])
         ]
-        for r in resources:
-            r["source"] = "agent_generated"
         return {"resources": resources, "total": len(resources), "page": 1, "sessionId": session_id}
 
     return {"resources": [], "total": 0, "page": 1, "sessionId": session_id}
@@ -1159,7 +1157,6 @@ def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "") -> 
         ]
         match = next((item for item in resources if item["id"] == resource_id), None)
         if match:
-            match["source"] = "agent_generated"
             return {"resource": match}
 
     return {
@@ -1211,10 +1208,7 @@ def generate_resource(payload: dict[str, Any]) -> dict[str, Any]:
         _to_resource(item, result.get("course_id", "ai_intro"), session_id)
         for item in result.get("resources", [])
     ]
-    for r in resources:
-        r["source"] = "agent_generated"
-
-    primary = resources[0] if resources else {"id": "res_new", "title": f"{topic} 个性化资源", "source": "agent_generated"}
+    primary = resources[0] if resources else {"id": "res_new", "title": f"{topic} 个性化资源", "source": "none"}
     return {"resource": primary}
 
 
