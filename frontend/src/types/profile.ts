@@ -1,5 +1,5 @@
 // ================================================================
-// Student Profile types — 10-dimension portrait
+// Student Profile types
 // ================================================================
 
 export interface StudentProfile {
@@ -9,46 +9,44 @@ export interface StudentProfile {
   createdAt: number;
   updatedAt: number;
   dimensions: ProfileDimension[];
-  /** 知识短板列表 */
   weaknesses: KnowledgeGap[];
-  /** 学习偏好 */
   preferences: LearningPreferences;
-  /** 学习历史摘要 */
   history: StudyHistory;
 }
 
 /** 维度数据来源类型 */
-export type DimensionSource = 'user_input' | 'agent_generated' | 'system_inferred' | 'fallback';
+export type DimensionSource =
+  | 'user_input'
+  | 'inferred'
+  | 'llm_generated'
+  | 'rule_based_fallback'
+  | 'diagnosis'
+  | 'feedback';
 
 export interface ProfileDimension {
   key: DimensionKey;
   label: string;
-  /** 0-100 分数/掌握度（后端返回，前端不造假） */
-  value: number;
-  /** 0-1 置信度 */
+  value: string;
+  score: number;
   confidence: number;
-  /** 维度解释/说明 */
   description: string;
-  /** 支撑证据（如用户原始语句、分析依据） */
-  evidence?: string;
-  /** 分数（与 value 一致，语义更清晰的后端字段名） */
-  score?: number;
+  explanation: string;
+  evidence: string;
   updatedAt: number;
-  /** 数据来源 */
-  source?: DimensionSource;
+  source: DimensionSource;
 }
 
 export type DimensionKey =
-  | 'major_background'    // 专业背景
-  | 'knowledge_base'      // 知识基础
-  | 'learning_goal'       // 学习目标
-  | 'cognitive_style'     // 认知风格
-  | 'error_patterns'      // 易错点
-  | 'coding_ability'      // 编程能力
-  | 'learning_progress'   // 学习进度
-  | 'interest_direction'  // 兴趣方向
-  | 'learning_rhythm'     // 学习节奏
-  | 'self_efficacy';      // 学习效能感
+  | 'major_background'
+  | 'knowledge_base'
+  | 'learning_goal'
+  | 'cognitive_style'
+  | 'error_patterns'
+  | 'coding_ability'
+  | 'learning_progress'
+  | 'interest_direction'
+  | 'learning_rhythm'
+  | 'self_efficacy';
 
 export const DIMENSION_LABELS: Record<DimensionKey, string> = {
   major_background: '专业背景',
@@ -65,14 +63,14 @@ export const DIMENSION_LABELS: Record<DimensionKey, string> = {
 
 export interface KnowledgeGap {
   topic: string;
-  mastery: number;       // 0-100
-  priority: number;      // 1-10 优先修复
+  mastery: number;
+  priority: number;
   suggestedResources: string[];
 }
 
 export interface LearningPreferences {
   preferredFormats: ResourceFormat[];
-  paceMinutes: number;        // 单次理想学习时长(分钟)
+  paceMinutes: number;
   difficulty: DifficultyLevel | 'unknown';
   explainStyle: 'diagram' | 'code' | 'case' | 'theory' | 'unknown';
 }
@@ -84,7 +82,7 @@ export type DifficultyLevel = 'beginner' | 'intermediate' | 'advanced';
 export interface StudyHistory {
   totalStudyMinutes: number;
   completedTopics: string[];
-  quizAccuracy: number | null;     // 0-100, null when no quiz events exist
-  streak: number;            // 连续学习天数
+  quizAccuracy: number | null;
+  streak: number;
   lastStudyDate: number;
 }

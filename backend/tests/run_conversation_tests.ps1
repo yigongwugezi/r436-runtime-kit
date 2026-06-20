@@ -24,6 +24,7 @@ try {
     Invoke-PythonTest @("tests\conversation_eval.py")
     Invoke-PythonTest @("tests\conversation_regression.py")
     Invoke-PythonTest @("tests\profile_extractor_test.py")
+    Invoke-PythonTest @("tests\profile_agent_test.py")
     Invoke-PythonTest @("tests\planner_agent_test.py")
     Invoke-PythonTest @("tests\resource_agent_test.py")
     Invoke-PythonTest @("tests\agent_generation_test.py")

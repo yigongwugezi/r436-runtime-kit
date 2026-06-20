@@ -1,4 +1,4 @@
-# EduAgent 小组每日同步模板
+# Runtime Kit 小组每日同步模板
 
 ## 使用方式
 

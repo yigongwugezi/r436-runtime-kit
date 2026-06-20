@@ -489,7 +489,7 @@ export default function LearningPathPage() {
       <PageEmpty
         icon={<GitFork className="w-8 h-8" />}
         title="暂无学习路径"
-        description="通过 AI 对话让系统为你规划个性化学习路径"
+        description="通过对话让系统为你规划学习路径"
         action={
           <button
             onClick={() => navigate('/chat')}
@@ -561,7 +561,7 @@ export default function LearningPathPage() {
       <div className="mb-8">
         <div className="flex items-center gap-2 mb-2">
           <Target className="w-5 h-5 text-brand-500" />
-          <span className="text-xs font-bold text-brand-500 uppercase tracking-wider">Personalized Learning Path</span>
+          <span className="text-xs font-bold text-brand-500 uppercase tracking-wider">Study Workflow Path</span>
         </div>
         <h1 className="text-2xl md:text-3xl font-extrabold text-gray-900 mb-1">{path.title}</h1>
         <p className="text-sm text-gray-500 mb-2">{path.description}</p>

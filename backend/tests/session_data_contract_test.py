@@ -61,6 +61,30 @@ def test_generated_data_is_readable_by_session_and_isolated() -> None:
         assert_true(profile_b is not None, "session B should read generated profile")
         assert_true(path_b is not None, "session B should read generated learning path")
         assert_true(resources_b, "session B should read generated resources")
+        expected_profile_keys = {
+            "major_background",
+            "knowledge_base",
+            "learning_goal",
+            "cognitive_style",
+            "error_patterns",
+            "coding_ability",
+            "learning_progress",
+            "interest_direction",
+            "learning_rhythm",
+            "self_efficacy",
+        }
+        dims_a = profile_a.dimensions or []
+        dims_b = profile_b.dimensions or []
+        assert_true({dim.get("key") for dim in dims_a} == expected_profile_keys, "session A profile snapshot should store 10 dimensions")
+        assert_true({dim.get("key") for dim in dims_b} == expected_profile_keys, "session B profile snapshot should store 10 dimensions")
+        assert_true(
+            all(all(field in dim for field in ("score", "confidence", "explanation", "evidence", "source")) for dim in dims_a),
+            "session A profile snapshot should keep structured dimension fields",
+        )
+        assert_true(
+            all(dim.get("source") != "unknown" for dim in dims_a + dims_b),
+            "profile snapshots should not persist unknown sources",
+        )
 
         assert_true(path_a.session_id == session_a, "session A path should belong to session A")
         assert_true(path_b.session_id == session_b, "session B path should belong to session B")

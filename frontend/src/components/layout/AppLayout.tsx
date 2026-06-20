@@ -47,7 +47,7 @@ function MobileTopBar({ collapsed }: { collapsed: boolean }) {
   return (
     <div className="md:hidden sticky top-0 z-40 bg-white/90 dark:bg-gray-900/90 backdrop-blur-xl border-b border-gray-100 dark:border-gray-800 px-4 py-3">
       <p className="text-sm font-bold text-gray-800 dark:text-gray-200">
-        {labels[pathname] || 'EduAgent'}
+        {labels[pathname] || 'r436-runtime-kit'}
       </p>
     </div>
   );

@@ -1,4 +1,4 @@
-# EduAgent API Contract
+# Runtime Kit API Contract
 
 ## 1. Base URLs
 
@@ -16,14 +16,14 @@ http://localhost:8001
 
 The backend keeps two layers of APIs:
 
-1. Core orchestration API for the multi-agent workflow.
+1. Core orchestration API for the module workflow.
 2. Product APIs used directly by the React frontend.
 
 ## 2. Core API
 
 ### POST /api/agents/run
 
-Purpose: run the complete multi-agent workflow.
+Purpose: run the complete module workflow.
 
 Request:
 
@@ -77,9 +77,9 @@ Request:
 Response: Server-Sent Events.
 
 ```text
-data: {"content":"正在启动多智能体协同流程...\n","done":false}
+data: {"content":"正在启动工作流处理流程...\n","done":false}
 
-data: {"content":"## 个性化学习方案已生成\n","done":false}
+data: {"content":"## 学习方案已生成\n","done":false}
 
 data: {"done":true}
 ```
@@ -96,7 +96,7 @@ Response:
   "reply": {
     "id": "assistant_msg_001",
     "role": "assistant",
-    "content": "## 个性化学习方案已生成...",
+    "content": "## 学习方案已生成...",
     "timestamp": 1781321459000
   }
 }
@@ -149,7 +149,7 @@ The `source` field indicates data provenance: `"db"` (from SQLite), `"agent"` (i
 
 ### POST /profile/build
 
-Purpose: build or refresh the student profile from a new message. This triggers the full multi-agent pipeline and persists results.
+Purpose: build or refresh the student profile from a new message. This triggers the full workflow pipeline and persists results.
 
 Request:
 
@@ -201,7 +201,7 @@ Response:
 
 ### GET /learning-path
 
-Purpose: get the current personalized learning path. Reads from database — never triggers agents.
+Purpose: get the current study path. Reads from database — never triggers agents.
 
 Query: `?sessionId=frontend_session_001`
 
@@ -211,7 +211,7 @@ Response:
 {
   "path": {
     "id": "path_ai_intro",
-    "title": "人工智能导论个性化学习路径",
+    "title": "人工智能导论学习路径",
     "description": "采用先概念、再图解、再代码实验的学习策略",
     "courseName": "人工智能导论",
     "courseId": "ai_intro",
@@ -476,9 +476,9 @@ Response:
 ```json
 {
   "progress": {
-    "stage": "多智能体生成中",
+    "stage": "工作流生成中",
     "progress": 100,
-    "agentName": "EduAgent",
+    "agentName": "runtime-kit",
     "detail": "task_001"
   }
 }
@@ -786,10 +786,10 @@ Account (用户)
 ### 4.5 前端存储 (localStorage)
 
 ```json
-// eduagent_active_subject
+// r436_runtime_active_subject
 { "id": "subject_001", "name": "数据结构" }
 
-// eduagent_subject_{learnerId}
+// r436_runtime_subject_{learnerId}
 [{ "id": "subject_001", "name": "数据结构", ... }]
 ```
 

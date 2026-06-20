@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useChatStore } from '../../store/chatStore';
 import { useProfileStore } from '../../store/profileStore';
 import { useSubjectStore } from '../../store/subjectStore';
+import { getCurrentLearner } from '../../pages/LoginPage';
 import { Bug, ChevronDown, ChevronUp, X, Activity } from 'lucide-react';
 
 /* ===================================================================
@@ -37,12 +38,7 @@ export default function DebugPanel() {
   }, []);
 
   const calls = apiCalls.slice(0, 8);
-  const learner = (() => {
-    try {
-      const data = localStorage.getItem('eduagent_active_learner');
-      return data ? JSON.parse(data) : null;
-    } catch { return null; }
-  })();
+  const learner = getCurrentLearner();
 
   return (
     <>

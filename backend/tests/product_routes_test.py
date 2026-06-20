@@ -4,12 +4,28 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app.db.engine import SessionLocal
+from app.db.models import SessionModel
 from app.routers import product
+from app.services import agent_service
+from app.services.conversation_state import conversation_store
 
 
 def assert_true(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
+
+
+def _cleanup(session_id: str) -> None:
+    conversation_store._sessions.pop(session_id, None)
+    db = SessionLocal()
+    try:
+        session = db.get(SessionModel, session_id)
+        if session:
+            db.delete(session)
+            db.commit()
+    finally:
+        db.close()
 
 
 def test_resource_graph_missing_resource_is_empty() -> None:
@@ -63,9 +79,37 @@ def test_resource_source_preserves_rule_fallback_label() -> None:
     assert_true(resource["source"] == "rule_based_fallback", "resource source should not be overwritten as agent_generated")
 
 
+def test_profile_route_preserves_structured_dimension_fields() -> None:
+    session_id = "product_profile_roundtrip"
+    conversation_store.enable_db()
+    _cleanup(session_id)
+
+    try:
+        agent_service.run_agents(
+            session_id=session_id,
+            course_id="data_structures",
+            user_message="我是软件工程大三学生，C 语言基础一般，想用 48 小时复习数据结构，希望多给图解和代码案例。",
+        )
+        profile = product.get_profile(sessionId=session_id)["profile"]
+        dimensions = profile["dimensions"]
+
+        assert_true(len(dimensions) == 10, "/profile should return 10 dimensions")
+        assert_true(
+            all(all(field in dim for field in ("value", "score", "confidence", "explanation", "evidence", "source")) for dim in dimensions),
+            "/profile should preserve structured dimension fields",
+        )
+        assert_true(
+            all(dim["key"] not in {"weak_points", "programming_ability", "interests"} for dim in dimensions),
+            "/profile should not expose legacy 8-dimension keys",
+        )
+    finally:
+        _cleanup(session_id)
+
+
 if __name__ == "__main__":
     test_resource_graph_missing_resource_is_empty()
     test_path_stage_estimated_days_come_from_duration()
     test_naive_db_datetime_is_treated_as_utc()
     test_resource_source_preserves_rule_fallback_label()
+    test_profile_route_preserves_structured_dimension_fields()
     print("PASS product_routes_test")

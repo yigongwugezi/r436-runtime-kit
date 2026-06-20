@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    app_name: str = "eduagent-backend"
+    app_name: str = "r436-runtime-kit-backend"
     app_env: str = "development"
     frontend_origin: str = "http://localhost:5173"
     llm_provider: str = "mock"
@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
 
-    database_url: str = "sqlite:///./data/eduagent.db"
+    database_url: str = "sqlite:///./data/r436_runtime.db"
 
     # Agent orchestration settings
     agent_timeout: int = 60  # seconds per individual agent

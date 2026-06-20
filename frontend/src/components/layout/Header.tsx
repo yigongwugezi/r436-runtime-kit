@@ -3,6 +3,7 @@ import { Brain, Sparkles, LogOut, User, Settings, ChevronDown, Edit3 } from 'luc
 import { useNavigate, useLocation } from 'react-router-dom';
 import { getCurrentLearner, logoutLearner } from '../../pages/LoginPage';
 import { useChatStore } from '../../store/chatStore';
+import { readStorageJson, writeStorageJson, runtimeStorageKeys } from '../../utils/storageKeys';
 
 const navItems = [
   { path: '/', label: '首页' },
@@ -44,12 +45,12 @@ export default function Header() {
     const name = editName.trim();
     if (!name || !learner) return;
     // 更新 localStorage 中的 learner 名称
-    const learners = JSON.parse(localStorage.getItem('eduagent_learners') || '[]');
+    const learners = readStorageJson(runtimeStorageKeys.learners, [] as any[]);
     const updated = learners.map((l: any) =>
       l.id === learner.id ? { ...l, name } : l
     );
-    localStorage.setItem('eduagent_learners', JSON.stringify(updated));
-    localStorage.setItem('eduagent_active_learner', JSON.stringify({ ...learner, name }));
+    writeStorageJson(runtimeStorageKeys.learners, updated);
+    writeStorageJson(runtimeStorageKeys.activeLearner, { ...learner, name });
     setEditOpen(false);
     window.location.reload(); // 刷新以更新所有组件中的名称
   };
@@ -66,7 +67,7 @@ export default function Header() {
             <Brain className="w-5 h-5 text-white" />
           </div>
           <span className="text-xl font-extrabold text-gray-900 tracking-tight">
-            Edu<span className="gradient-text">Agent</span>
+            r436<span className="gradient-text">-runtime-kit</span>
           </span>
         </button>
 

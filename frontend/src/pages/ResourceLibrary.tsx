@@ -590,7 +590,7 @@ export default function ResourceLibrary() {
       <div className="mb-6">
         <h1 className="text-2xl md:text-3xl font-extrabold text-gray-900 mb-1">资源库</h1>
         <p className="text-sm text-gray-500">
-          共 <span className="font-semibold text-gray-700">{total}</span> 个学习资源，由多智能体协同为你个性化生成
+          共 <span className="font-semibold text-gray-700">{total}</span> 个学习资源，由当前工作流按课程上下文整理
         </p>
       </div>
 
@@ -638,8 +638,8 @@ export default function ResourceLibrary() {
               search || activeType || activeDifficulty
                 ? '尝试调整筛选条件或搜索关键词'
                 : hasCourse
-                  ? '当前课程暂无资源，在 AI 对话中说"生成学习资源"来获得个性化材料'
-                  : '在 AI 对话中描述你的学习需求，多智能体将为你生成个性化学习资源'
+                  ? '当前课程暂无资源，在对话中说"生成学习资源"来获得课程材料'
+                  : '在对话中描述你的学习需求，系统会为你整理课程资源'
             }
             action={
               !search && !activeType && !activeDifficulty ? (
@@ -781,17 +781,17 @@ export default function ResourceLibrary() {
               <div className="p-3 bg-amber-50/80 border border-amber-200 rounded-xl">
                 <p className="text-xs text-amber-700 font-medium mb-0.5">🛡️ 兜底资源</p>
                 <p className="text-[10px] text-amber-500">
-                  此资源由系统规则生成，未经过 AI 智能体优化。内容与你的学习画像匹配度可能有限。
-                  建议在 AI 对话中补充详细信息以获取更精准的个性化资源。
+                  此资源由系统规则生成，内容与当前课程信息的匹配度可能有限。
+                  建议在对话中补充详细信息以获取更准确的课程资源。
                 </p>
               </div>
             )}
             {selected.source === 'agent_generated' && (
               <div className="p-3 bg-green-50/70 border border-green-100 rounded-xl">
-                <p className="text-xs text-green-600 font-medium mb-0.5">✨ AI 智能体生成</p>
+                <p className="text-xs text-green-600 font-medium mb-0.5">💡 推荐理由</p>
                 <p className="text-[10px] text-green-500">
-                  此资源由 ResourceAgent 根据你的学习画像、当前阶段「{selected.relatedChapter || selected.relatedStageId || '当前课程'}」
-                  和知识短板个性化生成，与你的学习路径直接关联。
+                  此资源基于当前课程阶段「{selected.relatedChapter || selected.relatedStageId || '当前课程'}」
+                  和知识短板整理，与学习路径直接关联。
                 </p>
               </div>
             )}

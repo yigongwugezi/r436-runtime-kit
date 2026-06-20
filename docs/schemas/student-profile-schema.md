@@ -2,7 +2,7 @@
 
 ## 1. Purpose
 
-The student profile is used by EduAgent to understand the learner and generate personalized learning paths and resources.
+The student profile is used by the runtime kit to understand the learner and generate study paths and resources.
 
 The profile includes 10 dimensions extracted by `ProfileAgent` (aligned with frontend `DimensionKey` type):
 

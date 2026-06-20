@@ -1,23 +1,20 @@
 import { useState, useEffect } from 'react';
 import { User, Edit2, Check, X, Save, LogOut } from 'lucide-react';
+import { readStorageItem, writeStorageItem, runtimeStorageKeys } from '../../utils/storageKeys';
 
 /* ===================================================================
  * 用户信息管理
  * localStorage 存储：
- *   eduagent_learner_name  - 学习者昵称
- *   eduagent_current_session_id - 当前 sessionId
+ *   r436_runtime_learner_name  - 学习者昵称
+ *   r436_runtime_current_session_id - 当前 sessionId
  * =================================================================== */
 
-const LEARNER_KEY = 'eduagent_learner_name';
-
 function loadLearner(): string {
-  try {
-    return localStorage.getItem(LEARNER_KEY) || '';
-  } catch { return ''; }
+  return readStorageItem(runtimeStorageKeys.learnerName) || '';
 }
 
 function saveLearner(name: string) {
-  try { localStorage.setItem(LEARNER_KEY, name); } catch { /* noop */ }
+  writeStorageItem(runtimeStorageKeys.learnerName, name);
 }
 
 /* ===================================================================

@@ -22,6 +22,26 @@ def test_agents_generate_from_course_knowledge_base() -> None:
 
     assert_true(result["knowledge_context"]["source"] == "course_knowledge_base", "knowledge source should be real course KB")
     assert_true(result["knowledge_context"]["course_id"] == "data_structures", "course id should be preserved")
+    expected_profile_keys = [
+        "major_background",
+        "knowledge_base",
+        "learning_goal",
+        "cognitive_style",
+        "error_patterns",
+        "coding_ability",
+        "learning_progress",
+        "interest_direction",
+        "learning_rhythm",
+        "self_efficacy",
+    ]
+    assert_true(list(result["profile"].keys()) == expected_profile_keys, "profile should use stable 10-dimension keys")
+    assert_true(
+        all(
+            all(field in result["profile"][key] for field in ("score", "confidence", "explanation", "evidence", "source"))
+            for key in expected_profile_keys
+        ),
+        "profile dimensions should include structured profile fields",
+    )
     assert_true(len(result["diagnosis"]["weak_knowledge_points"]) >= 2, "diagnosis should contain weak points")
     assert_true(len(result["learning_path"]) >= 2, "planner should generate multiple stages")
     assert_true(result["estimatedDays"] == 2, "48 hours should be planned as 2 days")

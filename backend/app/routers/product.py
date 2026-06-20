@@ -39,7 +39,7 @@ from app.services.agent_service import (
     get_resources as ag_get_resources,
     run_agents as ag_run_agents,
 )
-from app.utils.profile_normalizer import normalize_profile_dimensions
+from app.utils.profile_normalizer import PROFILE_DIMENSION_LABELS, normalize_profile_dimensions
 from app.services.conversation_state import conversation_store
 from app.services.course_catalog import course_catalog
 from app.services.learning_tracker import learning_tracker
@@ -53,13 +53,24 @@ router = APIRouter(tags=["product"])
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _profile_item(label: str, value: str, source: str = "user_input", confidence: float = 1.0) -> dict[str, Any]:
+def _profile_item(
+    key: str,
+    value: str,
+    source: str = "user_input",
+    confidence: float = 1.0,
+    explanation: str | None = None,
+    evidence: str | None = None,
+    score: int = 70,
+) -> dict[str, Any]:
     return {
-        "label": label,
+        "key": key,
+        "label": PROFILE_DIMENSION_LABELS.get(key, key),
         "value": value,
+        "score": score,
         "confidence": confidence,
         "source": source,
-        "evidence": value,
+        "explanation": explanation or value,
+        "evidence": evidence or value,
     }
 
 
@@ -67,24 +78,46 @@ def _apply_state_facts_to_result(result: dict[str, Any], state, course: dict[str
     profile = result.setdefault("profile", {})
     course_name = str((course or {}).get("course_name") or state.facts.get("target_course") or "").strip()
     overrides = {
-        "major_background": ("Background", state.facts.get("background", "")),
-        "knowledge_base": ("Knowledge Base", state.facts.get("knowledge_base", "")),
-        "learning_goal": ("Learning Goal", state.facts.get("learning_goal", "")),
-        "cognitive_style": ("Learning Preference", state.facts.get("preference", "")),
-        "weak_points": ("Weak Points", state.facts.get("weak_points", "")),
-        "programming_ability": ("Programming Ability", state.facts.get("programming_ability", "")),
-        "interests": ("Target Course", state.facts.get("target_course", "")),
-        "learning_rhythm": ("Learning Rhythm", state.facts.get("time_budget", "")),
+        "major_background": state.facts.get("background", ""),
+        "knowledge_base": state.facts.get("knowledge_base", ""),
+        "learning_goal": state.facts.get("learning_goal", ""),
+        "cognitive_style": state.facts.get("preference", ""),
+        "error_patterns": state.facts.get("weak_points", ""),
+        "interest_direction": state.facts.get("target_course", ""),
+        "learning_rhythm": state.facts.get("time_budget", ""),
     }
-    for key, (label, value) in overrides.items():
+    for key, value in overrides.items():
         if value:
-            profile[key] = _profile_item(label, str(value))
+            profile[key] = _profile_item(
+                key,
+                str(value),
+                source="user_input",
+                confidence=1.0,
+                explanation=f"该维度直接来自用户描述：{value}",
+                evidence=str(value),
+            )
 
     if course_name:
-        profile["interests"] = _profile_item("Target Course", course_name, source="course_match", confidence=0.9)
+        profile["interest_direction"] = _profile_item(
+            "interest_direction",
+            course_name,
+            source="user_input",
+            confidence=0.9,
+            explanation=f"目标课程已识别为：{course_name}",
+            evidence=course_name,
+            score=82,
+        )
         profile.setdefault(
             "learning_progress",
-            _profile_item("Learning Progress", f"Starting {course_name}", source="course_match", confidence=0.8),
+            _profile_item(
+                "learning_progress",
+                f"正在推进{course_name}学习",
+                source="inferred",
+                confidence=0.8,
+                explanation="根据目标课程和当前对话推断学习进度仍处于推进阶段。",
+                evidence=course_name,
+                score=60,
+            ),
         )
 
 
@@ -154,14 +187,18 @@ def _normalize_frontend_dimensions(dimensions: list[dict[str, Any]]) -> list[dic
             continue
         key = dim.get("key", "")
         text_value = str(dim.get("value", ""))
-        # Compute numeric score from the text value
-        score = _dimension_score(key, dim)
+        score = int(dim.get("score", _dimension_score(key, dim)))
+        explanation = str(dim.get("explanation", dim.get("description", text_value)))
         result.append({
             "key": key,
             "label": _DIMENSION_LABELS.get(key, dim.get("label", key)),
-            "value": score,
+            "value": text_value,
+            "score": score,
             "confidence": dim.get("confidence", 0.75),
-            "description": text_value,
+            "description": explanation,
+            "explanation": explanation,
+            "evidence": str(dim.get("evidence", "")),
+            "source": str(dim.get("source", "rule_based_fallback")),
             "updatedAt": int(time.time() * 1000),
         })
     return result
@@ -207,11 +244,13 @@ def _to_profile(result: dict[str, Any]) -> dict[str, Any]:
         {
             "key": key,
             "label": _DIMENSION_LABELS.get(key, item.get("label", key) if isinstance(item, dict) else key),
-            "value": _dimension_score(key, item) if isinstance(item, dict) else 50,
+            "value": item.get("value", "") if isinstance(item, dict) else str(item),
+            "score": int(item.get("score", _dimension_score(key, item))) if isinstance(item, dict) else 50,
             "confidence": item.get("confidence", 0.75) if isinstance(item, dict) else 0.5,
-            "description": item.get("value", "") if isinstance(item, dict) else str(item),
-            "source": _source_label(item.get("source", "")) if isinstance(item, dict) else None,
-            "evidence": item.get("evidence", "") if isinstance(item, dict) else None,
+            "description": item.get("explanation", item.get("value", "")) if isinstance(item, dict) else str(item),
+            "explanation": item.get("explanation", item.get("value", "")) if isinstance(item, dict) else str(item),
+            "evidence": item.get("evidence", "") if isinstance(item, dict) else "",
+            "source": item.get("source", "rule_based_fallback") if isinstance(item, dict) else "rule_based_fallback",
             "updatedAt": int(time.time() * 1000),
         }
         for key, item in raw_profile.items()

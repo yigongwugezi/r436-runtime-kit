@@ -1,1 +1,1 @@
-"""EduAgent backend application package."""
+"""r436 runtime kit backend package."""

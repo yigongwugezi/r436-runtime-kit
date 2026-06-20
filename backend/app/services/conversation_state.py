@@ -193,7 +193,11 @@ class ConversationStore:
                         dim.get("key", f"dim_{idx}"): {
                             "label": dim.get("label", ""),
                             "value": dim.get("value", ""),
+                            "score": dim.get("score", 50),
                             "confidence": dim.get("confidence", 0.75),
+                            "explanation": dim.get("explanation", dim.get("description", dim.get("value", ""))),
+                            "evidence": dim.get("evidence", ""),
+                            "source": dim.get("source", "rule_based_fallback"),
                         }
                         for idx, dim in enumerate(normalized_dims)
                     }
@@ -330,7 +334,11 @@ class ConversationStore:
                         "key": key,
                         "label": item.get("label", key) if isinstance(item, dict) else key,
                         "value": str(item.get("value", "")) if isinstance(item, dict) else str(item),
+                        "score": item.get("score", 50) if isinstance(item, dict) else 50,
                         "confidence": item.get("confidence", 0.75) if isinstance(item, dict) else 0.75,
+                        "explanation": item.get("explanation", item.get("value", "")) if isinstance(item, dict) else str(item),
+                        "evidence": item.get("evidence", "") if isinstance(item, dict) else "",
+                        "source": item.get("source", "rule_based_fallback") if isinstance(item, dict) else "rule_based_fallback",
                     }
                     for key, item in profile_data.items()
                 ]

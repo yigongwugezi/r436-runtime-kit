@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useSubjectStore } from '../../store/subjectStore';
 import { getCurrentLearner, logoutLearner } from '../../pages/LoginPage';
+import { readStorageItem, readStorageJson, writeStorageJson, runtimeStorageKeys } from '../../utils/storageKeys';
 import {
   User, BookOpen, MessageSquare, Activity, Database, Info,
   Check, X, Edit3, Trash2, Download, Upload,
@@ -95,8 +96,6 @@ function SettingRow({ label, description, children }: {
 /* ===================================================================
  * 学习偏好持久化
  * =================================================================== */
-const PREFS_KEY = 'eduagent_learning_preferences';
-
 interface LearningPrefs {
   defaultDuration: number;
   difficulty: string;
@@ -117,13 +116,12 @@ const DEFAULT_PREFS: LearningPrefs = {
 
 function loadPrefs(): LearningPrefs {
   try {
-    const data = localStorage.getItem(PREFS_KEY);
-    return data ? { ...DEFAULT_PREFS, ...JSON.parse(data) } : DEFAULT_PREFS;
+    return { ...DEFAULT_PREFS, ...readStorageJson(runtimeStorageKeys.learningPrefs, {}) };
   } catch { return DEFAULT_PREFS; }
 }
 
 function savePrefs(prefs: LearningPrefs) {
-  try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch {}
+  writeStorageJson(runtimeStorageKeys.learningPrefs, prefs);
 }
 
 /* ===================================================================
@@ -170,22 +168,24 @@ export default function SettingsModal({ open, onClose }: {
   const handleSaveName = () => {
     const name = nameInput.trim();
     if (!name || !learner) return;
-    const learners = JSON.parse(localStorage.getItem('eduagent_learners') || '[]');
+    const learners = readStorageJson(runtimeStorageKeys.learners, [] as any[]);
     const updated = learners.map((l: any) =>
       l.id === learner.id ? { ...l, name } : l
     );
-    localStorage.setItem('eduagent_learners', JSON.stringify(updated));
-    localStorage.setItem('eduagent_active_learner', JSON.stringify({ ...learner, name }));
+    writeStorageJson(runtimeStorageKeys.learners, updated);
+    writeStorageJson(runtimeStorageKeys.activeLearner, { ...learner, name });
     setEditingName(false);
     window.location.reload();
   };
 
   const handleClearData = () => {
-    const learners = localStorage.getItem('eduagent_learners');
-    const activeLearner = localStorage.getItem('eduagent_active_learner');
+    const learners = readStorageItem(runtimeStorageKeys.learners);
+    const activeLearner = readStorageItem(runtimeStorageKeys.activeLearner);
+    const prefs = readStorageItem(runtimeStorageKeys.learningPrefs);
     localStorage.clear();
-    if (learners) localStorage.setItem('eduagent_learners', learners);
-    if (activeLearner) localStorage.setItem('eduagent_active_learner', activeLearner);
+    if (learners) localStorage.setItem(runtimeStorageKeys.learners.primary, learners);
+    if (activeLearner) localStorage.setItem(runtimeStorageKeys.activeLearner.primary, activeLearner);
+    if (prefs) localStorage.setItem(runtimeStorageKeys.learningPrefs.primary, prefs);
     setShowClearConfirm(false);
     setClearDone(true);
     setTimeout(() => setClearDone(false), 3000);
@@ -204,7 +204,7 @@ export default function SettingsModal({ open, onClose }: {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `eduagent_backup_${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `r436_runtime_backup_${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
     setExportDone(true);
@@ -355,7 +355,7 @@ export default function SettingsModal({ open, onClose }: {
                 ]} onChange={v => updatePrefs({ aiStyle: v })} />
               </SettingRow>
 
-              <p className="text-xs text-gray-400 font-semibold uppercase tracking-wider pt-2">多智能体管线</p>
+              <p className="text-xs text-gray-400 font-semibold uppercase tracking-wider pt-2">模块管线</p>
               <div className="grid grid-cols-2 gap-1.5">
                 {[
                   { name: 'ProfileAgent', label: '画像分析', desc: '提取学习画像' },
@@ -474,10 +474,10 @@ export default function SettingsModal({ open, onClose }: {
                 <div className="w-14 h-14 rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center mx-auto mb-3 shadow-md">
                   <Brain className="w-7 h-7 text-white" />
                 </div>
-                <h3 className="text-xl font-extrabold text-gray-900">Edu<span className="text-brand-500">Agent</span></h3>
+                <h3 className="text-xl font-extrabold text-gray-900">r436<span className="text-brand-500">-runtime-kit</span></h3>
                 <p className="text-xs text-gray-400 mt-1">v0.3.0 · 2026.06</p>
                 <p className="text-sm text-gray-500 mt-2 leading-relaxed max-w-sm mx-auto">
-                  基于多智能体协作架构的 AI 个性化学习规划平台
+                  面向课程工作流与模块集成的本地演示套件
                 </p>
               </div>
 
@@ -488,7 +488,7 @@ export default function SettingsModal({ open, onClose }: {
                   ['状态管理', 'Zustand 5'],
                   ['后端框架', 'FastAPI 0.137'],
                   ['数据库', 'SQLAlchemy + SQLite'],
-                  ['AI 架构', '多智能体协作'],
+                  ['AI 架构', 'workflow modules'],
                 ].map(([label, value]) => (
                   <div key={label as string} className="px-2.5 py-2 bg-gray-50 rounded-lg border border-gray-100">
                     <p className="text-[10px] text-gray-400">{label as string}</p>

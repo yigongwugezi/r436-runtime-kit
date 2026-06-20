@@ -1,13 +1,11 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Brain, Sparkles, User, ArrowRight, Check, Trash2, Plus } from 'lucide-react';
+import { readStorageJson, writeStorageJson, runtimeStorageKeys } from '../utils/storageKeys';
 
 /* ===================================================================
  * 多学习者管理
  * =================================================================== */
-
-const LEARNERS_KEY = 'eduagent_learners';
-const ACTIVE_KEY = 'eduagent_active_learner';
 
 interface Learner {
   id: string;
@@ -17,24 +15,19 @@ interface Learner {
 }
 
 function loadLearners(): Learner[] {
-  try {
-    return JSON.parse(localStorage.getItem(LEARNERS_KEY) || '[]');
-  } catch { return []; }
+  return readStorageJson(runtimeStorageKeys.learners, []);
 }
 
 function saveLearners(learners: Learner[]) {
-  try { localStorage.setItem(LEARNERS_KEY, JSON.stringify(learners)); } catch { /* noop */ }
+  writeStorageJson(runtimeStorageKeys.learners, learners);
 }
 
 function loadActiveLearner(): Learner | null {
-  try {
-    const data = localStorage.getItem(ACTIVE_KEY);
-    return data ? JSON.parse(data) : null;
-  } catch { return null; }
+  return readStorageJson(runtimeStorageKeys.activeLearner, null);
 }
 
 function saveActiveLearner(learner: Learner) {
-  try { localStorage.setItem(ACTIVE_KEY, JSON.stringify(learner)); } catch { /* noop */ }
+  writeStorageJson(runtimeStorageKeys.activeLearner, learner);
 }
 
 function generateId(): string {
@@ -46,7 +39,7 @@ export function getCurrentLearner(): Learner | null {
 }
 
 export function logoutLearner() {
-  try { localStorage.removeItem(ACTIVE_KEY); } catch { /* noop */ }
+  try { localStorage.removeItem(runtimeStorageKeys.activeLearner.primary); } catch { /* noop */ }
 }
 
 /* ===================================================================
@@ -137,10 +130,8 @@ export default function LoginPage() {
           <div className="w-16 h-16 rounded-3xl bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center mx-auto mb-4 shadow-xl shadow-brand-200/50 animate-float">
             <Brain className="w-8 h-8 text-white" />
           </div>
-          <h1 className="text-2xl font-extrabold text-gray-900">
-            Edu<span className="gradient-text">Agent</span>
-          </h1>
-          <p className="text-sm text-gray-400 mt-1">多智能体个性化学习系统</p>
+          <h1 className="text-2xl font-extrabold text-gray-900">r436<span className="gradient-text">-runtime-kit</span></h1>
+          <p className="text-sm text-gray-400 mt-1">课程工作流演示系统</p>
         </div>
 
         {/* 当前已登录 */}

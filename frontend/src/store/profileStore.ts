@@ -41,7 +41,7 @@ export const useProfileStore = create<ProfileStore>((set) => ({
           [subjectId]: {
             ...profile,
             dimensions: profile.dimensions.map((d) =>
-              d.key === key ? { ...d, value, updatedAt: Date.now() } : d,
+              d.key === key ? { ...d, score: value, updatedAt: Date.now() } : d,
             ),
           },
         },

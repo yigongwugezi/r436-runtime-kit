@@ -20,8 +20,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="EduAgent Backend",
-    description="EduAgent MVP with SQLite persistence for session, profile, path, resource and event data.",
+    title="r436 Runtime Kit Backend",
+    description="Course workflow demo backend with SQLite persistence for session, profile, path, resource and event data.",
     version="0.2.0",
     lifespan=lifespan,
 )

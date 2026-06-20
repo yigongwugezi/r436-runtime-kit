@@ -1,51 +1,78 @@
-"""Profile dimension normalization utilities.
+"""Profile dimension normalization utilities."""
 
-Maps old 8-dimension profile keys to the current 10-dimension format
-expected by the frontend, and fills in missing default dimensions.
-"""
+from __future__ import annotations
 
 from typing import Any
 
-# Mapping from old (Stage 1) dimension keys to new (Stage 2) keys
+PROFILE_DIMENSION_ORDER = [
+    "major_background",
+    "knowledge_base",
+    "learning_goal",
+    "cognitive_style",
+    "error_patterns",
+    "coding_ability",
+    "learning_progress",
+    "interest_direction",
+    "learning_rhythm",
+    "self_efficacy",
+]
+
+PROFILE_DIMENSION_LABELS: dict[str, str] = {
+    "major_background": "专业背景",
+    "knowledge_base": "知识基础",
+    "learning_goal": "学习目标",
+    "cognitive_style": "认知风格",
+    "error_patterns": "易错模式",
+    "coding_ability": "编程能力",
+    "learning_progress": "学习进度",
+    "interest_direction": "兴趣方向",
+    "learning_rhythm": "学习节奏",
+    "self_efficacy": "学习效能",
+}
+
 OLD_TO_NEW_KEYS: dict[str, str] = {
     "weak_points": "error_patterns",
     "programming_ability": "coding_ability",
     "interests": "interest_direction",
 }
 
-# Default values for dimensions that may be missing from older snapshots
 DEFAULT_DIMENSIONS: dict[str, dict[str, Any]] = {
-    "learning_rhythm": {
-        "label": "学习节奏",
-        "value": "暂未确定",
-        "confidence": 0.5,
-        "source": "inferred",
-        "evidence": "暂无数据",
-    },
-    "self_efficacy": {
-        "label": "学习效能感",
-        "value": "暂未确定",
-        "confidence": 0.5,
-        "source": "inferred",
-        "evidence": "暂无数据",
-    },
+    key: {
+        "label": label,
+        "value": "待补充",
+        "score": 50,
+        "confidence": 0.35,
+        "explanation": "当前对话中还缺少足够信息，后续可继续补充。",
+        "evidence": "",
+        "source": "rule_based_fallback",
+    }
+    for key, label in PROFILE_DIMENSION_LABELS.items()
 }
+
+
+def clamp_score(value: Any, default: int = 50) -> int:
+    try:
+        number = int(round(float(value)))
+    except (TypeError, ValueError):
+        return default
+    return max(0, min(100, number))
+
+
+def clamp_confidence(value: Any, default: float = 0.5) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0.0, min(1.0, number))
 
 
 def normalize_profile_dimensions(
     dimensions: list[dict[str, Any]] | dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
-    """Normalize dimensions from DB to frontend-expected 10-dimension format.
-
-    Handles:
-    - Old 8-dimension snapshots (remaps keys, adds missing)
-    - New 10-dimension snapshots (pass-through)
-    - Dict format (agent result) -> list format (DB format)
-    """
+    """Normalize dimensions to the stable 10-dimension schema."""
     if dimensions is None:
         dimensions = []
 
-    # Convert dict format to list format
     if isinstance(dimensions, dict):
         dims_list: list[dict[str, Any]] = []
         for key, value in dimensions.items():
@@ -57,21 +84,43 @@ def normalize_profile_dimensions(
     elif not isinstance(dimensions, list):
         return []
 
-    # Remap old keys and collect seen keys
-    seen_keys: set[str] = set()
-    result: list[dict[str, Any]] = []
+    by_key: dict[str, dict[str, Any]] = {}
     for dim in dimensions:
         if not isinstance(dim, dict):
             continue
-        old_key = str(dim.get("key", ""))
+        old_key = str(dim.get("key", "")).strip()
         new_key = OLD_TO_NEW_KEYS.get(old_key, old_key)
-        dim["key"] = new_key
-        seen_keys.add(new_key)
-        result.append(dim)
+        if new_key not in PROFILE_DIMENSION_LABELS:
+            continue
 
-    # Add missing default dimensions
-    for key, default in DEFAULT_DIMENSIONS.items():
-        if key not in seen_keys:
-            result.append({"key": key, **default})
+        default = DEFAULT_DIMENSIONS[new_key]
+        value_text = str(dim.get("value", default["value"])).strip() or default["value"]
+        explanation = str(dim.get("explanation", "")).strip() or value_text
+        evidence = str(dim.get("evidence", "")).strip()
+        source = str(dim.get("source", default["source"])).strip() or default["source"]
 
-    return result
+        by_key[new_key] = {
+            "key": new_key,
+            "label": str(dim.get("label", default["label"])) or default["label"],
+            "value": value_text,
+            "score": clamp_score(dim.get("score"), default["score"]),
+            "confidence": clamp_confidence(dim.get("confidence"), default["confidence"]),
+            "explanation": explanation,
+            "description": explanation,
+            "evidence": evidence,
+            "source": source,
+        }
+
+    normalized: list[dict[str, Any]] = []
+    for key in PROFILE_DIMENSION_ORDER:
+        if key in by_key:
+            normalized.append(by_key[key])
+            continue
+        normalized.append(
+            {
+                "key": key,
+                "description": DEFAULT_DIMENSIONS[key]["explanation"],
+                **DEFAULT_DIMENSIONS[key],
+            }
+        )
+    return normalized

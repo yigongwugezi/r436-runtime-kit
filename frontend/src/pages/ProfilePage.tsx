@@ -1,42 +1,43 @@
 import { useNavigate } from 'react-router-dom';
 import { useProfile } from '../hooks/useProfile';
 import { getCurrentLearner } from './LoginPage';
-import { DIMENSION_LABELS, type ProfileDimension, type DimensionKey } from '../types/profile';
 import { DIMENSION_COLORS } from '../utils/constants';
 import { formatDuration, timeAgo } from '../utils/format';
 import {
-  User, Clock, Target, TrendingUp, Zap, BookOpen, Brain, Shield,
-  Sparkles, AlertCircle, CheckCircle2, ArrowRight, Info, AlertTriangle, RefreshCw,
+  User, Clock, Target, TrendingUp, Zap, BookOpen, Brain,
+  Sparkles, AlertCircle, ArrowRight, Info, RefreshCw,
 } from 'lucide-react';
 import {
   PageLoading,
   PageEmpty,
   PageError,
-  SourceTag,
   FallbackBanner,
   RefreshOverlay,
 } from '../components/common/PageState';
+import { DIMENSION_LABELS, type DimensionKey, type ProfileDimension } from '../types/profile';
 
-/* ===================================================================
- * 画像完整度常量
- * =================================================================== */
 const ALL_DIMENSION_KEYS: DimensionKey[] = [
-  'major_background', 'knowledge_base', 'learning_goal', 'cognitive_style',
-  'error_patterns', 'coding_ability', 'learning_progress', 'interest_direction',
-  'learning_rhythm', 'self_efficacy',
+  'major_background',
+  'knowledge_base',
+  'learning_goal',
+  'cognitive_style',
+  'error_patterns',
+  'coding_ability',
+  'learning_progress',
+  'interest_direction',
+  'learning_rhythm',
+  'self_efficacy',
 ];
 
-/** 维度来源 → 展示标签映射（与后端 source 字段直连） */
-const DIM_SOURCE_LABELS: Record<string, { label: string; color: string }> = {
-  user_input:       { label: '用户输入', color: 'bg-blue-50 text-blue-600 border-blue-200' },
-  agent_generated:  { label: 'LLM 生成', color: 'bg-purple-50 text-purple-600 border-purple-200' },
-  system_inferred:  { label: '模型推断', color: 'bg-amber-50 text-amber-600 border-amber-200' },
-  fallback:         { label: '兜底',     color: 'bg-gray-100 text-gray-500 border-gray-200' },
+const SOURCE_LABELS: Record<string, { label: string; color: string }> = {
+  user_input: { label: '用户提供', color: 'bg-blue-50 text-blue-600 border-blue-200' },
+  inferred: { label: '系统推断', color: 'bg-amber-50 text-amber-600 border-amber-200' },
+  llm_generated: { label: 'LLM 生成', color: 'bg-indigo-50 text-indigo-600 border-indigo-200' },
+  rule_based_fallback: { label: '规则兜底', color: 'bg-slate-50 text-slate-600 border-slate-200' },
+  diagnosis: { label: '诊断分析', color: 'bg-purple-50 text-purple-600 border-purple-200' },
+  feedback: { label: '学习反馈', color: 'bg-green-50 text-green-600 border-green-200' },
 };
 
-/* ===================================================================
- * 雷达图
- * =================================================================== */
 function DimensionRadar({ dimensions }: { dimensions: ProfileDimension[] }) {
   const size = 300;
   const center = size / 2;
@@ -44,9 +45,9 @@ function DimensionRadar({ dimensions }: { dimensions: ProfileDimension[] }) {
   const levels = 5;
   const angleSlice = (2 * Math.PI) / dimensions.length;
 
-  const getPoint = (i: number, value: number) => {
+  const getPoint = (i: number, score: number) => {
     const angle = angleSlice * i - Math.PI / 2;
-    const r = (value / 100) * radius;
+    const r = (score / 100) * radius;
     return {
       x: center + r * Math.cos(angle),
       y: center + r * Math.sin(angle),
@@ -54,40 +55,41 @@ function DimensionRadar({ dimensions }: { dimensions: ProfileDimension[] }) {
   };
 
   const rings = Array.from({ length: levels }, (_, i) => ((i + 1) / levels) * radius);
-
-  const dataPoints = dimensions.map((d, i) => getPoint(i, d.value));
+  const dataPoints = dimensions.map((d, i) => getPoint(i, d.score));
   const polygonPath = dataPoints.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ') + ' Z';
 
   return (
     <div className="flex justify-center">
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="overflow-visible">
-        {/* 同心网格 */}
         {rings.map((r, ri) => (
           <circle
-            key={ri} cx={center} cy={center} r={r}
-            fill="none" stroke={ri === levels - 1 ? '#cbd5e1' : '#e2e8f0'}
+            key={ri}
+            cx={center}
+            cy={center}
+            r={r}
+            fill="none"
+            stroke={ri === levels - 1 ? '#cbd5e1' : '#e2e8f0'}
             strokeWidth={ri === levels - 1 ? 1.5 : 0.5}
             strokeDasharray={ri === 0 ? 'none' : '3 3'}
           />
         ))}
-        {/* 轴线 */}
         {dimensions.map((_, i) => {
           const end = getPoint(i, 100);
           return <line key={i} x1={center} y1={center} x2={end.x} y2={end.y} stroke="#e2e8f0" strokeWidth={0.5} />;
         })}
-        {/* 数据多边形 */}
         <path d={polygonPath} fill="rgba(99,102,241,0.12)" stroke="url(#radarGradient)" strokeWidth={2} />
-        {/* 数据点 */}
         {dataPoints.map((p, i) => (
           <circle key={i} cx={p.x} cy={p.y} r={5} fill="#6366f1" stroke="white" strokeWidth={2.5} className="drop-shadow-sm" />
         ))}
-        {/* 标签 */}
         {dimensions.map((d, i) => {
           const labelPoint = getPoint(i, 138);
           return (
             <text
-              key={i} x={labelPoint.x} y={labelPoint.y}
-              textAnchor="middle" dominantBaseline="middle"
+              key={i}
+              x={labelPoint.x}
+              y={labelPoint.y}
+              textAnchor="middle"
+              dominantBaseline="middle"
               className="text-[10px] font-semibold"
               fill="#475569"
             >
@@ -95,7 +97,6 @@ function DimensionRadar({ dimensions }: { dimensions: ProfileDimension[] }) {
             </text>
           );
         })}
-        {/* 渐变定义 */}
         <defs>
           <linearGradient id="radarGradient" x1="0" y1="0" x2="1" y2="1">
             <stop offset="0%" stopColor="#6366f1" />
@@ -112,14 +113,14 @@ function DimensionRadar({ dimensions }: { dimensions: ProfileDimension[] }) {
  * =================================================================== */
 function DimensionBar({ dim, index }: { dim: ProfileDimension; index: number }) {
   const color = DIMENSION_COLORS[index % DIMENSION_COLORS.length];
-  const sourceInfo = dim.source ? DIM_SOURCE_LABELS[dim.source] : null;
+  const sourceInfo = SOURCE_LABELS[dim.source];
   return (
     <div className="flex items-center gap-2">
       <div className="w-16 text-[10px] text-gray-500 text-right flex-shrink-0 truncate" title={dim.label}>{dim.label}</div>
       <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
-        <div className="h-full rounded-full transition-all duration-700" style={{ width: `${dim.value}%`, backgroundColor: color }} />
+        <div className="h-full rounded-full transition-all duration-700" style={{ width: `${dim.score}%`, backgroundColor: color }} />
       </div>
-      <div className="w-8 text-[10px] font-semibold text-right flex-shrink-0" style={{ color }}>{dim.value}</div>
+      <div className="w-10 text-xs font-semibold text-right" style={{ color }}>{dim.score}</div>
       {sourceInfo && (
         <span className={`px-1.5 py-0.5 rounded text-[8px] font-medium border flex-shrink-0 ${sourceInfo.color}`}>
           {sourceInfo.label}
@@ -134,41 +135,31 @@ function DimensionBar({ dim, index }: { dim: ProfileDimension; index: number }) 
  * =================================================================== */
 function DimensionCard({ dim, index }: { dim: ProfileDimension; index: number }) {
   const color = DIMENSION_COLORS[index % DIMENSION_COLORS.length];
-  // 直接使用后端返回的 source，不根据 confidence 做前端推断
-  const sourceInfo = dim.source ? DIM_SOURCE_LABELS[dim.source] : null;
+  const sourceInfo = SOURCE_LABELS[dim.source];
 
   return (
     <div className="bg-white border border-gray-100 rounded-xl p-4 hover:shadow-md transition-all duration-200">
-      {/* 头部：维度名 + 来源标记 */}
-      <div className="flex items-start justify-between mb-2">
+      <div className="flex items-start justify-between mb-2 gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
           <h4 className="text-sm font-semibold text-gray-800 truncate">{dim.label}</h4>
         </div>
         {sourceInfo && (
-          <span className={`px-2 py-0.5 rounded-md text-[10px] font-medium border whitespace-nowrap ml-2 flex-shrink-0 ${sourceInfo.color}`}>
+          <span className={`px-2 py-0.5 rounded-md text-[10px] font-medium border ${sourceInfo.color}`}>
             {sourceInfo.label}
           </span>
         )}
       </div>
 
-      {/* 分数进度条 */}
       <div className="flex items-center gap-3 mb-2">
         <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
-          <div
-            className="h-full rounded-full transition-all duration-700"
-            style={{ width: `${dim.value}%`, backgroundColor: color }}
-          />
+          <div className="h-full rounded-full transition-all duration-700" style={{ width: `${dim.score}%`, backgroundColor: color }} />
         </div>
-        <span className="text-sm font-bold flex-shrink-0" style={{ color }}>{dim.value}%</span>
+        <span className="text-sm font-bold" style={{ color }}>{dim.score}%</span>
       </div>
 
-      {/* 解释 */}
-      {dim.description && (
-        <p className="text-xs text-gray-500 leading-relaxed">{dim.description}</p>
-      )}
-
-      {/* 证据（后端返回时才展示） */}
+      <p className="text-xs text-gray-600 leading-relaxed">{dim.value || '待补充'}</p>
+      <p className="text-[11px] text-gray-500 leading-relaxed mt-2">{dim.explanation || dim.description || '待补充'}</p>
       {dim.evidence && (
         <div className="mt-2 p-2.5 bg-gray-50 border border-gray-100 rounded-lg">
           <div className="flex items-center gap-1 mb-1">
@@ -178,8 +169,6 @@ function DimensionCard({ dim, index }: { dim: ProfileDimension; index: number })
           <p className="text-[10px] text-gray-500 leading-relaxed">{dim.evidence}</p>
         </div>
       )}
-
-      {/* 底部：置信度 */}
       <div className="flex items-center gap-1.5 mt-2 text-[10px] text-gray-400">
         <div className="flex-1 h-1 bg-gray-100 rounded-full overflow-hidden">
           <div
@@ -193,9 +182,6 @@ function DimensionCard({ dim, index }: { dim: ProfileDimension; index: number })
   );
 }
 
-/* ===================================================================
- * 主页面
- * =================================================================== */
 export default function ProfilePage() {
   const navigate = useNavigate();
   const { profile, loading, error, fetchProfile } = useProfile();
@@ -224,7 +210,7 @@ export default function ProfilePage() {
         icon={<User className="w-8 h-8" />}
         title="暂无学习画像"
         description="在 AI 对话中描述你的专业、基础和目标，系统会自动构建你的专属学习画像"
-        action={
+        action={(
           <button
             onClick={() => navigate('/chat')}
             className="mt-3 px-5 py-2.5 bg-gray-900 text-white rounded-xl text-sm font-semibold hover:bg-gray-800 transition-all inline-flex items-center gap-2"
@@ -232,22 +218,20 @@ export default function ProfilePage() {
             <Sparkles className="w-4 h-4" />
             去对话页生成画像
           </button>
-        }
+        )}
       />
     );
   }
 
-  // 判断数据来源（用于 fallback 标记）
   const dimensionSources = profile.dimensions.map(d => d.source).filter(Boolean);
-  const isFallback = dimensionSources.length > 0 && dimensionSources.every(s => s === 'system_inferred');
-  const isGenerated = dimensionSources.some(s => s === 'agent_generated');
+  const isFallback = dimensionSources.length > 0 && dimensionSources.every(s => s === 'rule_based_fallback' || s === 'inferred');
 
-  // 计算完整度
   const existingKeys = new Set(profile.dimensions.map((d) => d.key));
   const completedCount = ALL_DIMENSION_KEYS.filter((k) => existingKeys.has(k)).length;
   const completeness = Math.round((completedCount / ALL_DIMENSION_KEYS.length) * 100);
   const missingDimensions = ALL_DIMENSION_KEYS.filter((k) => !existingKeys.has(k));
   const learnerName = getCurrentLearner()?.name || profile.nickname || '学习者';
+  const background = profile.dimensions.find((d) => d.key === 'major_background');
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-6 md:py-8 relative">
@@ -273,18 +257,20 @@ export default function ProfilePage() {
       {/* ========== 顶部信息卡 — 含完整度 ========== */}
       <div className="bg-white border border-gray-100 rounded-2xl p-6 md:p-8 mb-6 shadow-sm">
         <div className="flex flex-col md:flex-row md:items-center gap-6">
-          {/* 头像 + 完整度环 */}
           <div className="relative flex-shrink-0">
             <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center text-white text-2xl font-bold shadow-lg shadow-brand-200">
               {learnerName?.[0] || '学'}
             </div>
-            {/* 完整度环 */}
             <svg className="absolute -bottom-1 -right-1 w-10 h-10" viewBox="0 0 36 36">
               <circle cx="18" cy="18" r="15" fill="none" stroke="#e2e8f0" strokeWidth="3" />
               <circle
-                cx="18" cy="18" r="15" fill="none"
+                cx="18"
+                cy="18"
+                r="15"
+                fill="none"
                 stroke={completeness >= 80 ? '#22c55e' : completeness >= 50 ? '#f59e0b' : '#ef4444'}
-                strokeWidth="3" strokeLinecap="round"
+                strokeWidth="3"
+                strokeLinecap="round"
                 strokeDasharray={`${completeness * 0.942} 94.2`}
                 transform="rotate(-90 18 18)"
                 className="transition-all duration-1000"
@@ -308,7 +294,7 @@ export default function ProfilePage() {
               </span>
             </div>
             <p className="text-sm text-gray-500 mb-3">
-              {profile.dimensions.find((d) => d.key === 'major_background')?.description || '等待画像分析…'}
+              {background?.value || background?.description || '等待画像分析…'}
             </p>
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">
               <span className="flex items-center gap-1">
@@ -342,7 +328,6 @@ export default function ProfilePage() {
           </div>
         </div>
 
-        {/* 完整度进度条 */}
         <div className="mt-5 pt-4 border-t border-gray-50">
           <div className="flex items-center justify-between mb-1.5">
             <span className="text-xs text-gray-500">画像完整度</span>
@@ -359,7 +344,6 @@ export default function ProfilePage() {
         </div>
       </div>
 
-      {/* ========== 缺失维度提示 ========== */}
       {missingDimensions.length > 0 && (
         <div className="mb-6 p-4 bg-amber-50/70 border border-amber-100 rounded-2xl">
           <div className="flex items-start gap-3">
@@ -367,10 +351,8 @@ export default function ProfilePage() {
               <AlertCircle className="w-4 h-4 text-amber-600" />
             </div>
             <div className="flex-1">
-              <h4 className="text-sm font-semibold text-amber-800 mb-1">补充以下信息，让画像更精准</h4>
-              <p className="text-xs text-amber-600 mb-2">
-                缺少 {missingDimensions.length} 个维度，回到对话页补充你的信息。
-              </p>
+              <h4 className="text-sm font-semibold text-amber-800 mb-1">补充以下信息，画像会更完整</h4>
+              <p className="text-xs text-amber-600 mb-2">还缺少 {missingDimensions.length} 个维度，可回到对话页继续补充。</p>
               <div className="flex flex-wrap gap-1.5">
                 {missingDimensions.map((key) => (
                   <span key={key} className="px-2 py-1 bg-white border border-amber-200 rounded-lg text-[10px] text-amber-700 font-medium">
@@ -390,9 +372,7 @@ export default function ProfilePage() {
         </div>
       )}
 
-      {/* ========== 雷达图 + 维度详情 ========== */}
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 mb-6">
-        {/* 雷达图 */}
         <div className="lg:col-span-3 bg-white border border-gray-100 rounded-2xl p-6">
           <h3 className="text-sm font-semibold text-gray-700 mb-4 flex items-center gap-2">
             <Brain className="w-4 h-4 text-brand-500" />
@@ -401,7 +381,6 @@ export default function ProfilePage() {
           <DimensionRadar dimensions={profile.dimensions} />
         </div>
 
-        {/* 维度进度条 */}
         <div className="lg:col-span-2 bg-white border border-gray-100 rounded-2xl p-6">
           <h3 className="text-sm font-semibold text-gray-700 mb-4">各维度得分</h3>
           <div className="space-y-4">
@@ -412,7 +391,6 @@ export default function ProfilePage() {
         </div>
       </div>
 
-      {/* ========== 维度详情卡片 (含来源标记) ========== */}
       <div className="mb-6">
         <h3 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
           <Info className="w-4 h-4 text-brand-500" />
@@ -425,12 +403,11 @@ export default function ProfilePage() {
         </div>
       </div>
 
-      {/* ========== 知识短板 ========== */}
       {profile.weaknesses.length > 0 && (
         <div className="mb-6 bg-white border border-gray-100 rounded-2xl p-6">
           <h3 className="text-sm font-semibold text-gray-700 mb-4 flex items-center gap-2">
             <Target className="w-4 h-4 text-red-400" />
-            知识短板 · 优先修复
+            知识短板
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
             {profile.weaknesses.map((gap) => (
@@ -451,7 +428,6 @@ export default function ProfilePage() {
         </div>
       )}
 
-      {/* ========== 学习偏好 ========== */}
       <div className="mb-6 bg-white border border-gray-100 rounded-2xl p-6">
         <h3 className="text-sm font-semibold text-gray-700 mb-4 flex items-center gap-2">
           <BookOpen className="w-4 h-4 text-brand-500" />
@@ -459,26 +435,22 @@ export default function ProfilePage() {
         </h3>
         <div className="flex flex-wrap gap-3">
           <span className="px-3 py-1.5 bg-brand-50 text-brand-600 rounded-xl text-xs font-medium border border-brand-100">
-            📚 偏好格式：{(profile.preferences.preferredFormats || ['文本']).join(' / ')}
+            偏好格式：{(profile.preferences.preferredFormats || ['text']).join(' / ')}
           </span>
           <span className="px-3 py-1.5 bg-green-50 text-green-600 rounded-xl text-xs font-medium border border-green-100">
-            ⏱ 学习节奏：{formatDuration(profile.preferences.paceMinutes)} / 次
+            学习节奏：{formatDuration(profile.preferences.paceMinutes)} / 次
           </span>
           <span className="px-3 py-1.5 bg-amber-50 text-amber-600 rounded-xl text-xs font-medium border border-amber-100">
-            📊 难度等级：{profile.preferences.difficulty === 'beginner' ? '入门' : profile.preferences.difficulty === 'intermediate' ? '进阶' : '高级'}
+            难度等级：{profile.preferences.difficulty === 'beginner' ? '入门' : profile.preferences.difficulty === 'intermediate' ? '进阶' : '高级'}
           </span>
           <span className="px-3 py-1.5 bg-purple-50 text-purple-600 rounded-xl text-xs font-medium border border-purple-100">
-            🎨 讲解风格：{profile.preferences.explainStyle === 'diagram' ? '图解优先' : profile.preferences.explainStyle === 'code' ? '代码优先' : profile.preferences.explainStyle === 'case' ? '案例优先' : '理论优先'}
+            讲解风格：{profile.preferences.explainStyle === 'diagram' ? '图解优先' : profile.preferences.explainStyle === 'code' ? '代码优先' : profile.preferences.explainStyle === 'case' ? '案例优先' : '理论优先'}
           </span>
         </div>
       </div>
 
-      {/* ========== 底部来源标记 ========== */}
-      <div className="flex items-center justify-center gap-3 mt-8 mb-2">
-        <SourceTag source={isFallback ? 'system_inferred' : isGenerated ? 'agent_generated' : undefined} />
-      </div>
-      <p className="text-center text-xs text-gray-400">
-        画像更新时间：{timeAgo(profile.updatedAt)} · 数据来源包含用户对话、系统推断和诊断分析
+      <p className="text-center text-xs text-gray-400 mt-8">
+        画像更新时间：{timeAgo(profile.updatedAt)} · 数据来源包含用户对话、系统推断和画像生成结果
       </p>
     </div>
   );
