@@ -1,17 +1,17 @@
-# EduAgent 多智能体协作流程
+# Runtime Kit 模块协作流程
 
 ## 1. Agent Pipeline (6 agents)
 
-智能体属于后端模块，由 `AgentOrchestrator` 统一调度。管线依次运行，每个智能体的输出会合并进共享上下文。
+各处理模块由 `AgentOrchestrator` 统一调度。管线依次运行，每个模块的输出会合并进共享上下文。
 
 | Agent | Chinese Name | Responsibility | Status |
 | --- | --- | --- | --- |
-| `ProfileAgent` | 画像智能体 | 从用户输入中提取 8 个维度学生画像 | Real (DeepSeek) |
-| `KnowledgeAgent` | 知识库智能体 | 根据 `course_id` 定位课程知识点和章节内容 | Mock |
-| `DiagnosisAgent` | 学习诊断智能体 | 根据画像和课程要求识别知识短板 | Mock |
-| `PlannerAgent` | 路径规划智能体 | 生成阶段化个性化学习路径 | Mock |
-| `ResourceAgent` | 资源生成智能体 | 生成讲义、题库、拓展阅读、实操案例、思维导图、视频脚本等 6 类资源 | Mock (schema ready) |
-| `ReviewAgent` | 质量检查智能体 | 检查格式完整性、资源覆盖度和内容安全 | Mock |
+| `ProfileAgent` | 画像模块 | 从用户输入中提取 8 个维度学生画像 | Real (DeepSeek) |
+| `KnowledgeAgent` | 知识检索模块 | 根据 `course_id` 定位课程知识点和章节内容 | Mock |
+| `DiagnosisAgent` | 诊断模块 | 根据画像和课程要求识别知识短板 | Mock |
+| `PlannerAgent` | 路径规划模块 | 生成阶段化学习路径 | Mock |
+| `ResourceAgent` | 资源模块 | 生成讲义、题库、拓展阅读、实操案例、思维导图、视频脚本等 6 类资源 | Mock (schema ready) |
+| `ReviewAgent` | 质量检查模块 | 检查格式完整性、资源覆盖度和内容安全 | Mock |
 
 > **注意**: 思维导图 (Mermaid) 由 `ResourceAgent` 作为 `mindmap` 类型资源生成，不作为独立 Agent 存在。
 

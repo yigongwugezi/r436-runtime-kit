@@ -137,10 +137,8 @@ export default function LoginPage() {
           <div className="w-16 h-16 rounded-3xl bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center mx-auto mb-4 shadow-xl shadow-brand-200/50 animate-float">
             <Brain className="w-8 h-8 text-white" />
           </div>
-          <h1 className="text-2xl font-extrabold text-gray-900">
-            Edu<span className="gradient-text">Agent</span>
-          </h1>
-          <p className="text-sm text-gray-400 mt-1">多智能体个性化学习系统</p>
+          <h1 className="text-2xl font-extrabold text-gray-900">r436<span className="gradient-text">-runtime-kit</span></h1>
+          <p className="text-sm text-gray-400 mt-1">课程工作流演示系统</p>
         </div>
 
         {/* 当前已登录 */}

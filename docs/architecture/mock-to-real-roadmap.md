@@ -1,4 +1,4 @@
-# EduAgent Mock 与真实能力替换路线
+# Runtime Kit Mock 与真实能力替换路线
 
 ## 当前结论
 
@@ -29,7 +29,7 @@
 | 资源库具体内容 | 半 mock（DB schema 已完成，18 字段完整存储） | 最高 |
 | 画像页 8 维分数 | 半 mock | 高 |
 | 诊断报告 | 半 mock | 高 |
-| 多智能体每一步详细产出 | 半 mock（步骤追踪已实现，内容待真实生成） | 中 |
+| 模块流程每一步详细产出 | 半 mock（步骤追踪已实现，内容待真实生成） | 中 |
 | ReviewAgent 防幻觉审核 | 雏形 | 中 |
 
 > **Stage 2 进展**: 资源库 DB 已支持完整字段存储（difficulty、estimatedMinutes、format、mermaidDef、codeBlocks、questions、pptOutline、studyStatus、source），GET/POST 端点均可读写。Agent 管线已具备 per-agent 错误隔离和超时处理能力。
@@ -111,12 +111,12 @@
 
 ## 组员分工建议
 
-### 组长/智能体方向
+### 组长/模块方向
 
 - PlannerAgent 真实生成
 - ResourceAgent 真实生成
 - ProfileAgent 8 维画像
-- 多智能体流程说明
+- 模块流程说明
 
 ### 后端方向
 

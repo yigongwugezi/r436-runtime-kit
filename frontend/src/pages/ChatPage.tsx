@@ -14,7 +14,7 @@ import Markdown from '../utils/markdown';
 import ChatHistorySidebar from '../components/chat/ChatHistorySidebar';
 
 /* ===================================================================
- * 多智能体管线定义
+ * 工作流管线定义
  * =================================================================== */
 const AGENT_PIPELINE: { agentName: string; label: string; description: string }[] = [
   { agentName: 'ProfileAgent',   label: '画像分析',   description: '正在提取学习画像…' },
@@ -116,7 +116,7 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
 }
 
 /* ===================================================================
- * 多智能体进度管线 — 赛级展示
+ * 工作流进度管线
  * =================================================================== */
 function AgentPipelineProgress({ progress }: { progress: GenerationProgress }) {
   const currentIdx = AGENT_PIPELINE.findIndex((a) => a.agentName === progress.agentName);
@@ -128,7 +128,7 @@ function AgentPipelineProgress({ progress }: { progress: GenerationProgress }) {
       <div className="flex items-center gap-2.5">
         <div className="w-5 h-5 rounded-full border-2 border-brand-500 border-t-transparent animate-spin" />
         <span className="text-sm font-semibold text-gray-800">
-          {progress.stage || '多智能体正在协同工作'}
+          {progress.stage || '工作流模块正在协同处理'}
         </span>
         <span className="text-xs text-brand-500 font-medium ml-auto">{pct}%</span>
       </div>
@@ -379,7 +379,7 @@ export default function ChatPage() {
             </div>
             <h2 className="text-xl font-bold text-gray-800 mb-2">开始你的学习之旅</h2>
             <p className="text-gray-400 text-sm max-w-sm mb-8">
-              告诉 EduAgent 你的专业、基础和目标<br />AI 智能体会为你量身定制学习方案
+              告诉系统你的专业、基础和目标<br />工作流模块会为你整理课程方案
             </p>
             <QuickCommands onSelect={(prompt) => { setInput(prompt); inputRef.current?.focus(); }} />
           </div>
@@ -400,7 +400,7 @@ export default function ChatPage() {
           </div>
         ))}
 
-        {/* 多智能体进度管线 */}
+        {/* 工作流进度管线 */}
         {isStreaming && agentProgress && (
           <AgentPipelineProgress progress={agentProgress} />
         )}
@@ -479,7 +479,7 @@ export default function ChatPage() {
             {input.length > 0 && `${input.length} / 4000`}
           </span>
           <span>
-            EduAgent 可能生成不准确内容，关键信息请查阅课程教材确认
+            系统可能生成不准确内容，关键信息请查阅课程教材确认
           </span>
         </div>
       </div>

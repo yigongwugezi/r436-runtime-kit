@@ -395,7 +395,7 @@ export default function SettingsPage() {
               ============================== */}
           {activeCategory === 'chat' && (
             <div>
-              <SettingSection title="AI 回复偏好" description="控制智能体的对话风格">
+              <SettingSection title="AI 回复偏好" description="控制模块输出的对话风格">
                 <SettingRow label="回复详细程度" description="AI 回答的篇幅和深度">
                   <Select value={prefs.aiStyle} options={[
                     { value: 'concise', label: '⚡ 简洁（直击要点）' },
@@ -413,7 +413,7 @@ export default function SettingsPage() {
                 </SettingRow>
               </SettingSection>
 
-              <SettingSection title="多智能体管线" description="对话时的多智能体协作流程">
+              <SettingSection title="模块管线" description="对话时的工作流协作流程">
                 <div className="grid grid-cols-2 gap-2">
                   {[
                     { name: 'ProfileAgent', label: '画像分析', desc: '提取学习画像' },
@@ -550,17 +550,17 @@ export default function SettingsPage() {
               ============================== */}
           {activeCategory === 'about' && (
             <div>
-              <SettingSection title="EduAgent" description="基于多智能体协作的个性化学习平台">
+              <SettingSection title="r436-runtime-kit" description="面向课程工作流的本地演示套件">
                 <div className="bg-gradient-to-br from-brand-500/5 to-brand-700/5 border border-brand-100 rounded-2xl p-6 text-center mb-6">
                   <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center mx-auto mb-3 shadow-lg shadow-brand-200">
                     <Brain className="w-8 h-8 text-white" />
                   </div>
                   <h3 className="text-xl font-extrabold text-gray-900">
-                    Edu<span className="text-brand-500">Agent</span>
+                    r436<span className="text-brand-500">-runtime-kit</span>
                   </h3>
                   <p className="text-xs text-gray-400 mt-1">v0.3.0 · 2026.06</p>
                   <p className="text-xs text-gray-500 mt-3 max-w-md mx-auto leading-relaxed">
-                    基于多智能体协作架构的 AI 个性化学习规划平台，为中国软件杯大赛 A3 赛题打造。
+                    面向课程工作流与模块集成的本地演示套件。
                   </p>
                 </div>
               </SettingSection>
@@ -575,7 +575,7 @@ export default function SettingsPage() {
                     { label: '构建工具', value: 'Vite 8' },
                     { label: '后端框架', value: 'FastAPI 0.137' },
                     { label: '数据库', value: 'SQLAlchemy + SQLite' },
-                    { label: 'AI 模型', value: '多智能体协作' },
+                    { label: 'AI 模型', value: 'workflow modules' },
                   ].map(item => (
                     <div key={item.label} className="px-3 py-2.5 bg-gray-50 rounded-xl border border-gray-100">
                       <p className="text-[10px] text-gray-400">{item.label}</p>
@@ -585,7 +585,7 @@ export default function SettingsPage() {
                 </div>
               </SettingSection>
 
-              <SettingSection title="智能体架构">
+              <SettingSection title="模块架构">
                 <div className="flex flex-wrap gap-2">
                   {[
                     'ProfileAgent · 画像分析',

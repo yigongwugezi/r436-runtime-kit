@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    app_name: str = "eduagent-backend"
+    app_name: str = "r436-runtime-kit-backend"
     app_env: str = "development"
     frontend_origin: str = "http://localhost:5173"
     llm_provider: str = "mock"
