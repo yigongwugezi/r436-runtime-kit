@@ -389,5 +389,75 @@
       "knowledge_base": ["Python：还可以"]
     },
     "expect_ready_to_plan": true
+  },
+  {
+    "name": "build_learning_profile_request",
+    "turns": [
+      {
+        "message": "帮我构建学习画像",
+        "intent": "learning_plan",
+        "reply_contains": ["生成学习方案", "学习路径"]
+      }
+    ]
+  },
+  {
+    "name": "find_learning_resources_request",
+    "turns": [
+      {
+        "message": "帮我找学习资源",
+        "intent": "resource_request",
+        "reply_contains": ["资源", "生成"]
+      }
+    ]
+  },
+  {
+    "name": "recommend_resources_by_path",
+    "turns": [
+      {
+        "message": "根据我的学习路径推荐资源",
+        "intent": "resource_request",
+        "reply_contains": ["资源"]
+      }
+    ]
+  },
+  {
+    "name": "full_workflow_profile_path_resources",
+    "turns": [
+      {
+        "message": "画像 + 路径 + 资源完整流程",
+        "intent": "learning_plan",
+        "reply_contains": ["生成学习方案", "学习路径"]
+      }
+    ]
+  },
+  {
+    "name": "weakness_diagnosis_query",
+    "turns": [
+      {
+        "message": "我哪里比较薄弱",
+        "intent": "progress_feedback",
+        "reply_contains": ["薄弱", "反馈"]
+      }
+    ]
+  },
+  {
+    "name": "resource_request_for_specific_topic",
+    "turns": [
+      {
+        "message": "帮我生成神经网络练习题",
+        "intent": "resource_request",
+        "reply_contains": ["生成", "练习题"]
+      }
+    ]
+  },
+  {
+    "name": "recommend_reading_materials",
+    "turns": [
+      {
+        "message": "给我推荐一些拓展阅读材料",
+        "intent": "resource_request",
+        "reply_contains": ["推荐", "阅读"]
+      }
+    ]
   }
 ]

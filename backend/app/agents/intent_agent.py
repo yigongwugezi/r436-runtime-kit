@@ -121,6 +121,19 @@ class IntentAgent(BaseAgent):
         if any(pattern in compact for pattern in date_patterns):
             return self._result("date_query", 0.96, False, "用户询问日期或时间，不写入学习画像。")
 
+        # ── Resource request patterns ──
+        resource_markers = ["找学习资源", "推荐资源", "生成资源", "找资源", "给我资源", "推荐一些", "推荐阅读", "拓展阅读"]
+        if any(marker in text for marker in resource_markers):
+            return self._result("resource_request", 0.92, True, "用户明确请求学习资源。")
+
+        # ── Profile-building request ──
+        if "构建学习画像" in text or "构建画像" in text:
+            return self._result("learning_plan", 0.88, True, "用户要求构建学习画像，启动规划流程。")
+
+        # ── Weakness diagnosis query ──
+        if ("哪里" in text and "薄弱" in text) or ("哪里" in text and "不会" in text):
+            return self._result("progress_feedback", 0.85, False, "用户询问自身薄弱点，属于进度反馈。")
+
         clarification_patterns = [
             "你啥意思",
             "你什么意思",
