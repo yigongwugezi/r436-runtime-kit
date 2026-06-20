@@ -68,6 +68,7 @@ interface ChatStore {
   clearMessages: () => void;
   newSession: () => void;
   removeLastMessage: () => void;
+  removeSession: (id: string) => void;
   bumpDataVersion: () => void;
   /** 重新加载当前科目的会话 ID 和列表（科目切换后调用） */
   reloadSession: () => void;
@@ -167,6 +168,19 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   },
   removeLastMessage: () =>
     set((s) => ({ messages: s.messages.slice(0, -1) })),
+
+  removeSession: (id) =>
+    set((s) => {
+      const sessions = loadSessions().filter((ses) => ses.id !== id);
+      persistSessions(sessions);
+      // 如果删除的是当前会话，创建新会话
+      if (s.currentSessionId === id) {
+        const newId = createSessionId();
+        persistSessionId(newId);
+        return { sessions, currentSessionId: newId, messages: [] };
+      }
+      return { sessions };
+    }),
 
   bumpDataVersion: () =>
     set((s) => ({ dataVersion: s.dataVersion + 1 })),

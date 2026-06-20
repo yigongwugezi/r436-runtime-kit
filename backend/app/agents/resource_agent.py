@@ -109,15 +109,48 @@ class ResourceAgent(BaseAgent):
         knowledge_points: list[dict[str, Any]],
         profile: dict[str, Any],
     ) -> list[dict[str, Any]]:
+        """Generate resources per learning path: stage-level + per-task.
+
+        Architecture:
+        1. For each stage → generate stage-level overview resources (mindmap + reading)
+           tagged with ``related_stage_id`` only (no ``task_id``).
+        2. For each task/node within the stage → generate task-specific resources
+           (lecture + quiz + case_study) tagged with both ``related_stage_id``
+           and ``task_id``.
+
+        This enables both stage-level filtering (``?relatedStageId=stage_1``)
+        and node-level filtering (``?taskId=stage_1_node_2``).
+        """
         bindings = self._stage_bindings(stages, knowledge_points)
-        return [
-            self._lecture(course, bindings[0], profile),
-            self._mindmap(course, bindings),
-            self._quiz(course, bindings, profile),
-            self._reading(course, bindings),
-            self._practice(course, bindings[0], profile),
-            self._video_script(course, bindings[min(1, len(bindings) - 1)]),
-        ]
+        resources: list[dict[str, Any]] = []
+        extra_types = ["mindmap", "reading", "practice", "video"]
+
+        for binding in bindings:
+            stage_id = str(binding.get("stage_id", ""))
+            tasks = binding.get("tasks", [])
+
+            # ── Stage-level resources (no task_id, show for entire stage) ──
+            resources.append(self._mindmap_for_task(course, binding, binding.get("title", ""), stage_id, ""))
+            resources.append(self._reading_for_task(course, binding, binding.get("title", ""), stage_id, ""))
+
+            # ── Per-task resources (with task_id, show only for that node) ──
+            for ti, task in enumerate(tasks[:6]):
+                task_id = f"{stage_id}_node_{ti + 1}"
+                # Every task gets lecture + quiz as the base pair
+                resources.append(self._lecture_for_task(course, binding, profile, task, task_id))
+                resources.append(self._quiz_for_task(course, binding, profile, task, task_id))
+                # Plus one additional type cycling through the extras
+                extra = extra_types[ti % len(extra_types)]
+                if extra == "mindmap":
+                    resources.append(self._mindmap_for_task(course, binding, task, stage_id, task_id))
+                elif extra == "reading":
+                    resources.append(self._reading_for_task(course, binding, task, stage_id, task_id))
+                elif extra == "practice":
+                    resources.append(self._practice_for_task(course, binding, profile, task, task_id))
+                elif extra == "video":
+                    resources.append(self._video_script_for_task(course, binding, task, task_id))
+
+        return resources
 
     def _normalize_llm_resources(
         self,
@@ -125,6 +158,12 @@ class ResourceAgent(BaseAgent):
         stages: list[dict[str, Any]],
         knowledge_points: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
+        """Normalize LLM output and auto-fill ``task_id`` when missing.
+
+        LLM may not output ``task_id``.  When missing, resources are
+        distributed among each stage's tasks round-robin so that they
+        can be filtered by node in the frontend.
+        """
         stage_ids = {str(stage.get("stage_id") or f"stage_{index}") for index, stage in enumerate(stages, start=1)}
         fallback_bindings = self._stage_bindings(stages, knowledge_points)
         normalized: list[dict[str, Any]] = []
@@ -147,6 +186,14 @@ class ResourceAgent(BaseAgent):
             if not content and not quiz_items:
                 continue
 
+            # Auto-fill task_id if LLM didn't provide it
+            task_id = str(item.get("task_id") or "")
+            if not task_id:
+                tasks = binding.get("tasks", [])
+                if tasks:
+                    task_idx = (index - 1) % len(tasks)
+                    task_id = f"{stage_id}_node_{task_idx + 1}"
+
             normalized.append(
                 {
                     "resource_id": str(item.get("resource_id") or f"res_{resource_type}_{index:03d}"),
@@ -161,6 +208,7 @@ class ResourceAgent(BaseAgent):
                     "related_knowledge_points": knowledge,
                     "source": SOURCE_LLM,
                     "quality_status": str(item.get("quality_status") or "passed"),
+                    "task_id": task_id,
                     "reason": str(item.get("reason") or item.get("generation_reason") or binding["reason"]),
                     "generation_reason": str(item.get("generation_reason") or item.get("reason") or binding["reason"]),
                     "difficulty": str(item.get("difficulty") or binding["difficulty"]),
@@ -298,6 +346,130 @@ class ResourceAgent(BaseAgent):
             reason="满足偏好视频/图解的学生，也为后续多模态生成预留结构。",
         )
 
+    # ── Per-task resource generators ──────────────────────────────
+    # Each generates a single resource for a specific task within a stage.
+
+    def _lecture_for_task(self, course, binding, profile, task, task_id):
+        base = self._profile_value(profile, ["knowledge_base"], "基础未明确")
+        content = (
+            f"## {task} 课程讲义\n\n"
+            f"- 课程：{course.get('course_name', '')}\n"
+            f"- 对应阶段：{binding['stage_id']}\n"
+            f"- 学习任务：{task}\n"
+            f"- 学生基础：{base}\n\n"
+            f"### 核心内容\n\n{task}的核心知识点和概念讲解。\n\n"
+            f"### 学习步骤\n\n"
+            f"1. 先理解每个概念解决的问题和适用场景。\n"
+            f"2. 再结合课程章节中的示例或伪代码手推一遍。\n"
+            f"3. 最后用练习题检查边界条件、复杂度和常见误区。"
+        )
+        return self._resource(
+            f"res_lecture_{task_id}", "lecture",
+            f"{task}讲义",
+            f"针对学习任务「{task}」的个性化讲义。",
+            "markdown", binding,
+            content=content,
+            reason=f"针对任务「{task}」的阅读和练习材料",
+            task_id=task_id,
+        )
+
+    def _mindmap_for_task(self, course, binding, task, stage_id, task_id=""):
+        label = task or stage_id
+        res_id = f"res_mindmap_{task_id}" if task_id else f"res_mindmap_{stage_id}"
+        content = f"mindmap\n  root(({self._safe_mermaid(label)}))\n    核心概念\n    关键算法\n    应用场景\n    常见误区"
+        return self._resource(
+            res_id, "mindmap",
+            f"{label}知识图谱",
+            f"学习任务「{label}」的知识结构图。",
+            "mermaid", binding,
+            content=content,
+            reason=f"帮助学生建立{label}的结构关系",
+            task_id=task_id,
+        )
+
+    def _quiz_for_task(self, course, binding, profile, task, task_id):
+        goal = self._profile_value(profile, ["learning_goal"], "查漏补缺")
+        items = [{
+            "question_id": f"q_{task_id}_001",
+            "question_type": "short_answer",
+            "stem": f"围绕 {task}，说明它在当前学习目标中的作用。",
+            "options": [],
+            "answer": f"应从 {task} 的任务目标、输入输出、方法流程和评价方式四方面作答。",
+            "explanation": f"本题服务于目标：{goal}；重点检查 {task} 是否能用于真实题目或任务。",
+            "difficulty": binding["difficulty"],
+            "knowledge_point": task,
+        }]
+        return self._resource(
+            f"res_quiz_{task_id}", "quiz",
+            f"{task}练习题",
+            f"覆盖学习任务「{task}」的测验题。",
+            "json", binding,
+            items=items,
+            reason=f"检验{task}的掌握情况",
+            task_id=task_id,
+        )
+
+    def _reading_for_task(self, course, binding, task, stage_id, task_id=""):
+        label = task or stage_id
+        res_id = f"res_reading_{task_id}" if task_id else f"res_reading_{stage_id}"
+        content = (
+            f"## {label} 拓展阅读\n\n"
+            f"### 阅读重点\n\n"
+            f"1. {label}的核心概念与定义\n"
+            f"2. 经典算法与实现思路\n"
+            f"3. 实际应用案例分析\n"
+            f"4. 前沿进展与扩展方向\n\n"
+            f"### 阅读建议\n\n"
+            f"先阅读讲义掌握基础概念，再通过拓展阅读加深理解。"
+        )
+        return self._resource(
+            res_id, "reading",
+            f"{label}拓展阅读",
+            f"与学习任务「{label}」相关的拓展阅读材料。",
+            "markdown", binding,
+            content=content,
+            reason=f"拓展{label}的深度和广度",
+            task_id=task_id,
+        )
+
+    def _practice_for_task(self, course, binding, profile, task, task_id):
+        base = self._profile_value(profile, ["coding_ability"], "基础未明确")
+        content = (
+            f"## 实操任务：拆解 {task} 的 AI 流程\n\n"
+            f"1. 写出任务输入、模型/算法、输出和评价指标。\n"
+            f"2. 用 5 条样本数据模拟一次预测、搜索或推理流程。\n"
+            f"3. 说明可能的数据偏差、过拟合或评价误差。\n\n"
+            f"学生编程基础：{base}"
+        )
+        return self._resource(
+            f"res_practice_{task_id}", "practice",
+            f"{task}实操案例",
+            f"结合学习任务「{task}」生成可手推或可运行的实操任务。",
+            "markdown", binding,
+            content=content,
+            reason=f"通过实践加深对{task}的理解",
+            task_id=task_id,
+        )
+
+    def _video_script_for_task(self, course, binding, task, task_id):
+        content = (
+            f"## 90 秒视频脚本：{task}\n\n"
+            f"1. 画面：显示课程 {course.get('course_name', '')} 与阶段 {binding['stage_id']}。\n"
+            f"2. 旁白：先说明 {task} 要解决的核心问题。\n"
+            f"3. 画面：用一个最小例子展示输入、处理过程和输出。\n"
+            f"4. 旁白：点出常见误区和本阶段练习任务。\n"
+            f"5. 画面：收束到讲义、练习题和实操案例。"
+        )
+        return self._resource(
+            f"res_video_{task_id}", "multimodal",
+            f"视频脚本：{task}",
+            f"针对学习任务「{task}」的视频讲解脚本。",
+            "markdown", binding,
+            content=content,
+            reason=f"满足偏好视频/图解的学生",
+            task_id=task_id,
+        )
+
     def _resource(
         self,
         resource_id: str,
@@ -311,6 +483,7 @@ class ResourceAgent(BaseAgent):
         items: list[dict[str, Any]] | None = None,
         reason: str | None = None,
         difficulty: str | None = None,
+        task_id: str | None = None,
     ) -> dict[str, Any]:
         return {
             "resource_id": resource_id,
@@ -328,6 +501,7 @@ class ResourceAgent(BaseAgent):
             "reason": reason or binding["reason"],
             "generation_reason": reason or binding["reason"],
             "difficulty": difficulty or binding["difficulty"],
+            "task_id": task_id or "",
         }
 
     def _course_context(self, context: dict[str, Any]) -> dict[str, Any]:
@@ -424,6 +598,7 @@ class ResourceAgent(BaseAgent):
                     "knowledge_points": names[:5] or [str(stage.get("title") or f"阶段 {index}")],
                     "difficulty": self._difficulty(group),
                     "reason": str(stage.get("reason") or stage.get("goal") or "根据学习路径阶段和课程章节生成。"),
+                    "tasks": stage.get("tasks", []),
                 }
             )
         return result

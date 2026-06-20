@@ -222,7 +222,7 @@ class ConversationStore:
                             "content": r.content or "",
                             "content_format": "markdown",
                             "source": "db",
-                            "related_stage_id": r.session_id,
+                            "related_stage_id": r.related_stage_id or "",
                         }
                         for r in db_resources
                     ]
@@ -418,6 +418,8 @@ class ConversationStore:
                         "bookmarked": item.get("bookmarked", False),
                         "study_status": item.get("study_status", "new"),
                         "source": item.get("source", "agent_generated"),
+                        "related_stage_id": item.get("related_stage_id", ""),
+                        "task_id": item.get("task_id", ""),
                     })
             except Exception:
                 # Log but don't crash — in-memory state is already updated
@@ -552,8 +554,11 @@ class ConversationStore:
         )
 
         time_match = re.search(
-            r"(\d+\s*(天|周|个月|小时|分钟)|一周|两周|半个月|一个月|半小时|一个半小时|两个小时|两小时)(内|左右|以内|以上|完成)?",
-            time_text,
+            r"(\d+\s*(天|周|个月|小时|分钟)|"
+            r"[一二两三四五六七八九十半]+天|"
+            r"一周|两周|半个月|一个月|半小时|一个半小时|两个小时|两小时)"
+            r"(内|左右|以内|以上|完成)?",
+            text,
         )
         if time_match:
             set_fact("time_budget", time_match.group(0))

@@ -90,6 +90,8 @@ def init_db() -> None:
             "bookmarked": "BOOLEAN DEFAULT 0",
             "study_status": "VARCHAR(16) DEFAULT 'new'",
             "source": "VARCHAR(16) DEFAULT 'agent_generated'",
+            "related_stage_id": "VARCHAR(64)",
+            "task_id": "VARCHAR(64)",
             "updated_at": "DATETIME",
         },
     }

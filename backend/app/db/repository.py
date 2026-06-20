@@ -309,6 +309,8 @@ def save_resource(
         bookmarked=resource_data.get("bookmarked", False),
         study_status=resource_data.get("study_status") or resource_data.get("studyStatus", "new"),
         source=resource_data.get("source", "agent_generated"),
+        related_stage_id=resource_data.get("related_stage_id", ""),
+        task_id=resource_data.get("task_id", ""),
     )
     existing = db.get(ResourceModel, res.id)
     if existing:
@@ -329,6 +331,8 @@ def save_resource(
         existing.bookmarked = res.bookmarked
         existing.study_status = res.study_status
         existing.source = res.source
+        existing.related_stage_id = res.related_stage_id
+        existing.task_id = res.task_id
         existing.updated_at = _utcnow()
         res = existing
     else:

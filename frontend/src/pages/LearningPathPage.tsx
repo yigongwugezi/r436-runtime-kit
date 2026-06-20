@@ -27,19 +27,8 @@ const STATUS_CONFIG: Record<PathNodeStatus, { icon: any; label: string; bg: stri
   mastered:    { icon: CheckCircle2, label: '已完成',  bg: 'bg-green-50/70 border-green-200', iconColor: 'text-green-500' },
 };
 
-/** 可切换的状态列表（排除 locked） */
-const TOGGLEABLE_STATUSES: PathNodeStatus[] = ['available', 'in_progress', 'mastered'];
-
-/** 状态切换顺序 */
-const NEXT_STATUS: Record<PathNodeStatus, PathNodeStatus> = {
-  available: 'in_progress',
-  in_progress: 'mastered',
-  mastered: 'available',
-  locked: 'available',
-};
-
 /* ===================================================================
- * 节点卡片 — 带状态切换 + 资源跳转
+ * 节点卡片 — 点击跳转到该节点的资源
  * =================================================================== */
 function NodeCard({ node, isLast, isRecommended, onStatusChange }: {
   node: PathNode;
@@ -51,19 +40,10 @@ function NodeCard({ node, isLast, isRecommended, onStatusChange }: {
   const cfg = STATUS_CONFIG[node.status];
   const isLocked = node.status === 'locked';
 
-  // 点击节点体 → 跳转到第一个必要资源
+  // 点击节点体 → 跳转到资源库并筛选该节点对应的资源（按 taskId 精确匹配）
   const handleNodeClick = () => {
     if (isLocked) return;
-    const target = node.resources.find(r => r.essential) || node.resources[0];
-    if (target) navigate(`/resources/${target.resourceId}`);
-  };
-
-  // 循环切换状态
-  const cycleStatus = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (isLocked) return;
-    const next = NEXT_STATUS[node.status];
-    onStatusChange(node.id, next);
+    navigate(`/resources?taskId=${node.id}`);
   };
 
   const statusIcon = node.status === 'in_progress' ? (
@@ -82,16 +62,14 @@ function NodeCard({ node, isLast, isRecommended, onStatusChange }: {
             <Star className="w-4 h-4 text-amber-500 relative z-10" />
           </div>
         )}
-        <button
-          onClick={cycleStatus}
-          disabled={isLocked}
-          title={isLocked ? '未解锁' : `当前：${cfg.label}，点击切换`}
+        <div
+          title={cfg.label}
           className={`w-9 h-9 rounded-xl flex items-center justify-center border-2 transition-all ${
-            isLocked ? 'bg-gray-100 border-gray-200 cursor-not-allowed' : 'bg-white border-brand-200 shadow-sm hover:shadow-md hover:scale-110 cursor-pointer'
+            isLocked ? 'bg-gray-100 border-gray-200' : 'bg-white border-brand-200 shadow-sm'
           } ${isRecommended ? 'ring-2 ring-amber-300 ring-offset-2' : ''}`}
         >
           {statusIcon}
-        </button>
+        </div>
         {!isLast && (
           <div className={`w-0.5 flex-1 min-h-[24px] my-1 transition-colors ${
             node.status === 'mastered' ? 'bg-green-300' : 'bg-gray-200'
@@ -120,18 +98,17 @@ function NodeCard({ node, isLast, isRecommended, onStatusChange }: {
                   推荐起点
                 </span>
               )}
-              {/* 状态标记（可点击切换） */}
-              <button onClick={cycleStatus} disabled={isLocked}
-                className={`ml-auto text-[10px] font-semibold px-2 py-0.5 rounded-md border transition-all ${
+              {/* 状态标记（只读，不可手动切换） */}
+              <span
+                className={`ml-auto text-[10px] font-semibold px-2 py-0.5 rounded-md border ${
                   isLocked ? 'text-gray-300 border-gray-100' :
-                  node.status === 'mastered' ? 'text-green-600 border-green-200 bg-green-50 hover:bg-green-100' :
-                  node.status === 'in_progress' ? 'text-brand-600 border-brand-200 bg-brand-50 hover:bg-brand-100' :
-                  'text-gray-400 border-gray-200 bg-white hover:bg-gray-50'
+                  node.status === 'mastered' ? 'text-green-600 border-green-200 bg-green-50' :
+                  node.status === 'in_progress' ? 'text-brand-600 border-brand-200 bg-brand-50' :
+                  'text-gray-400 border-gray-200 bg-white'
                 }`}
-                title="点击切换状态"
               >
                 {cfg.label}
-              </button>
+              </span>
             </div>
             <p className="text-xs text-gray-400 line-clamp-2">{node.description}</p>
           </div>
@@ -464,8 +441,7 @@ export default function LearningPathPage() {
 
   // —— 跳转到资源库并筛选当前阶段 ——
   const handleViewResources = (stageId: string) => {
-    sessionStorage.setItem('eduagent_filter_stage', stageId);
-    navigate(`/resources?stage=${stageId}`);
+    navigate(`/resources?relatedStageId=${stageId}`);
   };
 
   // —— Loading（首次无数据） ——

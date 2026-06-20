@@ -32,6 +32,7 @@ try {
     Invoke-PythonTest @("tests\course_catalog_test.py")
     Invoke-PythonTest @("tests\import_app_test.py")
     Invoke-PythonTest @("tests\learning_tracker_test.py")
+    Invoke-PythonTest @("tests\learning_events_e2e_test.py")
     Invoke-PythonTest @("tests\product_routes_test.py")
     Invoke-PythonTest @("-m", "compileall", "app", "tests")
 }

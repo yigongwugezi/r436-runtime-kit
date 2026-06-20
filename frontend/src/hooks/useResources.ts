@@ -4,7 +4,7 @@ import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
 import type { Resource, ResourceFilter } from '../types/resource';
 
-export function useResources() {
+export function useResources(initialFilter?: ResourceFilter) {
   const subjectId = useSubjectStore((s) => s.activeSubject?.id);
   const sessionId = useChatStore((state) => state.currentSessionId);
   const dataVersion = useChatStore((state) => state.dataVersion);
@@ -12,8 +12,9 @@ export function useResources() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<ResourceFilter>({});
+  const [filter, setFilter] = useState<ResourceFilter>(initialFilter || {});
   const lastReadKeyRef = useRef<string | undefined>(undefined);
+  const lastInitialFilterRef = useRef<string | undefined>(undefined);
   const lastVersionRef = useRef<number>(0);
   const fetchingRef = useRef(false);
   const pendingFilterRef = useRef<ResourceFilter | undefined>(undefined);
@@ -49,14 +50,22 @@ export function useResources() {
     }
   }, [sessionId, subjectId]);
 
+  // Fetch on mount / subject change / initialFilter change
   useEffect(() => {
     const readKey = subjectId ? `${sessionId}:${subjectId}` : undefined;
-    if (readKey && lastReadKeyRef.current !== readKey) {
+    const initialFilterKey = JSON.stringify(initialFilter || {});
+    const shouldFetch = readKey && (
+      lastReadKeyRef.current !== readKey ||
+      lastInitialFilterRef.current !== initialFilterKey
+    );
+    if (shouldFetch) {
       lastReadKeyRef.current = readKey;
-      setFilter({});
-      doFetch({});
+      lastInitialFilterRef.current = initialFilterKey;
+      const f = initialFilter || {};
+      setFilter(f);
+      doFetch(f);
     }
-  }, [sessionId, subjectId, doFetch]);
+  }, [sessionId, subjectId, doFetch, initialFilter]);
 
   useEffect(() => {
     if (dataVersion <= 0 || dataVersion === lastVersionRef.current) return;
@@ -85,7 +94,6 @@ export function useResources() {
     );
   }, [sessionId, subjectId]);
 
-  /** 本地更新某个资源的状态（如标记完成） */
   const updateResource = useCallback((id: string, updates: Partial<Resource>) => {
     setResources((prev) =>
       prev.map((r) => (r.id === id ? { ...r, ...updates } : r))

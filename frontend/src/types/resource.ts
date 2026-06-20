@@ -36,6 +36,8 @@ export interface Resource {
   // ========== ResourceAgent P0 新增字段 ==========
   /** 关联的学习阶段 ID */
   relatedStageId?: string;
+  /** 关联的子阶段/任务 ID (如 stage_1_node_2) */
+  taskId?: string;
   /** 关联的章节名称 */
   relatedChapter?: string;
   /** 关联的知识点列表 */
@@ -75,4 +77,7 @@ export interface ResourceFilter {
   format?: ResourceFormat;
   search?: string;
   sortBy?: 'newest' | 'relevance' | 'difficulty';
+  relatedStageId?: string;
+  taskId?: string;
+  resourceIds?: string;
 }

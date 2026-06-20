@@ -8,7 +8,7 @@ import { readStorageJson, writeStorageJson, runtimeStorageKeys } from '../../uti
 import {
   Brain, MessageSquare, Library, GitFork, User, Home, TrendingUp,
   LogOut, ChevronLeft, ChevronRight, Edit3, Check, X,
-  Settings, Gift, HelpCircle, GraduationCap, Share2, Plus,
+  Settings, Gift, HelpCircle, GraduationCap, Share2, Plus, Trash2,
 } from 'lucide-react';
 
 /* ===================================================================
@@ -240,25 +240,33 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
             {sessions.map((ses) => {
               const active = ses.id === useChatStore.getState().currentSessionId;
               return (
-                <button
-                  key={ses.id}
-                  onClick={() => {
-                    setCurrentSession(ses.id);
-                    navigate('/chat');
-                  }}
-                  className={`w-full text-left px-3 py-2 rounded-lg transition-colors group ${
-                    active ? 'bg-gray-800/50' : 'hover:bg-gray-800/50'
-                  }`}
-                >
-                  <p className={`text-[11px] leading-relaxed truncate ${
-                    active ? 'text-gray-200' : 'text-gray-400'
-                  }`}>
-                    {ses.title || '新对话'}
-                  </p>
-                  <p className="text-[9px] text-gray-700 mt-0.5">
-                    {new Date(ses.updatedAt || ses.createdAt).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                  </p>
-                </button>
+                <div key={ses.id} className="group relative">
+                  <button
+                    onClick={() => {
+                      setCurrentSession(ses.id);
+                      navigate('/chat');
+                    }}
+                    className={`w-full text-left px-3 py-2 rounded-lg transition-colors ${
+                      active ? 'bg-gray-800/50' : 'hover:bg-gray-800/50'
+                    }`}
+                  >
+                    <p className={`text-[11px] leading-relaxed truncate ${
+                      active ? 'text-gray-200' : 'text-gray-400'
+                    }`}>
+                      {ses.title || '新对话'}
+                    </p>
+                    <p className="text-[9px] text-gray-700 mt-0.5">
+                      {new Date(ses.updatedAt || ses.createdAt).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                    </p>
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); if (confirm('确定删除此对话？')) useChatStore.getState().removeSession(ses.id); }}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-md text-gray-600 hover:text-red-400 hover:bg-gray-800 opacity-0 group-hover:opacity-100 transition-all"
+                    title="删除对话"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               );
             })}
           </div>

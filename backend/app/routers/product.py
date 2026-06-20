@@ -361,6 +361,7 @@ def _to_resource(
     related_chapter = str(item.get("related_chapter") or "")
     related_knowledge_points = item.get("related_knowledge_points") or []
     quality_status = str(item.get("quality_status") or "passed")
+    task_id = str(item.get("task_id") or "")
     return {
         "id": resource_id,
         "type": _resource_type(item.get("type", "lecture")),
@@ -381,6 +382,7 @@ def _to_resource(
         "studyStatus": item.get("studyStatus", "new"),
         "source": _source_label(item.get("source", "")),
         "relatedStageId": related_stage_id,
+        "taskId": task_id,
         "relatedChapter": related_chapter,
         "relatedKnowledgePoints": related_knowledge_points if isinstance(related_knowledge_points, list) else [related_knowledge_points],
         "qualityStatus": quality_status,
@@ -867,6 +869,10 @@ def _reply_for_intent(message: str, intent: dict[str, Any], session_id: str) -> 
         return _resource_request_reply(message, session_id), True
     if name == "tutoring":
         return _tutoring_reply(message), False
+    if name == "diagnosis":
+        return _feedback_reply(message, session_id), False
+    if name == "full_workflow":
+        return _learning_plan_request_reply(message, intent, session_id)
     if name == "progress_feedback":
         return _feedback_reply(message, session_id), False
     if name == "unsafe":
@@ -1225,11 +1231,34 @@ def get_resources(
     source: str = "",
     search: str = "",
     knowledgePoint: str = "",
+    relatedStageId: str = "",   # 从学习路径跳转时按阶段筛选
+    resourceIds: str = "",       # 从节点跳转时按指定资源 ID 筛选（逗号分隔）
+    taskId: str = "",             # 按 task_id 精确匹配（节点级筛选）
 ) -> dict[str, Any]:
-    """Read resources from DB. Supports filtering by type/difficulty/source/search."""
+    """Read resources from DB. Supports filtering by type/difficulty/source/search/stage/node."""
     session_id = _resolve_session_id(sessionId, subjectId)
+    _resource_id_set: set[str] = set()
+    _resource_id_suffixes: set[str] = set()
+    if resourceIds:
+        for rid in resourceIds.split(","):
+            rid = rid.strip()
+            if rid:
+                _resource_id_set.add(rid)
+                _resource_id_suffixes.add(rid)
+                # Also match with session prefix (resource IDs in nodes don't have
+                # the session_id_ prefix that actual saved resources have)
+                _resource_id_set.add(f"_{rid}")  # suffix match helper
 
     def _matches(item: dict[str, Any]) -> bool:
+        if _resource_id_set:
+            item_id = item.get("id", "")
+            if item_id in _resource_id_set:
+                return True
+            # Also check suffix match (node IDs vs saved IDs with session prefix)
+            for suffix in _resource_id_suffixes:
+                if item_id.endswith(f"_{suffix}") or item_id.endswith(suffix):
+                    return True
+            return False
         if type and item.get("type", "") != type:
             return False
         if difficulty and item.get("difficulty", "") != difficulty:
@@ -1238,25 +1267,13 @@ def get_resources(
             item_source = _source_label(item.get("source", ""))
             if item_source != source:
                 return False
-        if search:
-            q = search.lower()
-            title = (item.get("title") or "").lower()
-            desc = (item.get("description") or "").lower()
-            kps = " ".join(item.get("knowledgePoints", item.get("knowledge_points", []))).lower()
-            if q not in title and q not in desc and q not in kps and q not in item.get("id", "").lower():
+        if relatedStageId:
+            item_stage = item.get("relatedStageId", item.get("related_stage_id", ""))
+            if item_stage != relatedStageId:
                 return False
-        if knowledgePoint:
-            kps = item.get("knowledgePoints", item.get("knowledge_points", []))
-            if knowledgePoint not in kps:
-                return False
-        return True
-        if type and item.get("type", "") != type:
-            return False
-        if difficulty and item.get("difficulty", "") != difficulty:
-            return False
-        if source:
-            item_source = _source_label(item.get("source", ""))
-            if item_source != source:
+        if taskId:
+            item_task = item.get("taskId", item.get("task_id", ""))
+            if item_task != taskId:
                 return False
         if search:
             q = search.lower()
@@ -1292,6 +1309,7 @@ def get_resources(
             "studyStatus": item.get("studyStatus", item.get("study_status", "new")),
             "source": _source_label(item.get("source", "")),
             "relatedStageId": item.get("relatedStageId", item.get("related_stage_id", "")),
+            "taskId": item.get("taskId", item.get("task_id", "")),
             "relatedChapter": item.get("relatedChapter", item.get("related_chapter", "")),
             "relatedKnowledgePoints": item.get("relatedKnowledgePoints", item.get("related_knowledge_points", [])),
             "qualityStatus": item.get("qualityStatus", item.get("quality_status", "")),
@@ -1456,7 +1474,9 @@ def update_resource_study_status(resource_id: str, payload: dict[str, Any], sess
         from app.db.repository import get_resource as repo_get_resource, save_resource as repo_save_resource
         resource = repo_get_resource(db, resource_id)
         if resource:
-            # 已有 DB 记录，直接更新状态
+            # 校验资源属于当前 session，防止跨 session 修改
+            if resource.session_id != session_id:
+                return {"ok": False, "error": "resource does not belong to this session"}
             resource.study_status = study_status
             db.commit()
         else:
@@ -1573,19 +1593,90 @@ def resource_knowledge_graph_legacy(resource_id: str) -> dict[str, Any]:
 
 
 # ── In-memory node progress store ────────────────────────────────────
-# Keyed by node_id, stores {status, mastery, updatedAt}
+# Keyed by "{session_id}:{node_id}" for session isolation.
+# Two learners with the same node_id (e.g. "stage_1_node_1") won't
+# interfere with each other.
 _node_progress_store: dict[str, dict[str, Any]] = {}
 
 
-def _apply_node_progress(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Apply saved node progress on top of default stages."""
+def _nkey(session_id: str, node_id: str) -> str:
+    """Build a session-isolated key for the node progress store."""
+    return f"{session_id}:{node_id}"
+
+
+def _apply_node_progress(stages: list[dict[str, Any]], session_id: str = "") -> list[dict[str, Any]]:
+    """Derive node status from resource study_statuses, and auto-unlock stages.
+
+    Node status is NOT stored as a separate fact — it is DERIVED from the
+    completion states of ALL resources tagged with that node's ``task_id``.
+
+    Rules (in priority order):
+    1. All resources completed → mastered (100%)
+    2. Any resource completed → in_progress (60%)
+    3. Node unlocked in store → available (0%)
+    4. Otherwise → locked (0%)
+
+    When ALL nodes in a stage are mastered, the first node of the next stage
+    is automatically unlocked (stored in ``_node_progress_store``).
+    """
+    if not session_id:
+        return stages
     for stage in stages:
         for node in stage.get("nodes", []):
             nid = node["id"]
-            if nid in _node_progress_store:
-                saved = _node_progress_store[nid]
+            try:
+                from app.db.engine import SessionLocal as _DL
+                from app.db.models import ResourceModel as _RM
+                from sqlalchemy import select, func as _F
+                _db = _DL()
+                total = _db.execute(
+                    select(_F.count(_RM.id))
+                    .where(_RM.session_id == session_id)
+                    .where(_RM.task_id == nid)
+                ).scalar() or 0
+                completed = _db.execute(
+                    select(_F.count(_RM.id))
+                    .where(_RM.session_id == session_id)
+                    .where(_RM.task_id == nid)
+                    .where(_RM.study_status == "completed")
+                ).scalar() or 0
+                _db.close()
+            except Exception:
+                total = 0
+                completed = 0
+
+            if total > 0 and completed >= total:
+                node["status"] = "mastered"
+                node["mastery"] = 100
+            elif completed > 0:
+                node["status"] = "in_progress"
+                node["mastery"] = 60
+            elif _nkey(session_id, nid) in _node_progress_store:
+                saved = _node_progress_store[_nkey(session_id, nid)]
                 node["status"] = saved.get("status", node["status"])
                 node["mastery"] = saved.get("mastery", node["mastery"])
+            # else: keep default (locked/available from learning path)
+
+    # ── Auto-unlock: after computing node statuses, check if any stage
+    #    is fully mastered and unlock the next stage's first node.
+    for i, stage in enumerate(stages):
+        nodes = stage.get("nodes", [])
+        if not nodes:
+            continue
+        all_mastered = all(n.get("status") == "mastered" for n in nodes)
+        if all_mastered and i + 1 < len(stages):
+            next_stage = stages[i + 1]
+            next_nodes = next_stage.get("nodes", [])
+            if next_nodes:
+                first_next = next_nodes[0]["id"]
+                if _nkey(session_id, first_next) not in _node_progress_store:
+                    _node_progress_store[_nkey(session_id, first_next)] = {
+                        "status": "available", "mastery": 0,
+                        "updatedAt": time.time(),
+                    }
+                    _log_node_progress(session_id, first_next, "available")
+                next_nodes[0]["status"] = "available"
+
     return stages
 
 
@@ -1600,7 +1691,10 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
     session_id = _resolve_session_id(sessionId, subjectId)
 
     def _build_path(stages: list[dict[str, Any]], base: dict[str, Any]) -> dict[str, Any]:
-        stages = _apply_node_progress(stages)
+        stages = _apply_node_progress(stages, session_id)
+        all_nodes = [n for s in stages for n in s.get("nodes", [])]
+        mastered = sum(1 for n in all_nodes if n.get("status") == "mastered")
+        overall = round(mastered / len(all_nodes) * 100) if all_nodes else 0
         return {
             "id": base.get("id", f"path_{session_id}"),
             "title": base.get("title", "个性化学习路径"),
@@ -1609,7 +1703,7 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
             "courseId": base.get("courseId", ""),
             "stages": stages,
             "createdAt": base.get("createdAt", int(time.time() * 1000)),
-            "overallProgress": 0,
+            "overallProgress": overall,
             "estimatedDays": base.get("estimatedDays", 14),
             "source": "agent_generated",
         }
@@ -1641,7 +1735,10 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
         if not path.get("stages"):
             return {"path": _empty_learning_path(session_id)}
         path["source"] = "agent_generated"
-        path["stages"] = _apply_node_progress(path["stages"])
+        path["stages"] = _apply_node_progress(path["stages"], session_id)
+        all_nodes = [n for s in path["stages"] for n in s.get("nodes", [])]
+        mastered = sum(1 for n in all_nodes if n.get("status") == "mastered")
+        path["overallProgress"] = round(mastered / len(all_nodes) * 100) if all_nodes else 0
         return {"path": path}
 
     return {"path": _empty_learning_path(session_id)}
@@ -1662,8 +1759,8 @@ def generate_learning_path(payload: dict[str, Any]) -> dict[str, Any]:
 @router.patch("/learning-path/nodes/{node_id}")
 def update_node_progress(node_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     session_id = _payload_session_id(payload)
-    # 持久化节点进度到内存存储
-    _node_progress_store[node_id] = {
+    # 持久化节点进度到会话隔离的内存存储
+    _node_progress_store[_nkey(session_id, node_id)] = {
         "status": payload.get("status", "available"),
         "mastery": payload.get("mastery", 0),
         "updatedAt": time.time(),
@@ -1682,7 +1779,9 @@ def update_node_progress(node_id: str, payload: dict[str, Any]) -> dict[str, Any
 
 @router.post("/feedback")
 def submit_feedback(payload: dict[str, Any]) -> dict[str, Any]:
-    session_id = _payload_session_id(payload)
+    session_id = str(payload.get("sessionId") or "")
+    if not session_id:
+        return {"ok": False, "error": "sessionId is required"}
     learning_tracker.log({"event": "feedback", **payload}, session_id=session_id)
     return {"ok": True}
 
@@ -1690,7 +1789,85 @@ def submit_feedback(payload: dict[str, Any]) -> dict[str, Any]:
 @router.post("/feedback/event")
 def log_study_event(payload: dict[str, Any]) -> dict[str, Any]:
     session_id = _payload_session_id(payload)
+    # Auto-fill duration from resource's estimated_minutes for completion events
+    if payload.get("event") == "resource_complete" and payload.get("resourceId"):
+        try:
+            from app.db.repository import get_resource as _get_res
+            db = SessionLocal()
+            res = _get_res(db, payload["resourceId"])
+            if res and res.estimated_minutes and not payload.get("duration"):
+                payload["duration"] = res.estimated_minutes
+            db.close()
+        except Exception:
+            pass
     learning_tracker.log(payload, session_id=session_id)
+    return {"ok": True}
+
+
+
+
+
+def _log_node_progress(session_id: str, node_id: str, status: str) -> None:
+    """Log a node_progress event to the learning tracker."""
+    try:
+        learning_tracker.log({
+            "event": "node_progress",
+            "resourceId": node_id,
+            "sessionId": session_id,
+            "metadata": {"nodeId": node_id, "status": status},
+        }, session_id=session_id)
+    except Exception:
+        pass
+
+
+@router.patch("/learning-path/auto-advance")
+def auto_advance_node(payload: dict[str, Any]) -> dict[str, Any]:
+    """Auto-advance node progress when a user views/completes a resource.
+
+    Uses ``taskId`` (e.g. ``stage_1_node_2``) to pinpoint the exact node.
+    Falls back to iterating all tasks within ``relatedStageId`` when
+    ``taskId`` is not provided.
+    """
+    related_stage_id = str(payload.get("relatedStageId", ""))
+    task_id = str(payload.get("taskId", "")).strip()
+    event = str(payload.get("event", ""))
+    if not related_stage_id or event not in ("resource_view", "resource_complete"):
+        return {"ok": False}
+
+    if task_id and not task_id.startswith(related_stage_id):
+        task_id = ""  # mismatched stage — ignore
+
+    session_id = _payload_session_id(payload)
+
+    def _update(node_id: str, status: str, mastery: int) -> None:
+        _node_progress_store[_nkey(session_id, node_id)] = {
+            "status": status, "mastery": mastery,
+            "updatedAt": time.time(),
+        }
+
+    def _has(node_id: str) -> bool:
+        return _nkey(session_id, node_id) in _node_progress_store
+
+    if task_id and event == "resource_view":
+        if not _has(task_id):
+            _update(task_id, "in_progress", 40)
+            _log_node_progress(session_id, task_id, "in_progress")
+        parts = task_id.rsplit("_node_", 1)
+        if len(parts) == 2:
+            next_num = int(parts[1]) + 1
+            next_id = f"{parts[0]}_node_{next_num}"
+            if not _has(next_id):
+                _update(next_id, "available", 0)
+                _log_node_progress(session_id, next_id, "available")
+    elif task_id and event == "resource_complete":
+        parts = task_id.rsplit("_node_", 1)
+        if len(parts) == 2:
+            next_num = int(parts[1]) + 1
+            next_id = f"{parts[0]}_node_{next_num}"
+            if not _has(next_id):
+                _update(next_id, "available", 0)
+                _log_node_progress(session_id, next_id, "available")
+        _log_node_progress(session_id, task_id, "completed")
     return {"ok": True}
 
 
