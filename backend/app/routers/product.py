@@ -1107,47 +1107,87 @@ def get_learner_endpoint(learner_id: str) -> dict[str, Any]:
 
 
 @router.get("/resources")
-def get_resources(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
-    """Read resources from DB. Never triggers agents."""
+def get_resources(
+    sessionId: str = "",
+    subjectId: str = "",
+    type: str = "",
+    difficulty: str = "",
+    source: str = "",
+    search: str = "",
+    knowledgePoint: str = "",
+) -> dict[str, Any]:
+    """Read resources from DB. Supports filtering by type/difficulty/source/search."""
     session_id = _resolve_session_id(sessionId, subjectId)
+
+    def _matches(item: dict[str, Any]) -> bool:
+        if type and item.get("type", "") != type:
+            return False
+        if difficulty and item.get("difficulty", "") != difficulty:
+            return False
+        if source:
+            item_source = _source_label(item.get("source", ""))
+            if item_source != source:
+                return False
+        if search:
+            q = search.lower()
+            title = (item.get("title") or "").lower()
+            desc = (item.get("description") or "").lower()
+            kps = " ".join(item.get("knowledgePoints", item.get("knowledge_points", []))).lower()
+            if q not in title and q not in desc and q not in kps and q not in item.get("id", "").lower():
+                return False
+        if knowledgePoint:
+            kps = item.get("knowledgePoints", item.get("knowledge_points", []))
+            if knowledgePoint not in kps:
+                return False
+        return True
+
+    def _normalize(item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": item["id"],
+            "type": _resource_type(item.get("type", "lecture")),
+            "title": item.get("title", "学习资源"),
+            "description": item.get("description", ""),
+            "content": item.get("content", ""),
+            "knowledgePoints": item.get("knowledgePoints", item.get("knowledge_points", [])),
+            "tags": item.get("tags", []),
+            "difficulty": item.get("difficulty", "easy"),
+            "estimatedMinutes": item.get("estimatedMinutes", item.get("estimated_minutes", 20)),
+            "format": item.get("format", "text"),
+            "mermaidDef": item.get("mermaidDef", item.get("mermaid_def")),
+            "codeBlocks": item.get("codeBlocks", item.get("code_blocks")),
+            "questions": item.get("questions"),
+            "pptOutline": item.get("pptOutline", item.get("ppt_outline")),
+            "createdAt": item.get("createdAt", int(time.time() * 1000)),
+            "bookmarked": item.get("bookmarked", False),
+            "studyStatus": item.get("studyStatus", item.get("study_status", "new")),
+            "source": _source_label(item.get("source", "")),
+            "relatedStageId": item.get("relatedStageId", item.get("related_stage_id", "")),
+            "relatedChapter": item.get("relatedChapter", item.get("related_chapter", "")),
+            "relatedKnowledgePoints": item.get("relatedKnowledgePoints", item.get("related_knowledge_points", [])),
+            "qualityStatus": item.get("qualityStatus", item.get("quality_status", "")),
+        }
 
     # Try DB first
     db_resources = ag_get_resources(session_id)
     if db_resources:
         bookmarks = _get_bookmarks(session_id)
-        items = [
-            {
-                "id": r["id"],
-                "type": _resource_type(r.get("type", "lecture")),
-                "title": r.get("title", "学习资源"),
-                "description": r.get("description", ""),
-                "content": r.get("content", ""),
-                "knowledgePoints": r.get("knowledge_points", []),
-                "tags": r.get("tags", []),
-                "difficulty": r.get("difficulty", "easy"),
-                "estimatedMinutes": r.get("estimated_minutes", 20),
-                "format": r.get("format", "text"),
-                "mermaidDef": r.get("mermaid_def"),
-                "codeBlocks": r.get("code_blocks"),
-                "questions": r.get("questions"),
-                "pptOutline": r.get("ppt_outline"),
-                "createdAt": int(datetime.fromisoformat(r["created_at"]).timestamp() * 1000) if r.get("created_at") else int(time.time() * 1000),
-                "bookmarked": r["id"] in bookmarks,
-                "studyStatus": r.get("study_status", "new"),
-                "source": _source_label(r.get("source", "")),
-            }
-            for r in db_resources
-        ]
+        items = []
+        for r in db_resources:
+            r["bookmarked"] = r["id"] in bookmarks
+            r["createdAt"] = int(datetime.fromisoformat(r["created_at"]).timestamp() * 1000) if r.get("created_at") else int(time.time() * 1000)
+            if _matches(r):
+                items.append(_normalize(r))
         return {"resources": items, "total": len(items), "page": 1, "sessionId": session_id}
 
     # Fall back to in-memory last_result
     state = conversation_store.get(session_id)
     if state.last_result:
-        resources = [
+        raw_resources = [
             _to_resource(item, state.last_result.get("course_id", "ai_intro"), session_id)
             for item in state.last_result.get("resources", [])
         ]
-        return {"resources": resources, "total": len(resources), "page": 1, "sessionId": session_id}
+        filtered = [r for r in raw_resources if _matches(r)]
+        return {"resources": filtered, "total": len(filtered), "page": 1, "sessionId": session_id}
 
     return {"resources": [], "total": 0, "page": 1, "sessionId": session_id}
 

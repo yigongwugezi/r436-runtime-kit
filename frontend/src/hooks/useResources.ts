@@ -16,24 +16,36 @@ export function useResources() {
   const lastReadKeyRef = useRef<string | undefined>(undefined);
   const lastVersionRef = useRef<number>(0);
   const fetchingRef = useRef(false);
+  const pendingFilterRef = useRef<ResourceFilter | undefined>(undefined);
 
   const doFetch = useCallback(async (f: ResourceFilter) => {
     if (!subjectId) return;
-    if (fetchingRef.current) return;
+    if (fetchingRef.current) {
+      pendingFilterRef.current = f;
+      return;
+    }
     fetchingRef.current = true;
+    pendingFilterRef.current = undefined;
     setLoading(true);
     setError(null);
     try {
       const res = await resourcesApi.getResources({ ...f, sessionId, subjectId });
-      setResources(res?.resources || []);
-      setTotal(res?.total || 0);
+      if (pendingFilterRef.current === undefined) {
+        setResources(res?.resources || []);
+        setTotal(res?.total || 0);
+      }
     } catch {
-      setResources([]);
-      setTotal(0);
-      setError('资源加载失败，请确认后端已启动');
+      if (pendingFilterRef.current === undefined) {
+        setResources([]);
+        setTotal(0);
+        setError('资源加载失败，请确认后端已启动');
+      }
     } finally {
       setLoading(false);
       fetchingRef.current = false;
+      if (pendingFilterRef.current) {
+        doFetch(pendingFilterRef.current);
+      }
     }
   }, [sessionId, subjectId]);
 
