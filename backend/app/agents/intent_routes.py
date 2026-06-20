@@ -147,6 +147,14 @@ INTENT_ROUTES = {
             "帮我设计一个NLP小项目",
         ],
     },
+    "full_workflow": {
+        "description": "用户希望同时完成画像构建、学习路径规划和资源生成，属于复合型需求。",
+        "examples": [
+            "帮我构建学习画像、学习路径和学习资源",
+            "帮我生成学习画像、学习路径和相关资源",
+            "给我创建完整的学习方案，包括画像、路径和资源",
+        ],
+    },
     "unsafe": {
         "description": "作弊、攻击、违法、绕过系统等不安全请求。",
         "examples": [
@@ -160,4 +168,4 @@ INTENT_ROUTES = {
 }
 
 
-ROUTE_AGENT_INTENTS = {"learning_plan", "resource_request", "project_help"}
+ROUTE_AGENT_INTENTS = {"learning_plan", "resource_request", "project_help", "full_workflow"}

@@ -21,6 +21,7 @@ IntentType = Literal[
     "resource_request",
     "progress_feedback",
     "project_help",
+    "full_workflow",
     "unsafe",
     "unknown",
 ]
@@ -160,6 +161,53 @@ class IntentAgent(BaseAgent):
                 "用户正在补充学习时间安排，属于画像更新。",
             )
 
+        # ── Resource request high-precision triggers ──
+        #   Must be BEFORE the compound rule so messages like
+        #   "根据我的学习路径推荐资源" are not mistaken for full_workflow.
+        resource_triggers = [
+            "找学习资源",
+            "推荐学习资源",
+            "推荐资源",
+            "给我推荐",
+            "根据我的学习路径推荐",
+            "给我找",
+        ]
+        if any(trigger in text for trigger in resource_triggers):
+            return self._result(
+                "resource_request",
+                0.9,
+                True,
+                "用户明确请求查找或推荐学习资源。",
+            )
+
+        # ── Compound intent detection: user wants to BUILD multiple things ──
+        #   Uses strict markers requiring action words (构建/生成/创建) + target.
+        compound_groups = [
+            {"构建画像", "生成画像", "构建学习画像", "生成学习画像"},        # profile_update (explicit build)
+            {"生成学习路径", "构建学习路径", "制定学习计划", "生成学习方案", "帮我规划"},  # learning_plan (explicit build)
+            {"生成学习资源", "构建学习资源", "生成资源", "创建资源"},        # resource_request (explicit build)
+        ]
+        matched_count = sum(
+            1 for group in compound_groups if any(m in text for m in group)
+        )
+        if matched_count >= 2:
+            return self._result(
+                "full_workflow",
+                0.88,
+                True,
+                "用户同时请求构建画像、路径规划和资源生成中的至少两项。",
+            )
+
+        # Fallback compound check: if the user mentions "画像、学习路径和学习资源"
+        # in a single sentence (common full-workflow pattern), catch it.
+        if "学习画像" in text and "学习路径" in text and "学习资源" in text:
+            return self._result(
+                "full_workflow",
+                0.92,
+                True,
+                "用户同时提到学习画像、学习路径和学习资源，判定为全流程请求。",
+            )
+
         # Clean UTF-8 rules for normal Chinese profile sentences. Keep this
         # before example routing so rich profile updates are never mistaken for
         # greetings or generic questions.
@@ -226,6 +274,22 @@ class IntentAgent(BaseAgent):
                 "用户同时提供了个人背景和学习目标，适合启动画像构建与学习规划。",
             )
 
+        # ── Interrogative diagnosis detection ──
+        #   Catch "我哪里比较薄弱" / "我什么薄弱" / "我的薄弱点是什么" as
+        #   profile_query (diagnosis inquiry) BEFORE the broad profile_update
+        #   rule interprets "薄弱" as a detail marker.
+        question_words = ["哪里", "什么", "哪", "吗", "怎么", "如何"]
+        diagnosis_words = ["薄弱", "差", "不会", "不懂", "不好"]
+        if any(q in text for q in question_words) and any(
+            d in text for d in diagnosis_words
+        ):
+            return self._result(
+                "profile_query",
+                0.82,
+                False,
+                "用户以疑问句询问自身薄弱点或水平状态，判定为画像查询。",
+            )
+
         profile_update_markers = [
             "我是",
             "我是一名",
@@ -250,6 +314,9 @@ class IntentAgent(BaseAgent):
             "准备学",
             "考研",
             "复习",
+            "画像",
+            "构建画像",
+            "构建学习画像",
         ]
         profile_detail_markers = [
             "基础",

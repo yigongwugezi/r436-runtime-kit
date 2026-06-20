@@ -541,9 +541,19 @@ class ConversationStore:
                     break
             set_fact("learning_goal", goal_segment or text)
 
+        # Normalize Chinese single-digit numbers + time units to Arabic
+        # so that "两天" → "2天", "一小时" → "1小时", etc.
+        _cn_map = {"一": "1", "二": "2", "两": "2", "三": "3", "四": "4",
+                   "五": "5", "六": "6", "七": "7", "八": "8", "九": "9"}
+        time_text = re.sub(
+            r"([一二两三四五六七八九])\s*(天|周|个月|小时|分钟)",
+            lambda m: _cn_map[m.group(1)] + m.group(2),
+            text,
+        )
+
         time_match = re.search(
             r"(\d+\s*(天|周|个月|小时|分钟)|一周|两周|半个月|一个月|半小时|一个半小时|两个小时|两小时)(内|左右|以内|以上|完成)?",
-            text,
+            time_text,
         )
         if time_match:
             set_fact("time_budget", time_match.group(0))

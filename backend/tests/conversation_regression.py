@@ -191,6 +191,24 @@ def test_data_structure_two_day_plan_uses_correct_course_and_duration() -> None:
     assert_contains(content, "2")
 
 
+def test_intent_classify_profile_keyword_画像() -> None:
+    """Issue #1: 构建学习画像 should be profile_update, not learning_plan."""
+    assert classify("帮我构建学习画像")["intent"] == "profile_update"
+
+
+def test_intent_classify_diagnosis_question() -> None:
+    """Issue #4: 我哪里比较薄弱 should be profile_query, not progress_feedback."""
+    result = classify("我哪里比较薄弱")
+    assert result["intent"] == "profile_query"
+
+
+def test_intent_classify_compound_full_workflow() -> None:
+    """Issue #3: compound request should be full_workflow."""
+    result = classify("帮我构建学习画像、学习路径和学习资源")
+    assert result["intent"] == "full_workflow"
+    assert result["should_run_agents"] is True
+
+
 if __name__ == "__main__":
     tests = [
         test_fresh_start_has_no_fake_profile,
@@ -204,6 +222,9 @@ if __name__ == "__main__":
         test_force_generate_bypasses_profile_guard,
         test_casual_chat_uses_existing_context,
         test_data_structure_two_day_plan_uses_correct_course_and_duration,
+        test_intent_classify_profile_keyword_画像,
+        test_intent_classify_diagnosis_question,
+        test_intent_classify_compound_full_workflow,
     ]
     for test in tests:
         test()

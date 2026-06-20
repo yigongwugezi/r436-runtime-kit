@@ -389,5 +389,57 @@
       "knowledge_base": ["Python：还可以"]
     },
     "expect_ready_to_plan": true
+  },
+  {
+    "name": "profile_keyword_画像",
+    "turns": [
+      {
+        "message": "帮我构建学习画像",
+        "intent": "profile_update"
+      }
+    ],
+    "expect_missing_facts": ["background", "target_course"],
+    "expect_ready_to_plan": false
+  },
+  {
+    "name": "compound_full_workflow_detection",
+    "turns": [
+      {
+        "message": "帮我构建学习画像、学习路径和学习资源",
+        "intent": "full_workflow"
+      }
+    ]
+  },
+  {
+    "name": "diagnosis_question_is_profile_query",
+    "turns": [
+      {
+        "message": "我哪里比较薄弱",
+        "intent": "profile_query"
+      }
+    ]
+  },
+  {
+    "name": "time_budget_chinese_two_days",
+    "turns": [
+      {
+        "message": "我是软件工程大二学生",
+        "intent": "profile_update"
+      },
+      {
+        "message": "我想学习数据结构",
+        "intent": "profile_update"
+      },
+      {
+        "message": "我有两天时间",
+        "intent": "profile_update"
+      }
+    ],
+    "expect_facts": {
+      "background": "软件工程大二学生",
+      "target_course": "数据结构",
+      "time_budget": "2天"
+    },
+    "expect_ready_to_plan": false
   }
 ]

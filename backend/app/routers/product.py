@@ -324,7 +324,6 @@ _SOURCE_MAP: dict[str, str] = {
     "inferred": "system_inferred",
     "model_inferred": "system_inferred",
     "fallback": "fallback",
-    "rule_based_fallback": "fallback",
     "": "system_inferred",
 }
 
@@ -872,6 +871,8 @@ def _reply_for_intent(message: str, intent: dict[str, Any], session_id: str) -> 
         return _feedback_reply(message, session_id), False
     if name == "unsafe":
         return "这个请求可能不适合处理。你可以换成正常的学习问题或课程规划需求。", False
+    if name == "full_workflow":
+        return _learning_plan_request_reply(message, intent, session_id)
     return _unknown_reply(intent), False
 
 
