@@ -568,6 +568,15 @@ export default function ResourceLibrary() {
         });
       } catch { /* 静默 */ }
     }
+    // 实操案例资源额外上报 practice_result 事件供学习分析统计
+    if (resource.type === 'case_study') {
+      await logStudyEvent({
+        event: 'practice_result',
+        resourceId: resource.id,
+        sessionId: useChatStore.getState().currentSessionId,
+        metadata: { type: resource.type, subjectId, title: resource.title },
+      });
+    }
     // 持久化到后端
     try {
       await client.patch(`/resources/${resource.id}/study-status`, { studyStatus: 'completed' });

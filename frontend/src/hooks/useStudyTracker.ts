@@ -36,6 +36,7 @@ export function useStudyTracker(page: string) {
  */
 export function useTracker() {
   return useCallback((event: string, extra?: Record<string, unknown>) => {
-    logStudyEvent({ event, metadata: extra }).catch(() => { /* ignore */ });
+    const sessionId = useChatStore.getState().currentSessionId;
+    logStudyEvent({ event, sessionId, metadata: extra }).catch(() => { /* ignore */ });
   }, []);
 }

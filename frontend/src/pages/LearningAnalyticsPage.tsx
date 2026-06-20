@@ -22,8 +22,8 @@ interface AnalyticsData {
   activeResourceCount: number;
   eventBreakdown: Record<string, number>;
   topResources: { resourceId: string; count: number; title?: string }[];
-  quizAccuracy: number;
-  weakTopics: string[];
+  quizAccuracy: number | null;
+  weakTopics: { topic: string; wrongCount: number; totalCount: number; risk: number }[];
   recommendations: string[];
   recentEvents: { event: string; timestamp?: number; metadata?: Record<string, unknown> }[];
   summary: string;
@@ -246,7 +246,7 @@ export default function LearningAnalyticsPage() {
         <StatCard
           icon={<Target className="w-5 h-5 text-amber-500" />}
           label="练习正确率"
-          value={`${analytics.quizAccuracy}%`}
+          value={analytics.quizAccuracy != null ? `${analytics.quizAccuracy}%` : '--'}
           color="bg-amber-50"
         />
         <StatCard
@@ -266,10 +266,12 @@ export default function LearningAnalyticsPage() {
             练习正确率
           </h3>
           <div className="flex items-center gap-6">
-            <ProgressRing pct={analytics.quizAccuracy} size={100} />
+            <ProgressRing pct={analytics.quizAccuracy ?? 0} size={100} />
             <div className="text-sm text-gray-500 space-y-1">
               <p>
-                {analytics.quizAccuracy >= 80
+                {analytics.quizAccuracy == null
+                  ? '📝 完成练习后开始统计'
+                  : analytics.quizAccuracy >= 80
                   ? '🎉 优秀！继续保持'
                   : analytics.quizAccuracy >= 60
                     ? '👍 不错，还有进步空间'
@@ -327,14 +329,17 @@ export default function LearningAnalyticsPage() {
           {analytics.weakTopics.length === 0 ? (
             <p className="text-xs text-gray-400">暂无数据，完成练习后可自动分析</p>
           ) : (
-            <div className="flex flex-wrap gap-2">
+            <div className="space-y-2">
               {analytics.weakTopics.map((topic, i) => (
-                <span
+                <div
                   key={i}
-                  className="px-3 py-1.5 bg-red-50 text-red-600 border border-red-100 rounded-xl text-xs font-medium"
+                  className="flex items-center justify-between px-3 py-2 bg-red-50 border border-red-100 rounded-xl"
                 >
-                  {topic}
-                </span>
+                  <span className="text-xs font-medium text-red-700">{topic.topic}</span>
+                  <span className="text-xs text-red-400">
+                    {topic.wrongCount}/{topic.totalCount} · 风险 {(topic.risk * 100).toFixed(0)}%
+                  </span>
+                </div>
               ))}
             </div>
           )}

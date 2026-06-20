@@ -30,6 +30,7 @@ from app.db.repository import (
     get_messages as repo_get_messages,
     get_or_create_session,
     list_sessions as repo_list_sessions,
+    save_profile_snapshot,
     toggle_bookmark,
 )
 from app.services.agent_service import (
@@ -821,8 +822,8 @@ def _resource_request_reply(message: str, session_id: str) -> str:
     )
 
 
-def _feedback_reply(message: str) -> str:
-    learning_tracker.log({"event": "chat_feedback", "metadata": {"message": message}})
+def _feedback_reply(message: str, session_id: str) -> str:
+    learning_tracker.log({"event": "chat_feedback", "metadata": {"message": message}}, session_id=session_id)
     return (
         "收到你的学习反馈了。我已经记录这次反馈，后续会用于调整画像、资源推荐和学习路径。\n\n"
         "学习事件已持久化保存。"
@@ -850,8 +851,7 @@ def _reply_for_intent(message: str, intent: dict[str, Any], session_id: str) -> 
     if name == "profile_query":
         return _profile_query_reply(session_id), False
     if name == "profile_update":
-        reply = _profile_update_reply(session_id)
-        # Auto-trigger agent pipeline if profile is ready — persists profile to DB
+        # Auto-trigger agent pipeline if profile is ready — run BEFORE generating reply
         ran_agents = False
         state = conversation_store.get(session_id)
         if conversation_store.readiness(state)["readyToPlan"]:
@@ -860,6 +860,7 @@ def _reply_for_intent(message: str, intent: dict[str, Any], session_id: str) -> 
                 ran_agents = True
             except Exception:
                 pass  # Don't block chat reply if agent run fails
+        reply = _profile_update_reply(session_id)
         return reply, ran_agents
     if name == "start_advice":
         return _start_advice_reply(session_id), False
@@ -870,7 +871,7 @@ def _reply_for_intent(message: str, intent: dict[str, Any], session_id: str) -> 
     if name == "tutoring":
         return _tutoring_reply(message), False
     if name == "progress_feedback":
-        return _feedback_reply(message), False
+        return _feedback_reply(message, session_id), False
     if name == "unsafe":
         return "这个请求可能不适合处理。你可以换成正常的学习问题或课程规划需求。", False
     return _unknown_reply(intent), False
@@ -1087,17 +1088,83 @@ def build_profile(payload: dict[str, Any]) -> dict[str, Any]:
 
 @router.patch("/profile")
 def update_profile(payload: dict[str, Any]) -> dict[str, Any]:
-    """Update profile fields directly (client-side edits)."""
+    """Update profile fields directly (client-side edits). Persists to DB and syncs facts."""
     session_id = _payload_session_id(payload)
+    state = conversation_store.get(session_id)
 
     # Use existing data as base, merge payload
-    state = conversation_store.get(session_id)
     if state.last_result:
         profile = _to_profile(state.last_result)
     else:
         profile = _empty_profile(session_id)
 
     profile.update({k: v for k, v in payload.items() if k not in {"sessionId", "subjectId", "code", "message", "data"}})
+
+    # Sync dimension updates back to conversation facts
+    updated_dimensions = payload.get("dimensions")
+    if isinstance(updated_dimensions, list):
+        _DIM_TO_FACT: dict[str, str] = {
+            "major_background": "background",
+            "knowledge_base": "knowledge_base",
+            "learning_goal": "learning_goal",
+            "cognitive_style": "preference",
+            "error_patterns": "weak_points",
+            "interest_direction": "target_course",
+            "learning_rhythm": "time_budget",
+        }
+        for dim in updated_dimensions:
+            if not isinstance(dim, dict):
+                continue
+            dim_key = dim.get("key", "")
+            fact_key = _DIM_TO_FACT.get(dim_key)
+            if fact_key:
+                dim_value = str(dim.get("value", dim.get("description", ""))).strip()
+                if dim_value:
+                    state.facts[fact_key] = dim_value
+
+    # Persist updated profile to DB
+    try:
+        db = SessionLocal()
+        profile_dimensions = profile.get("dimensions", [])
+        dimensions_list = [
+            {
+                "key": dim.get("key", ""),
+                "label": dim.get("label", dim.get("key", "")),
+                "value": str(dim.get("value", dim.get("description", ""))),
+                "score": dim.get("score", 50),
+                "confidence": dim.get("confidence", 0.75),
+                "explanation": dim.get("explanation", dim.get("description", "")),
+                "evidence": str(dim.get("evidence", "")),
+                "source": str(dim.get("source", "user_input")),
+            }
+            for dim in profile_dimensions
+            if isinstance(dim, dict)
+        ]
+        readiness = conversation_store.readiness(state)
+        save_profile_snapshot(
+            db,
+            session_id,
+            dimensions=dimensions_list,
+            weaknesses=profile.get("weaknesses"),
+            preferences=profile.get("preferences"),
+            readiness_score=readiness.get("score", 0),
+        )
+    finally:
+        db.close()
+
+    # Update in-memory last_result to stay consistent with DB
+    if state.last_result and "profile" in state.last_result:
+        for dim in profile_dimensions:
+            if not isinstance(dim, dict):
+                continue
+            key = dim.get("key", "")
+            if key in state.last_result.get("profile", {}):
+                existing = state.last_result["profile"][key]
+                if isinstance(existing, dict):
+                    existing["value"] = dim.get("value", dim.get("description", ""))
+                    existing["source"] = "user_input"
+                    existing["confidence"] = 1.0
+
     return {"profile": profile}
 
 

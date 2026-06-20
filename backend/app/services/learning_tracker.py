@@ -152,7 +152,7 @@ class LearningTracker:
 
     def _filter(self, session_id: str | None = None) -> list[dict[str, Any]]:
         if session_id is None:
-            return list(self._events)
+            return []
         sid = session_id or "frontend_session_001"
         return [event for event in self._events if event.get("sessionId") == sid]
 
