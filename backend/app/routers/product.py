@@ -1660,6 +1660,7 @@ def _apply_node_progress(stages: list[dict[str, Any]], session_id: str = "") -> 
                         "status": "available", "mastery": 0,
                         "updatedAt": time.time(),
                     }
+                    _log_node_progress(session_id, first_next, "available")
                 next_nodes[0]["status"] = "available"
 
     return stages
@@ -1779,6 +1780,19 @@ def log_study_event(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 
+def _log_node_progress(session_id: str, node_id: str, status: str) -> None:
+    """Log a node_progress event to the learning tracker."""
+    try:
+        learning_tracker.log({
+            "event": "node_progress",
+            "resourceId": node_id,
+            "sessionId": session_id,
+            "metadata": {"nodeId": node_id, "status": status},
+        }, session_id=session_id)
+    except Exception:
+        pass
+
+
 @router.patch("/learning-path/auto-advance")
 def auto_advance_node(payload: dict[str, Any]) -> dict[str, Any]:
     """Auto-advance node progress when a user views/completes a resource.
@@ -1802,26 +1816,27 @@ def auto_advance_node(payload: dict[str, Any]) -> dict[str, Any]:
             "updatedAt": time.time(),
         }
 
+    session_id = _payload_session_id(payload)
     if task_id and event == "resource_view":
-        # First interaction → unlock the node
         if task_id not in _node_progress_store:
             _update(task_id, "in_progress", 40)
-        # Also unlock next sibling so it's clickable
+            _log_node_progress(session_id, task_id, "in_progress")
         parts = task_id.rsplit("_node_", 1)
         if len(parts) == 2:
             next_num = int(parts[1]) + 1
             next_id = f"{parts[0]}_node_{next_num}"
             if next_id not in _node_progress_store:
                 _update(next_id, "available", 0)
+                _log_node_progress(session_id, next_id, "available")
     elif task_id and event == "resource_complete":
-        # Unlock next sibling so user can navigate to it.
-        session_id = _payload_session_id(payload)
         parts = task_id.rsplit("_node_", 1)
         if len(parts) == 2:
             next_num = int(parts[1]) + 1
             next_id = f"{parts[0]}_node_{next_num}"
             if next_id not in _node_progress_store:
                 _update(next_id, "available", 0)
+                _log_node_progress(session_id, next_id, "available")
+        _log_node_progress(session_id, task_id, "completed")
     return {"ok": True}
 
 

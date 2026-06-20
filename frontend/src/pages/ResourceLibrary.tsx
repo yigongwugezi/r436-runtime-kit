@@ -533,6 +533,7 @@ export default function ResourceLibrary() {
   const [showFeedback, setShowFeedback] = useState(false);
   const [showThanks, setShowThanks] = useState(false);
   const [prevResourceIds, setPrevResourceIds] = useState<string>('');
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // 阶段筛选在 useResources(initialFilter) 中已处理，这里仅同步 UI 状态
   useEffect(() => {
@@ -559,7 +560,10 @@ export default function ResourceLibrary() {
     // 先持久化 study_status 到后端
     try {
       await client.patch(`/resources/${resource.id}/study-status`, { studyStatus: newStatus });
-    } catch { /* 静默 */ }
+    } catch {
+      setErrorMsg('状态保存失败，请检查后端服务');
+      setTimeout(() => setErrorMsg(null), 3000);
+    }
 
     if (newStatus === 'completed') {
       await logStudyEvent({
@@ -576,7 +580,10 @@ export default function ResourceLibrary() {
             taskId: resource.taskId,
             event: 'resource_complete',
           });
-        } catch { /* 静默 */ }
+        } catch {
+          setErrorMsg('学习路径推进失败');
+          setTimeout(() => setErrorMsg(null), 3000);
+        }
       }
       // 实操案例额外上报
       if (resource.type === 'case_study') {
@@ -613,7 +620,10 @@ export default function ResourceLibrary() {
           taskId: resource.taskId,
           event: 'resource_view',
         });
-      } catch { /* 静默 */ }
+      } catch {
+        setErrorMsg('学习路径推进失败');
+        setTimeout(() => setErrorMsg(null), 3000);
+      }
     }
   }, [subjectId]);
 
@@ -630,6 +640,12 @@ export default function ResourceLibrary() {
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6 md:py-8">
+      {/* ========== 错误提示 ========== */}
+      {errorMsg && (
+        <div className="fixed top-4 right-4 z-50 px-4 py-2 bg-red-50 border border-red-200 text-red-600 rounded-xl text-xs shadow-lg animate-slide-down">
+          {errorMsg}
+        </div>
+      )}
       {/* ========== 头部 ========== */}
       <div className="mb-6">
         <div className="flex items-center justify-between">

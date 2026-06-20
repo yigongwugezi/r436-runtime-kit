@@ -24,9 +24,9 @@ const SOURCE_CONFIG: Record<DataSource, {
     className: 'bg-amber-50 text-amber-600 border-amber-200',
   },
   fallback: {
-    label: '兜底',
+    label: '规则兜底',
     icon: <Cpu className="w-2.5 h-2.5" />,
-    className: 'bg-gray-100 text-gray-500 border-gray-200',
+    className: 'bg-slate-50 text-slate-600 border-slate-200',
   },
 };
 

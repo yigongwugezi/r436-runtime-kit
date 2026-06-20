@@ -109,7 +109,7 @@ function DimensionRadar({ dimensions }: { dimensions: ProfileDimension[] }) {
 }
 
 /* ===================================================================
- * 维度进度条（含来源标记）
+ * 维度进度条（概要视图，仅分数+来源）
  * =================================================================== */
 function DimensionBar({ dim, index }: { dim: ProfileDimension; index: number }) {
   const color = DIMENSION_COLORS[index % DIMENSION_COLORS.length];
@@ -131,7 +131,7 @@ function DimensionBar({ dim, index }: { dim: ProfileDimension; index: number }) 
 }
 
 /* ===================================================================
- * 维度卡片 — 展示分数 / 解释 / 证据 / 来源（全部直连后端，不做前端推断）
+ * 维度卡片 — 分数 / 解释 / 证据 / 来源
  * =================================================================== */
 function DimensionCard({ dim, index }: { dim: ProfileDimension; index: number }) {
   const color = DIMENSION_COLORS[index % DIMENSION_COLORS.length];
@@ -139,44 +139,56 @@ function DimensionCard({ dim, index }: { dim: ProfileDimension; index: number })
 
   return (
     <div className="bg-white border border-gray-100 rounded-xl p-4 hover:shadow-md transition-all duration-200">
-      <div className="flex items-start justify-between mb-2 gap-2">
+      {/* 头部：标签 + 来源 */}
+      <div className="flex items-start justify-between mb-3 gap-2">
         <div className="flex items-center gap-2 min-w-0">
-          <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
+          <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
           <h4 className="text-sm font-semibold text-gray-800 truncate">{dim.label}</h4>
         </div>
         {sourceInfo && (
-          <span className={`px-2 py-0.5 rounded-md text-[10px] font-medium border ${sourceInfo.color}`}>
+          <span className={`px-2 py-0.5 rounded-md text-[10px] font-medium border whitespace-nowrap ${sourceInfo.color}`}>
             {sourceInfo.label}
           </span>
         )}
       </div>
 
-      <div className="flex items-center gap-3 mb-2">
-        <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
+      {/* 分数 */}
+      <div className="flex items-center gap-3 mb-3">
+        <div className="flex-1 h-2.5 bg-gray-100 rounded-full overflow-hidden">
           <div className="h-full rounded-full transition-all duration-700" style={{ width: `${dim.score}%`, backgroundColor: color }} />
         </div>
-        <span className="text-sm font-bold" style={{ color }}>{dim.score}%</span>
+        <span className="text-lg font-bold tabular-nums" style={{ color }}>{dim.score}</span>
       </div>
 
-      <p className="text-xs text-gray-600 leading-relaxed">{dim.value || '待补充'}</p>
-      <p className="text-[11px] text-gray-500 leading-relaxed mt-2">{dim.explanation || dim.description || '待补充'}</p>
+      {/* 数值 */}
+      {dim.value && (
+        <p className="text-xs text-gray-700 leading-relaxed mb-2">{dim.value}</p>
+      )}
+
+      {/* 解释 */}
+      {(dim.explanation || dim.description) && (
+        <p className="text-[11px] text-gray-500 leading-relaxed mb-2">
+          {dim.explanation || dim.description}
+        </p>
+      )}
+
+      {/* 证据 */}
       {dim.evidence && (
-        <div className="mt-2 p-2.5 bg-gray-50 border border-gray-100 rounded-lg">
-          <div className="flex items-center gap-1 mb-1">
+        <div className="mb-2 p-3 bg-gray-50 border border-gray-100 rounded-lg">
+          <div className="flex items-center gap-1 mb-1.5">
             <Info className="w-3 h-3 text-gray-400" />
-            <span className="text-[10px] font-medium text-gray-500">支撑证据</span>
+            <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">支撑证据</span>
           </div>
-          <p className="text-[10px] text-gray-500 leading-relaxed">{dim.evidence}</p>
+          <p className="text-[11px] text-gray-500 leading-relaxed">{dim.evidence}</p>
         </div>
       )}
-      <div className="flex items-center gap-1.5 mt-2 text-[10px] text-gray-400">
+
+      {/* 置信度 */}
+      <div className="flex items-center gap-1.5 text-[10px] text-gray-400">
         <div className="flex-1 h-1 bg-gray-100 rounded-full overflow-hidden">
-          <div
-            className="h-full rounded-full"
-            style={{ width: `${dim.confidence * 100}%`, backgroundColor: color }}
-          />
+          <div className="h-full rounded-full" style={{ width: `${dim.confidence * 100}%`, backgroundColor: color }} />
         </div>
-        <span>置信度 {(dim.confidence * 100).toFixed(0)}%</span>
+        <span className="tabular-nums">置信度 {(dim.confidence * 100).toFixed(0)}%</span>
       </div>
     </div>
   );
@@ -209,7 +221,7 @@ export default function ProfilePage() {
       <PageEmpty
         icon={<User className="w-8 h-8" />}
         title="暂无学习画像"
-        description="在 AI 对话中描述你的专业、基础和目标，系统会自动构建你的专属学习画像"
+        description="先去聊天页输入你的专业背景、学习基础和目标，系统会自动构建 10 维专属学习画像"
         action={(
           <button
             onClick={() => navigate('/chat')}
