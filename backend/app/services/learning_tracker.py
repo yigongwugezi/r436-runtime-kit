@@ -92,8 +92,16 @@ class LearningTracker:
         total_minutes = sum(self._duration_minutes(event) for event in events)
         resource_events = [event for event in events if event.get("resourceId")]
         from collections import Counter
-        resource_counter = Counter(str(event.get("resourceId")) for event in resource_events)
-        event_counter = Counter(str(event.get("event", "unknown")) for event in events)
+        resource_counter: Counter[str] = Counter(str(event.get("resourceId")) for event in resource_events)
+        event_counter: Counter[str] = Counter(str(event.get("event", "unknown")) for event in events)
+        # Capture the most recent title for each resourceId from event metadata
+        resource_titles: dict[str, str] = {}
+        for event in events:
+            rid = str(event.get("resourceId", ""))
+            if rid and isinstance(event.get("metadata"), dict):
+                title = event["metadata"].get("title")
+                if title:
+                    resource_titles[rid] = str(title)
 
         quiz_events = [
             event
@@ -111,7 +119,7 @@ class LearningTracker:
             "activeResourceCount": len(resource_counter),
             "eventBreakdown": dict(event_counter),
             "topResources": [
-                {"resourceId": resource_id, "count": count}
+                {"resourceId": resource_id, "count": count, "title": resource_titles.get(resource_id, "")}
                 for resource_id, count in resource_counter.most_common(5)
             ],
             "quizAccuracy": quiz_accuracy,

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import client from '../api/client';
+import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
 import {
   TrendingUp, Zap, Target, BookOpen, Clock, Brain,
@@ -84,14 +85,17 @@ export default function LearningAnalyticsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const lastSubjectRef = useRef<string | undefined>(undefined);
+  const dataVersion = useChatStore((state) => state.dataVersion);
+  const lastVersionRef = useRef<number>(0);
 
   const fetchAnalytics = useCallback(async () => {
-    if (!subjectId) return;
+    const sid = useChatStore.getState().currentSessionId;
+    if (!subjectId && !sid) return;
     setLoading(true);
     setError(null);
     try {
       const { data } = await client.get('/learning-analytics', {
-        params: { subjectId },
+        params: { sessionId: sid, subjectId },
       });
       setAnalytics(data);
     } catch {
@@ -101,18 +105,26 @@ export default function LearningAnalyticsPage() {
     }
   }, [subjectId]);
 
+  // 科目切换时重新获取
   useEffect(() => {
     if (subjectId && lastSubjectRef.current !== subjectId) {
       lastSubjectRef.current = subjectId;
       fetchAnalytics();
     }
-    // 无科目时立即结束加载
     if (!subjectId) {
       setLoading(false);
       setError(null);
       setAnalytics(null);
     }
   }, [subjectId, fetchAnalytics]);
+
+  // 对话完成后自动刷新（dataVersion 递增时）
+  useEffect(() => {
+    if (dataVersion > 0 && dataVersion !== lastVersionRef.current) {
+      lastVersionRef.current = dataVersion;
+      fetchAnalytics();
+    }
+  }, [dataVersion, fetchAnalytics]);
 
   // —— 无科目 ——
   if (!subjectId) {

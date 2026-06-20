@@ -280,9 +280,12 @@ _SOURCE_MAP: dict[str, str] = {
     "mock": "system_inferred",
     "agent": "agent_generated",
     "llm": "agent_generated",
+    "llm_generated": "agent_generated",
     "inferred": "system_inferred",
     "model_inferred": "system_inferred",
     "fallback": "fallback",
+    "rule_based_fallback": "fallback",
+    "": "system_inferred",
 }
 
 
@@ -1140,6 +1143,26 @@ def get_resources(
             if knowledgePoint not in kps:
                 return False
         return True
+        if type and item.get("type", "") != type:
+            return False
+        if difficulty and item.get("difficulty", "") != difficulty:
+            return False
+        if source:
+            item_source = _source_label(item.get("source", ""))
+            if item_source != source:
+                return False
+        if search:
+            q = search.lower()
+            title = (item.get("title") or "").lower()
+            desc = (item.get("description") or "").lower()
+            kps = " ".join(item.get("knowledgePoints", item.get("knowledge_points", []))).lower()
+            if q not in title and q not in desc and q not in kps and q not in item.get("id", "").lower():
+                return False
+        if knowledgePoint:
+            kps = item.get("knowledgePoints", item.get("knowledge_points", []))
+            if knowledgePoint not in kps:
+                return False
+        return True
 
     def _normalize(item: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -1167,29 +1190,74 @@ def get_resources(
             "qualityStatus": item.get("qualityStatus", item.get("quality_status", "")),
         }
 
-    # Try DB first
+    # Merge DB resources with in-memory resources.
+    # DB resources carry persisted state (study_status, bookmarks).
+    # In-memory resources carry full content (title, description, etc.).
     db_resources = ag_get_resources(session_id)
+    db_map: dict[str, dict[str, Any]] = {}
     if db_resources:
         bookmarks = _get_bookmarks(session_id)
-        items = []
         for r in db_resources:
             r["bookmarked"] = r["id"] in bookmarks
             r["createdAt"] = int(datetime.fromisoformat(r["created_at"]).timestamp() * 1000) if r.get("created_at") else int(time.time() * 1000)
-            if _matches(r):
-                items.append(_normalize(r))
-        return {"resources": items, "total": len(items), "page": 1, "sessionId": session_id}
+            db_map[r["id"]] = _normalize(r)
 
-    # Fall back to in-memory last_result
     state = conversation_store.get(session_id)
-    if state.last_result:
-        raw_resources = [
-            _to_resource(item, state.last_result.get("course_id", "ai_intro"), session_id)
-            for item in state.last_result.get("resources", [])
-        ]
-        filtered = [r for r in raw_resources if _matches(r)]
-        return {"resources": filtered, "total": len(filtered), "page": 1, "sessionId": session_id}
+    merged: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
 
-    return {"resources": [], "total": 0, "page": 1, "sessionId": session_id}
+    # Build in-memory lookup (full content, may lack persisted state)
+    memory_map: dict[str, dict[str, Any]] = {}
+    if state and state.last_result:
+        for item in state.last_result.get("resources", []):
+            normalized = _to_resource(item, state.last_result.get("course_id", "ai_intro"), session_id)
+            rid = normalized.get("id", "")
+            if rid:
+                memory_map[rid] = normalized
+
+    # Clean up orphaned DB stubs (created by previous buggy PATCH that saved
+    # resources with empty titles). These have no matching memory data and
+    # would show garbled content, so remove them from DB.
+    orphaned_ids = [
+        rid for rid, item in db_map.items()
+        if rid not in memory_map
+        and (not item.get("title") or item.get("title") in ("", "学习资源"))
+    ]
+    if orphaned_ids:
+        try:
+            from app.db.repository import delete_resource as repo_delete_resource
+            db = SessionLocal()
+            for oid in orphaned_ids:
+                repo_delete_resource(db, oid)
+            db.close()
+        except Exception:
+            pass
+        for oid in orphaned_ids:
+            db_map.pop(oid, None)
+
+    # Merge: DB state overlaid on memory content
+    all_ids = set(db_map.keys()) | set(memory_map.keys())
+    for rid in all_ids:
+        db_item = db_map.get(rid)
+        mem_item = memory_map.get(rid)
+        if db_item and (db_item.get("title") or "").strip() and db_item.get("title") != "学习资源":
+            item = db_item  # DB has full content → use as-is
+        elif mem_item:
+            # Memory has content, DB may have state → merge (carries study_status)
+            item = {**mem_item, **(db_item or {})}
+            item["id"] = rid
+        elif db_item:
+            item = db_item  # DB stub only → still show minimally
+        else:
+            continue
+        if _matches(item):
+            seen_ids.add(rid)
+            merged.append(item)
+
+    # Sort: completed resources to the end
+    merged.sort(key=lambda r: 1 if r.get("studyStatus") == "completed" else 0)
+
+    return {"resources": merged, "total": len(merged), "page": 1, "sessionId": session_id}
 
 
 @router.get("/resources/{resource_id}")
@@ -1269,6 +1337,42 @@ def bookmark_resource(resource_id: str, sessionId: str = "", subjectId: str = ""
         return {"bookmarked": bookmarked if bookmarked is not None else True}
     finally:
         db.close()
+
+
+@router.patch("/resources/{resource_id}/study-status")
+def update_resource_study_status(resource_id: str, payload: dict[str, Any], sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
+    """Update the study status of a resource. Only updates existing DB records."""
+    session_id = _resolve_session_id(sessionId, subjectId)
+    study_status = str(payload.get("studyStatus", "completed"))
+    try:
+        db = SessionLocal()
+        from app.db.repository import get_resource as repo_get_resource, save_resource as repo_save_resource
+        resource = repo_get_resource(db, resource_id)
+        if resource:
+            # 已有 DB 记录，直接更新状态
+            resource.study_status = study_status
+            db.commit()
+        else:
+            # 尚未入库，尝试从内存找完整数据再存
+            state = conversation_store.get(session_id)
+            if state and state.last_result:
+                for item in state.last_result.get("resources", []):
+                    rid = item.get("resource_id") or item.get("id", "")
+                    if rid == resource_id:
+                        repo_save_resource(db, session_id, {
+                            "id": resource_id,
+                            "type": item.get("type", "lecture"),
+                            "title": item.get("title", "学习资源"),
+                            "description": item.get("description", ""),
+                            "content": item.get("content", ""),
+                            "difficulty": item.get("difficulty", "easy"),
+                            "source": item.get("source", "agent_generated"),
+                            "study_status": study_status,
+                        })
+                        break
+    finally:
+        db.close()
+    return {"ok": True, "studyStatus": study_status}
 
 
 @router.post("/resources/generate")
@@ -1361,6 +1465,23 @@ def resource_knowledge_graph_legacy(resource_id: str) -> dict[str, Any]:
     }
 
 
+# ── In-memory node progress store ────────────────────────────────────
+# Keyed by node_id, stores {status, mastery, updatedAt}
+_node_progress_store: dict[str, dict[str, Any]] = {}
+
+
+def _apply_node_progress(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Apply saved node progress on top of default stages."""
+    for stage in stages:
+        for node in stage.get("nodes", []):
+            nid = node["id"]
+            if nid in _node_progress_store:
+                saved = _node_progress_store[nid]
+                node["status"] = saved.get("status", node["status"])
+                node["mastery"] = saved.get("mastery", node["mastery"])
+    return stages
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Learning path endpoints — read from DB, trigger via POST
 # ═══════════════════════════════════════════════════════════════════════
@@ -1371,10 +1492,24 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
     """Read the latest learning path from DB. Never triggers agents."""
     session_id = _resolve_session_id(sessionId, subjectId)
 
+    def _build_path(stages: list[dict[str, Any]], base: dict[str, Any]) -> dict[str, Any]:
+        stages = _apply_node_progress(stages)
+        return {
+            "id": base.get("id", f"path_{session_id}"),
+            "title": base.get("title", "个性化学习路径"),
+            "description": base.get("description", ""),
+            "courseName": base.get("courseName", ""),
+            "courseId": base.get("courseId", ""),
+            "stages": stages,
+            "createdAt": base.get("createdAt", int(time.time() * 1000)),
+            "overallProgress": 0,
+            "estimatedDays": base.get("estimatedDays", 14),
+            "source": "agent_generated",
+        }
+
     # Try DB first
     db_path = ag_get_learning_path(session_id)
     if db_path:
-        # Convert raw orchestrator stages to frontend format (with nodes)
         raw_stages = db_path.get("stages", [])
         if isinstance(raw_stages, list):
             stages = _raw_stages_to_nodes(raw_stages)
@@ -1382,20 +1517,15 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
             stages = []
         if not stages:
             return {"path": _empty_learning_path(session_id)}
-        return {
-            "path": {
-                "id": db_path.get("id", f"path_{session_id}"),
-                "title": f"{db_path.get('course_name', '')}个性化学习路径",
-                "description": db_path.get("description", ""),
-                "courseName": db_path.get("course_name", ""),
-                "courseId": db_path.get("course_id", ""),
-                "stages": stages,
-                "createdAt": _datetime_to_ms(db_path.get("created_at")),
-                "overallProgress": 0,
-                "estimatedDays": db_path.get("estimated_days", 14),
-                "source": "agent_generated",
-            }
-        }
+        return {"path": _build_path(stages, {
+            "id": db_path.get("id", f"path_{session_id}"),
+            "title": f"{db_path.get('course_name', '')}个性化学习路径",
+            "description": db_path.get("description", ""),
+            "courseName": db_path.get("course_name", ""),
+            "courseId": db_path.get("course_id", ""),
+            "createdAt": _datetime_to_ms(db_path.get("created_at")),
+            "estimatedDays": db_path.get("estimated_days", 14),
+        })}
 
     # Fall back to in-memory last_result
     state = conversation_store.get(session_id)
@@ -1404,6 +1534,7 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
         if not path.get("stages"):
             return {"path": _empty_learning_path(session_id)}
         path["source"] = "agent_generated"
+        path["stages"] = _apply_node_progress(path["stages"])
         return {"path": path}
 
     return {"path": _empty_learning_path(session_id)}
@@ -1424,6 +1555,12 @@ def generate_learning_path(payload: dict[str, Any]) -> dict[str, Any]:
 @router.patch("/learning-path/nodes/{node_id}")
 def update_node_progress(node_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     session_id = _payload_session_id(payload)
+    # 持久化节点进度到内存存储
+    _node_progress_store[node_id] = {
+        "status": payload.get("status", "available"),
+        "mastery": payload.get("mastery", 0),
+        "updatedAt": time.time(),
+    }
     learning_tracker.log(
         {"event": "node_progress", "resourceId": node_id, "metadata": payload},
         session_id=session_id,

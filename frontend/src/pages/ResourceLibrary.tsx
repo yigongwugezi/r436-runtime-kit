@@ -19,6 +19,7 @@ import EmptyState from '../components/common/EmptyState';
 import Modal from '../components/common/Modal';
 import Markdown from '../utils/markdown';
 import MermaidDiagram from '../utils/mermaid';
+import client from '../api/client';
 import { submitFeedback, logStudyEvent } from '../api/feedback';
 import SourceBadge, { type DataSource } from '../components/common/SourceBadge';
 import { SourceTag, RefreshOverlay, PageError } from '../components/common/PageState';
@@ -219,7 +220,7 @@ function FilterBar({
         </div>
         <div className="flex items-center gap-1.5">
           <span className="text-[10px] text-gray-400 flex-shrink-0">来源：</span>
-          {([undefined, 'agent_generated', 'system_inferred', 'user_input'] as (DataSource | undefined)[]).map((s) => (
+          {([undefined, 'agent_generated', 'system_inferred', 'fallback', 'user_input'] as (DataSource | undefined)[]).map((s) => (
             <button
               key={s || 'all-src'}
               onClick={() => onSelectSource(s)}
@@ -229,7 +230,7 @@ function FilterBar({
                   : 'bg-gray-50 text-gray-500 hover:bg-gray-100'
               }`}
             >
-              {s ? (s === 'agent_generated' ? '智能体生成' : s === 'system_inferred' ? '系统推断' : '用户输入') : '不限'}
+              {s ? (s === 'agent_generated' ? '智能体生成' : s === 'system_inferred' ? '系统推断' : s === 'fallback' ? '兜底' : '用户输入') : '不限'}
             </button>
           ))}
         </div>
@@ -504,7 +505,7 @@ export default function ResourceLibrary() {
   const navigate = useNavigate();
   const params = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
-  const { resources, total, loading, error, applyFilter, toggleBookmark, refetch } = useResources();
+  const { resources, total, loading, error, applyFilter, toggleBookmark, updateResource, refetch } = useResources();
   const dataVersion = useChatStore((state) => state.dataVersion);
   const subjectId = useSubjectStore((s) => s.activeSubject?.id);
   const profile = useProfileStore((s) => subjectId ? s.profiles[subjectId] ?? null : null);
@@ -547,8 +548,14 @@ export default function ResourceLibrary() {
       event: 'resource_complete',
       resourceId: resource.id,
       sessionId: useChatStore.getState().currentSessionId,
-      metadata: { type: resource.type, subjectId },
+      metadata: { type: resource.type, subjectId, title: resource.title },
     });
+    // 持久化到后端
+    try {
+      await client.patch(`/resources/${resource.id}/study-status`, { studyStatus: 'completed' });
+    } catch { /* 静默失败，本地状态优先 */ }
+    // 同步更新前端列表
+    updateResource(resource.id, { studyStatus: 'completed' });
     setSelected((prev) => prev ? { ...prev, studyStatus: 'completed' } : null);
   }, [subjectId]);
 
@@ -562,7 +569,7 @@ export default function ResourceLibrary() {
       event: 'resource_view',
       resourceId: resource.id,
       sessionId: useChatStore.getState().currentSessionId,
-      metadata: { type: resource.type, subjectId },
+      metadata: { type: resource.type, subjectId, title: resource.title },
     });
   }, [subjectId]);
 

@@ -85,6 +85,13 @@ export function useResources() {
     );
   }, [sessionId, subjectId]);
 
+  /** 本地更新某个资源的状态（如标记完成） */
+  const updateResource = useCallback((id: string, updates: Partial<Resource>) => {
+    setResources((prev) =>
+      prev.map((r) => (r.id === id ? { ...r, ...updates } : r))
+    );
+  }, []);
+
   return {
     resources,
     total,
@@ -93,6 +100,7 @@ export function useResources() {
     filter,
     applyFilter,
     toggleBookmark,
+    updateResource,
     refetch: () => doFetch(filter),
   };
 }

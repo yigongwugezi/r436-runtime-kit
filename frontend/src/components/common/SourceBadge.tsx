@@ -1,7 +1,7 @@
 import { Clock, Cpu, Sparkles, User } from 'lucide-react';
 import type { ReactNode } from 'react';
 
-export type DataSource = 'user_input' | 'agent_generated' | 'system_inferred';
+export type DataSource = 'user_input' | 'agent_generated' | 'system_inferred' | 'fallback';
 
 const SOURCE_CONFIG: Record<DataSource, {
   label: string;
@@ -22,6 +22,11 @@ const SOURCE_CONFIG: Record<DataSource, {
     label: '系统推断',
     icon: <Cpu className="w-2.5 h-2.5" />,
     className: 'bg-amber-50 text-amber-600 border-amber-200',
+  },
+  fallback: {
+    label: '兜底',
+    icon: <Cpu className="w-2.5 h-2.5" />,
+    className: 'bg-gray-100 text-gray-500 border-gray-200',
   },
 };
 

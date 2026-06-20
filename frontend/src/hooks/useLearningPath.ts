@@ -85,11 +85,20 @@ export function useLearningPath() {
     });
   }, [sessionId, subjectId]);
 
-  /** 本地切换节点状态并同步掌握度，同时更新总体进度 */
-  const updateNodeStatus = useCallback((nodeId: string, status: PathNodeStatus) => {
+  /** 切换节点状态 + 同步掌握度 + 更新总体进度 + 持久化到后端 */
+  const updateNodeStatus = useCallback(async (nodeId: string, status: PathNodeStatus) => {
+    const mastery = statusToMastery(status);
+    // 先持久化到后端
+    try {
+      await knowledgeApi.updateNodeProgress(nodeId, mastery, {
+        sessionId,
+        subjectId,
+        status,
+      });
+    } catch { /* 后端不可用时静默降级，本地更新仍然生效 */ }
+    // 再更新本地状态
     setPath((current) => {
       if (!current) return current;
-      const mastery = statusToMastery(status);
       const next: LearningPath = {
         ...current,
         stages: current.stages.map((stage) => ({
@@ -102,7 +111,7 @@ export function useLearningPath() {
       next.overallProgress = computeOverallProgress(next);
       return next;
     });
-  }, []);
+  }, [sessionId, subjectId]);
 
   // 科目切换时重新获取学习路径
   useEffect(() => {

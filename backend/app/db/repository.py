@@ -351,6 +351,21 @@ def get_resource(db: Session, resource_id: str) -> ResourceModel | None:
     return db.get(ResourceModel, resource_id)
 
 
+def delete_resource(db: Session, resource_id: str) -> None:
+    """Delete a resource by ID."""
+    resource = db.query(ResourceModel).filter(ResourceModel.id == resource_id).first()
+    if resource:
+        db.delete(resource)
+        db.commit()
+
+
+def update_resource_study_status(db: Session, resource_id: str, study_status: str) -> None:
+    """Update the study status of a resource (new / in_progress / completed)."""
+    resource = db.query(ResourceModel).filter(ResourceModel.id == resource_id).first()
+    if resource:
+        resource.study_status = study_status
+
+
 def toggle_bookmark(db: Session, resource_id: str) -> bool | None:
     res = db.get(ResourceModel, resource_id)
     if res is None:
@@ -418,6 +433,7 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
     quiz_correct = 0
     quiz_total = 0
     quiz_scores: list[float] = []
+    resource_titles: dict[str, str] = {}
     topic_wrong: dict[str, int] = {}
     topic_total: dict[str, int] = {}
 
@@ -433,6 +449,9 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
         # Resource counter
         if evt.resource_id:
             resource_counts[evt.resource_id] = resource_counts.get(evt.resource_id, 0) + 1
+            # Capture resource title from metadata
+            if meta.get("title"):
+                resource_titles[evt.resource_id] = str(meta["title"])
 
         # Event counter
         etype = evt.event_type or "unknown"
@@ -508,7 +527,7 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
         "activeResourceCount": len(resource_counts),
         "eventBreakdown": event_counts,
         "topResources": [
-            {"resourceId": rid, "count": cnt} for rid, cnt in top_resources
+            {"resourceId": rid, "count": cnt, "title": resource_titles.get(rid, "")} for rid, cnt in top_resources
         ],
         "quizAccuracy": quiz_accuracy,
         "weakTopics": weak_topics,
