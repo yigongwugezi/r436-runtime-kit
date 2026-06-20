@@ -187,9 +187,7 @@ useSubjectStore.subscribe((state) => {
   const newId = state.activeSubject?.id;
   if (newId && newId !== prevSubjectId) {
     prevSubjectId = newId;
-    // 延迟执行，等 store 状态更新完毕
-    setTimeout(() => {
-      useChatStore.getState().reloadSession();
-    }, 0);
+    // 同步刷新，确保 React 同一次渲染中 subjectId 和 sessionId 一致
+    useChatStore.getState().reloadSession();
   }
 });

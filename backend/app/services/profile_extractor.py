@@ -51,6 +51,7 @@ OS = zh("64cd 4f5c 7cfb 7edf")
 DATABASE = zh("6570 636e 5e93")
 COMPILER = zh("7f16 8bd1 539f 7406")
 ALGORITHM = zh("7b97 6cd5")
+COMPUTER_ORGANIZATION = zh("8ba1 7b97 673a 7ec4 6210 539f 7406")  # 计算机组成原理
 
 GRADE_PATTERNS: tuple[tuple[str, str], ...] = (
     (DA_YI, DA_YI),
@@ -103,6 +104,7 @@ COURSE_ALIASES: tuple[tuple[str, str], ...] = (
     (DATABASE, DATABASE),
     (COMPILER, COMPILER),
     (ALGORITHM, ALGORITHM),
+    (COMPUTER_ORGANIZATION, COMPUTER_ORGANIZATION),
 )
 
 WEAK_WORDS = (
@@ -180,7 +182,24 @@ def _find_major(text: str) -> str:
 
 
 def _find_major_background(text: str) -> str:
-    return next((raw for raw, _ in MAJOR_ALIASES if raw in text), "")
+    # Sort by raw-string length descending: longer matches are more specific
+    # and less likely to be false positives (e.g. "自动化" vs "软件")
+    sorted_majors = sorted(MAJOR_ALIASES, key=lambda x: -len(x[0]))
+    # Identity markers that indicate the surrounding text is about the user
+    _identity_ctx = (zh("6211 662f"), zh("672c 4eba 662f"), zh("4e13 4e1a"), STUDENT, zh("5e74 7ea7"))
+    for raw, _ in sorted_majors:
+        if raw not in text:
+            continue
+        # Short raw strings (≤2 chars) are prone to false matches inside
+        # compound terms (e.g. "软件" inside "软件编程基础").  Require nearby
+        # identity context so we don't mistake a skill for a major.
+        if len(raw) <= 2:
+            idx = text.find(raw)
+            window = text[max(0, idx - 12):idx + len(raw) + 12]
+            if not any(marker in window for marker in _identity_ctx):
+                continue
+        return raw
+    return ""
 
 
 def _find_courses(text: str) -> list[str]:

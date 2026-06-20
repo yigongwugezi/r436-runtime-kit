@@ -414,9 +414,10 @@ def get_events(
     session_id: str | None = None,
     limit: int | None = None,
 ) -> list[LearningEventModel]:
+    if not session_id:
+        return []
     q = db.query(LearningEventModel)
-    if session_id:
-        q = q.filter(LearningEventModel.session_id == session_id)
+    q = q.filter(LearningEventModel.session_id == session_id)
     q = q.order_by(desc(LearningEventModel.created_at))
     if limit:
         q = q.limit(limit)

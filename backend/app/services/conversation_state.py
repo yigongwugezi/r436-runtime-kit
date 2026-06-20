@@ -496,7 +496,7 @@ class ConversationStore:
                 add_supplemental("interest_note", interest_match.group(1))
 
         course_match = re.search(
-            r"(?:想学习|想学|想系统学习|我要学|希望学|准备学|入门|复习|掌握|了解)([^，。,.!?！？]{2,30})",
+            r"(?:想学习|想学|想系统学习|我要学|希望学|准备学|要学习|要学|入门|复习|掌握|了解)([^，。,.!?！？]{2,30})",
             text,
         )
         if course_match:
@@ -530,8 +530,16 @@ class ConversationStore:
             else:
                 set_fact("weak_points", text)
 
-        if any(word in text for word in ["考试", "考研", "项目", "竞赛", "作业", "就业", "入门", "提升", "查漏补缺", "学懂", "掌握"]):
-            set_fact("learning_goal", text)
+        _goal_words = {"考试", "考研", "项目", "竞赛", "作业", "就业", "入门", "提升", "查漏补缺", "学懂", "掌握"}
+        if any(word in text for word in _goal_words):
+            # Extract just the clause containing the goal marker, not the entire message
+            segments = re.split(r"[，。,.!?！？；;]", text)
+            goal_segment = ""
+            for seg in segments:
+                if any(word in seg for word in _goal_words):
+                    goal_segment = seg.strip()
+                    break
+            set_fact("learning_goal", goal_segment or text)
 
         time_match = re.search(
             r"(\d+\s*(天|周|个月|小时|分钟)|一周|两周|半个月|一个月|半小时|一个半小时|两个小时|两小时)(内|左右|以内|以上|完成)?",
@@ -558,7 +566,10 @@ class ConversationStore:
 
         extracted_profile_facts = extract_profile_facts(text)
         for key, value in extracted_profile_facts.facts.items():
-            set_fact(key, value)
+            # Only fill gaps — never overwrite facts already set by the
+            # regex patterns above (which use identity-context matching).
+            if key not in state.facts or not state.facts[key]:
+                set_fact(key, value)
         for key, values in extracted_profile_facts.supplemental.items():
             for value in values:
                 add_supplemental(key, value)
