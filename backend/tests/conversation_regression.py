@@ -52,7 +52,7 @@ def test_profile_update_is_not_casual_chat() -> None:
     content = reply(sid, "我是软件工程学生")
     assert_contains(content, "身份/专业背景：软件工程学生")
     assert_contains(content, "最想学习哪门课")
-    assert_not_contains(content, "我是 EduAgent")
+    assert_not_contains(content, "我是 r436-runtime-kit")
 
 
 def test_incremental_slot_filling() -> None:
@@ -78,7 +78,7 @@ def test_plan_request_needs_core_profile() -> None:
     state = conversation_store.get(sid)
     assert "target_course" not in state.facts
     assert_contains(content, "画像信息还不够")
-    assert_not_contains(content, "个性化学习方案已生成")
+    assert_not_contains(content, "学习方案已生成")
 
 
 def test_low_value_background_does_not_fill_core_profile() -> None:
@@ -136,7 +136,7 @@ def test_fragment_background_is_profile_update() -> None:
     state = conversation_store.get(sid)
     assert state.facts["background"] == "软件工程大一学生"
     assert_contains(content, "身份/专业背景：软件工程大一学生")
-    assert_not_contains(content, "我是 EduAgent")
+    assert_not_contains(content, "我是 r436-runtime-kit")
 
 
 def test_force_generate_bypasses_profile_guard() -> None:
@@ -146,7 +146,7 @@ def test_force_generate_bypasses_profile_guard() -> None:
     state = conversation_store.get(sid)
     assert state.facts["target_course"] == "机器学习"
     content = reply(sid, "不用在意准不准，直接生成看看效果")
-    assert_contains(content, "个性化学习方案已生成")
+    assert_contains(content, "学习方案已生成")
     assert_contains(content, "低画像完整度")
 
 

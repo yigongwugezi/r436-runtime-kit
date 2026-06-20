@@ -1,4 +1,4 @@
-# EduAgent Conversation Tests
+# Runtime Kit Conversation Tests
 
 This folder contains lightweight conversation tests for the learning-profile dialogue flow.
 

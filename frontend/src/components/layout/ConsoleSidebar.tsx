@@ -4,6 +4,7 @@ import { useChatStore } from '../../store/chatStore';
 import { useSubjectStore } from '../../store/subjectStore';
 import { getCurrentLearner, logoutLearner } from '../../pages/LoginPage';
 import SettingsModal from '../common/SettingsModal';
+import { readStorageJson, writeStorageJson, runtimeStorageKeys } from '../../utils/storageKeys';
 import {
   Brain, MessageSquare, Library, GitFork, User, Home, TrendingUp,
   LogOut, ChevronLeft, ChevronRight, Edit3, Check, X,
@@ -63,12 +64,12 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
   const handleSaveName = () => {
     const name = nameInput.trim();
     if (!name || !learner) return;
-    const learners = JSON.parse(localStorage.getItem('eduagent_learners') || '[]');
+    const learners = readStorageJson(runtimeStorageKeys.learners, [] as any[]);
     const updated = learners.map((l: any) =>
       l.id === learner.id ? { ...l, name } : l
     );
-    localStorage.setItem('eduagent_learners', JSON.stringify(updated));
-    localStorage.setItem('eduagent_active_learner', JSON.stringify({ ...learner, name }));
+    writeStorageJson(runtimeStorageKeys.learners, updated);
+    writeStorageJson(runtimeStorageKeys.activeLearner, { ...learner, name });
     setEditingName(false);
     window.location.reload();
   };
@@ -132,7 +133,7 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
             <Brain className="w-4.5 h-4.5 text-white" />
           </div>
           <span className="text-base font-extrabold text-white tracking-tight">
-            Edu<span className="text-brand-400">Agent</span>
+            r436<span className="text-brand-400">-runtime-kit</span>
           </span>
         </button>
         <button onClick={onToggle}

@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { ChatMessage, ChatSession, QuickCommand, GenerationProgress } from '../types/chat';
 import { getCurrentLearner } from '../pages/LoginPage';
 import { useSubjectStore } from './subjectStore';
+import { readStorageItem, readStorageJson, writeStorageItem, writeStorageJson, runtimeStorageKeys } from '../utils/storageKeys';
 
 /** 基于 learnerId + subjectId 生成 storage key，实现科目隔离 */
 export const suffix = () => {
@@ -12,8 +13,8 @@ export const suffix = () => {
   return `${learnerId}_${subjectId}`;
 };
 
-const storageKey = () => `eduagent_session_${suffix()}`;
-const sessionsKey = () => `eduagent_sessions_${suffix()}`;
+const storageKey = () => runtimeStorageKeys.chatSession(suffix());
+const sessionsKey = () => runtimeStorageKeys.chatSessions(suffix());
 
 const createSessionId = () => {
   const randomPart =
@@ -24,28 +25,25 @@ const createSessionId = () => {
 /** 从 localStorage 恢复或创建新的 sessionId */
 const loadSessionId = (): string => {
   try {
-    const stored = localStorage.getItem(storageKey());
+    const stored = readStorageItem(storageKey());
     if (stored) return stored;
   } catch { /* 无痕模式等环境 */ }
   const id = createSessionId();
-  try { localStorage.setItem(storageKey(), id); } catch { /* noop */ }
+  writeStorageItem(storageKey(), id);
   return id;
 };
 
 const persistSessionId = (id: string) => {
-  try { localStorage.setItem(storageKey(), id); } catch { /* noop */ }
+  writeStorageItem(storageKey(), id);
 };
 
 /** 加载历史会话列表 */
 const loadSessions = (): ChatSession[] => {
-  try {
-    const data = localStorage.getItem(sessionsKey());
-    return data ? JSON.parse(data) : [];
-  } catch { return []; }
+  return readStorageJson(sessionsKey(), []);
 };
 
 const persistSessions = (sessions: ChatSession[]) => {
-  try { localStorage.setItem(sessionsKey(), JSON.stringify(sessions)); } catch { /* noop */ }
+  writeStorageJson(sessionsKey(), sessions);
 };
 
 interface ChatStore {

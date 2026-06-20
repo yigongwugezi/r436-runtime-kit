@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { getCurrentLearner } from '../pages/LoginPage';
+import { readStorageJson, writeStorageJson, runtimeStorageKeys } from '../utils/storageKeys';
 
 /* ===================================================================
  * 科目（Subject）类型定义
@@ -17,39 +18,38 @@ export interface Subject {
  * =================================================================== */
 const subjectsKey = () => {
   const learner = getCurrentLearner();
-  return `eduagent_subjects_${learner?.id || 'anonymous'}`;
+  return runtimeStorageKeys.subjects(learner?.id || 'anonymous');
 };
 
 const activeSubjectKey = () => {
   const learner = getCurrentLearner();
-  return `eduagent_active_subject_${learner?.id || 'anonymous'}`;
+  return runtimeStorageKeys.activeSubject(learner?.id || 'anonymous');
 };
 
 const createSubjectId = () => `subject_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 function loadSubjects(): Subject[] {
-  try {
-    const data = localStorage.getItem(subjectsKey());
-    return data ? JSON.parse(data) : [];
-  } catch { return []; }
+  return readStorageJson(subjectsKey(), []);
 }
 
 function persistSubjects(subjects: Subject[]) {
-  try { localStorage.setItem(subjectsKey(), JSON.stringify(subjects)); } catch {}
+  writeStorageJson(subjectsKey(), subjects);
 }
 
 function loadActiveSubject(): Subject | null {
-  try {
-    const data = localStorage.getItem(activeSubjectKey());
-    return data ? JSON.parse(data) : null;
-  } catch { return null; }
+  return readStorageJson(activeSubjectKey(), null);
 }
 
 function persistActiveSubject(subject: Subject | null) {
   if (subject) {
-    try { localStorage.setItem(activeSubjectKey(), JSON.stringify(subject)); } catch {}
+    writeStorageJson(activeSubjectKey(), subject);
   } else {
-    try { localStorage.removeItem(activeSubjectKey()); } catch {}
+    try {
+      localStorage.removeItem(activeSubjectKey().primary);
+      for (const legacyKey of activeSubjectKey().legacy) {
+        localStorage.removeItem(legacyKey);
+      }
+    } catch {}
   }
 }
 

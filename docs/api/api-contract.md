@@ -786,10 +786,10 @@ Account (用户)
 ### 4.5 前端存储 (localStorage)
 
 ```json
-// eduagent_active_subject
+// r436_runtime_active_subject
 { "id": "subject_001", "name": "数据结构" }
 
-// eduagent_subject_{learnerId}
+// r436_runtime_subject_{learnerId}
 [{ "id": "subject_001", "name": "数据结构", ... }]
 ```
 

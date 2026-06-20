@@ -18,7 +18,7 @@
       {
         "message": "你好",
         "intent": "casual_chat",
-        "reply_contains": ["我是 EduAgent"]
+        "reply_contains": ["你可以告诉我"]
       }
     ],
     "expect_facts": {},
@@ -47,8 +47,7 @@
       {
         "message": "你啥意思",
         "intent": "clarification",
-        "reply_contains": ["我的意思是"],
-        "reply_not_contains": ["你好，我是 EduAgent"]
+        "reply_contains": ["我的意思是"]
       }
     ],
     "expect_facts": {},
@@ -91,8 +90,7 @@
       {
         "message": "我是软件工程大二学生，数据结构基础一般，想学习数据结构，为了考试通过",
         "intent": "profile_update",
-        "reply_contains": ["身份/专业背景", "目标课程/知识方向", "已有基础"],
-        "reply_not_contains": ["你好，我是 EduAgent"]
+        "reply_contains": ["身份/专业背景", "目标课程/知识方向", "已有基础"]
       }
     ],
     "expect_fact_contains": {

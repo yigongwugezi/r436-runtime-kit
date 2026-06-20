@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSubjectStore } from '../store/subjectStore';
 import { getCurrentLearner, logoutLearner } from './LoginPage';
+import { readStorageItem, readStorageJson, writeStorageJson, runtimeStorageKeys } from '../utils/storageKeys';
 import {
   Settings, User, BookOpen, MessageSquare, Activity, Database, Info,
   ChevronRight, Check, X, Edit3, Save, Trash2, Download, Upload,
@@ -123,8 +124,6 @@ function Select({ value, options, onChange }: {
 /* ===================================================================
  * 学习偏好设置存储
  * =================================================================== */
-const PREFS_KEY = 'eduagent_learning_preferences';
-
 interface LearningPrefs {
   defaultDuration: number;       // 分钟
   difficulty: 'beginner' | 'intermediate' | 'advanced';
@@ -144,14 +143,11 @@ const DEFAULT_PREFS: LearningPrefs = {
 };
 
 function loadPrefs(): LearningPrefs {
-  try {
-    const data = localStorage.getItem(PREFS_KEY);
-    return data ? { ...DEFAULT_PREFS, ...JSON.parse(data) } : DEFAULT_PREFS;
-  } catch { return DEFAULT_PREFS; }
+  return { ...DEFAULT_PREFS, ...readStorageJson(runtimeStorageKeys.learningPrefs, {}) };
 }
 
 function savePrefs(prefs: LearningPrefs) {
-  try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch {}
+  writeStorageJson(runtimeStorageKeys.learningPrefs, prefs);
 }
 
 /* ===================================================================
@@ -184,23 +180,25 @@ export default function SettingsPage() {
   const handleSaveName = () => {
     const name = nameInput.trim();
     if (!name || !learner) return;
-    const learners = JSON.parse(localStorage.getItem('eduagent_learners') || '[]');
+    const learners = readStorageJson(runtimeStorageKeys.learners, [] as any[]);
     const updated = learners.map((l: any) =>
       l.id === learner.id ? { ...l, name } : l
     );
-    localStorage.setItem('eduagent_learners', JSON.stringify(updated));
-    localStorage.setItem('eduagent_active_learner', JSON.stringify({ ...learner, name }));
+    writeStorageJson(runtimeStorageKeys.learners, updated);
+    writeStorageJson(runtimeStorageKeys.activeLearner, { ...learner, name });
     setEditingName(false);
     window.location.reload();
   };
 
   const handleClearData = () => {
     // 保留学习者信息，清除其他
-    const learners = localStorage.getItem('eduagent_learners');
-    const activeLearner = localStorage.getItem('eduagent_active_learner');
+    const learners = readStorageItem(runtimeStorageKeys.learners);
+    const activeLearner = readStorageItem(runtimeStorageKeys.activeLearner);
+    const prefs = readStorageItem(runtimeStorageKeys.learningPrefs);
     localStorage.clear();
-    if (learners) localStorage.setItem('eduagent_learners', learners);
-    if (activeLearner) localStorage.setItem('eduagent_active_learner', activeLearner);
+    if (learners) localStorage.setItem(runtimeStorageKeys.learners.primary, learners);
+    if (activeLearner) localStorage.setItem(runtimeStorageKeys.activeLearner.primary, activeLearner);
+    if (prefs) localStorage.setItem(runtimeStorageKeys.learningPrefs.primary, prefs);
     setShowClearConfirm(false);
     setClearDone(true);
     setTimeout(() => setClearDone(false), 3000);
@@ -219,7 +217,7 @@ export default function SettingsPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `eduagent_backup_${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `r436_runtime_backup_${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
     setExportDone(true);

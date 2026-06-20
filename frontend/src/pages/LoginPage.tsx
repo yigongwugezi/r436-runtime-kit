@@ -1,13 +1,11 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Brain, Sparkles, User, ArrowRight, Check, Trash2, Plus } from 'lucide-react';
+import { readStorageJson, writeStorageJson, runtimeStorageKeys } from '../utils/storageKeys';
 
 /* ===================================================================
  * 多学习者管理
  * =================================================================== */
-
-const LEARNERS_KEY = 'eduagent_learners';
-const ACTIVE_KEY = 'eduagent_active_learner';
 
 interface Learner {
   id: string;
@@ -17,24 +15,19 @@ interface Learner {
 }
 
 function loadLearners(): Learner[] {
-  try {
-    return JSON.parse(localStorage.getItem(LEARNERS_KEY) || '[]');
-  } catch { return []; }
+  return readStorageJson(runtimeStorageKeys.learners, []);
 }
 
 function saveLearners(learners: Learner[]) {
-  try { localStorage.setItem(LEARNERS_KEY, JSON.stringify(learners)); } catch { /* noop */ }
+  writeStorageJson(runtimeStorageKeys.learners, learners);
 }
 
 function loadActiveLearner(): Learner | null {
-  try {
-    const data = localStorage.getItem(ACTIVE_KEY);
-    return data ? JSON.parse(data) : null;
-  } catch { return null; }
+  return readStorageJson(runtimeStorageKeys.activeLearner, null);
 }
 
 function saveActiveLearner(learner: Learner) {
-  try { localStorage.setItem(ACTIVE_KEY, JSON.stringify(learner)); } catch { /* noop */ }
+  writeStorageJson(runtimeStorageKeys.activeLearner, learner);
 }
 
 function generateId(): string {
@@ -46,7 +39,7 @@ export function getCurrentLearner(): Learner | null {
 }
 
 export function logoutLearner() {
-  try { localStorage.removeItem(ACTIVE_KEY); } catch { /* noop */ }
+  try { localStorage.removeItem(runtimeStorageKeys.activeLearner.primary); } catch { /* noop */ }
 }
 
 /* ===================================================================
