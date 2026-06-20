@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import * as knowledgeApi from '../api/knowledge';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
@@ -23,6 +24,7 @@ function statusToMastery(status: PathNodeStatus): number {
 }
 
 export function useLearningPath() {
+  const location = useLocation();
   const subjectId = useSubjectStore((s) => s.activeSubject?.id);
   const sessionId = useChatStore((state) => state.currentSessionId);
   const dataVersion = useChatStore((state) => state.dataVersion);
@@ -113,14 +115,21 @@ export function useLearningPath() {
     });
   }, [sessionId, subjectId]);
 
-  // 科目切换时重新获取学习路径
+  // 每次路由进入该页面时重新获取学习路径（确保从资源库返回后看到节点进度更新）
   useEffect(() => {
     const readKey = subjectId ? `${sessionId}:${subjectId}` : undefined;
-    if (readKey && lastReadKeyRef.current !== readKey) {
-      lastReadKeyRef.current = readKey;
+    if (readKey) {
       fetchPath();
     }
-  }, [sessionId, subjectId, fetchPath]);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        fetchPath();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, subjectId, location.key, fetchPath]);
 
   // 对话完成后自动刷新
   useEffect(() => {

@@ -551,39 +551,46 @@ export default function ResourceLibrary() {
     }
   }, [toggleBookmark, selected?.id]);
 
-  // 完成学习
+  // 切换完成/未完成（可撤销）
   const handleComplete = useCallback(async (resource: Resource) => {
-    await logStudyEvent({
-      event: 'resource_complete',
-      resourceId: resource.id,
-      sessionId: useChatStore.getState().currentSessionId,
-      metadata: { type: resource.type, subjectId, title: resource.title, relatedStageId: resource.relatedStageId },
-    });
-    // 自动推进学习路径节点状态
-    if (resource.relatedStageId) {
-      try {
-        await client.patch(`/learning-path/auto-advance`, {
-          relatedStageId: resource.relatedStageId,
-          event: 'resource_complete',
-        });
-      } catch { /* 静默 */ }
-    }
-    // 实操案例资源额外上报 practice_result 事件供学习分析统计
-    if (resource.type === 'case_study') {
+    const wasCompleted = resource.studyStatus === 'completed';
+    const newStatus = wasCompleted ? 'new' : 'completed';
+
+    // 先持久化 study_status 到后端
+    try {
+      await client.patch(`/resources/${resource.id}/study-status`, { studyStatus: newStatus });
+    } catch { /* 静默 */ }
+
+    if (newStatus === 'completed') {
       await logStudyEvent({
-        event: 'practice_result',
+        event: 'resource_complete',
         resourceId: resource.id,
         sessionId: useChatStore.getState().currentSessionId,
-        metadata: { type: resource.type, subjectId, title: resource.title },
+        metadata: { type: resource.type, subjectId, title: resource.title, relatedStageId: resource.relatedStageId },
       });
+      // 自动推进学习路径节点状态
+      if (resource.relatedStageId) {
+        try {
+          await client.patch(`/learning-path/auto-advance`, {
+            relatedStageId: resource.relatedStageId,
+            taskId: resource.taskId,
+            event: 'resource_complete',
+          });
+        } catch { /* 静默 */ }
+      }
+      // 实操案例额外上报
+      if (resource.type === 'case_study') {
+        await logStudyEvent({
+          event: 'practice_result',
+          resourceId: resource.id,
+          sessionId: useChatStore.getState().currentSessionId,
+          metadata: { type: resource.type, subjectId, title: resource.title },
+        });
+      }
     }
-    // 持久化到后端
-    try {
-      await client.patch(`/resources/${resource.id}/study-status`, { studyStatus: 'completed' });
-    } catch { /* 静默失败，本地状态优先 */ }
     // 同步更新前端列表
-    updateResource(resource.id, { studyStatus: 'completed' });
-    setSelected((prev) => prev ? { ...prev, studyStatus: 'completed' } : null);
+    updateResource(resource.id, { studyStatus: newStatus });
+    setSelected((prev) => prev ? { ...prev, studyStatus: newStatus } : null);
   }, [subjectId]);
 
   // 打开资源详情
@@ -603,6 +610,7 @@ export default function ResourceLibrary() {
       try {
         await client.patch(`/learning-path/auto-advance`, {
           relatedStageId: resource.relatedStageId,
+          taskId: resource.taskId,
           event: 'resource_view',
         });
       } catch { /* 静默 */ }
@@ -868,16 +876,18 @@ export default function ResourceLibrary() {
                 {selected.bookmarked ? '已收藏' : '收藏'}
               </button>
 
-              {/* 完成学习 */}
-              {selected.studyStatus !== 'completed' && (
-                <button
-                  onClick={() => handleComplete(selected)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-green-50 text-green-600 border border-green-200 hover:bg-green-100 transition-all"
-                >
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  标记完成
-                </button>
-              )}
+              {/* 完成学习/撤销完成 */}
+              <button
+                onClick={() => handleComplete(selected)}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                  selected.studyStatus === 'completed'
+                    ? 'bg-amber-50 text-amber-600 border-amber-200 hover:bg-amber-100'
+                    : 'bg-green-50 text-green-600 border-green-200 hover:bg-green-100'
+                }`}
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                {selected.studyStatus === 'completed' ? '撤销完成' : '标记完成'}
+              </button>
 
               {/* 反馈 */}
               {!showFeedback && !showThanks && (

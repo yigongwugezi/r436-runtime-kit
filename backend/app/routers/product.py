@@ -1590,15 +1590,78 @@ def resource_knowledge_graph_legacy(resource_id: str) -> dict[str, Any]:
 _node_progress_store: dict[str, dict[str, Any]] = {}
 
 
-def _apply_node_progress(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Apply saved node progress on top of default stages."""
+def _apply_node_progress(stages: list[dict[str, Any]], session_id: str = "") -> list[dict[str, Any]]:
+    """Derive node status from resource study_statuses, and auto-unlock stages.
+
+    Node status is NOT stored as a separate fact — it is DERIVED from the
+    completion states of ALL resources tagged with that node's ``task_id``.
+
+    Rules (in priority order):
+    1. All resources completed → mastered (100%)
+    2. Any resource completed → in_progress (60%)
+    3. Node unlocked in store → available (0%)
+    4. Otherwise → locked (0%)
+
+    When ALL nodes in a stage are mastered, the first node of the next stage
+    is automatically unlocked (stored in ``_node_progress_store``).
+    """
+    if not session_id:
+        return stages
     for stage in stages:
         for node in stage.get("nodes", []):
             nid = node["id"]
-            if nid in _node_progress_store:
+            try:
+                from app.db.engine import SessionLocal as _DL
+                from app.db.models import ResourceModel as _RM
+                from sqlalchemy import select, func as _F
+                _db = _DL()
+                total = _db.execute(
+                    select(_F.count(_RM.id))
+                    .where(_RM.session_id == session_id)
+                    .where(_RM.task_id == nid)
+                ).scalar() or 0
+                completed = _db.execute(
+                    select(_F.count(_RM.id))
+                    .where(_RM.session_id == session_id)
+                    .where(_RM.task_id == nid)
+                    .where(_RM.study_status == "completed")
+                ).scalar() or 0
+                _db.close()
+            except Exception:
+                total = 0
+                completed = 0
+
+            if total > 0 and completed >= total:
+                node["status"] = "mastered"
+                node["mastery"] = 100
+            elif completed > 0:
+                node["status"] = "in_progress"
+                node["mastery"] = 60
+            elif nid in _node_progress_store:
                 saved = _node_progress_store[nid]
                 node["status"] = saved.get("status", node["status"])
                 node["mastery"] = saved.get("mastery", node["mastery"])
+            # else: keep default (locked/available from learning path)
+
+    # ── Auto-unlock: after computing node statuses, check if any stage
+    #    is fully mastered and unlock the next stage's first node.
+    for i, stage in enumerate(stages):
+        nodes = stage.get("nodes", [])
+        if not nodes:
+            continue
+        all_mastered = all(n.get("status") == "mastered" for n in nodes)
+        if all_mastered and i + 1 < len(stages):
+            next_stage = stages[i + 1]
+            next_nodes = next_stage.get("nodes", [])
+            if next_nodes:
+                first_next = next_nodes[0]["id"]
+                if first_next not in _node_progress_store:
+                    _node_progress_store[first_next] = {
+                        "status": "available", "mastery": 0,
+                        "updatedAt": time.time(),
+                    }
+                next_nodes[0]["status"] = "available"
+
     return stages
 
 
@@ -1613,7 +1676,10 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
     session_id = _resolve_session_id(sessionId, subjectId)
 
     def _build_path(stages: list[dict[str, Any]], base: dict[str, Any]) -> dict[str, Any]:
-        stages = _apply_node_progress(stages)
+        stages = _apply_node_progress(stages, session_id)
+        all_nodes = [n for s in stages for n in s.get("nodes", [])]
+        mastered = sum(1 for n in all_nodes if n.get("status") == "mastered")
+        overall = round(mastered / len(all_nodes) * 100) if all_nodes else 0
         return {
             "id": base.get("id", f"path_{session_id}"),
             "title": base.get("title", "个性化学习路径"),
@@ -1622,7 +1688,7 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
             "courseId": base.get("courseId", ""),
             "stages": stages,
             "createdAt": base.get("createdAt", int(time.time() * 1000)),
-            "overallProgress": 0,
+            "overallProgress": overall,
             "estimatedDays": base.get("estimatedDays", 14),
             "source": "agent_generated",
         }
@@ -1654,7 +1720,10 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
         if not path.get("stages"):
             return {"path": _empty_learning_path(session_id)}
         path["source"] = "agent_generated"
-        path["stages"] = _apply_node_progress(path["stages"])
+        path["stages"] = _apply_node_progress(path["stages"], session_id)
+        all_nodes = [n for s in path["stages"] for n in s.get("nodes", [])]
+        mastered = sum(1 for n in all_nodes if n.get("status") == "mastered")
+        path["overallProgress"] = round(mastered / len(all_nodes) * 100) if all_nodes else 0
         return {"path": path}
 
     return {"path": _empty_learning_path(session_id)}
@@ -1707,59 +1776,52 @@ def log_study_event(payload: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True}
 
 
+
+
+
 @router.patch("/learning-path/auto-advance")
 def auto_advance_node(payload: dict[str, Any]) -> dict[str, Any]:
-    """Auto-advance node progress when a user views/completes a resource."""
+    """Auto-advance node progress when a user views/completes a resource.
+
+    Uses ``taskId`` (e.g. ``stage_1_node_2``) to pinpoint the exact node.
+    Falls back to iterating all tasks within ``relatedStageId`` when
+    ``taskId`` is not provided.
+    """
     related_stage_id = str(payload.get("relatedStageId", ""))
+    task_id = str(payload.get("taskId", "")).strip()
     event = str(payload.get("event", ""))
     if not related_stage_id or event not in ("resource_view", "resource_complete"):
         return {"ok": False}
 
-    # Find the first node in this stage that can be advanced
-    # Try to load learning path to find matching nodes
-    session_id = _payload_session_id(payload)
-    state = conversation_store.get(session_id)
-    if state and state.last_result:
-        from app.services.agent_service import get_learning_path as ag_get_path
-        db_path = ag_get_path(session_id)
-        raw_stages = (db_path or {}).get("stages", []) if db_path else []
-        if not raw_stages and state.last_result:
-            raw_stages = state.last_result.get("learning_path", [])
-        for s in raw_stages:
-            if not isinstance(s, dict):
-                continue
-            sid = str(s.get("stage_id", ""))
-            if not sid or sid != related_stage_id:
-                continue
-            tasks = s.get("tasks", [])
-            for ti, _ in enumerate(tasks, start=1):
-                node_id = f"{sid}_node_{ti}"
-                if event == "resource_view":
-                    # First view → mark first node as in_progress
-                    if node_id not in _node_progress_store:
-                        _node_progress_store[node_id] = {
-                            "status": "in_progress",
-                            "mastery": 40,
-                            "updatedAt": time.time(),
-                        }
-                        break
-                elif event == "resource_complete":
-                    # Complete → mark as mastered, advance to next
-                    _node_progress_store[node_id] = {
-                        "status": "mastered",
-                        "mastery": 100,
-                        "updatedAt": time.time(),
-                    }
-                    # Auto-unlock next node
-                    next_node_id = f"{sid}_node_{ti + 1}"
-                    if next_node_id not in _node_progress_store:
-                        _node_progress_store[next_node_id] = {
-                            "status": "available",
-                            "mastery": 0,
-                            "updatedAt": time.time(),
-                        }
-                    break
-            break
+    if task_id and not task_id.startswith(related_stage_id):
+        task_id = ""  # mismatched stage — ignore
+
+    def _update(node_id: str, status: str, mastery: int) -> None:
+        _node_progress_store[node_id] = {
+            "status": status, "mastery": mastery,
+            "updatedAt": time.time(),
+        }
+
+    if task_id and event == "resource_view":
+        # First interaction → unlock the node
+        if task_id not in _node_progress_store:
+            _update(task_id, "in_progress", 40)
+        # Also unlock next sibling so it's clickable
+        parts = task_id.rsplit("_node_", 1)
+        if len(parts) == 2:
+            next_num = int(parts[1]) + 1
+            next_id = f"{parts[0]}_node_{next_num}"
+            if next_id not in _node_progress_store:
+                _update(next_id, "available", 0)
+    elif task_id and event == "resource_complete":
+        # Unlock next sibling so user can navigate to it.
+        session_id = _payload_session_id(payload)
+        parts = task_id.rsplit("_node_", 1)
+        if len(parts) == 2:
+            next_num = int(parts[1]) + 1
+            next_id = f"{parts[0]}_node_{next_num}"
+            if next_id not in _node_progress_store:
+                _update(next_id, "available", 0)
     return {"ok": True}
 
 
