@@ -361,6 +361,7 @@ def _to_resource(
     related_chapter = str(item.get("related_chapter") or "")
     related_knowledge_points = item.get("related_knowledge_points") or []
     quality_status = str(item.get("quality_status") or "passed")
+    task_id = str(item.get("task_id") or "")
     return {
         "id": resource_id,
         "type": _resource_type(item.get("type", "lecture")),
@@ -381,6 +382,7 @@ def _to_resource(
         "studyStatus": item.get("studyStatus", "new"),
         "source": _source_label(item.get("source", "")),
         "relatedStageId": related_stage_id,
+        "taskId": task_id,
         "relatedChapter": related_chapter,
         "relatedKnowledgePoints": related_knowledge_points if isinstance(related_knowledge_points, list) else [related_knowledge_points],
         "qualityStatus": quality_status,
@@ -1157,11 +1159,34 @@ def get_resources(
     source: str = "",
     search: str = "",
     knowledgePoint: str = "",
+    relatedStageId: str = "",   # 从学习路径跳转时按阶段筛选
+    resourceIds: str = "",       # 从节点跳转时按指定资源 ID 筛选（逗号分隔）
+    taskId: str = "",             # 按 task_id 精确匹配（节点级筛选）
 ) -> dict[str, Any]:
-    """Read resources from DB. Supports filtering by type/difficulty/source/search."""
+    """Read resources from DB. Supports filtering by type/difficulty/source/search/stage/node."""
     session_id = _resolve_session_id(sessionId, subjectId)
+    _resource_id_set: set[str] = set()
+    _resource_id_suffixes: set[str] = set()
+    if resourceIds:
+        for rid in resourceIds.split(","):
+            rid = rid.strip()
+            if rid:
+                _resource_id_set.add(rid)
+                _resource_id_suffixes.add(rid)
+                # Also match with session prefix (resource IDs in nodes don't have
+                # the session_id_ prefix that actual saved resources have)
+                _resource_id_set.add(f"_{rid}")  # suffix match helper
 
     def _matches(item: dict[str, Any]) -> bool:
+        if _resource_id_set:
+            item_id = item.get("id", "")
+            if item_id in _resource_id_set:
+                return True
+            # Also check suffix match (node IDs vs saved IDs with session prefix)
+            for suffix in _resource_id_suffixes:
+                if item_id.endswith(f"_{suffix}") or item_id.endswith(suffix):
+                    return True
+            return False
         if type and item.get("type", "") != type:
             return False
         if difficulty and item.get("difficulty", "") != difficulty:
@@ -1170,25 +1195,13 @@ def get_resources(
             item_source = _source_label(item.get("source", ""))
             if item_source != source:
                 return False
-        if search:
-            q = search.lower()
-            title = (item.get("title") or "").lower()
-            desc = (item.get("description") or "").lower()
-            kps = " ".join(item.get("knowledgePoints", item.get("knowledge_points", []))).lower()
-            if q not in title and q not in desc and q not in kps and q not in item.get("id", "").lower():
+        if relatedStageId:
+            item_stage = item.get("relatedStageId", item.get("related_stage_id", ""))
+            if item_stage != relatedStageId:
                 return False
-        if knowledgePoint:
-            kps = item.get("knowledgePoints", item.get("knowledge_points", []))
-            if knowledgePoint not in kps:
-                return False
-        return True
-        if type and item.get("type", "") != type:
-            return False
-        if difficulty and item.get("difficulty", "") != difficulty:
-            return False
-        if source:
-            item_source = _source_label(item.get("source", ""))
-            if item_source != source:
+        if taskId:
+            item_task = item.get("taskId", item.get("task_id", ""))
+            if item_task != taskId:
                 return False
         if search:
             q = search.lower()
@@ -1224,6 +1237,7 @@ def get_resources(
             "studyStatus": item.get("studyStatus", item.get("study_status", "new")),
             "source": _source_label(item.get("source", "")),
             "relatedStageId": item.get("relatedStageId", item.get("related_stage_id", "")),
+            "taskId": item.get("taskId", item.get("task_id", "")),
             "relatedChapter": item.get("relatedChapter", item.get("related_chapter", "")),
             "relatedKnowledgePoints": item.get("relatedKnowledgePoints", item.get("related_knowledge_points", [])),
             "qualityStatus": item.get("qualityStatus", item.get("quality_status", "")),
@@ -1623,6 +1637,62 @@ def submit_feedback(payload: dict[str, Any]) -> dict[str, Any]:
 def log_study_event(payload: dict[str, Any]) -> dict[str, Any]:
     session_id = _payload_session_id(payload)
     learning_tracker.log(payload, session_id=session_id)
+    return {"ok": True}
+
+
+@router.patch("/learning-path/auto-advance")
+def auto_advance_node(payload: dict[str, Any]) -> dict[str, Any]:
+    """Auto-advance node progress when a user views/completes a resource."""
+    related_stage_id = str(payload.get("relatedStageId", ""))
+    event = str(payload.get("event", ""))
+    if not related_stage_id or event not in ("resource_view", "resource_complete"):
+        return {"ok": False}
+
+    # Find the first node in this stage that can be advanced
+    # Try to load learning path to find matching nodes
+    session_id = _payload_session_id(payload)
+    state = conversation_store.get(session_id)
+    if state and state.last_result:
+        from app.services.agent_service import get_learning_path as ag_get_path
+        db_path = ag_get_path(session_id)
+        raw_stages = (db_path or {}).get("stages", []) if db_path else []
+        if not raw_stages and state.last_result:
+            raw_stages = state.last_result.get("learning_path", [])
+        for s in raw_stages:
+            if not isinstance(s, dict):
+                continue
+            sid = str(s.get("stage_id", ""))
+            if not sid or sid != related_stage_id:
+                continue
+            tasks = s.get("tasks", [])
+            for ti, _ in enumerate(tasks, start=1):
+                node_id = f"{sid}_node_{ti}"
+                if event == "resource_view":
+                    # First view → mark first node as in_progress
+                    if node_id not in _node_progress_store:
+                        _node_progress_store[node_id] = {
+                            "status": "in_progress",
+                            "mastery": 40,
+                            "updatedAt": time.time(),
+                        }
+                        break
+                elif event == "resource_complete":
+                    # Complete → mark as mastered, advance to next
+                    _node_progress_store[node_id] = {
+                        "status": "mastered",
+                        "mastery": 100,
+                        "updatedAt": time.time(),
+                    }
+                    # Auto-unlock next node
+                    next_node_id = f"{sid}_node_{ti + 1}"
+                    if next_node_id not in _node_progress_store:
+                        _node_progress_store[next_node_id] = {
+                            "status": "available",
+                            "mastery": 0,
+                            "updatedAt": time.time(),
+                        }
+                    break
+            break
     return {"ok": True}
 
 

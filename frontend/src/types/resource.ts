@@ -75,4 +75,7 @@ export interface ResourceFilter {
   format?: ResourceFormat;
   search?: string;
   sortBy?: 'newest' | 'relevance' | 'difficulty';
+  relatedStageId?: string;
+  taskId?: string;
+  resourceIds?: string;
 }

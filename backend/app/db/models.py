@@ -171,6 +171,8 @@ class ResourceModel(Base):
     bookmarked: Mapped[bool] = mapped_column(Boolean, default=False)
     study_status: Mapped[str] = mapped_column(String(16), default="new")  # new|in_progress|completed
     source: Mapped[str] = mapped_column(String(16), default="agent_generated")   # db|agent_generated|system_inferred
+    related_stage_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    task_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 

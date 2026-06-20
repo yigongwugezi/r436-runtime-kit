@@ -51,11 +51,10 @@ function NodeCard({ node, isLast, isRecommended, onStatusChange }: {
   const cfg = STATUS_CONFIG[node.status];
   const isLocked = node.status === 'locked';
 
-  // 点击节点体 → 跳转到第一个必要资源
+  // 点击节点体 → 跳转到资源库并筛选该节点对应的资源（按 taskId 精确匹配）
   const handleNodeClick = () => {
     if (isLocked) return;
-    const target = node.resources.find(r => r.essential) || node.resources[0];
-    if (target) navigate(`/resources/${target.resourceId}`);
+    navigate(`/resources?taskId=${node.id}`);
   };
 
   // 循环切换状态
@@ -464,7 +463,6 @@ export default function LearningPathPage() {
 
   // —— 跳转到资源库并筛选当前阶段 ——
   const handleViewResources = (stageId: string) => {
-    sessionStorage.setItem('eduagent_filter_stage', stageId);
     navigate(`/resources?stage=${stageId}`);
   };
 

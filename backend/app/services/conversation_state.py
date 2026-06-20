@@ -222,7 +222,7 @@ class ConversationStore:
                             "content": r.content or "",
                             "content_format": "markdown",
                             "source": "db",
-                            "related_stage_id": r.session_id,
+                            "related_stage_id": r.related_stage_id or "",
                         }
                         for r in db_resources
                     ]
@@ -418,6 +418,8 @@ class ConversationStore:
                         "bookmarked": item.get("bookmarked", False),
                         "study_status": item.get("study_status", "new"),
                         "source": item.get("source", "agent_generated"),
+                        "related_stage_id": item.get("related_stage_id", ""),
+                        "task_id": item.get("task_id", ""),
                     })
             except Exception:
                 # Log but don't crash — in-memory state is already updated

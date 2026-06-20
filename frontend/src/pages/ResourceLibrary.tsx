@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { useNavigate, useParams, useLocation, useSearchParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
   Search, Filter, BookOpen, Brain, Code, FileText, Lightbulb,
   Play, Presentation, Clock, Star, ChevronRight, BookmarkPlus,
@@ -10,7 +10,7 @@ import { useResources } from '../hooks/useResources';
 import { useChatStore } from '../store/chatStore';
 import { useProfileStore } from '../store/profileStore';
 import { useSubjectStore } from '../store/subjectStore';
-import type { Resource } from '../types/resource';
+import type { Resource, ResourceFilter } from '../types/resource';
 import type { ResourceType } from '../types/chat';
 import { RESOURCE_TYPE_LABELS } from '../utils/constants';
 import { timeAgo, formatDuration } from '../utils/format';
@@ -504,14 +504,28 @@ function QuizAnswerer({ questions, resourceId }: {
 export default function ResourceLibrary() {
   const navigate = useNavigate();
   const params = useParams<{ id: string }>();
-  const [searchParams] = useSearchParams();
-  const { resources, total, loading, error, applyFilter, toggleBookmark, updateResource, refetch } = useResources();
+  // 从 URL 读取筛选参数（阶段/task/搜索/资源ID）
+  const urlParams = new URLSearchParams(window.location.search);
+  const stageFilter = urlParams.get('stage') || '';
+  const taskIdFilter = urlParams.get('taskId') || '';
+  const searchFilter = urlParams.get('search') || '';
+  const resourceIdsFilter = urlParams.get('resourceIds') || '';
+  const initialFilter: ResourceFilter | undefined = taskIdFilter
+    ? { taskId: taskIdFilter }
+    : stageFilter
+      ? { relatedStageId: stageFilter }
+      : searchFilter
+        ? { search: searchFilter }
+        : resourceIdsFilter
+          ? { resourceIds: resourceIdsFilter }
+          : undefined;
+  const { resources, total, loading, error, applyFilter, toggleBookmark, updateResource, refetch } = useResources(initialFilter);
   const dataVersion = useChatStore((state) => state.dataVersion);
   const subjectId = useSubjectStore((s) => s.activeSubject?.id);
   const profile = useProfileStore((s) => subjectId ? s.profiles[subjectId] ?? null : null);
   const hasCourse = profile?.dimensions?.some(d => d.key === 'knowledge_base');
   const [selected, setSelected] = useState<Resource | null>(null);
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(searchFilter ? decodeURIComponent(searchFilter) : '');
   const [activeType, setActiveType] = useState<ResourceType | undefined>();
   const [activeDifficulty, setActiveDifficulty] = useState<string | undefined>();
   const [activeSource, setActiveSource] = useState<DataSource | undefined>();
@@ -519,20 +533,15 @@ export default function ResourceLibrary() {
   const [showFeedback, setShowFeedback] = useState(false);
   const [showThanks, setShowThanks] = useState(false);
   const [prevResourceIds, setPrevResourceIds] = useState<string>('');
-  const stageFilterApplied = useRef(false);
 
-  // 从 URL query ?stage=xxx 读取阶段筛选
+  // 阶段筛选在 useResources(initialFilter) 中已处理，这里仅同步 UI 状态
   useEffect(() => {
-    const stageFromUrl = searchParams.get('stage');
-    const stageFromStorage = sessionStorage.getItem('eduagent_filter_stage');
-    const stageId = stageFromUrl || stageFromStorage;
-    if (stageId && !stageFilterApplied.current) {
-      stageFilterApplied.current = true;
-      setActiveStageId(stageId);
-      applyFilter({ search: stageId }); // 用 stageId 作为搜索词传递给后端
-      sessionStorage.removeItem('eduagent_filter_stage');
-    }
-  }, [searchParams, applyFilter]);
+    if (stageFilter) setActiveStageId(stageFilter);
+  }, [stageFilter]);
+  // 无阶段筛选时清除 UI 状态
+  useEffect(() => {
+    if (!stageFilter) setActiveStageId(undefined);
+  }, [stageFilter]);
 
   // 收藏切换
   const handleBookmark = useCallback(async (id: string) => {
@@ -548,8 +557,17 @@ export default function ResourceLibrary() {
       event: 'resource_complete',
       resourceId: resource.id,
       sessionId: useChatStore.getState().currentSessionId,
-      metadata: { type: resource.type, subjectId, title: resource.title },
+      metadata: { type: resource.type, subjectId, title: resource.title, relatedStageId: resource.relatedStageId },
     });
+    // 自动推进学习路径节点状态
+    if (resource.relatedStageId) {
+      try {
+        await client.patch(`/learning-path/auto-advance`, {
+          relatedStageId: resource.relatedStageId,
+          event: 'resource_complete',
+        });
+      } catch { /* 静默 */ }
+    }
     // 持久化到后端
     try {
       await client.patch(`/resources/${resource.id}/study-status`, { studyStatus: 'completed' });
@@ -569,8 +587,17 @@ export default function ResourceLibrary() {
       event: 'resource_view',
       resourceId: resource.id,
       sessionId: useChatStore.getState().currentSessionId,
-      metadata: { type: resource.type, subjectId, title: resource.title },
+      metadata: { type: resource.type, subjectId, title: resource.title, relatedStageId: resource.relatedStageId },
     });
+    // 自动推进学习路径节点状态
+    if (resource.relatedStageId) {
+      try {
+        await client.patch(`/learning-path/auto-advance`, {
+          relatedStageId: resource.relatedStageId,
+          event: 'resource_view',
+        });
+      } catch { /* 静默 */ }
+    }
   }, [subjectId]);
 
   // 当资源列表加载完成且 URL 有 :id 参数时自动打开详情
@@ -588,9 +615,22 @@ export default function ResourceLibrary() {
     <div className="max-w-7xl mx-auto px-4 py-6 md:py-8">
       {/* ========== 头部 ========== */}
       <div className="mb-6">
-        <h1 className="text-2xl md:text-3xl font-extrabold text-gray-900 mb-1">资源库</h1>
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl md:text-3xl font-extrabold text-gray-900 mb-1">资源库</h1>
+          {activeStageId && (
+            <button
+              onClick={() => { setActiveStageId(undefined); navigate('/resources'); }}
+              className="text-xs text-brand-500 hover:text-brand-600 flex items-center gap-1"
+            >
+              ✕ 清除阶段筛选
+            </button>
+          )}
+        </div>
         <p className="text-sm text-gray-500">
           共 <span className="font-semibold text-gray-700">{total}</span> 个学习资源，由当前工作流按课程上下文整理
+          {activeStageId && <span className="text-brand-500 font-medium"> · 已筛选阶段：{activeStageId}</span>}
+          {searchFilter && <span className="text-purple-500 font-medium"> · 搜索：{decodeURIComponent(searchFilter)}</span>}
+          {resourceIdsFilter && <span className="text-purple-500 font-medium"> · 已筛选节点资源</span>}
         </p>
       </div>
 

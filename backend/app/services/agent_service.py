@@ -204,6 +204,43 @@ def get_profile(session_id: str) -> dict[str, Any] | None:
         db.close()
 
 
+def _extract_stage_id(r) -> str:
+    """Extract related_stage_id from a ResourceModel.
+
+    Priority:
+    1. The dedicated ``related_stage_id`` column (new resources).
+    2. ``knowledge_points`` list (old resources store stage_id in any position).
+    3. ``tags`` list (fallback for very old data).
+    """
+    # 1) Dedicated column
+    col = getattr(r, "related_stage_id", None)
+    if col:
+        return str(col)
+    # 2) knowledge_points (stage_id may be anywhere in the list)
+    kps = r.knowledge_points or []
+    if kps and isinstance(kps, (list, tuple)):
+        for kp in kps:
+            t = str(kp).strip()
+            if t.startswith("stage_") or t.startswith("s") or t.startswith("custom_"):
+                return t
+    # 3) tags
+    tags = r.tags or []
+    if tags and isinstance(tags, (list, tuple)):
+        for tag in tags:
+            t = str(tag).strip()
+            if t.startswith("stage_") or t.startswith("s"):
+                return t
+    return ""
+
+
+def _extract_task_id(r) -> str:
+    """Extract task_id from a ResourceModel."""
+    col = getattr(r, "task_id", None)
+    if col:
+        return str(col)
+    return ""
+
+
 # ── Read: get latest learning path from DB ────────────────────────────
 
 
@@ -260,6 +297,8 @@ def get_resources(session_id: str) -> list[dict[str, Any]]:
                 "bookmarked": r.bookmarked or False,
                 "study_status": r.study_status or "new",
                 "source": r.source or "system_inferred",
+                "related_stage_id": _extract_stage_id(r),
+                "task_id": r.task_id or _extract_task_id(r),
                 "created_at": r.created_at.isoformat() if r.created_at else None,
                 "updated_at": r.updated_at.isoformat() if r.updated_at else None,
             }
