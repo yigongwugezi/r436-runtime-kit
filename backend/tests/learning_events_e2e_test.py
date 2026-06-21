@@ -5,8 +5,13 @@ Usage:
     python -m pytest tests/learning_events_e2e_test.py -v
 """
 
+import sys
 import time
 import uuid
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 from fastapi.testclient import TestClient
 

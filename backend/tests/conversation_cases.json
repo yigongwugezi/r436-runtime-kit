@@ -436,7 +436,7 @@
       {
         "message": "画像 + 路径 + 资源完整流程",
         "intent": "full_workflow",
-        "reply_contains": ["生成学习方案", "画像信息还不够"]
+        "reply_contains": ["画像信息还不够", "画像、路径和资源"]
       }
     ]
   },
