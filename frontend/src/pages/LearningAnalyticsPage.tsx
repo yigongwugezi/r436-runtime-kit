@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
 import client from '../api/client';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
@@ -25,7 +26,7 @@ interface AnalyticsData {
   quizAccuracy: number | null;
   weakTopics: { topic: string; wrongCount: number; totalCount: number; risk: number }[];
   recommendations: string[];
-  recentEvents: { event: string; timestamp?: number; metadata?: Record<string, unknown> }[];
+  recentEvents: { event: string; resourceId?: string; timestamp?: number | string; metadata?: Record<string, unknown> }[];
   summary: string;
 }
 
@@ -80,6 +81,7 @@ function ProgressRing({ pct, size = 80, strokeWidth = 6 }: { pct: number; size?:
  * 主页面
  * =================================================================== */
 export default function LearningAnalyticsPage() {
+  const location = useLocation();
   const subjectId = useSubjectStore((s) => s.activeSubject?.id);
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -105,20 +107,26 @@ export default function LearningAnalyticsPage() {
     }
   }, [subjectId]);
 
-  // 科目切换时重新获取
+  // 每次进入页面时刷新 + 科目切换
   useEffect(() => {
-    if (subjectId && lastSubjectRef.current !== subjectId) {
-      lastSubjectRef.current = subjectId;
+    if (subjectId) {
       fetchAnalytics();
-    }
-    if (!subjectId) {
+    } else {
       setLoading(false);
       setError(null);
       setAnalytics(null);
     }
-  }, [subjectId, fetchAnalytics]);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && subjectId) {
+        fetchAnalytics();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subjectId, location.key, fetchAnalytics]);
 
-  // 对话完成后自动刷新（dataVersion 递增时）
+  // 对话完成后自动刷新
   useEffect(() => {
     if (dataVersion > 0 && dataVersion !== lastVersionRef.current) {
       lastVersionRef.current = dataVersion;
@@ -170,6 +178,7 @@ export default function LearningAnalyticsPage() {
   const eventLabels: Record<string, { label: string; icon: string; color: string }> = {
     resource_view:     { label: '查看资源', icon: '👁',  color: 'text-blue-500' },
     resource_complete: { label: '完成学习', icon: '✅',  color: 'text-green-500' },
+    practice_result:   { label: '实操完成', icon: '💻',  color: 'text-cyan-500' },
     quiz_submit:       { label: '提交练习', icon: '📝',  color: 'text-amber-500' },
     quiz_result:       { label: '练习结果', icon: '📝',  color: 'text-amber-500' },
     feedback:          { label: '资源评价', icon: '💬',  color: 'text-purple-500' },
@@ -184,6 +193,7 @@ export default function LearningAnalyticsPage() {
     switch (evt.event) {
       case 'resource_view':     return `查看了资源「${meta.title || meta.type || ''}」`;
       case 'resource_complete': return `完成了资源「${meta.title || meta.type || ''}」`;
+      case 'practice_result':   return `完成了实操「${meta.title || ''}」`;
       case 'quiz_result':       return `完成练习：正确 ${meta.correct}/${meta.total}（${meta.accuracy}%）`;
       case 'feedback':          return `评价资源：${meta.rating} 星`;
       case 'node_progress':     return `完成了阶段「${meta.stageTitle || ''}」`;
@@ -194,6 +204,23 @@ export default function LearningAnalyticsPage() {
   };
 
   const isFallback = !analytics.summary || analytics.recommendations.length === 0;
+
+  /** 格式化时间戳（后端可能返回 epoch ms 或 ISO 字符串） */
+  const formatEventTime = (ts: number | string | undefined): string => {
+    if (!ts) return '';
+    try {
+      const d = typeof ts === 'number' ? new Date(ts) : new Date(ts);
+      if (isNaN(d.getTime())) return '';
+      const now = new Date();
+      const diffMs = now.getTime() - d.getTime();
+      const diffMin = Math.floor(diffMs / 60000);
+      if (diffMin < 1) return '刚刚';
+      if (diffMin < 60) return `${diffMin} 分钟前`;
+      const diffHour = Math.floor(diffMin / 60);
+      if (diffHour < 24) return `${diffHour} 小时前`;
+      return d.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    } catch { return ''; }
+  };
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-6 md:py-8 relative">
@@ -226,6 +253,47 @@ export default function LearningAnalyticsPage() {
         <div className="flex items-center gap-2 mt-1">
           <p className="text-sm text-gray-500">{analytics.summary || '基于你的学习行为自动生成'}</p>
           <SourceTag source={analytics.eventCount > 0 ? 'agent_generated' : 'system_inferred'} />
+        </div>
+      </div>
+
+      {/* ========== 关键发现摘要 ========== */}
+      <div className="mb-6 p-4 bg-gradient-to-r from-brand-50 to-blue-50 border border-brand-100 rounded-2xl">
+        <div className="flex items-start gap-3">
+          <div className="w-8 h-8 rounded-xl bg-brand-100 flex items-center justify-center flex-shrink-0">
+            <Brain className="w-4 h-4 text-brand-600" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-sm font-semibold text-gray-800 mb-1">学习洞察摘要</h3>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600">
+              {analytics.totalStudyMinutes > 0 && (
+                <span className="flex items-center gap-1">
+                  <Clock className="w-3 h-3 text-blue-400" />
+                  累计学习 {formatDuration(analytics.totalStudyMinutes)}
+                </span>
+              )}
+              {analytics.activeResourceCount > 0 && (
+                <span className="flex items-center gap-1">
+                  <BookOpen className="w-3 h-3 text-green-400" />
+                  交互过 {analytics.activeResourceCount} 个资源
+                </span>
+              )}
+              {analytics.quizAccuracy != null && (
+                <span className="flex items-center gap-1">
+                  <Target className="w-3 h-3 text-amber-400" />
+                  正确率 {analytics.quizAccuracy}%
+                </span>
+              )}
+              {analytics.weakTopics.length > 0 && (
+                <span className="flex items-center gap-1">
+                  <AlertCircle className="w-3 h-3 text-red-400" />
+                  {analytics.weakTopics.length} 个薄弱知识点待加强
+                </span>
+              )}
+              {analytics.totalStudyMinutes === 0 && analytics.activeResourceCount === 0 && (
+                <span>开始学习后，这里将展示你的学习数据洞察</span>
+              )}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -377,6 +445,7 @@ export default function LearningAnalyticsPage() {
             {[...analytics.recentEvents].reverse().slice(-10).reverse().map((evt, i) => {
               const info = eventLabels[evt.event] || { label: evt.event, icon: '📌', color: 'text-gray-400' };
               const desc = eventDescription(evt);
+              const timeStr = formatEventTime(evt.timestamp as number | string | undefined);
               return (
                 <div key={i} className="flex items-start gap-3 py-2.5 border-b border-gray-50 last:border-0">
                   {/* 时间线圆点 */}
@@ -393,9 +462,7 @@ export default function LearningAnalyticsPage() {
                     <p className="text-xs text-gray-700 leading-relaxed">{desc}</p>
                     <p className="text-[10px] text-gray-400 mt-0.5">
                       {info.label}
-                      {evt.timestamp && ` · ${new Date(evt.timestamp).toLocaleString('zh-CN', {
-                        month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
-                      })}`}
+                      {timeStr && ` · ${timeStr}`}
                     </p>
                   </div>
                 </div>
