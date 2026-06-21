@@ -13,6 +13,15 @@ from app.services.conversation_state import conversation_store  # noqa: E402
 
 
 CASES_PATH = Path(__file__).with_name("conversation_cases.json")
+REQUIRED_INTENT_CASES = {
+    "帮我构建学习画像": "profile_update",
+    "我是计算机新生，帮我构建学习画像": "profile_update",
+    "帮我生成学习路径": "learning_plan",
+    "根据我的学习路径推荐资源": "resource_request",
+    "帮我找学习资源": "resource_request",
+    "帮我构建学习画像、学习路径和学习资源": "full_workflow",
+    "我哪里比较薄弱": "diagnosis",
+}
 
 
 def classify(message: str) -> dict[str, Any]:
@@ -93,6 +102,22 @@ def main() -> None:
     for case in cases:
         assert_case(case)
         print(f"PASS {case['name']}")
+
+    seen_intents: dict[str, str] = {}
+    for case in cases:
+        for turn in case.get("turns", []):
+            message = turn.get("message")
+            intent = turn.get("intent")
+            if isinstance(message, str) and isinstance(intent, str):
+                seen_intents.setdefault(message, intent)
+
+    for message, expected_intent in REQUIRED_INTENT_CASES.items():
+        actual_intent = seen_intents.get(message)
+        if actual_intent != expected_intent:
+            raise AssertionError(
+                f"required intent case {message!r} expected {expected_intent!r}, got {actual_intent!r}"
+            )
+
     print(f"PASS {len(cases)} conversation evaluation cases")
 
 
