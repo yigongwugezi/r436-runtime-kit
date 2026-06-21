@@ -349,7 +349,9 @@ def _source_label(source: str) -> str:
     """Map internal source labels to frontend-compatible labels."""
     if not source:
         return "system_inferred"
-    return _SOURCE_MAP.get(source, source)
+    if source in ("user_input", "agent_generated", "system_inferred", "fallback"):
+        return source
+    return _SOURCE_MAP.get(source, "system_inferred")
 
 
 def _to_resource(
