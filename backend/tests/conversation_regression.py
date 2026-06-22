@@ -202,6 +202,56 @@ def test_intent_classify_diagnosis_question() -> None:
     assert result["intent"] == "diagnosis"
 
 
+def test_diagnosis_route_returns_structured_result() -> None:
+    sid = "regression_diagnosis_route"
+    conversation_store.reset(sid)
+    conversation_store.set_result(
+        sid,
+        {
+            "session_id": sid,
+            "profile": {
+                "error_patterns": {
+                    "value": "栈不熟",
+                    "score": 42,
+                    "confidence": 0.8,
+                    "explanation": "用户明确反馈栈掌握较弱",
+                    "evidence": "栈不熟",
+                    "source": "user_input",
+                }
+            },
+            "learning_path": [
+                {
+                    "stage_id": "stage_stack",
+                    "title": "栈与队列",
+                    "goal": "掌握栈的基本操作",
+                    "tasks": ["实现顺序栈"],
+                }
+            ],
+            "resources": [
+                {
+                    "resource_id": f"{sid}_res_stack",
+                    "title": "栈代码练习",
+                    "related_stage_id": "stage_stack",
+                    "related_knowledge_points": ["栈"],
+                }
+            ],
+        },
+    )
+
+    response = product.send_chat({"sessionId": sid, "message": "我哪里比较薄弱"})
+    content = response["reply"]["content"]
+    diagnosis = response.get("diagnosis") or {}
+
+    assert_contains(content, "学习诊断结果")
+    assert_not_contains(content, "收到你的学习反馈了")
+    for field in ("weak_topics", "reason", "source", "confidence", "next_actions", "limitations"):
+        assert field in diagnosis
+    assert diagnosis["weak_topics"][0]["topic"] == "栈"
+    assert diagnosis["weak_topics"][0]["recommended_stage_id"] == "stage_stack"
+    assert diagnosis["weak_topics"][0]["recommended_resource_ids"] == [f"{sid}_res_stack"]
+    assert any("行为数据" in item for item in diagnosis["limitations"])
+
+
 def test_intent_classify_compound_full_workflow() -> None:
     """Issue #3: compound request should be full_workflow."""
     result = classify("帮我构建学习画像、学习路径和学习资源")
@@ -428,6 +478,7 @@ if __name__ == "__main__":
         test_data_structure_two_day_plan_uses_correct_course_and_duration,
         test_intent_classify_profile_keyword_画像,
         test_intent_classify_diagnosis_question,
+        test_diagnosis_route_returns_structured_result,
         test_intent_classify_compound_full_workflow,
         test_intent_画像_with_self_intro_is_profile_update,
         test_intent_生成学习路径_is_learning_plan,

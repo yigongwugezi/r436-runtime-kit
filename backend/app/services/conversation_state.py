@@ -448,6 +448,15 @@ class ConversationStore:
                 if db is not None:
                     db.close()
 
+    def set_diagnosis(self, session_id: str, diagnosis: dict[str, Any]) -> None:
+        """Attach a diagnosis to the current session without regenerating other artifacts."""
+        state = self.get(session_id)
+        result = dict(state.last_result or {})
+        result.setdefault("session_id", state.session_id)
+        result["diagnosis"] = diagnosis
+        state.last_result = result
+        state.updated_at = time.time()
+
     # ── Fact extraction (unchanged, pure processing logic) ─────────────
 
     def extract_facts(self, state: ConversationState, message: str) -> None:

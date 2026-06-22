@@ -20,6 +20,7 @@ from typing import Any, Callable
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
+from app.agents.diagnosis_agent import DiagnosisAgent
 from app.agents.intent_agent import IntentAgent
 from app.config import settings
 from app.db.engine import SessionLocal
@@ -843,6 +844,74 @@ def _resource_request_reply(message: str, session_id: str, progress_callback: Ca
     )
 
 
+def _diagnosis_context(message: str, session_id: str) -> dict[str, Any]:
+    state = conversation_store.get(session_id)
+    cached = state.last_result or {}
+
+    try:
+        stored_profile = ag_get_profile(session_id)
+    except Exception:
+        stored_profile = None
+    try:
+        stored_path = ag_get_learning_path(session_id)
+    except Exception:
+        stored_path = None
+    try:
+        stored_resources = ag_get_resources(session_id)
+    except Exception:
+        stored_resources = []
+    try:
+        analytics = ag_get_analytics(session_id)
+    except Exception:
+        analytics = {}
+
+    profile = cached.get("profile") or ((stored_profile or {}).get("dimensions") or [])
+    learning_path = cached.get("learning_path") or ((stored_path or {}).get("stages") or [])
+    resources = cached.get("resources") or stored_resources or []
+
+    return {
+        "session_id": session_id,
+        "user_message": message,
+        "profile": profile,
+        "profile_facts": dict(state.facts),
+        "learning_path": learning_path,
+        "resources": resources,
+        "knowledge_context": cached.get("knowledge_context") or {},
+        "analytics": analytics,
+    }
+
+
+def _run_diagnosis(message: str, session_id: str) -> dict[str, Any]:
+    result = DiagnosisAgent(mock_data={}).run(_diagnosis_context(message, session_id))
+    diagnosis = result["diagnosis"]
+    conversation_store.set_diagnosis(session_id, diagnosis)
+    return diagnosis
+
+
+def _diagnosis_reply(message: str, session_id: str) -> str:
+    diagnosis = _run_diagnosis(message, session_id)
+    weak_topics = diagnosis.get("weak_topics") or []
+    if weak_topics:
+        topic_lines = "\n".join(
+            f"- {item.get('topic', '待确认知识点')}（{item.get('priority', 'medium')}）：{item.get('reason', '')}"
+            for item in weak_topics
+        )
+    else:
+        topic_lines = "- 暂无足够证据确认具体薄弱点"
+
+    action_lines = "\n".join(f"- {action}" for action in diagnosis.get("next_actions") or [])
+    limitation_lines = "\n".join(f"- {item}" for item in diagnosis.get("limitations") or [])
+    return (
+        "学习诊断结果\n\n"
+        f"{diagnosis.get('summary', '')}\n\n"
+        f"薄弱点/待验证重点：\n{topic_lines}\n\n"
+        f"下一步：\n{action_lines or '- 完成一次练习后重新诊断'}\n\n"
+        f"诊断限制：\n{limitation_lines or '- 当前未发现额外限制'}\n\n"
+        f"诊断来源：{diagnosis.get('source', 'rule_based_diagnosis')}；"
+        f"置信度：{float(diagnosis.get('confidence', 0)):.0%}"
+    )
+
+
 def _feedback_reply(message: str, session_id: str) -> str:
     learning_tracker.log({"event": "chat_feedback", "metadata": {"message": message}}, session_id=session_id)
     return (
@@ -899,7 +968,7 @@ def _reply_for_intent(
     if name == "tutoring":
         return _tutoring_reply(message), False
     if name == "diagnosis":
-        return _feedback_reply(message, session_id), False
+        return _diagnosis_reply(message, session_id), True
     if name == "full_workflow":
         return _learning_plan_request_reply(message, intent, session_id, progress_callback=progress_callback)
     if name == "progress_feedback":
@@ -1042,7 +1111,11 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
             for chunk in reply.splitlines(keepends=True):
                 yield f"data: {json.dumps({'content': chunk, 'done': False}, ensure_ascii=False)}\n\n"
 
-        yield 'data: {"done":true}\n\n'
+        final_event: dict[str, Any] = {"done": True}
+        if intent["intent"] == "diagnosis":
+            result = conversation_store.get(session_id).last_result or {}
+            final_event["diagnosis"] = result.get("diagnosis", {})
+        yield f"data: {json.dumps(final_event, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -1059,7 +1132,7 @@ def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
     conversation_store.set_intent(session_id, intent)
     reply, _ = _reply_for_intent(message, intent, session_id)
     conversation_store.append_message(session_id, "assistant", reply)
-    return {
+    response = {
         "sessionId": session_id,
         "reply": {
             "id": "assistant_msg_001",
@@ -1068,6 +1141,10 @@ def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
             "timestamp": int(time.time() * 1000),
         },
     }
+    if intent["intent"] == "diagnosis":
+        result = conversation_store.get(session_id).last_result or {}
+        response["diagnosis"] = result.get("diagnosis", {})
+    return response
 
 
 @router.get("/chat/sessions")
