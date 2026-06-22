@@ -1,6 +1,7 @@
-import { Info } from 'lucide-react';
+import { Info, ChevronDown, ChevronUp } from 'lucide-react';
 import type { ProfileDimension } from '../../types/profile';
 import { DIMENSION_COLORS } from '../../utils/constants';
+import ExpandableText from '../common/ExpandableText';
 
 const SOURCE_LABELS: Record<string, { label: string; color: string }> = {
   user_input:          { label: '用户提供',   color: 'bg-blue-50 text-blue-600 border-blue-200' },
@@ -46,9 +47,11 @@ export default function ProfileDimensionCard({ dim, index }: Props) {
       )}
 
       {(dim.explanation || dim.description) && (
-        <p className="text-[11px] text-gray-500 leading-relaxed mb-2">
-          {dim.explanation || dim.description}
-        </p>
+        <ExpandableText
+          text={dim.explanation || dim.description || ''}
+          maxLines={3}
+          className="text-[11px] text-gray-500 leading-relaxed mb-2"
+        />
       )}
 
       {dim.evidence && (
@@ -57,7 +60,11 @@ export default function ProfileDimensionCard({ dim, index }: Props) {
             <Info className="w-3 h-3 text-gray-400" />
             <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">支撑证据</span>
           </div>
-          <p className="text-[11px] text-gray-500 leading-relaxed">{dim.evidence}</p>
+          <ExpandableText
+            text={dim.evidence}
+            maxLines={4}
+            className="text-[11px] text-gray-500 leading-relaxed"
+          />
         </div>
       )}
 

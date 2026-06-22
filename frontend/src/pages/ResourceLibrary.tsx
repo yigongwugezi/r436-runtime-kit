@@ -6,7 +6,7 @@ import {
   BookmarkCheck, CheckCircle2, MessageSquare, X, Send, Sparkles,
   HelpCircle, Check, XCircle, RefreshCw, AlertCircle, RotateCcw,
   SlidersHorizontal, BookmarkX, Layers, TrendingUp,
-  Download, ListChecks, Square, CheckSquare,
+  Download, ListChecks, Square, CheckSquare, ChevronUp, ChevronDown,
 } from 'lucide-react';
 import { useResources } from '../hooks/useResources';
 import { useChatStore } from '../store/chatStore';
@@ -27,6 +27,40 @@ import * as resourcesApi from '../api/resources';
 import { updateStudyStatus, autoAdvanceNode } from '../api/resources';
 import SourceBadge from '../components/common/SourceBadge';
 import { SourceTag, RefreshOverlay, PageError } from '../components/common/PageState';
+import ExpandableText from '../components/common/ExpandableText';
+
+/* ===================================================================
+ * 长内容折叠组件
+ * =================================================================== */
+function LongContent({ content, children }: { content: string; children: React.ReactNode }) {
+  const [expanded, setExpanded] = useState(content.length <= 1500);
+  const isLong = content.length > 1500;
+
+  if (!isLong) return <div className="p-5 bg-gray-50/80 rounded-xl border border-gray-100 prose-custom">{children}</div>;
+
+  return (
+    <div>
+      <div className={`relative ${expanded ? '' : 'max-h-[500px] overflow-hidden'}`}>
+        <div className={`p-5 bg-gray-50/80 rounded-xl border border-gray-100 prose-custom transition-opacity ${expanded ? '' : 'opacity-40 pointer-events-none'}`}>
+          {children}
+        </div>
+        {!expanded && (
+          <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-b from-transparent to-gray-50 rounded-b-xl" />
+        )}
+      </div>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="mt-2 w-full flex items-center justify-center gap-1.5 px-4 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs text-gray-500 hover:text-brand-600 hover:border-brand-200 transition-all"
+      >
+        {expanded ? (
+          <><ChevronUp className="w-3.5 h-3.5" /> 收起内容</>
+        ) : (
+          <><ChevronDown className="w-3.5 h-3.5" /> 展开全文（共约 {Math.ceil(content.length / 100) * 100} 字）</>
+        )}
+      </button>
+    </div>
+  );
+}
 
 /* ===================================================================
  * 常量定义
@@ -223,15 +257,13 @@ function QuizAnswerer({ questions, resourceId }: {
     const wrong = questions.length - correct;
     setScore({ correct, total: questions.length });
     setSubmitted(true);
-    // 上报做题事件（quiz_result 使学习分析页能计算正确率和薄弱知识点）
+    // 上报做题事件
     await logStudyEvent({
       event: 'quiz_result',
       resourceId,
       sessionId: useChatStore.getState().currentSessionId,
       metadata: {
-        correct,
-        wrong,
-        total: questions.length,
+        correct, wrong, total: questions.length,
         accuracy: Math.round((correct / questions.length) * 100),
         topic: questions[0]?.knowledgePoint || '通用',
         knowledgePoint: questions[0]?.knowledgePoint || '通用',
@@ -247,8 +279,17 @@ function QuizAnswerer({ questions, resourceId }: {
 
   if (questions.length === 0) return null;
 
+  // 计算每题解析
+  const questionResults = questions.map((q) => {
+    const chosen = answers[q.id];
+    const isCorrect = chosen === q.answer;
+    const isWrong = chosen && chosen !== q.answer;
+    return { q, chosen, isCorrect, isWrong };
+  });
+
   return (
     <div className="p-4 bg-amber-50/40 border border-amber-100 rounded-xl space-y-3">
+      {/* 标题 + 得分 */}
       <div className="flex items-center justify-between">
         <h4 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
           <HelpCircle className="w-4 h-4 text-amber-500" />
@@ -263,66 +304,94 @@ function QuizAnswerer({ questions, resourceId }: {
         )}
       </div>
 
-      {questions.map((q, qi) => {
-        const chosen = answers[q.id];
-        const isCorrect = submitted && chosen === q.answer;
-        const isWrong = submitted && chosen && chosen !== q.answer;
+      {/* 题目列表 */}
+      {questionResults.map(({ q, chosen, isCorrect, isWrong }, qi) => (
+        <div key={q.id} className={`p-3 rounded-xl border transition-all ${
+          isCorrect ? 'bg-green-50 border-green-200' : isWrong ? 'bg-red-50 border-red-200' : 'bg-white border-gray-100'
+        }`}>
+          <p className="text-xs font-medium text-gray-800 mb-2">{qi + 1}. {q.stem}</p>
 
-        return (
-          <div key={q.id} className={`p-3 rounded-xl border transition-all ${
-            isCorrect ? 'bg-green-50 border-green-200' : isWrong ? 'bg-red-50 border-red-200' : 'bg-white border-gray-100'
-          }`}>
-            <p className="text-xs font-medium text-gray-800 mb-2">{qi + 1}. {q.stem}</p>
-            {q.type === 'choice' && q.options ? (
-              <div className="space-y-1">
-                {q.options.map((opt, oi) => {
-                  const letter = String.fromCharCode(65 + oi);
-                  const selected = chosen === letter;
-                  return (
-                    <button
-                      key={oi}
-                      onClick={() => handleChoose(q.id, letter)}
-                      disabled={submitted}
-                      className={`w-full text-left px-3 py-1.5 rounded-lg text-xs transition-all ${
-                        submitted && letter === q.answer
-                          ? 'bg-green-100 text-green-700 font-medium'
-                          : submitted && selected && letter !== q.answer
-                            ? 'bg-red-100 text-red-600'
-                            : selected
-                              ? 'bg-brand-50 text-brand-600 ring-1 ring-brand-200'
-                              : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
-                      }`}
-                    >
-                      <span className="font-semibold mr-1.5">{letter}.</span>
-                      {opt}
-                      {submitted && letter === q.answer && <Check className="w-3 h-3 inline ml-1.5 text-green-500" />}
-                      {isWrong && selected && <XCircle className="w-3 h-3 inline ml-1.5 text-red-400" />}
-                    </button>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="space-y-1">
-                <input
-                  type="text"
-                  value={chosen || ''}
-                  onChange={(e) => handleChoose(q.id, e.target.value)}
-                  disabled={submitted}
-                  placeholder="输入你的答案…"
-                  className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-brand-500 disabled:bg-gray-50"
-                />
-                {submitted && (
+          {/* 选择题选项 */}
+          {q.type === 'choice' && q.options ? (
+            <div className="space-y-1">
+              {q.options.map((opt, oi) => {
+                const letter = String.fromCharCode(65 + oi);
+                const selected = chosen === letter;
+                return (
+                  <button
+                    key={oi}
+                    onClick={() => handleChoose(q.id, letter)}
+                    disabled={submitted}
+                    className={`w-full text-left px-3 py-1.5 rounded-lg text-xs transition-all ${
+                      submitted && letter === q.answer
+                        ? 'bg-green-100 text-green-700 font-medium'
+                        : submitted && selected && letter !== q.answer
+                          ? 'bg-red-100 text-red-600'
+                          : selected
+                            ? 'bg-brand-50 text-brand-600 ring-1 ring-brand-200'
+                            : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
+                    }`}
+                  >
+                    <span className="font-semibold mr-1.5">{letter}.</span>
+                    {opt}
+                    {submitted && letter === q.answer && <Check className="w-3 h-3 inline ml-1.5 text-green-500" />}
+                    {isWrong && selected && <XCircle className="w-3 h-3 inline ml-1.5 text-red-400" />}
+                  </button>
+                );
+              })}
+              {/* 选择题的答案解析（提交后展示） */}
+              {submitted && q.explanation && (
+                <div className="mt-2 px-3 py-2 bg-blue-50/60 border border-blue-100 rounded-lg">
+                  <p className="text-[10px] font-semibold text-blue-600 mb-0.5">📖 解析</p>
+                  <ExpandableText text={q.explanation} maxLines={3} className="text-[10px] text-gray-600 leading-relaxed" />
+                </div>
+              )}
+            </div>
+          ) : (
+            /* 填空题 */
+            <div className="space-y-1">
+              <input
+                type="text"
+                value={chosen || ''}
+                onChange={(e) => handleChoose(q.id, e.target.value)}
+                disabled={submitted}
+                placeholder="输入你的答案…"
+                className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-brand-500 disabled:bg-gray-50"
+              />
+              {submitted && (
+                <div className="space-y-1">
                   <p className="text-[10px] text-gray-500">
-                    正确答案：{q.answer}
-                    {q.explanation && ` · ${q.explanation}`}
+                    正确答案：<span className="font-semibold text-green-600">{q.answer}</span>
                   </p>
-                )}
-              </div>
-            )}
-          </div>
-        );
-      })}
+                  {q.explanation && (
+                    <ExpandableText text={q.explanation} maxLines={3} className="text-[10px] text-gray-500 leading-relaxed" />
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      ))}
 
+      {/* 提交后的整体解析 */}
+      {submitted && (
+        <div className="p-3 bg-white border border-gray-200 rounded-xl space-y-2">
+          <p className="text-[10px] font-semibold text-gray-600 flex items-center gap-1">
+            <HelpCircle className="w-3 h-3 text-brand-500" />
+            答题总结
+          </p>
+          <p className="text-[10px] text-gray-500">
+            共 {questions.length} 题，正确 {score?.correct || 0} 题，正确率 {score ? Math.round((score.correct / score.total) * 100) : 0}%
+          </p>
+          {questions[0]?.knowledgePoint && (
+            <p className="text-[10px] text-gray-400">
+              知识点：{questions[0].knowledgePoint}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* 操作按钮 */}
       <div className="flex items-center gap-2 pt-1">
         {!submitted ? (
           <button
@@ -1231,10 +1300,10 @@ export default function ResourceLibrary() {
             )}
 
             {/* 资源内容 — 按类型差异化展示 */}
-            <div className="prose-custom text-sm text-gray-800 leading-relaxed p-5 bg-gray-50/80 rounded-xl border border-gray-100">
+            <div className="text-sm text-gray-800 leading-relaxed">
               {/* ===== 课程讲义 / 拓展阅读 : Markdown 正文 ===== */}
               {(selected.type === 'lecture' || selected.type === 'reading') && (
-                <div>
+                <LongContent content={selected.content}>
                   {selected.type === 'reading' && (
                     <div className="mb-4 p-3 bg-emerald-50/70 border border-emerald-100 rounded-xl">
                       <p className="text-xs text-emerald-700 font-medium mb-0.5">📖 拓展阅读</p>
@@ -1248,7 +1317,7 @@ export default function ResourceLibrary() {
                     </div>
                   )}
                   <Markdown content={selected.content} />
-                </div>
+                </LongContent>
               )}
 
               {/* ===== 思维导图 : Mermaid 或结构化层级 ===== */}
@@ -1300,13 +1369,22 @@ export default function ResourceLibrary() {
                         <div key={i} className="bg-gray-900 text-gray-100 rounded-xl overflow-hidden border border-gray-800">
                           {block.language && (
                             <div className="px-4 py-1.5 bg-gray-800 border-b border-gray-700 flex items-center justify-between">
-                              <span className="text-[10px] text-gray-400 font-mono">{block.language}</span>
+                              <div className="flex items-center gap-2">
+                                <span className="w-5 h-5 rounded-full bg-cyan-700 text-cyan-200 text-[9px] font-bold flex items-center justify-center flex-shrink-0">
+                                  {i + 1}
+                                </span>
+                                <span className="text-[10px] text-gray-400 font-mono">{block.language}</span>
+                              </div>
                             </div>
                           )}
                           <pre className="text-xs font-mono p-4 overflow-x-auto"><code>{block.code}</code></pre>
                           {block.explanation && (
                             <div className="px-4 py-2 bg-gray-800/50 border-t border-gray-700">
-                              <p className="text-[10px] text-gray-400">{block.explanation}</p>
+                              <ExpandableText
+                                text={block.explanation}
+                                maxLines={3}
+                                className="text-[10px] text-gray-400 leading-relaxed"
+                              />
                             </div>
                           )}
                         </div>
