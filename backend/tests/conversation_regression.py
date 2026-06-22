@@ -209,6 +209,32 @@ def test_intent_classify_compound_full_workflow() -> None:
     assert result["should_run_agents"] is True
 
 
+def test_intent_画像_with_self_intro_is_profile_update() -> None:
+    """我是计算机新生 + 构建学习画像 → profile_update，不能归到 learning_plan。"""
+    assert classify("我是计算机新生，帮我构建学习画像")["intent"] == "profile_update"
+
+
+def test_intent_生成学习路径_is_learning_plan() -> None:
+    """帮我生成学习路径 → learning_plan。"""
+    result = classify("帮我生成学习路径")
+    assert result["intent"] == "learning_plan"
+    assert result["should_run_agents"] is True
+
+
+def test_intent_根据路径推荐资源_is_resource_request() -> None:
+    """根据我的学习路径推荐资源 → resource_request。"""
+    result = classify("根据我的学习路径推荐资源")
+    assert result["intent"] == "resource_request"
+    assert result["should_run_agents"] is True
+
+
+def test_intent_找学习资源_is_resource_request() -> None:
+    """帮我找学习资源 → resource_request。"""
+    result = classify("帮我找学习资源")
+    assert result["intent"] == "resource_request"
+    assert result["should_run_agents"] is True
+
+
 if __name__ == "__main__":
     tests = [
         test_fresh_start_has_no_fake_profile,
@@ -225,6 +251,10 @@ if __name__ == "__main__":
         test_intent_classify_profile_keyword_画像,
         test_intent_classify_diagnosis_question,
         test_intent_classify_compound_full_workflow,
+        test_intent_画像_with_self_intro_is_profile_update,
+        test_intent_生成学习路径_is_learning_plan,
+        test_intent_根据路径推荐资源_is_resource_request,
+        test_intent_找学习资源_is_resource_request,
     ]
     for test in tests:
         test()

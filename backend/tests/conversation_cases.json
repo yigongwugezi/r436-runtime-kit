@@ -451,6 +451,29 @@
     ]
   },
   {
+    "name": "profile_画像_with_self_intro",
+    "turns": [
+      {
+        "message": "我是计算机新生，帮我构建学习画像",
+        "intent": "profile_update"
+      }
+    ],
+    "expect_facts": {
+      "background": "计算机新生"
+    },
+    "expect_missing_facts": ["target_course"],
+    "expect_ready_to_plan": false
+  },
+  {
+    "name": "generate_learning_path_intent",
+    "turns": [
+      {
+        "message": "帮我生成学习路径",
+        "intent": "learning_plan"
+      }
+    ]
+  },
+  {
     "name": "time_budget_chinese_two_days",
     "turns": [
       {
