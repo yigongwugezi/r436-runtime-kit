@@ -227,7 +227,7 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
         <p className="text-[9px] text-gray-600 uppercase tracking-wider font-semibold px-3 mb-1">工具台</p>
         <NavBtn path="/chat" label="对话" icon={MessageSquare} active={location.pathname.startsWith('/chat')} navigate={navigate} />
         <NavBtn path="/profile" label="画像" icon={User} active={location.pathname === '/profile'} navigate={navigate} />
-        <NavBtn path="/analytics" label="分析" icon={TrendingUp} active={location.pathname.startsWith('/analytics') || location.pathname.startsWith('/timeline')} navigate={navigate} />
+        <NavBtn path="/analytics" label="分析" icon={TrendingUp} active={location.pathname === '/analytics'} navigate={navigate} />
         <NavBtn path="/timeline" label="时间线" icon={Clock} active={location.pathname === '/timeline'} navigate={navigate} />
       </div>
 
