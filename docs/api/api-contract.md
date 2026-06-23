@@ -69,7 +69,7 @@ Request:
 
 ```json
 {
-  "sessionId": "frontend_session_001",
+  "sessionId": "session_abc123",
   "message": "我是电子信息大二学生，Python基础一般，想两周入门人工智能。"
 }
 ```
@@ -92,7 +92,7 @@ Response:
 
 ```json
 {
-  "sessionId": "frontend_session_001",
+  "sessionId": "session_abc123",
   "reply": {
     "id": "assistant_msg_001",
     "role": "assistant",
@@ -106,14 +106,14 @@ Response:
 
 Purpose: get the current student profile. Reads from database — never triggers agents. Returns empty structure with `source: "none"` when no data exists.
 
-Query: `?sessionId=frontend_session_001`
+Query: `?sessionId=session_abc123`
 
 Response:
 
 ```json
 {
   "profile": {
-    "id": "frontend_session_001",
+    "id": "session_abc123",
     "learnerId": null,
     "nickname": "学习者",
     "createdAt": 1781235059000,
@@ -155,7 +155,7 @@ Request:
 
 ```json
 {
-  "sessionId": "frontend_session_001",
+  "sessionId": "session_abc123",
   "message": "我是软件工程大三学生，线性代数比较弱，想十天学懂神经网络。"
 }
 ```
@@ -165,7 +165,7 @@ Response:
 ```json
 {
   "profile": {
-    "id": "frontend_session_001",
+    "id": "session_abc123",
     "learnerId": null,
     "nickname": "学习者",
     "dimensions": [...],
@@ -186,7 +186,7 @@ Request:
 
 ```json
 {
-  "sessionId": "frontend_session_001",
+  "sessionId": "session_abc123",
   "nickname": "新昵称"
 }
 ```
@@ -203,7 +203,7 @@ Response:
 
 Purpose: get the current study path. Reads from database — never triggers agents.
 
-Query: `?sessionId=frontend_session_001`
+Query: `?sessionId=session_abc123`
 
 Response:
 
@@ -250,7 +250,7 @@ Request:
 
 ```json
 {
-  "sessionId": "frontend_session_001"
+  "sessionId": "session_abc123"
 }
 ```
 
@@ -270,7 +270,7 @@ Request:
 
 ```json
 {
-  "sessionId": "frontend_session_001",
+  "sessionId": "session_abc123",
   "status": "completed"
 }
 ```
@@ -313,7 +313,7 @@ Response:
 
 Purpose: get generated learning resources. Reads from database — never triggers agents.
 
-Query: `?sessionId=frontend_session_001`
+Query: `?sessionId=session_abc123`
 
 Response:
 
@@ -343,7 +343,7 @@ Response:
   ],
   "total": 6,
   "page": 1,
-  "sessionId": "frontend_session_001"
+  "sessionId": "session_abc123"
 }
 ```
 
@@ -359,7 +359,7 @@ Request:
 
 ```json
 {
-  "sessionId": "frontend_session_001",
+  "sessionId": "session_abc123",
   "topic": "链表",
   "type": "quiz"
 }
@@ -377,7 +377,7 @@ Response:
 
 Purpose: toggle the bookmarked state of a resource.
 
-Query: `?sessionId=frontend_session_001`
+Query: `?sessionId=session_abc123`
 
 Response:
 
@@ -409,7 +409,7 @@ Response:
 {
   "sessions": [
     {
-      "id": "frontend_session_001",
+      "id": "session_abc123",
       "title": "未命名会话",
       "status": "active",
       "createdAt": 1781235059000,
@@ -427,7 +427,7 @@ Response:
 
 ```json
 {
-  "sessionId": "frontend_session_001",
+  "sessionId": "session_abc123",
   "messages": [
     {
       "id": "msg_1",
@@ -448,7 +448,7 @@ Response:
 ```json
 {
   "ok": true,
-  "sessionId": "frontend_session_001"
+  "sessionId": "session_abc123"
 }
 ```
 
@@ -492,7 +492,7 @@ Request:
 
 ```json
 {
-  "sessionId": "frontend_session_001",
+  "sessionId": "session_abc123",
   "content": "这道题太简单了"
 }
 ```

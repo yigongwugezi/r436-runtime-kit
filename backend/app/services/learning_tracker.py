@@ -35,9 +35,11 @@ class LearningTracker:
     # ── Public API ────────────────────────────────────────────────────
 
     def log(self, event: dict[str, Any], session_id: str | None = None) -> dict[str, Any]:
+        if not session_id:
+            raise ValueError("session_id is required")
         normalized = {
             **event,
-            "sessionId": session_id or event.get("sessionId") or "frontend_session_001",
+            "sessionId": session_id,
             "timestamp": event.get("timestamp") or time.time(),
         }
 
@@ -80,10 +82,17 @@ class LearningTracker:
         return filtered[-limit:]
 
     def summary(self, session_id: str | None = None) -> dict[str, Any]:
+        if not session_id:
+            return {
+                "eventCount": 0, "totalStudyMinutes": 0, "activeResourceCount": 0,
+                "eventBreakdown": {}, "topResources": [], "quizAccuracy": None,
+                "weakTopics": [], "recommendations": [], "recentEvents": [],
+                "lastStudyDate": 0, "completedTopics": [], "streak": 0,
+            }
         if self._db_enabled:
             try:
                 db = self._db_session()
-                return get_event_analytics(db, session_id or "frontend_session_001")
+                return get_event_analytics(db, session_id)
             finally:
                 db.close()
 
@@ -134,27 +143,23 @@ class LearningTracker:
         }
 
     def reset(self, session_id: str | None = None) -> None:
+        if not session_id:
+            return  # no-op for empty session_id
         if self._db_enabled:
             try:
                 db = self._db_session()
-                sid = session_id or "frontend_session_001"
-                delete_session(db, sid)
+                delete_session(db, session_id)
             finally:
                 db.close()
 
-        if session_id is None:
-            self._events.clear()
-            return
-        sid = session_id or "frontend_session_001"
-        self._events = [event for event in self._events if event.get("sessionId") != sid]
+        self._events = [event for event in self._events if event.get("sessionId") != session_id]
 
     # ── Internal helpers ──────────────────────────────────────────────
 
     def _filter(self, session_id: str | None = None) -> list[dict[str, Any]]:
-        if session_id is None:
+        if not session_id:
             return []
-        sid = session_id or "frontend_session_001"
-        return [event for event in self._events if event.get("sessionId") == sid]
+        return [event for event in self._events if event.get("sessionId") == session_id]
 
     def _duration_minutes(self, event: dict[str, Any]) -> int:
         value = event.get("duration") or event.get("durationMinutes") or 0

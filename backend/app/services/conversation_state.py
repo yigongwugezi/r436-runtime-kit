@@ -250,15 +250,15 @@ class ConversationStore:
 
     # ── Public API ────────────────────────────────────────────────────
 
-    _DEFAULT_SESSION = "frontend_session_001"
-
     def get(self, session_id: str | None) -> ConversationState:
         """Get or create the conversation state for *session_id*.
 
-        Falls back to ``frontend_session_001`` when *session_id* is empty
-        (backwards-compatible default for the single-user dev flow).
+        Raises ValueError when *session_id* is empty — sessionId is the sole
+        data-ownership key and must always be provided.
         """
-        sid = (session_id or self._DEFAULT_SESSION).strip() or self._DEFAULT_SESSION
+        if not session_id or not session_id.strip():
+            raise ValueError("session_id is required and must be non-empty")
+        sid = session_id.strip()
         if sid not in self._sessions:
             state = ConversationState(session_id=sid)
             self._sessions[sid] = state
@@ -291,7 +291,9 @@ class ConversationStore:
 
     def reset(self, session_id: str | None) -> ConversationState:
         """Reset all state for a session (in-memory + DB)."""
-        sid = (session_id or self._DEFAULT_SESSION).strip() or self._DEFAULT_SESSION
+        if not session_id or not session_id.strip():
+            raise ValueError("session_id is required and must be non-empty")
+        sid = session_id.strip()
         self._sessions[sid] = ConversationState(session_id=sid)
         if self._db_enabled:
             try:

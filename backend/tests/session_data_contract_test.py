@@ -1,18 +1,84 @@
 import sys
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from fastapi.testclient import TestClient
+
 from app.db.engine import SessionLocal
 from app.db.models import SessionModel
-from app.db.repository import get_latest_learning_path, get_latest_profile, get_resources
+from app.db.repository import (
+    get_event_analytics,
+    get_latest_learning_path,
+    get_latest_profile,
+    get_resources,
+)
+from app.main import app
 from app.services import agent_service
 from app.services.conversation_state import conversation_store
+
+client = TestClient(app)
+
+_EXPECTED_PROFILE_KEYS = {
+    "major_background",
+    "knowledge_base",
+    "learning_goal",
+    "cognitive_style",
+    "error_patterns",
+    "coding_ability",
+    "learning_progress",
+    "interest_direction",
+    "learning_rhythm",
+    "self_efficacy",
+}
 
 
 def assert_true(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
+
+
+def _assert_profile_dimensions(profile, label: str) -> None:
+    """Verify profile has all 10 expected dimensions with structured fields."""
+    dims = profile.dimensions or []
+    keys = {dim.get("key") for dim in dims}
+    assert_true(keys == _EXPECTED_PROFILE_KEYS,
+                f"{label} profile should store 10 dimensions, got {keys}")
+    assert_true(
+        all(all(f in dim for f in ("score", "confidence", "explanation", "evidence", "source"))
+            for dim in dims),
+        f"{label} profile dimensions should keep structured fields",
+    )
+    assert_true(
+        all(dim.get("source") != "unknown" for dim in dims),
+        f"{label} profile snapshots should not persist unknown sources",
+    )
+
+
+def _assert_session_path_scoped(path, session_id: str, label: str) -> None:
+    """Verify learning path belongs to the correct session."""
+    assert_true(path is not None, f"{label} should have a learning path")
+    assert_true(path.session_id == session_id,
+                f"{label} path belongs to session {session_id}, got {path.session_id}")
+    assert_true(path.id.startswith(f"path_{session_id}_"),
+                f"{label} path id should include session id, got {path.id}")
+
+
+def _assert_resource_isolation(resources_a, resources_b, session_a: str, session_b: str) -> None:
+    """Verify resources are scoped to their sessions and don't overlap."""
+    ids_a = {r.id for r in resources_a}
+    ids_b = {r.id for r in resources_b}
+    assert_true(ids_a.isdisjoint(ids_b),
+                f"resource IDs must not overlap across sessions {session_a} and {session_b}")
+    assert_true(
+        all(r.session_id == session_a and r.id.startswith(f"{session_a}_") for r in resources_a),
+        f"all resources in session {session_a} must be scoped to it",
+    )
+    assert_true(
+        all(r.session_id == session_b and r.id.startswith(f"{session_b}_") for r in resources_b),
+        f"all resources in session {session_b} must be scoped to it",
+    )
 
 
 def _cleanup(session_ids: list[str]) -> None:
@@ -107,6 +173,226 @@ def test_generated_data_is_readable_by_session_and_isolated() -> None:
         _cleanup(sessions)
 
 
+# ── Scenario 1: Same subject, different sessions ──────────────────────
+
+def test_same_subject_different_sessions_isolation() -> None:
+    """Same course (ai_intro), two different sessions — data must not leak."""
+    session_a = "contract_same_subj_a"
+    session_b = "contract_same_subj_b"
+    sessions = [session_a, session_b]
+    conversation_store.enable_db()
+    _cleanup(sessions)
+
+    try:
+        agent_service.run_agents(
+            session_id=session_a, course_id="ai_intro",
+            user_message="我是大一学生，想入门人工智能",
+        )
+        agent_service.run_agents(
+            session_id=session_b, course_id="ai_intro",
+            user_message="我是大一学生，想入门人工智能",
+        )
+
+        db = SessionLocal()
+        try:
+            profile_a = get_latest_profile(db, session_a)
+            profile_b = get_latest_profile(db, session_b)
+            path_a = get_latest_learning_path(db, session_a)
+            path_b = get_latest_learning_path(db, session_b)
+            resources_a = get_resources(db, session_a)
+            resources_b = get_resources(db, session_b)
+        finally:
+            db.close()
+
+        _assert_profile_dimensions(profile_a, "session A")
+        _assert_profile_dimensions(profile_b, "session B")
+        _assert_session_path_scoped(path_a, session_a, "session A")
+        _assert_session_path_scoped(path_b, session_b, "session B")
+        assert_true(path_a.id != path_b.id, "path IDs must differ between sessions")
+        _assert_resource_isolation(resources_a, resources_b, session_a, session_b)
+    finally:
+        _cleanup(sessions)
+
+
+# ── Scenario 2: Different subjects, different sessions ────────────────
+
+def test_different_subjects_different_sessions_isolation() -> None:
+    """Different courses, different sessions — data must not leak."""
+    session_a = "contract_diff_subj_a"
+    session_b = "contract_diff_subj_b"
+    sessions = [session_a, session_b]
+    conversation_store.enable_db()
+    _cleanup(sessions)
+
+    try:
+        agent_service.run_agents(
+            session_id=session_a, course_id="ai_intro",
+            user_message="我是大一学生，想入门人工智能",
+        )
+        agent_service.run_agents(
+            session_id=session_b, course_id="data_structures",
+            user_message="我是软件工程大一学生，想复习数据结构",
+        )
+
+        db = SessionLocal()
+        try:
+            profile_a = get_latest_profile(db, session_a)
+            profile_b = get_latest_profile(db, session_b)
+            path_a = get_latest_learning_path(db, session_a)
+            path_b = get_latest_learning_path(db, session_b)
+            resources_a = get_resources(db, session_a)
+            resources_b = get_resources(db, session_b)
+        finally:
+            db.close()
+
+        _assert_profile_dimensions(profile_a, "session A (ai_intro)")
+        _assert_profile_dimensions(profile_b, "session B (data_structures)")
+        _assert_session_path_scoped(path_a, session_a, "session A")
+        _assert_session_path_scoped(path_b, session_b, "session B")
+        _assert_resource_isolation(resources_a, resources_b, session_a, session_b)
+    finally:
+        _cleanup(sessions)
+
+
+# ── Scenario 3: Order variation — AI Intro first, Data Structures second
+
+def test_order_variation_ai_intro_then_ds() -> None:
+    """Generate AI Intro first, then Data Structures — no cross-contamination."""
+    session_a = "contract_order_ai_first"
+    session_b = "contract_order_ds_second"
+    sessions = [session_a, session_b]
+    conversation_store.enable_db()
+    _cleanup(sessions)
+
+    try:
+        agent_service.run_agents(
+            session_id=session_a, course_id="ai_intro",
+            user_message="我是大一学生，想入门人工智能",
+        )
+        agent_service.run_agents(
+            session_id=session_b, course_id="data_structures",
+            user_message="我是软件工程大一学生，想复习数据结构",
+        )
+
+        db = SessionLocal()
+        try:
+            path_a = get_latest_learning_path(db, session_a)
+            path_b = get_latest_learning_path(db, session_b)
+            resources_a = get_resources(db, session_a)
+            resources_b = get_resources(db, session_b)
+        finally:
+            db.close()
+
+        _assert_session_path_scoped(path_a, session_a, "session A (AI first)")
+        _assert_session_path_scoped(path_b, session_b, "session B (DS second)")
+        _assert_resource_isolation(resources_a, resources_b, session_a, session_b)
+    finally:
+        _cleanup(sessions)
+
+
+# ── Scenario 4: Order variation — Data Structures first, AI Intro second
+
+def test_order_variation_ds_then_ai_intro() -> None:
+    """Generate Data Structures first, then AI Intro — no cross-contamination."""
+    session_a = "contract_order_ds_first"
+    session_b = "contract_order_ai_second"
+    sessions = [session_a, session_b]
+    conversation_store.enable_db()
+    _cleanup(sessions)
+
+    try:
+        agent_service.run_agents(
+            session_id=session_a, course_id="data_structures",
+            user_message="我是软件工程大一学生，想复习数据结构",
+        )
+        agent_service.run_agents(
+            session_id=session_b, course_id="ai_intro",
+            user_message="我是大一学生，想入门人工智能",
+        )
+
+        db = SessionLocal()
+        try:
+            path_a = get_latest_learning_path(db, session_a)
+            path_b = get_latest_learning_path(db, session_b)
+            resources_a = get_resources(db, session_a)
+            resources_b = get_resources(db, session_b)
+        finally:
+            db.close()
+
+        _assert_session_path_scoped(path_a, session_a, "session A (DS first)")
+        _assert_session_path_scoped(path_b, session_b, "session B (AI second)")
+        _assert_resource_isolation(resources_a, resources_b, session_a, session_b)
+    finally:
+        _cleanup(sessions)
+
+
+# ── Scenario 5: Learning analytics session isolation ──────────────────
+
+def test_learning_analytics_session_isolation() -> None:
+    """Learning analytics must be isolated per session."""
+    session_a = "contract_analytics_a"
+    session_b = "contract_analytics_b"
+    sessions = [session_a, session_b]
+    conversation_store.enable_db()
+    _cleanup(sessions)
+
+    try:
+        for session_id in sessions:
+            agent_service.run_agents(
+                session_id=session_id, course_id="ai_intro",
+                user_message="学习人工智能",
+            )
+
+        db = SessionLocal()
+        try:
+            analytics_a = get_event_analytics(db, session_a)
+            analytics_b = get_event_analytics(db, session_b)
+        finally:
+            db.close()
+
+        assert_true(isinstance(analytics_a, dict), "session A should return analytics dict")
+        assert_true(isinstance(analytics_b, dict), "session B should return analytics dict")
+        assert_true(analytics_a.get("eventCount", -1) >= 0, "session A analytics has eventCount")
+        assert_true(analytics_b.get("eventCount", -1) >= 0, "session B analytics has eventCount")
+    finally:
+        _cleanup(sessions)
+
+
+# ── Scenario 6: Empty sessionId rejected at API level ─────────────────
+
+def test_empty_session_id_rejected_at_api_level() -> None:
+    """API endpoints must reject requests with missing sessionId."""
+    # GET endpoints — no sessionId
+    r = client.get("/api/profile")
+    assert_true(r.status_code == 400, "profile without sessionId should return 400")
+    assert_true("sessionId is required" in r.json().get("detail", ""),
+                "error message must mention sessionId")
+
+    r = client.get("/api/learning-path")
+    assert_true(r.status_code == 400, "learning-path without sessionId should return 400")
+
+    r = client.get("/api/resources")
+    assert_true(r.status_code == 400, "resources without sessionId should return 400")
+
+    r = client.get("/api/learning-analytics")
+    assert_true(r.status_code == 400, "learning-analytics without sessionId should return 400")
+
+    # POST endpoints — no sessionId in payload
+    r = client.post("/api/chat/send", json={"message": "hello"})
+    assert_true(r.status_code == 400, "chat/send without sessionId should return 400")
+
+    r = client.post("/api/profile/build", json={"message": "hello"})
+    assert_true(r.status_code == 400, "profile/build without sessionId should return 400")
+
+
+# ── Test runner ──────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     test_generated_data_is_readable_by_session_and_isolated()
+    test_same_subject_different_sessions_isolation()
+    test_different_subjects_different_sessions_isolation()
+    test_order_variation_ai_intro_then_ds()
+    test_order_variation_ds_then_ai_intro()
+    test_learning_analytics_session_isolation()
+    test_empty_session_id_rejected_at_api_level()
     print("PASS session_data_contract_test")

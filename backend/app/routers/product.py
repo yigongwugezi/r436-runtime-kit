@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from queue import Queue, Empty
 from typing import Any, Callable
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.agents.intent_agent import IntentAgent
@@ -143,10 +143,12 @@ def _classify_intent(message: str) -> dict[str, Any]:
 
 def _run_agents(
     message: str = "我想学习人工智能导论",
-    session_id: str = "frontend_session_001",
+    session_id: str = "",
     progress_callback: Callable | None = None,
 ) -> dict[str, Any]:
     """Trigger the full multi-agent pipeline via AgentService and persist results."""
+    if not session_id:
+        raise ValueError("_run_agents requires a non-empty session_id")
     state = conversation_store.get(session_id)
     user_topic = state.facts.get("target_course") or message
     selected_course = course_catalog.match_course(user_topic)
@@ -598,7 +600,9 @@ def _learning_plan_reply(result: dict[str, Any], intent: dict[str, Any]) -> str:
     )
 
 
-def _casual_reply(session_id: str = "frontend_session_001") -> str:
+def _casual_reply(session_id: str = "") -> str:
+    if not session_id:
+        raise ValueError("session_id is required for _casual_reply")
     state = conversation_store.get(session_id)
     known = "\n".join(conversation_store.known_lines(state))
     if known:
@@ -935,9 +939,9 @@ GEN_STAGES = [
 @router.post("/chat/stream")
 def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
     message = str(payload.get("message", "我想学习人工智能导论"))
-    session_id = str(payload.get("sessionId", ""))
+    session_id = str(payload.get("sessionId", "")).strip()
     if not session_id:
-        session_id = "frontend_session_001"
+        raise HTTPException(status_code=400, detail="sessionId is required")
 
     conversation_store.append_message(session_id, "user", message)
     intent = _classify_intent(message)
@@ -1046,9 +1050,9 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
 @router.post("/chat/send")
 def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
     message = str(payload.get("message", "我想学习人工智能导论"))
-    session_id = str(payload.get("sessionId", ""))
+    session_id = str(payload.get("sessionId", "")).strip()
     if not session_id:
-        session_id = "frontend_session_001"
+        raise HTTPException(status_code=400, detail="sessionId is required")
 
     conversation_store.append_message(session_id, "user", message)
     intent = _classify_intent(message)
@@ -1135,12 +1139,21 @@ def generation_progress(task_id: str) -> dict[str, Any]:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _resolve_session_id(sessionId: str = "", subjectId: str = "") -> str:
-    return sessionId or subjectId or "frontend_session_001"
+def _resolve_session_id(sessionId: str = "", _subjectId: str = "") -> str:
+    """Validate sessionId for query-param endpoints. subjectId is accepted for API compat
+    but NEVER used as a sessionId substitute — sessionId is the sole data-ownership key."""
+    sid = sessionId.strip()
+    if not sid:
+        raise HTTPException(status_code=400, detail="sessionId is required")
+    return sid
 
 
 def _payload_session_id(payload: dict[str, Any]) -> str:
-    return str(payload.get("sessionId") or payload.get("subjectId") or "") or "frontend_session_001"
+    """Validate sessionId from request body. subjectId is NOT consulted."""
+    sid = str(payload.get("sessionId", "")).strip()
+    if not sid:
+        raise HTTPException(status_code=400, detail="sessionId is required")
+    return sid
 
 
 @router.get("/profile")
