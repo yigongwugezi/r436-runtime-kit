@@ -7,6 +7,7 @@ import app.services.orchestrator as orchestrator_module
 from app.services.orchestrator import AgentOrchestrator
 from app.agents.diagnosis_agent import DiagnosisAgent
 from app.config import settings
+from app.services.llm_client import MockLLMClient
 
 
 def assert_true(condition: bool, message: str) -> None:
@@ -14,8 +15,15 @@ def assert_true(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+def deterministic_orchestrator() -> AgentOrchestrator:
+    """Use a named test client so generated fixtures never depend on live LLM output."""
+    orchestrator = AgentOrchestrator()
+    orchestrator.llm_client = MockLLMClient()
+    return orchestrator
+
+
 def test_agents_generate_from_course_knowledge_base() -> None:
-    result = AgentOrchestrator().run(
+    result = deterministic_orchestrator().run(
         session_id="agent_generation_test",
         course_id="data_structures",
         user_message="我是软件工程大二学生，想48小时学习数据结构，为了考试通过，喜欢图解和练习题。",

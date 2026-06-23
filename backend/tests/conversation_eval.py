@@ -2,6 +2,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -9,7 +10,18 @@ sys.path.insert(0, str(ROOT))
 
 from app.agents.intent_agent import IntentAgent  # noqa: E402
 from app.routers import product  # noqa: E402
+from app.services import agent_service  # noqa: E402
 from app.services.conversation_state import conversation_store  # noqa: E402
+from app.services.llm_client import MockLLMClient  # noqa: E402
+from app.services.orchestrator import AgentOrchestrator  # noqa: E402
+
+
+class DeterministicTestOrchestrator(AgentOrchestrator):
+    """Keep conversation evaluation independent from external LLM behavior."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.llm_client = MockLLMClient()
 
 
 CASES_PATH = Path(__file__).with_name("conversation_cases.json")
@@ -32,7 +44,8 @@ def reply(session_id: str, message: str) -> tuple[dict[str, Any], str]:
     conversation_store.append_message(session_id, "user", message)
     intent = classify(message)
     conversation_store.set_intent(session_id, intent)
-    content, _ = product._reply_for_intent(message, intent, session_id)
+    with patch.object(agent_service, "AgentOrchestrator", DeterministicTestOrchestrator):
+        content, _ = product._reply_for_intent(message, intent, session_id)
     conversation_store.append_message(session_id, "assistant", content)
     return intent, content
 

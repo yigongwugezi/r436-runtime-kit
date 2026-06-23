@@ -1,5 +1,6 @@
 ﻿import sys
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi import HTTPException
 
@@ -9,8 +10,19 @@ sys.path.insert(0, str(ROOT))
 
 from app.agents.intent_agent import IntentAgent  # noqa: E402
 from app.routers import product  # noqa: E402
+from app.services import agent_service  # noqa: E402
 from app.services.conversation_state import conversation_store  # noqa: E402
 from app.services.learning_tracker import learning_tracker  # noqa: E402
+from app.services.llm_client import MockLLMClient  # noqa: E402
+from app.services.orchestrator import AgentOrchestrator  # noqa: E402
+
+
+class DeterministicTestOrchestrator(AgentOrchestrator):
+    """Keep routing regressions independent from external LLM latency and output."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.llm_client = MockLLMClient()
 
 
 def classify(message: str) -> dict:
@@ -21,7 +33,8 @@ def reply(session_id: str, message: str) -> str:
     state = conversation_store.append_message(session_id, "user", message)
     intent = classify(message)
     conversation_store.set_intent(session_id, intent)
-    content, _ = product._reply_for_intent(message, intent, session_id)
+    with patch.object(agent_service, "AgentOrchestrator", DeterministicTestOrchestrator):
+        content, _ = product._reply_for_intent(message, intent, session_id)
     conversation_store.append_message(session_id, "assistant", content)
     assert state.session_id == session_id
     return content

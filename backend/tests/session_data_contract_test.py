@@ -1,6 +1,7 @@
 import sys
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -20,9 +21,24 @@ from app.schemas.agent import AgentRunRequest
 from app.services import agent_service
 from app.services.conversation_state import conversation_store
 from app.services.learning_tracker import LearningTracker
+from app.services.llm_client import MockLLMClient
+from app.services.orchestrator import AgentOrchestrator
 
 
 client = TestClient(app)
+
+
+class DeterministicTestOrchestrator(AgentOrchestrator):
+    """Keep session-isolation tests independent from external LLM behavior."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.llm_client = MockLLMClient()
+
+
+def _run_agents(**kwargs):
+    with patch.object(agent_service, "AgentOrchestrator", DeterministicTestOrchestrator):
+        return agent_service.run_agents(**kwargs)
 
 _EXPECTED_PROFILE_KEYS = {
     "major_background",
@@ -107,12 +123,12 @@ def test_generated_data_is_readable_by_session_and_isolated() -> None:
     _cleanup(sessions)
 
     try:
-        agent_service.run_agents(
+        _run_agents(
             session_id=session_a,
             course_id="data_structures",
             user_message="Data structures review: linked lists, stacks, queues, trees and sorting in 48 hours.",
         )
-        agent_service.run_agents(
+        _run_agents(
             session_id=session_b,
             course_id="ai_intro",
             user_message="Artificial intelligence introduction: machine learning, neural networks and NLP in 10 days.",
@@ -209,11 +225,11 @@ def test_same_subject_different_sessions_isolation() -> None:
     _cleanup(sessions)
 
     try:
-        agent_service.run_agents(
+        _run_agents(
             session_id=session_a, course_id="ai_intro",
             user_message="我是大一学生，想入门人工智能",
         )
-        agent_service.run_agents(
+        _run_agents(
             session_id=session_b, course_id="ai_intro",
             user_message="我是大一学生，想入门人工智能",
         )
@@ -250,11 +266,11 @@ def test_different_subjects_different_sessions_isolation() -> None:
     _cleanup(sessions)
 
     try:
-        agent_service.run_agents(
+        _run_agents(
             session_id=session_a, course_id="ai_intro",
             user_message="我是大一学生，想入门人工智能",
         )
-        agent_service.run_agents(
+        _run_agents(
             session_id=session_b, course_id="data_structures",
             user_message="我是软件工程大一学生，想复习数据结构",
         )
@@ -290,11 +306,11 @@ def test_order_variation_ai_intro_then_ds() -> None:
     _cleanup(sessions)
 
     try:
-        agent_service.run_agents(
+        _run_agents(
             session_id=session_a, course_id="ai_intro",
             user_message="我是大一学生，想入门人工智能",
         )
-        agent_service.run_agents(
+        _run_agents(
             session_id=session_b, course_id="data_structures",
             user_message="我是软件工程大一学生，想复习数据结构",
         )
@@ -326,11 +342,11 @@ def test_order_variation_ds_then_ai_intro() -> None:
     _cleanup(sessions)
 
     try:
-        agent_service.run_agents(
+        _run_agents(
             session_id=session_a, course_id="data_structures",
             user_message="我是软件工程大一学生，想复习数据结构",
         )
-        agent_service.run_agents(
+        _run_agents(
             session_id=session_b, course_id="ai_intro",
             user_message="我是大一学生，想入门人工智能",
         )
@@ -363,7 +379,7 @@ def test_learning_analytics_session_isolation() -> None:
 
     try:
         for session_id in sessions:
-            agent_service.run_agents(
+            _run_agents(
                 session_id=session_id, course_id="ai_intro",
                 user_message="学习人工智能",
             )
