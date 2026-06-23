@@ -60,10 +60,64 @@ body {
   font-family: var(--font-sans);
 }
 
+/* 1366x768 小屏适配 */
+@media (max-width: 1366px) {
+  .max-w-6xl { max-width: 100%; }
+  .max-w-5xl { max-width: 100%; }
+}
+
+/* 窄屏适配 */
+@media (max-width: 768px) {
+  .hide-mobile { display: none !important; }
+}
+
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+/* 表格/列表水平滚动支持 */
+.scrollable-table { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.scrollable-list { overflow-y: auto; -webkit-overflow-scrolling: touch; max-height: 70vh; }
+
+/* 大屏双栏辅助类 */
+@media (min-width: 1920px) {
+  .xl-grid-2 { grid-template-columns: 1fr 1fr; }
+  .xl-gap-8 { gap: 2rem; }
+}
+
+/* 焦点可见性 */
+*:focus-visible {
+  outline: 2px solid var(--color-brand-400);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* 按钮禁用全局样式 */
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* 表单输入状态 */
+.input-error {
+  border-color: #ef4444 !important;
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.15) !important;
+}
+.input-success {
+  border-color: #22c55e !important;
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.15) !important;
+}
+.input-focused {
+  border-color: var(--color-brand-400) !important;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12) !important;
+}
+
+/* 统一的表单输入基础样式 */
+input, textarea, select {
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
 
 .prose-custom {
   max-width: none;

@@ -3,8 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import {
   TrendingUp, Zap, Target, BookOpen, Clock, Brain,
   AlertCircle, Sparkles, ArrowRight, Star, RefreshCw,
-  BarChart3, Activity, ListChecks, Eye, MessageSquare, HelpCircle, Cpu,
-  CheckCircle2, User, GitFork,
+  BarChart3, Activity, Eye, MessageSquare, Cpu, GitFork,
+  CheckCircle2, Shield,
 } from 'lucide-react';
 import {
   PageLoading, PageEmpty, PageError, SourceTag, FallbackBanner, RefreshOverlay,
@@ -13,8 +13,9 @@ import { formatDuration } from '../utils/format';
 import { useLearningAnalytics } from '../hooks/useLearningAnalytics';
 import type { AnalyticsSummary } from '../types/analytics';
 import { useSubjectStore } from '../store/subjectStore';
+import DiagnosisPanel from '../components/analytics/DiagnosisPanel';
 import { useChatStore } from '../store/chatStore';
-import { getLearningPath } from '../api/knowledge';
+import { getLearningPath } from '../api/learningPath';
 
 /* ===================================================================
  * 子组件
@@ -175,7 +176,7 @@ export default function LearningAnalyticsPage() {
   };
 
   return (
-    <div className="max-w-5xl mx-auto px-4 py-6 md:py-8 relative">
+    <div className="max-w-7xl mx-auto px-4 py-6 md:py-8 relative">
       {/* ========== 刷新遮罩 ========== */}
       {loading && analytics && <RefreshOverlay />}
 
@@ -260,8 +261,8 @@ export default function LearningAnalyticsPage() {
         </div>
       </div>
 
-      {/* 核心指标卡片 */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-8">
+      {/* 核心指标卡片 - 大屏自动分布 */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 xl:grid-cols-6 gap-3 mb-8">
         <StatCard
           icon={<Clock className="w-5 h-5 text-blue-500" />}
           label="学习时长"
@@ -511,6 +512,7 @@ export default function LearningAnalyticsPage() {
           <button
             onClick={() => navigate('/timeline')}
             className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-[10px] font-medium text-brand-600 bg-brand-50 hover:bg-brand-100 transition-colors"
+            title="查看完整时间线"
           >
             <Activity className="w-3 h-3" />
             查看完整时间线
@@ -518,7 +520,7 @@ export default function LearningAnalyticsPage() {
           </button>
         </div>
         {analytics.recentEvents && analytics.recentEvents.length > 0 ? (
-          <div className="space-y-0">
+          <div className="space-y-0 scrollable-list">
             {[...analytics.recentEvents].reverse().slice(-5).reverse().map((evt, i) => {
               const info = eventLabels[evt.event] || { label: evt.event, icon: '📌', color: 'text-gray-400' };
               const desc = eventDescription(evt);
@@ -588,13 +590,108 @@ export default function LearningAnalyticsPage() {
         </div>
       )}
 
+      {/* ========== 诊断建议入口 ========== */}
+      <div className="bg-white border border-gray-100 rounded-2xl p-6 shadow-sm mb-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
+            <Shield className="w-4 h-4 text-brand-500" />
+            诊断建议
+          </h3>
+          {analytics.weakTopics.length > 0 && (
+            <button
+              onClick={() => {
+                const el = document.getElementById('diagnosis-panel-analytics');
+                el?.scrollIntoView({ behavior: 'smooth' });
+              }}
+              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-[10px] font-medium text-brand-600 bg-brand-50 hover:bg-brand-100 transition-colors"
+              title="查看诊断详情"
+            >
+              <Shield className="w-3 h-3" />
+              查看详情
+              <ArrowRight className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+
+        {analytics.weakTopics.length > 0 ? (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-xs text-gray-500 mb-2">
+              <AlertCircle className="w-3.5 h-3.5" />
+              检测到 <span className="font-semibold text-gray-700">{analytics.weakTopics.length}</span> 个薄弱知识点，
+              系统已生成针对性学习建议
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {analytics.weakTopics.slice(0, 5).map((topic, i) => (
+                <span
+                  key={i}
+                  className={`px-2.5 py-1 rounded-lg text-[10px] font-medium border ${
+                    topic.priority === 'high'
+                      ? 'bg-red-50 text-red-600 border-red-200'
+                      : topic.priority === 'medium'
+                        ? 'bg-amber-50 text-amber-600 border-amber-200'
+                        : 'bg-blue-50 text-blue-600 border-blue-200'
+                  }`}
+                >
+                  {topic.topic}
+                  {topic.priority === 'high' && ' 🔥'}
+                </span>
+              ))}
+              {analytics.weakTopics.length > 5 && (
+                <span className="px-2.5 py-1 rounded-lg text-[10px] font-medium bg-gray-50 text-gray-400 border border-gray-100">
+                  +{analytics.weakTopics.length - 5} 更多
+                </span>
+              )}
+            </div>
+            {analytics.recommendations.length > 0 && (
+              <div className="mt-2 p-3 bg-brand-50/50 rounded-xl">
+                <p className="text-xs text-brand-700 leading-relaxed">
+                  💡 {analytics.recommendations[0]}
+                </p>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="flex flex-col items-center py-6 text-center">
+            <Shield className="w-8 h-8 text-gray-200 mb-2" />
+            <p className="text-xs text-gray-400">暂无诊断建议</p>
+            <p className="text-[10px] text-gray-300 mt-1">完成更多学习任务后自动生成诊断分析</p>
+          </div>
+        )}
+      </div>
+
+      {/* ========== 诊断详情面板（折叠区域） ========== */}
+      {analytics.weakTopics.length > 0 && (
+        <div id="diagnosis-panel-analytics" className="mb-6 bg-white border border-gray-100 rounded-2xl p-6 shadow-sm">
+          <h3 className="text-sm font-semibold text-gray-700 mb-4 flex items-center gap-2">
+            <Shield className="w-4 h-4 text-brand-500" />
+            诊断详情
+          </h3>
+          <DiagnosisPanel
+            diagnosis={{
+              weakTopics: analytics.weakTopics.map((t) => ({
+                topic: t.topic,
+                priority: (t.priority as 'high' | 'medium' | 'low') || 'medium',
+                reason: t.reason,
+                mastery: t.mastery,
+                wrongCount: t.wrongCount,
+                totalCount: t.totalCount,
+                confidence: t.risk != null ? 1 - t.risk : undefined,
+              })),
+              summary: analytics.summary || undefined,
+              confidence: analytics.weakTopics.length > 0 ? 0.7 : undefined,
+              source: analytics.eventCount > 0 ? 'agent_generated' : 'system_inferred',
+            }}
+          />
+        </div>
+      )}
+
       {/* ========== 系统调整说明 ========== */}
       <div className="bg-gradient-to-r from-brand-50 to-purple-50 border border-brand-100 rounded-2xl p-6 shadow-sm mb-6">
         <h3 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
           <Cpu className="w-4 h-4 text-brand-500" />
           系统自适应调整说明
         </h3>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 xl:grid-cols-3 gap-4">
           <div className="p-3 bg-white/70 rounded-xl">
             <div className="flex items-center gap-2 mb-1.5">
               <Target className="w-4 h-4 text-amber-500" />

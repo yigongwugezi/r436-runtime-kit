@@ -33,7 +33,7 @@ export default function Home() {
             <p className="text-sm text-gray-400">{subjects.length} 个科目</p>
           </div>
         </div>
-        <button className="p-2 rounded-lg hover:bg-gray-100 text-gray-400 transition-colors" title="设置">
+        <button className="p-2 rounded-lg hover:bg-gray-100 text-gray-400 transition-colors" title="设置" aria-label="打开设置">
           <Settings className="w-5 h-5" />
         </button>
       </div>
@@ -96,7 +96,8 @@ export default function Home() {
                   <div className="flex items-center gap-2">
                     {isActive && <span className="px-2 py-0.5 bg-brand-100 text-brand-600 rounded text-[10px] font-semibold">当前</span>}
                     <button onClick={(e) => { e.stopPropagation(); if (confirm(`确定删除科目「${subject.name}」？相关数据将被清除。`)) remove(subject.id); }}
-                      className="p-1.5 rounded-lg text-gray-300 hover:text-red-500 hover:bg-red-50 transition-all opacity-0 group-hover:opacity-100">
+                      className="p-1.5 rounded-lg text-gray-300 hover:text-red-500 hover:bg-red-50 transition-all opacity-0 group-hover:opacity-100"
+                      title={`删除科目「${subject.name}」`} aria-label={`删除科目「${subject.name}」`}>
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
                     <ChevronRight className="w-4 h-4 text-gray-300" />

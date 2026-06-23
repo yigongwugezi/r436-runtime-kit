@@ -1,4 +1,4 @@
-import { Info, ChevronDown, ChevronUp } from 'lucide-react';
+import { Info, ChevronDown, ChevronUp, ShieldAlert } from 'lucide-react';
 import type { ProfileDimension } from '../../types/profile';
 import { DIMENSION_COLORS } from '../../utils/constants';
 import ExpandableText from '../common/ExpandableText';
@@ -72,8 +72,25 @@ export default function ProfileDimensionCard({ dim, index }: Props) {
         <div className="flex-1 h-1 bg-gray-100 rounded-full overflow-hidden">
           <div className="h-full rounded-full" style={{ width: `${dim.confidence * 100}%`, backgroundColor: color }} />
         </div>
-        <span className="tabular-nums">置信度 {(dim.confidence * 100).toFixed(0)}%</span>
+        {dim.confidence < 0.5 ? (
+          <span className="tabular-nums text-amber-500 flex items-center gap-0.5" title="需要更多学习数据确认（置信度较低）">
+            <ShieldAlert className="w-2.5 h-2.5" />
+            需更多数据
+          </span>
+        ) : dim.confidence < 0.75 ? (
+          <span className="tabular-nums text-gray-400">{(dim.confidence * 100).toFixed(0)}%</span>
+        ) : (
+          <span className="tabular-nums text-green-500">{(dim.confidence * 100).toFixed(0)}%</span>
+        )}
       </div>
+      {dim.confidence < 0.5 && dim.source !== 'user_input' && (
+        <div className="mt-2 p-2 bg-amber-50/60 border border-dashed border-amber-200 rounded-lg">
+          <p className="text-[10px] text-amber-600 leading-relaxed flex items-start gap-1">
+            <ShieldAlert className="w-2.5 h-2.5 flex-shrink-0 mt-0.5" />
+            此维度基于有限数据推断（置信度 {(dim.confidence * 100).toFixed(0)}%），继续学习后可获得更精准的画像。
+          </p>
+        </div>
+      )}
     </div>
   );
 }

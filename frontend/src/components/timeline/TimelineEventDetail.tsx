@@ -1,5 +1,6 @@
-import { BookOpen, Target } from 'lucide-react';
-import type { TimelineEvent } from '../../types/analytics';
+import { BookOpen, Target, ChevronDown, ChevronUp } from 'lucide-react';
+import { useState } from 'react';
+import type { TimelineEvent } from '../../types/timeline';
 import { timeAgo } from '../../utils/format';
 
 /* ===================================================================
@@ -56,13 +57,9 @@ export default function TimelineEventDetail({ event }: TimelineEventDetailProps)
         <NodeProgressDetail meta={meta} event={event} />
       )}
 
-      {/* ── 兜底：展示原始 metadata ── */}
+      {/* ── 兜底：展示原始 metadata（可折叠） ── */}
       {!['quiz_result', 'practice_result', 'feedback', 'resource_view', 'resource_complete', 'node_progress', 'stage_complete'].includes(event.event) && (
-        <div className="p-3 bg-gray-50 rounded-xl">
-          <pre className="text-[10px] text-gray-400 font-mono whitespace-pre-wrap">
-            {JSON.stringify(meta, null, 2)}
-          </pre>
-        </div>
+        <ExpandableMeta label="元数据" text={JSON.stringify(meta, null, 2)} />
       )}
     </div>
   );
@@ -131,16 +128,10 @@ function PracticeDetail({ meta }: { meta: Record<string, unknown> }) {
         {rating != null && <InfoItem label="评分" value={'⭐'.repeat(rating)} />}
       </div>
       {completionNotes && (
-        <div className="text-[11px] text-gray-600 mt-1">
-          <span className="text-gray-400">完成说明：</span>
-          {completionNotes}
-        </div>
+        <ExpandableMeta label="完成说明" text={completionNotes} />
       )}
       {evaluation && (
-        <div className="text-[11px] text-gray-600">
-          <span className="text-gray-400">评价：</span>
-          {evaluation}
-        </div>
+        <ExpandableMeta label="评价" text={evaluation} />
       )}
     </div>
   );
@@ -175,9 +166,7 @@ function FeedbackDetail({ meta }: { meta: Record<string, unknown> }) {
         {rating != null && <InfoItem label="评分" value={'⭐'.repeat(rating)} />}
       </div>
       {content && (
-        <div className="text-[11px] text-gray-600 mt-1 p-2 bg-white/60 rounded-lg">
-          {content}
-        </div>
+        <ExpandableMeta label="反馈内容" text={content} />
       )}
     </div>
   );
@@ -283,6 +272,49 @@ function InfoItem({ label, value }: { label: string; value: string }) {
     <div className="flex flex-col">
       <span className="text-[10px] text-gray-400">{label}</span>
       <span className="text-[11px] text-gray-700 font-medium">{value}</span>
+    </div>
+  );
+}
+
+/* ===================================================================
+ * 可折叠元数据（用于长文本）
+ * =================================================================== */
+function ExpandableMeta({ label, text }: { label: string; text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const isLong = text.length > 120;
+
+  if (!isLong) {
+    return (
+      <div className="text-[11px] text-gray-600 mt-1 p-2 bg-white/60 rounded-lg">
+        <span className="text-gray-400">{label}：</span>
+        {text}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-1">
+      <div className={`relative ${expanded ? '' : 'max-h-[80px] overflow-hidden'}`}>
+        <div className="text-[11px] text-gray-600 p-2 bg-white/60 rounded-lg transition-opacity">
+          <span className="text-gray-400">{label}：</span>
+          {text}
+        </div>
+        {!expanded && (
+          <div className="absolute inset-x-0 bottom-0 h-8 bg-gradient-to-b from-transparent to-white/80 rounded-b-lg" />
+        )}
+      </div>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="inline-flex items-center gap-1 text-[10px] text-brand-500 hover:text-brand-600 font-medium transition-colors"
+        title={expanded ? '收起' : '展开全部'}
+        aria-label={expanded ? '收起内容' : '展开全部内容'}
+      >
+        {expanded ? (
+          <><ChevronUp className="w-3 h-3" /> 收起</>
+        ) : (
+          <><ChevronDown className="w-3 h-3" /> 展开全文（{text.length} 字符）</>
+        )}
+      </button>
     </div>
   );
 }

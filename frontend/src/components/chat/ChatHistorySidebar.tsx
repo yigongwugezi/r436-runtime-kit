@@ -47,12 +47,16 @@ export default function ChatHistorySidebar({ open, onClose, onJump }: {
               <p className="text-sm text-gray-400">暂无消息</p>
             </div>
           ) : (
-            messages.map((msg, idx) => (
+            messages.map((msg, idx) => {
+              const isLatest = idx === messages.length - 1;
+              return (
               <button
                 key={msg.id || idx}
                 onClick={() => { onJump(idx); onClose(); }}
-                className={`w-full text-left px-3 py-2.5 rounded-lg hover:bg-gray-50 transition-colors group ${
-                  msg.role === 'user' ? '' : 'bg-gray-50/50'
+                className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors group ${
+                  isLatest
+                    ? 'bg-brand-50/70 ring-1 ring-brand-200'
+                    : msg.role === 'user' ? 'hover:bg-gray-50' : 'bg-gray-50/50 hover:bg-gray-100'
                 }`}
               >
                 <div className="flex items-start gap-2">
@@ -72,7 +76,8 @@ export default function ChatHistorySidebar({ open, onClose, onJump }: {
                   </div>
                 </div>
               </button>
-            ))
+              );
+            })
           )}
         </div>
 

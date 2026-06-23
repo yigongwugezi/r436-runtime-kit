@@ -6,6 +6,7 @@ export interface SubmitFeedbackParams {
   rating: number;          // 1-5
   comment?: string;
   difficultyMatch?: 'too_easy' | 'just_right' | 'too_hard';
+  category?: string;
 }
 
 export async function submitFeedback(params: SubmitFeedbackParams): Promise<void> {

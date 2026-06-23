@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import * as knowledgeApi from '../api/knowledge';
+import * as learningPathApi from '../api/learningPath';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
 import type { LearningPath, PathNodeStatus } from '../types/learningPath';
@@ -39,7 +39,7 @@ export function useLearningPath() {
     setLoading(true);
     setError(null);
     try {
-      const res = await knowledgeApi.getLearningPath({ sessionId, subjectId });
+      const res = await learningPathApi.getLearningPath({ sessionId, subjectId });
       if (res?.path) {
         setPath(res.path);
       } else {
@@ -58,7 +58,7 @@ export function useLearningPath() {
     setLoading(true);
     setError(null);
     try {
-      const res = await knowledgeApi.generateLearningPath({
+      const res = await learningPathApi.generateLearningPath({
         ...params,
         sessionId,
         subjectId: params.subjectId || subjectId,
@@ -74,7 +74,7 @@ export function useLearningPath() {
   }, [sessionId, subjectId]);
 
   const updateNode = useCallback(async (nodeId: string, mastery: number) => {
-    await knowledgeApi.updateNodeProgress(nodeId, mastery, { sessionId, subjectId });
+    await learningPathApi.updateNodeProgress(nodeId, mastery, { sessionId, subjectId });
     setPath((current) => {
       if (!current) return current;
       return {
@@ -92,7 +92,7 @@ export function useLearningPath() {
     const mastery = statusToMastery(status);
     // 先持久化到后端
     try {
-      await knowledgeApi.updateNodeProgress(nodeId, mastery, {
+      await learningPathApi.updateNodeProgress(nodeId, mastery, {
         sessionId,
         subjectId,
         status,

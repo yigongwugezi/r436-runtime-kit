@@ -13,6 +13,7 @@ import {
 import Markdown from '../utils/markdown';
 import ChatHistorySidebar from '../components/chat/ChatHistorySidebar';
 import ChatClarification from '../components/chat/ChatClarification';
+import PromptTemplates from '../components/chat/PromptTemplates';
 
 /* ===================================================================
  * 生成流程管线定义
@@ -104,8 +105,20 @@ function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onCla
         </div>
 
         {/* 时间戳 */}
-        <span className="text-[10px] text-gray-300 px-1">
+        <span className="text-[10px] text-gray-300 px-1 flex items-center gap-1.5">
           {timeAgo(msg.timestamp)}
+          {!isUser && !msg.streaming && msg.content && !msg.error && !msg.isClarification && (
+            <span className="w-1 h-1 rounded-full bg-green-300" title="生成完成" />
+          )}
+          {!isUser && msg.streaming && (
+            <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse" title="生成中" />
+          )}
+          {msg.error && (
+            <span className="w-1 h-1 rounded-full bg-red-400" title="生成失败" />
+          )}
+          {!isUser && msg.isClarification && (
+            <span className="text-[9px] text-amber-400">引导</span>
+          )}
         </span>
       </div>
 
@@ -472,6 +485,7 @@ export default function ChatPage() {
         <button
           onClick={() => setHistoryOpen(true)}
           className="absolute top-3 right-3 z-10 flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs text-gray-500 hover:text-gray-700 hover:border-gray-300 shadow-sm transition-all"
+          title="查看对话历史" aria-label="打开对话历史"
         >
           <History className="w-3.5 h-3.5" />
           历史
@@ -552,6 +566,7 @@ export default function ChatPage() {
         <button
           onClick={() => scrollToBottom(true)}
           className="absolute bottom-24 left-1/2 -translate-x-1/2 w-8 h-8 bg-white border border-gray-200 rounded-full flex items-center justify-center shadow-md hover:shadow-lg transition-all z-10"
+          title="滚动到底部" aria-label="滚动到最新消息"
         >
           <ChevronDown className="w-4 h-4 text-gray-500" />
         </button>
@@ -559,7 +574,12 @@ export default function ChatPage() {
 
       {/* 输入区域 */}
       <div className="border-t border-gray-100 bg-white px-4 py-3">
-        <div className="max-w-4xl mx-auto flex items-end gap-2">
+        <div className="max-w-4xl mx-auto">
+          {/* 快捷输入模板 */}
+          {messages.length > 0 && !isStreaming && (
+            <PromptTemplates onSelect={(prompt) => { setInput(prompt); inputRef.current?.focus(); }} />
+          )}
+          <div className="flex items-end gap-2">
           {/* 输入框 */}
           <textarea
             ref={inputRef}
@@ -593,6 +613,7 @@ export default function ChatPage() {
               <Send className="w-4 h-4" />
             </button>
           )}
+        </div>
         </div>
 
         {/* 字数统计 + 免责声明 */}

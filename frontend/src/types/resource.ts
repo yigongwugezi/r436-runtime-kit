@@ -27,6 +27,21 @@ export type StudyStatus = 'new' | 'in_progress' | 'completed';
 /** 质检状态 */
 export type QualityStatus = 'passed' | 'needs_review' | 'fallback_passed';
 
+/** 审核状态 */
+export type ReviewStatus = 'passed' | 'warning' | 'blocked';
+
+/** 审核问题项 */
+export interface ReviewIssue {
+  /** 问题描述 */
+  issue: string;
+  /** 严重程度 */
+  severity: 'error' | 'warning' | 'info';
+  /** 建议 */
+  suggestion?: string;
+  /** 涉及内容区域 */
+  location?: string;
+}
+
 export interface Resource {
   id: string;
   type: ResourceType;
@@ -65,6 +80,12 @@ export interface Resource {
   relatedKnowledgePoints?: string[];
   /** 质检状态 */
   qualityStatus?: QualityStatus;
+  /** 审核状态 */
+  reviewStatus?: ReviewStatus;
+  /** 审核问题列表 */
+  reviewIssues?: ReviewIssue[];
+  /** 审核建议 */
+  reviewSuggestions?: string[];
 }
 
 export interface CodeBlock {

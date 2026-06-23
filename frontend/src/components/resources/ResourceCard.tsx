@@ -1,7 +1,8 @@
+import { useState } from 'react';
 import {
   Clock, BookOpen, Brain, Code, FileText, Lightbulb,
   Play, Presentation, BookmarkCheck, CheckCircle2, ChevronRight,
-  CheckSquare, Square,
+  CheckSquare, Square, ChevronDown, ChevronUp, Shield,
 } from 'lucide-react';
 import type { Resource } from '../../types/resource';
 import type { ResourceType } from '../../types/resource';
@@ -41,6 +42,8 @@ interface Props {
 }
 
 export default function ResourceCard({ resource, onClick, searchQuery, selected, onToggleSelect, selectionMode }: Props) {
+  const [showAllKps, setShowAllKps] = useState(false);
+  const hasManyKps = resource.knowledgePoints.length > 3;
   const colorMap: Record<string, string> = {
     lecture: 'from-blue-400 to-blue-500', mindmap: 'from-purple-400 to-purple-500',
     quiz: 'from-amber-400 to-orange-500', case_study: 'from-cyan-400 to-teal-500',
@@ -102,13 +105,22 @@ export default function ResourceCard({ resource, onClick, searchQuery, selected,
               <HighlightText text={tag} query={searchQuery} />
             </span>
           ))}
-          {resource.knowledgePoints.slice(0, 3).map((kp) => (
+          {(showAllKps ? resource.knowledgePoints : resource.knowledgePoints.slice(0, 3)).map((kp) => (
             <span key={kp} className={`px-2 py-0.5 rounded-md text-[10px] ${
               searchQuery && matchesQuery(kp, searchQuery) ? 'bg-amber-100 text-amber-700 font-medium border border-amber-200' : 'bg-brand-50 text-brand-600 border border-brand-100'
             }`}>
               <HighlightText text={kp} query={searchQuery} />
             </span>
           ))}
+          {hasManyKps && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setShowAllKps(!showAllKps); }}
+              className="px-2 py-0.5 rounded-md text-[10px] font-medium text-gray-400 bg-gray-50 border border-gray-100 hover:bg-gray-100 hover:text-gray-600 transition-colors inline-flex items-center gap-0.5"
+            >
+              {showAllKps ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+              {showAllKps ? '收起' : `+${resource.knowledgePoints.length - 3}`}
+            </button>
+          )}
         </div>
 
         {(resource.relatedStageId || resource.relatedChapter) && (
@@ -121,6 +133,13 @@ export default function ResourceCard({ resource, onClick, searchQuery, selected,
         <div className="flex items-center justify-between text-[10px] text-gray-400 pt-1">
           <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{formatDuration(resource.estimatedMinutes)}</span>
           <div className="flex items-center gap-2">
+            {/* fallback 温和标识 */}
+            {resource.source === 'system_inferred' && (
+              <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] bg-slate-50 text-slate-400 border border-slate-100" title="此资源由系统规则生成">
+                <Shield className="w-2.5 h-2.5" />
+                兜底
+              </span>
+            )}
             {resource.bookmarked && <span className="flex items-center gap-0.5 text-brand-500"><BookmarkCheck className="w-3 h-3" /></span>}
             <SourceBadge source={resource.source || 'system_inferred'} size="xs" />
             <span className="flex items-center gap-0.5 text-brand-500 opacity-0 group-hover:opacity-100 transition-opacity">查看详情 <ChevronRight className="w-3 h-3" /></span>

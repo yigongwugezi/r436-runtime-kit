@@ -129,9 +129,14 @@ export function SourceTag({
       cls: 'bg-purple-50 text-purple-600 border-purple-200',
     },
     system_inferred: {
-      label: '系统推断（兜底）',
+      label: '系统推断',
       icon: <Cpu className="w-3 h-3" />,
       cls: 'bg-amber-50 text-amber-600 border-amber-200',
+    },
+    fallback: {
+      label: '规则兜底',
+      icon: <Cpu className="w-3 h-3" />,
+      cls: 'bg-slate-50 text-slate-500 border-slate-200',
     },
   };
 
@@ -141,7 +146,11 @@ export function SourceTag({
   return (
     <span
       className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-[10px] font-medium ${c.cls}`}
-      title={source === 'system_inferred' ? '此内容来自规则兜底，非 AI 智能体生成' : '由 AI 智能体分析生成'}
+      title={
+        source === 'system_inferred' ? '基于系统规则的初步推断，尚未经过 AI 深度分析' :
+        source === 'fallback' ? '此内容由系统规则兜底生成，可能与实际存在偏差' :
+        '由 AI 智能体分析生成'
+      }
     >
       {c.icon}
       {c.label}

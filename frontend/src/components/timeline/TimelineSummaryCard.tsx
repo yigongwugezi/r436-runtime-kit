@@ -1,5 +1,5 @@
 import { BookOpen, FileText, Code, Clock, History } from 'lucide-react';
-import type { TimelineEvent } from '../../types/analytics';
+import type { TimelineEvent } from '../../types/timeline';
 import { timeAgo } from '../../utils/format';
 
 /* ===================================================================

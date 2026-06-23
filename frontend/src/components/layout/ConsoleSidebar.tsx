@@ -77,11 +77,12 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
   if (collapsed) {
     return (
       <div className="fixed left-0 top-0 bottom-0 z-50 w-14 bg-gray-900 border-r border-gray-800 flex flex-col items-center py-4 gap-2">
-        <button onClick={onToggle} className="w-9 h-9 rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center shadow-lg mb-4">
+        <button onClick={onToggle} className="w-9 h-9 rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center shadow-lg mb-4" title="展开侧边栏" aria-label="展开侧边栏">
           <Brain className="w-5 h-5 text-white" />
         </button>
         <button onClick={() => navigate('/')}
-          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}>
+          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
+          title="首页" aria-label="前往首页">
           <Home className="w-4.5 h-4.5" />
         </button>
         <div className="w-8 border-t border-gray-800/30 my-1" />
@@ -91,28 +92,34 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
         </button>
         <div className="w-8 border-t border-gray-800/30 my-1" />
         <button onClick={() => navigate('/resources')}
-          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/resources' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}>
+          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/resources' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
+          title="资源库" aria-label="前往资源库">
           <Library className="w-4.5 h-4.5" />
         </button>
         <button onClick={() => navigate('/path')}
-          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/path' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}>
+          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/path' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
+          title="学习路径" aria-label="前往学习路径">
           <GitFork className="w-4.5 h-4.5" />
         </button>
         <button onClick={() => navigate('/chat')}
-          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/chat' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}>
+          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/chat' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
+          title="AI 对话" aria-label="前往 AI 对话">
           <MessageSquare className="w-4.5 h-4.5" />
         </button>
         <button onClick={() => navigate('/profile')}
-          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/profile' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}>
+          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/profile' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
+          title="学习画像" aria-label="前往学习画像">
           <User className="w-4.5 h-4.5" />
         </button>
         <button onClick={() => navigate('/analytics')}
-          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/analytics' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}>
+          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/analytics' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
+          title="学习分析" aria-label="前往学习分析">
           <TrendingUp className="w-4.5 h-4.5" />
         </button>
         <div className="w-8 border-t border-gray-800/30 my-1" />
         <button onClick={() => setSettingsOpen(true)}
-          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all text-gray-500 hover:text-gray-300 hover:bg-gray-800`}>
+          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all text-gray-500 hover:text-gray-300 hover:bg-gray-800`}
+          title="设置" aria-label="打开设置">
           <Settings className="w-4.5 h-4.5" />
         </button>
         <div className="flex-1" />
@@ -155,10 +162,10 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
               autoFocus
               maxLength={20}
             />
-            <button onClick={handleSaveName} className="p-1.5 rounded-lg hover:bg-gray-700 text-brand-400">
+            <button onClick={handleSaveName} className="p-1.5 rounded-lg hover:bg-gray-700 text-brand-400" title="保存昵称" aria-label="保存昵称">
               <Check className="w-3.5 h-3.5" />
             </button>
-            <button onClick={() => setEditingName(false)} className="p-1.5 rounded-lg hover:bg-gray-700 text-gray-500">
+            <button onClick={() => setEditingName(false)} className="p-1.5 rounded-lg hover:bg-gray-700 text-gray-500" title="取消编辑" aria-label="取消编辑昵称">
               <X className="w-3.5 h-3.5" />
             </button>
           </div>
@@ -172,7 +179,7 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
               <div className="flex items-center gap-1.5">
                 <p className="text-[10px] text-gray-600">学习者</p>
                 <button onClick={() => { setNameInput(learner?.name || ''); setEditingName(true); }}
-                  className="text-gray-600 hover:text-gray-300 transition-colors">
+                  className="text-gray-600 hover:text-gray-300 transition-colors" title="修改昵称" aria-label="修改昵称">
                   <Edit3 className="w-3 h-3" />
                 </button>
               </div>
@@ -213,12 +220,12 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
         </button>
 
         <p className="text-[9px] text-gray-600 uppercase tracking-wider font-semibold px-3 mb-1">资源</p>
-        <NavBtn path="/resources" label="资源库" icon={Library} active={location.pathname === '/resources'} navigate={navigate} />
+        <NavBtn path="/resources" label="资源库" icon={Library} active={location.pathname.startsWith('/resources')} navigate={navigate} />
         <NavBtn path="/path" label="学习路径" icon={GitFork} active={location.pathname === '/path'} navigate={navigate} />
 
         <div className="border-t border-gray-800/40 my-2" />
         <p className="text-[9px] text-gray-600 uppercase tracking-wider font-semibold px-3 mb-1">工具台</p>
-        <NavBtn path="/chat" label="对话" icon={MessageSquare} active={location.pathname === '/chat'} navigate={navigate} />
+        <NavBtn path="/chat" label="对话" icon={MessageSquare} active={location.pathname.startsWith('/chat')} navigate={navigate} />
         <NavBtn path="/profile" label="画像" icon={User} active={location.pathname === '/profile'} navigate={navigate} />
         <NavBtn path="/analytics" label="分析" icon={TrendingUp} active={location.pathname === '/analytics'} navigate={navigate} />
         <NavBtn path="/timeline" label="时间线" icon={Clock} active={location.pathname === '/timeline'} navigate={navigate} />
