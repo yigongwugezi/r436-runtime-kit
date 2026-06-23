@@ -61,6 +61,127 @@ def test_data_structure_exam_plan_uses_full_course_outline() -> None:
     assert_true(all(stage.get("reason") for stage in path), "each stage should explain planning reason")
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# _infer_days() time-budget regression tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+_AGENT = PlannerAgent()
+
+
+def _infer(message: str, profile: dict | None = None) -> int:
+    """Shortcut to call _infer_days with a message-only context."""
+    p = profile or {}
+    return _AGENT._infer_days(message, p)
+
+
+def test_infer_days_48_hours_to_2_days() -> None:
+    assert _infer("我想48小时完成") == 2
+
+
+def test_infer_days_two_days_cn() -> None:
+    assert _infer("我有两天时间") == 2
+
+
+def test_infer_days_2_days_arabic() -> None:
+    assert _infer("给我2天") == 2
+
+
+def test_infer_days_10_days() -> None:
+    assert _infer("需要10天完成") == 10
+
+
+def test_infer_days_one_week() -> None:
+    assert _infer("我有一周时间") == 7
+
+
+def test_infer_days_3_days() -> None:
+    assert _infer("三天完成") == 3
+
+
+def test_infer_days_no_time_defaults_to_14() -> None:
+    assert _infer("我想学习数据结构") == 14
+
+
+def test_infer_days_from_profile_learning_rhythm() -> None:
+    assert _infer("请生成学习路径", {"learning_rhythm": {"value": "5天"}}) == 5
+
+
+def test_infer_days_from_profile_learning_goal() -> None:
+    assert _infer("开始规划", {"learning_goal": {"value": "我想用三天复习"}}) == 3
+
+
+def test_infer_days_12_days_cn_compound() -> None:
+    assert _infer("十二天左右") == 12
+
+
+def test_infer_days_20_days_cn_compound() -> None:
+    assert _infer("需要二十天") == 20
+
+
+def test_infer_days_15_days_cn_compound() -> None:
+    assert _infer("十五天") == 15
+
+
+def test_infer_days_two_weeks_cn() -> None:
+    assert _infer("两周时间") == 14
+
+
+def test_infer_days_1_week_explicit() -> None:
+    assert _infer("一个星期") == 7
+
+
+def test_infer_days_profile_message_both_have_time_prefer_profile() -> None:
+    """When both profile and message have time info, message context is included
+    but the profile dimension (learning_rhythm) is also scanned — the first
+    match in the combined text wins."""
+    assert _infer(
+        "请生成学习路径",
+        {
+            "learning_rhythm": {"value": "10天"},
+            "learning_goal": {"value": "考试通过"},
+        },
+    ) == 10
+
+
+def test_infer_days_clamped_to_60() -> None:
+    assert _infer("给我100天") == 60
+
+
+def test_infer_days_zero_days_clamped_to_1() -> None:
+    assert _infer("0天完成") == 1
+
+
+def test_infer_days_hours_vs_days_prefer_hours_first() -> None:
+    """When both hours and days are present, hour match runs first."""
+    assert _infer("48小时内完成，大约2天") == 2
+
+
+def test_infer_days_fallback_is_not_hardcoded_2() -> None:
+    """Regression: the fallback must NOT be hardcoded to any specific number
+    like 2.  It must be 14 — a reasonable general-purpose default."""
+    assert _infer("") == 14
+    assert _infer("学习一下") == 14
+
+
 if __name__ == "__main__":
     test_data_structure_exam_plan_uses_full_course_outline()
+    test_infer_days_48_hours_to_2_days()
+    test_infer_days_two_days_cn()
+    test_infer_days_2_days_arabic()
+    test_infer_days_10_days()
+    test_infer_days_one_week()
+    test_infer_days_3_days()
+    test_infer_days_no_time_defaults_to_14()
+    test_infer_days_from_profile_learning_rhythm()
+    test_infer_days_from_profile_learning_goal()
+    test_infer_days_12_days_cn_compound()
+    test_infer_days_20_days_cn_compound()
+    test_infer_days_15_days_cn_compound()
+    test_infer_days_two_weeks_cn()
+    test_infer_days_1_week_explicit()
+    test_infer_days_profile_message_both_have_time_prefer_profile()
+    test_infer_days_clamped_to_60()
+    test_infer_days_zero_days_clamped_to_1()
+    test_infer_days_hours_vs_days_prefer_hours_first()
+    test_infer_days_fallback_is_not_hardcoded_2()
     print("PASS planner_agent_test")
