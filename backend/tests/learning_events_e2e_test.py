@@ -16,6 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.db import init_db
+from app.db.engine import SessionLocal
+from app.db.repository import save_resource
 from app.main import app
 from app.services.learning_tracker import learning_tracker
 
@@ -69,7 +71,7 @@ def test_all_six_event_types_logged() -> None:
         assert event_type in breakdown, f"Event '{event_type}' missing from eventBreakdown"
         assert breakdown[event_type] >= 1, f"Event '{event_type}' count should be >= 1"
 
-    print("✓ All 6 event types logged and present in breakdown")
+    print("PASS All 6 event types logged and present in breakdown")
 
 
 def test_all_nine_analytics_fields_returned() -> None:
@@ -102,7 +104,7 @@ def test_all_nine_analytics_fields_returned() -> None:
     assert isinstance(analytics["recommendations"], list)
     assert isinstance(analytics["recentEvents"], list)
 
-    print("✓ All 9 analytics fields present with correct types")
+    print("PASS All 9 analytics fields present with correct types")
 
 
 def test_event_count_accuracy() -> None:
@@ -113,7 +115,7 @@ def test_event_count_accuracy() -> None:
     assert analytics["eventCount"] == computed_total, (
         f"eventCount {analytics['eventCount']} != sum of breakdown {computed_total}"
     )
-    print(f"✓ eventCount = {analytics['eventCount']} (matches breakdown sum)")
+    print(f"PASS eventCount = {analytics['eventCount']} (matches breakdown sum)")
 
 
 def test_total_study_minutes() -> None:
@@ -123,7 +125,7 @@ def test_total_study_minutes() -> None:
     assert analytics["totalStudyMinutes"] >= 30, (
         f"Expected >= 30 totalStudyMinutes, got {analytics['totalStudyMinutes']}"
     )
-    print(f"✓ totalStudyMinutes = {analytics['totalStudyMinutes']}")
+    print(f"PASS totalStudyMinutes = {analytics['totalStudyMinutes']}")
 
 
 def test_active_resource_count() -> None:
@@ -135,7 +137,7 @@ def test_active_resource_count() -> None:
     assert analytics["activeResourceCount"] >= 2, (
         f"Expected >= 2 activeResourceCount, got {analytics['activeResourceCount']}"
     )
-    print(f"✓ activeResourceCount = {analytics['activeResourceCount']}")
+    print(f"PASS activeResourceCount = {analytics['activeResourceCount']}")
 
 
 def test_top_resources() -> None:
@@ -146,7 +148,7 @@ def test_top_resources() -> None:
     # res_01 has 3 events (view + complete + feedback), should be #1
     assert top[0]["resourceId"] == "res_01", f"Expected res_01 as top, got {top[0]['resourceId']}"
     assert top[0]["count"] >= 2
-    print(f"✓ topResources[0] = {top[0]['resourceId']} (count={top[0]['count']})")
+    print(f"PASS topResources[0] = {top[0]['resourceId']} (count={top[0]['count']})")
 
 
 def test_quiz_accuracy() -> None:
@@ -156,7 +158,7 @@ def test_quiz_accuracy() -> None:
     assert analytics["quizAccuracy"] == 75, (
         f"Expected quizAccuracy=75, got {analytics['quizAccuracy']}"
     )
-    print(f"✓ quizAccuracy = {analytics['quizAccuracy']}%")
+    print(f"PASS quizAccuracy = {analytics['quizAccuracy']}%")
 
 
 def test_weak_topics() -> None:
@@ -173,7 +175,7 @@ def test_weak_topics() -> None:
     assert "wrongCount" in t
     assert "totalCount" in t
     assert "risk" in t
-    print(f"✓ weakTopics[0] = {t['topic']} (wrong={t['wrongCount']}, total={t['totalCount']}, risk={t['risk']})")
+    print(f"PASS weakTopics[0] = {t['topic']} (wrong={t['wrongCount']}, total={t['totalCount']}, risk={t['risk']})")
 
 
 def test_recent_events() -> None:
@@ -184,7 +186,7 @@ def test_recent_events() -> None:
     evt = recent[-1]  # Most recent is last (events[-10:] in backend)
     assert "event" in evt
     assert "timestamp" in evt
-    print(f"✓ recentEvents has {len(recent)} events, newest={evt['event']}")
+    print(f"PASS recentEvents has {len(recent)} events, newest={evt['event']}")
 
 
 def test_recommendations() -> None:
@@ -193,7 +195,7 @@ def test_recommendations() -> None:
     recs = analytics["recommendations"]
     assert len(recs) >= 1, "Should have at least 1 recommendation"
     assert all(isinstance(r, str) for r in recs)
-    print(f"✓ recommendations ({len(recs)} items)")
+    print(f"PASS recommendations ({len(recs)} items)")
 
 
 def test_event_breakdown_labels() -> None:
@@ -201,7 +203,7 @@ def test_event_breakdown_labels() -> None:
     analytics = _get_analytics()
     breakdown = analytics["eventBreakdown"]
     assert "generic" not in breakdown, "Should not have 'generic' event type"
-    print(f"✓ eventBreakdown keys: {list(breakdown.keys())}")
+    print(f"PASS eventBreakdown keys: {list(breakdown.keys())}")
 
 
 def test_session_isolation() -> None:
@@ -227,35 +229,53 @@ def test_session_isolation() -> None:
     assert other["eventCount"] >= 1
     assert other["eventBreakdown"].get("resource_view", 0) >= 1
 
-    print("✓ Session isolation works correctly")
+    print("PASS Session isolation works correctly")
 
 
 def test_resource_status_cross_session() -> None:
     """Verify resource study_status cannot be modified across sessions."""
-    # Create a resource in session A
-    res_id = "cross_session_res"
-    client.post("/api/feedback/event", json={
-        "sessionId": SESSION, "event": "resource_view",
-        "resourceId": res_id,
-    })
+    res_id = f"{SESSION}_cross_session_res"
+    db = SessionLocal()
+    try:
+        save_resource(db, SESSION, {
+            "id": res_id,
+            "type": "lecture",
+            "title": "Session-owned resource",
+            "content": "owner-only content",
+            "study_status": "new",
+        })
+    finally:
+        db.close()
+
     # Mark it completed in session A
     r1 = client.patch(f"/api/resources/{res_id}/study-status",
         json={"studyStatus": "completed"},
         params={"sessionId": SESSION})
     assert r1.status_code == 200
+    assert r1.json().get("ok") is True
 
     # Session B tries to mark it incomplete
     other = "e2e_other_cross"
     r2 = client.patch(f"/api/resources/{res_id}/study-status",
         json={"studyStatus": "new"},
         params={"sessionId": other})
-    # Should still succeed (resource exists), but session B can't find it
+    assert r2.status_code == 200
+    assert r2.json().get("ok") is False
+    assert "does not belong" in r2.json().get("error", "")
+
+    bookmark = client.post(
+        f"/api/resources/{res_id}/bookmark",
+        params={"sessionId": other},
+    )
+    assert bookmark.status_code == 200
+    assert bookmark.json().get("ok") is False
+
     # Verify session A's status is still "completed"
     r3 = client.get(f"/api/resources/{res_id}", params={"sessionId": SESSION})
     assert r3.status_code == 200
     res = r3.json().get("resource", {})
-    assert res.get("studyStatus") != "completed" or True, "owned session keeps its status"
-    print("✓ Resource status cross-session modification protected")
+    assert res.get("studyStatus") == "completed", "owned session keeps its status"
+    print("PASS Resource status cross-session modification protected")
 
 
 def test_feedback_default_session() -> None:
@@ -265,11 +285,10 @@ def test_feedback_default_session() -> None:
     r = client.post("/api/feedback", json={
         "resourceId": fresh_id, "rating": 5,
     })
-    assert r.status_code == 200
+    assert r.status_code == 400
     result = r.json()
-    assert result.get("ok") is False, "feedback without sessionId should be rejected"
-    assert "sessionId is required" in result.get("error", "")
-    print("✓ Feedback without sessionId correctly rejected")
+    assert "sessionId is required" in str(result.get("detail", ""))
+    print("PASS Feedback without sessionId correctly rejected")
 
     # Verify the rejected event did not leak into the test session
     analytics = client.get("/api/learning-analytics",
@@ -278,7 +297,7 @@ def test_feedback_default_session() -> None:
     assert fresh_id not in resource_ids, (
         "rejected event leaked into active session"
     )
-    print("✓ Active session not polluted by rejected event")
+    print("PASS Active session not polluted by rejected event")
 
 
 def test_session_isolation_with_different_ids() -> None:
@@ -310,4 +329,42 @@ def test_session_isolation_with_different_ids() -> None:
     assert b["eventCount"] >= 1
     assert b["totalStudyMinutes"] >= 10
 
-    print("✓ Session isolation works correctly (events don't mix)")
+    print("PASS Session isolation works correctly (events don't mix)")
+
+
+def test_subject_id_cannot_replace_session_id() -> None:
+    subject_id = "e2e_subject_only"
+    event = client.post("/api/feedback/event", json={
+        "subjectId": subject_id,
+        "event": "resource_view",
+        "resourceId": "subject_only_res",
+    })
+    analytics = client.get("/api/learning-analytics", params={"subjectId": subject_id})
+
+    assert event.status_code == 400
+    assert analytics.status_code == 400
+    print("PASS subjectId cannot substitute for sessionId")
+
+
+if __name__ == "__main__":
+    tests = [
+        test_all_six_event_types_logged,
+        test_all_nine_analytics_fields_returned,
+        test_event_count_accuracy,
+        test_total_study_minutes,
+        test_active_resource_count,
+        test_top_resources,
+        test_quiz_accuracy,
+        test_weak_topics,
+        test_recent_events,
+        test_recommendations,
+        test_event_breakdown_labels,
+        test_session_isolation,
+        test_resource_status_cross_session,
+        test_feedback_default_session,
+        test_session_isolation_with_different_ids,
+        test_subject_id_cannot_replace_session_id,
+    ]
+    for test in tests:
+        test()
+        print(f"PASS {test.__name__}")

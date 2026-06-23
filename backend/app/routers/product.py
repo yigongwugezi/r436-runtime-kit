@@ -143,8 +143,8 @@ def _classify_intent(message: str) -> dict[str, Any]:
 
 
 def _run_agents(
-    message: str = "我想学习人工智能导论",
-    session_id: str = "",
+    message: str,
+    session_id: str,
     progress_callback: Callable | None = None,
 ) -> dict[str, Any]:
     """Trigger the full multi-agent pipeline via AgentService and persist results."""
@@ -601,7 +601,7 @@ def _learning_plan_reply(result: dict[str, Any], intent: dict[str, Any]) -> str:
     )
 
 
-def _casual_reply(session_id: str = "") -> str:
+def _casual_reply(session_id: str) -> str:
     if not session_id:
         raise ValueError("session_id is required for _casual_reply")
     state = conversation_store.get(session_id)
@@ -1008,9 +1008,7 @@ GEN_STAGES = [
 @router.post("/chat/stream")
 def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
     message = str(payload.get("message", "我想学习人工智能导论"))
-    session_id = str(payload.get("sessionId", "")).strip()
-    if not session_id:
-        raise HTTPException(status_code=400, detail="sessionId is required")
+    session_id = _payload_session_id(payload)
 
     conversation_store.append_message(session_id, "user", message)
     intent = _classify_intent(message)
@@ -1123,9 +1121,7 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
 @router.post("/chat/send")
 def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
     message = str(payload.get("message", "我想学习人工智能导论"))
-    session_id = str(payload.get("sessionId", "")).strip()
-    if not session_id:
-        raise HTTPException(status_code=400, detail="sessionId is required")
+    session_id = _payload_session_id(payload)
 
     conversation_store.append_message(session_id, "user", message)
     intent = _classify_intent(message)
@@ -1216,21 +1212,20 @@ def generation_progress(task_id: str) -> dict[str, Any]:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _resolve_session_id(sessionId: str = "", _subjectId: str = "") -> str:
-    """Validate sessionId for query-param endpoints. subjectId is accepted for API compat
-    but NEVER used as a sessionId substitute — sessionId is the sole data-ownership key."""
-    sid = sessionId.strip()
-    if not sid:
+def _require_session_id(value: Any) -> str:
+    session_id = str(value or "").strip()
+    if not session_id:
         raise HTTPException(status_code=400, detail="sessionId is required")
-    return sid
+    return session_id
+
+
+def _resolve_session_id(sessionId: str = "", subjectId: str = "") -> str:
+    # subjectId remains course context only; it must never identify a session.
+    return _require_session_id(sessionId)
 
 
 def _payload_session_id(payload: dict[str, Any]) -> str:
-    """Validate sessionId from request body. subjectId is NOT consulted."""
-    sid = str(payload.get("sessionId", "")).strip()
-    if not sid:
-        raise HTTPException(status_code=400, detail="sessionId is required")
-    return sid
+    return _require_session_id(payload.get("sessionId"))
 
 
 @router.get("/profile")
@@ -1740,7 +1735,7 @@ def bookmark_resource(resource_id: str, sessionId: str = "", subjectId: str = ""
     try:
         db = SessionLocal()
         # Ensure resource exists in DB before toggling bookmark
-        from app.db.repository import save_resource as repo_save_resource
+        from app.db.repository import get_resource as repo_get_resource, save_resource as repo_save_resource
         state = conversation_store.get(session_id)
         if state.last_result:
             for item in state.last_result.get("resources", []):
@@ -1753,8 +1748,11 @@ def bookmark_resource(resource_id: str, sessionId: str = "", subjectId: str = ""
                         "content": item.get("content", ""),
                     })
                     break
+        resource = repo_get_resource(db, resource_id)
+        if resource is None or resource.session_id != session_id:
+            return {"bookmarked": False, "ok": False, "error": "resource does not belong to this session"}
         bookmarked = toggle_bookmark(db, resource_id)
-        return {"bookmarked": bookmarked if bookmarked is not None else True}
+        return {"bookmarked": bool(bookmarked), "ok": True}
     finally:
         db.close()
 
@@ -2186,9 +2184,7 @@ def update_node_progress(node_id: str, payload: dict[str, Any]) -> dict[str, Any
 
 @router.post("/feedback")
 def submit_feedback(payload: dict[str, Any]) -> dict[str, Any]:
-    session_id = str(payload.get("sessionId") or "")
-    if not session_id:
-        return {"ok": False, "error": "sessionId is required"}
+    session_id = _payload_session_id(payload)
     learning_tracker.log({"event": "feedback", **payload}, session_id=session_id)
     return {"ok": True}
 
@@ -2202,7 +2198,12 @@ def log_study_event(payload: dict[str, Any]) -> dict[str, Any]:
             from app.db.repository import get_resource as _get_res
             db = SessionLocal()
             res = _get_res(db, payload["resourceId"])
-            if res and res.estimated_minutes and not payload.get("duration"):
+            if (
+                res
+                and res.session_id == session_id
+                and res.estimated_minutes
+                and not payload.get("duration")
+            ):
                 payload["duration"] = res.estimated_minutes
             db.close()
         except Exception:

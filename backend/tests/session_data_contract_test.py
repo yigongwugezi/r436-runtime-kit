@@ -15,8 +15,12 @@ from app.db.repository import (
     get_resources,
 )
 from app.main import app
+from app.routers import product
+from app.schemas.agent import AgentRunRequest
 from app.services import agent_service
 from app.services.conversation_state import conversation_store
+from app.services.learning_tracker import LearningTracker
+
 
 client = TestClient(app)
 
@@ -103,12 +107,16 @@ def test_generated_data_is_readable_by_session_and_isolated() -> None:
     _cleanup(sessions)
 
     try:
-        for session_id in sessions:
-            agent_service.run_agents(
-                session_id=session_id,
-                course_id="data_structures",
-                user_message="我是软件工程大二学生，想48小时复习数据结构，为了考试通过，喜欢图解和练习题",
-            )
+        agent_service.run_agents(
+            session_id=session_a,
+            course_id="data_structures",
+            user_message="Data structures review: linked lists, stacks, queues, trees and sorting in 48 hours.",
+        )
+        agent_service.run_agents(
+            session_id=session_b,
+            course_id="ai_intro",
+            user_message="Artificial intelligence introduction: machine learning, neural networks and NLP in 10 days.",
+        )
 
         db = SessionLocal()
         try:
@@ -154,6 +162,8 @@ def test_generated_data_is_readable_by_session_and_isolated() -> None:
 
         assert_true(path_a.session_id == session_a, "session A path should belong to session A")
         assert_true(path_b.session_id == session_b, "session B path should belong to session B")
+        assert_true(path_a.course_id == "data_structures", "session A should keep its data structures path")
+        assert_true(path_b.course_id == "ai_intro", "session B should keep its AI path")
         assert_true(path_a.id != path_b.id, "path ids should be session scoped")
         assert_true(path_a.id.startswith(f"path_{session_a}_"), "session A path id should include session id")
         assert_true(path_b.id.startswith(f"path_{session_b}_"), "session B path id should include session id")
@@ -168,6 +178,21 @@ def test_generated_data_is_readable_by_session_and_isolated() -> None:
         assert_true(
             all(resource.session_id == session_b and resource.id.startswith(f"{session_b}_") for resource in resources_b),
             "session B resources should be scoped to session B",
+        )
+
+        diagnosis_context = product._diagnosis_context("\u6211\u54ea\u91cc\u6bd4\u8f83\u8584\u5f31", session_a)
+        assert_true(
+            all(
+                str(item.get("resource_id") or item.get("id") or "").startswith(f"{session_a}_")
+                for item in diagnosis_context["resources"]
+            ),
+            "session A diagnosis context must only contain session A resources",
+        )
+        diagnosis = product._run_diagnosis("\u6211\u54ea\u91cc\u6bd4\u8f83\u8584\u5f31", session_a)
+        recommended_ids = diagnosis.get("recommended_resource_ids") or []
+        assert_true(
+            all(str(resource_id).startswith(f"{session_a}_") for resource_id in recommended_ids),
+            "session A diagnosis must not recommend resources from session B",
         )
     finally:
         _cleanup(sessions)
@@ -385,7 +410,68 @@ def test_empty_session_id_rejected_at_api_level() -> None:
     assert_true(r.status_code == 400, "profile/build without sessionId should return 400")
 
 
-# ── Test runner ──────────────────────────────────────────────────────
+def test_subject_id_never_substitutes_for_session_id() -> None:
+    subject_id = "subject_only_must_not_be_session"
+    conversation_store._sessions.pop(subject_id, None)
+
+    profile_response = client.get("/api/profile", params={"subjectId": subject_id})
+    path_response = client.get("/api/learning-path", params={"subjectId": subject_id})
+    resources_response = client.get("/api/resources", params={"subjectId": subject_id})
+    analytics_response = client.get("/api/learning-analytics", params={"subjectId": subject_id})
+    event_response = client.post(
+        "/api/feedback/event",
+        json={"subjectId": subject_id, "event": "resource_view", "resourceId": "subject_only_resource"},
+    )
+
+    assert_true(profile_response.status_code == 400, "subjectId-only profile reads must be rejected")
+    assert_true(path_response.status_code == 400, "subjectId-only path reads must be rejected")
+    assert_true(resources_response.status_code == 400, "subjectId-only resource reads must be rejected")
+    assert_true(analytics_response.status_code == 400, "subjectId-only analytics reads must be rejected")
+    assert_true(event_response.status_code == 400, "subjectId-only event writes must be rejected")
+    assert_true(
+        conversation_store.get_state_or_none(subject_id) is None,
+        "subjectId-only requests must not create a conversation session",
+    )
+
+
+def test_missing_session_id_is_rejected_without_default_writes() -> None:
+    chat_response = client.post("/api/chat/send", json={"message": "hello"})
+    profile_response = client.get("/api/profile")
+    path_response = client.get("/api/learning-path")
+    resources_response = client.get("/api/resources")
+    event_response = client.post(
+        "/api/feedback/event",
+        json={"event": "resource_view", "resourceId": "missing_session_resource"},
+    )
+    agent_response = client.post(
+        "/api/agents/run",
+        json={"course_id": "data_structures", "user_message": "review stacks"},
+    )
+
+    assert_true(chat_response.status_code == 400, "chat must require sessionId")
+    assert_true(profile_response.status_code == 400, "profile reads must require sessionId")
+    assert_true(path_response.status_code == 400, "learning path reads must require sessionId")
+    assert_true(resources_response.status_code == 400, "resource reads must require sessionId")
+    assert_true(event_response.status_code == 400, "learning events must require sessionId")
+    assert_true(agent_response.status_code == 422, "agent runs must require session_id")
+
+    tracker = LearningTracker()
+    try:
+        tracker.log({"event": "resource_view", "resourceId": "missing_session_resource"})
+    except ValueError as exc:
+        assert_true("session_id is required" in str(exc), "tracker should explain the missing session")
+    else:
+        raise AssertionError("tracker must not log an event without a session")
+
+    assert_true(
+        AgentRunRequest(sessionId="agent_contract_camel").session_id == "agent_contract_camel",
+        "agent requests should accept the sessionId API field",
+    )
+    assert_true(
+        AgentRunRequest(session_id="agent_contract_snake").session_id == "agent_contract_snake",
+        "agent requests should preserve the legacy session_id field name",
+    )
+
 
 if __name__ == "__main__":
     test_generated_data_is_readable_by_session_and_isolated()
@@ -395,4 +481,6 @@ if __name__ == "__main__":
     test_order_variation_ds_then_ai_intro()
     test_learning_analytics_session_isolation()
     test_empty_session_id_rejected_at_api_level()
+    test_subject_id_never_substitutes_for_session_id()
+    test_missing_session_id_is_rejected_without_default_writes()
     print("PASS session_data_contract_test")

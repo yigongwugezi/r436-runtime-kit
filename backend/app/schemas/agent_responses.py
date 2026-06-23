@@ -54,7 +54,7 @@ class OrchestratorResult(BaseModel):
 class AgentRunRequest(BaseModel):
     """Request body for triggering a full multi-agent pipeline run."""
 
-    session_id: str = Field(default="", alias="sessionId")
+    session_id: str = Field(alias="sessionId", min_length=1)
     user_message: str = Field(default="我想学习人工智能导论")
     course_id: str | None = Field(default=None)
 

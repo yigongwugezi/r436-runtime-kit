@@ -1,6 +1,8 @@
 ﻿import sys
 from pathlib import Path
 
+from fastapi import HTTPException
+
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -252,6 +254,22 @@ def test_diagnosis_route_returns_structured_result() -> None:
     assert any("行为数据" in item for item in diagnosis["limitations"])
 
 
+def test_chat_requires_session_id_and_does_not_use_subject_id() -> None:
+    for payload in (
+        {"message": "hello"},
+        {"subjectId": "regression_subject_only", "message": "hello"},
+    ):
+        try:
+            product.send_chat(payload)
+        except HTTPException as exc:
+            assert exc.status_code == 400
+            assert "sessionId is required" in str(exc.detail)
+        else:
+            raise AssertionError("chat must reject requests without an explicit sessionId")
+
+    assert conversation_store.get_state_or_none("regression_subject_only") is None
+
+
 def test_intent_classify_compound_full_workflow() -> None:
     """Issue #3: compound request should be full_workflow."""
     result = classify("帮我构建学习画像、学习路径和学习资源")
@@ -479,6 +497,7 @@ if __name__ == "__main__":
         test_intent_classify_profile_keyword_画像,
         test_intent_classify_diagnosis_question,
         test_diagnosis_route_returns_structured_result,
+        test_chat_requires_session_id_and_does_not_use_subject_id,
         test_intent_classify_compound_full_workflow,
         test_intent_画像_with_self_intro_is_profile_update,
         test_intent_生成学习路径_is_learning_plan,

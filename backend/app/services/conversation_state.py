@@ -250,15 +250,16 @@ class ConversationStore:
 
     # ── Public API ────────────────────────────────────────────────────
 
-    def get(self, session_id: str | None) -> ConversationState:
-        """Get or create the conversation state for *session_id*.
+    @staticmethod
+    def _require_session_id(session_id: str | None) -> str:
+        sid = str(session_id or "").strip()
+        if not sid:
+            raise ValueError("session_id is required")
+        return sid
 
-        Raises ValueError when *session_id* is empty — sessionId is the sole
-        data-ownership key and must always be provided.
-        """
-        if not session_id or not session_id.strip():
-            raise ValueError("session_id is required and must be non-empty")
-        sid = session_id.strip()
+    def get(self, session_id: str | None) -> ConversationState:
+        """Get or create conversation state for an explicit session id."""
+        sid = self._require_session_id(session_id)
         if sid not in self._sessions:
             state = ConversationState(session_id=sid)
             self._sessions[sid] = state
@@ -273,7 +274,7 @@ class ConversationStore:
         Use this when you want to check whether a session already has data
         without creating phantom sessions.
         """
-        sid = session_id.strip()
+        sid = str(session_id or "").strip()
         if not sid:
             return None
         if sid in self._sessions:
@@ -291,9 +292,7 @@ class ConversationStore:
 
     def reset(self, session_id: str | None) -> ConversationState:
         """Reset all state for a session (in-memory + DB)."""
-        if not session_id or not session_id.strip():
-            raise ValueError("session_id is required and must be non-empty")
-        sid = session_id.strip()
+        sid = self._require_session_id(session_id)
         self._sessions[sid] = ConversationState(session_id=sid)
         if self._db_enabled:
             try:

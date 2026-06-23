@@ -32,14 +32,23 @@ class LearningTracker:
     def _db_session(self) -> Session:
         return SessionLocal()
 
+    @staticmethod
+    def _require_session_id(
+        session_id: str | None,
+        event: dict[str, Any] | None = None,
+    ) -> str:
+        sid = str(session_id or (event or {}).get("sessionId") or "").strip()
+        if not sid:
+            raise ValueError("session_id is required")
+        return sid
+
     # ── Public API ────────────────────────────────────────────────────
 
     def log(self, event: dict[str, Any], session_id: str | None = None) -> dict[str, Any]:
-        if not session_id:
-            raise ValueError("session_id is required")
+        sid = self._require_session_id(session_id, event)
         normalized = {
             **event,
-            "sessionId": session_id,
+            "sessionId": sid,
             "timestamp": event.get("timestamp") or time.time(),
         }
 
@@ -61,10 +70,11 @@ class LearningTracker:
         return normalized
 
     def recent(self, session_id: str | None = None, limit: int = 10) -> list[dict[str, Any]]:
+        sid = self._require_session_id(session_id)
         if self._db_enabled:
             try:
                 db = self._db_session()
-                events = get_events(db, session_id, limit=limit)
+                events = get_events(db, sid, limit=limit)
                 return [
                     {
                         "event": evt.event_type,
@@ -78,26 +88,20 @@ class LearningTracker:
             finally:
                 db.close()
 
-        filtered = self._filter(session_id)
+        filtered = self._filter(sid)
         return filtered[-limit:]
 
     def summary(self, session_id: str | None = None) -> dict[str, Any]:
-        if not session_id:
-            return {
-                "eventCount": 0, "totalStudyMinutes": 0, "activeResourceCount": 0,
-                "eventBreakdown": {}, "topResources": [], "quizAccuracy": None,
-                "weakTopics": [], "recommendations": [], "recentEvents": [],
-                "lastStudyDate": 0, "completedTopics": [], "streak": 0,
-            }
+        sid = self._require_session_id(session_id)
         if self._db_enabled:
             try:
                 db = self._db_session()
-                return get_event_analytics(db, session_id)
+                return get_event_analytics(db, sid)
             finally:
                 db.close()
 
         # In-memory fallback (original logic)
-        events = self._filter(session_id)
+        events = self._filter(sid)
         total_minutes = sum(self._duration_minutes(event) for event in events)
         # Only count real resource events (not node_progress which also has resourceId)
         _RESOURCE_EVENT_TYPES = {"resource_view", "resource_complete", "quiz_result", "quiz_submit", "feedback"}
@@ -143,23 +147,24 @@ class LearningTracker:
         }
 
     def reset(self, session_id: str | None = None) -> None:
-        if not session_id:
-            return  # no-op for empty session_id
+        if session_id is None:
+            self._events.clear()
+            return
+        sid = self._require_session_id(session_id)
         if self._db_enabled:
             try:
                 db = self._db_session()
-                delete_session(db, session_id)
+                delete_session(db, sid)
             finally:
                 db.close()
 
-        self._events = [event for event in self._events if event.get("sessionId") != session_id]
+        self._events = [event for event in self._events if event.get("sessionId") != sid]
 
     # ── Internal helpers ──────────────────────────────────────────────
 
     def _filter(self, session_id: str | None = None) -> list[dict[str, Any]]:
-        if not session_id:
-            return []
-        return [event for event in self._events if event.get("sessionId") == session_id]
+        sid = self._require_session_id(session_id)
+        return [event for event in self._events if event.get("sessionId") == sid]
 
     def _duration_minutes(self, event: dict[str, Any]) -> int:
         value = event.get("duration") or event.get("durationMinutes") or 0

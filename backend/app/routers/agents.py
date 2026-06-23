@@ -8,7 +8,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from app.schemas.agent import AgentRunRequest
 from app.schemas.common import ApiResponse
@@ -24,7 +24,9 @@ def run_agents(payload: AgentRunRequest) -> dict[str, Any]:
     Returns the orchestrator result with per-agent step metadata,
     overall status, and generated profile / diagnosis / learning_path / resources.
     """
-    session_id = payload.session_id
+    session_id = payload.session_id.strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="sessionId is required")
     course_id = payload.course_id
 
     try:
