@@ -3,8 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import {
   TrendingUp, Zap, Target, BookOpen, Clock, Brain,
   AlertCircle, Sparkles, ArrowRight, Star, RefreshCw,
-  BarChart3, Activity, ListChecks, Eye, MessageSquare, HelpCircle, Cpu,
-  CheckCircle2, User, GitFork, Shield,
+  BarChart3, Activity, Eye, MessageSquare, Cpu, GitFork,
+  CheckCircle2, Shield,
 } from 'lucide-react';
 import {
   PageLoading, PageEmpty, PageError, SourceTag, FallbackBanner, RefreshOverlay,
@@ -14,7 +14,6 @@ import { useLearningAnalytics } from '../hooks/useLearningAnalytics';
 import type { AnalyticsSummary } from '../types/analytics';
 import { useSubjectStore } from '../store/subjectStore';
 import DiagnosisPanel from '../components/analytics/DiagnosisPanel';
-import type { DiagnosisResult } from '../components/analytics/DiagnosisPanel';
 import { useChatStore } from '../store/chatStore';
 import { getLearningPath } from '../api/learningPath';
 

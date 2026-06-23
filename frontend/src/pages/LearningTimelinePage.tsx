@@ -7,8 +7,7 @@ import {
 } from 'lucide-react';
 import type { TimelineEvent } from '../types/timeline';
 import { timeAgo } from '../utils/format';
-import Loading from '../components/common/Loading';
-import EmptyState from '../components/common/EmptyState';
+import { PageLoading, PageEmpty } from '../components/common/PageState';
 import { useLearningEvents } from '../hooks/useLearningEvents';
 import TimelineSummaryCard from '../components/timeline/TimelineSummaryCard';
 import TimelineEventDetail from '../components/timeline/TimelineEventDetail';
@@ -295,7 +294,7 @@ export default function LearningTimelinePage() {
 
       {/* ========== 内容区：左列（时间线）+ 右列（统计卡片） ========== */}
       {loading ? (
-        <Loading text="加载时间线…" />
+        <PageLoading text="加载时间线…" />
       ) : error ? (
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <div className="w-16 h-16 rounded-2xl bg-red-50 flex items-center justify-center mb-4">
@@ -324,7 +323,7 @@ export default function LearningTimelinePage() {
 
             {/* 时间线列表 */}
             {events.length === 0 && total === 0 ? (
-              <EmptyState
+              <PageEmpty
                 icon={<History className="w-8 h-8" />}
                 title="暂无学习行为记录"
                 description="开始学习后，你的资源查看、练习提交、阶段完成等行为将显示在这里"

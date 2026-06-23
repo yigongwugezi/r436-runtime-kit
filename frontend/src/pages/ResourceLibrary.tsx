@@ -17,8 +17,7 @@ import type { ResourceType, DataSource } from '../types/resource';
 import { RESOURCE_TYPE_LABELS } from '../utils/constants';
 import { timeAgo, formatDuration } from '../utils/format';
 import { HighlightText, matchesQuery } from '../utils/highlight';
-import Loading from '../components/common/Loading';
-import EmptyState from '../components/common/EmptyState';
+import { PageLoading, PageEmpty, RefreshOverlay, PageError, SourceTag } from '../components/common/PageState';
 import Modal from '../components/common/Modal';
 import Markdown from '../utils/markdown';
 import MermaidDiagram from '../utils/mermaid';
@@ -26,7 +25,7 @@ import { submitFeedback, logStudyEvent } from '../api/feedback';
 import * as resourcesApi from '../api/resources';
 import { updateStudyStatus, autoAdvanceNode } from '../api/resources';
 import SourceBadge from '../components/common/SourceBadge';
-import { SourceTag, RefreshOverlay, PageError } from '../components/common/PageState';
+
 import ExpandableText from '../components/common/ExpandableText';
 import QualityStatusPopover, {
   ReviewStatusBadge,
@@ -1042,7 +1041,7 @@ export default function ResourceLibrary() {
 
       {/* ========== 列表 ========== */}
       {loading && resources.length === 0 ? (
-        <Loading text="加载资源中…" />
+        <PageLoading text="加载资源中…" />
       ) : error && resources.length === 0 ? (
         <PageError
           title="资源加载失败"
@@ -1080,7 +1079,7 @@ export default function ResourceLibrary() {
             </div>
           ) : (
             // 没有任何资源
-            <EmptyState
+            <PageEmpty
               icon={<BookOpen className="w-8 h-8" />}
               title="暂无资源"
               description={
