@@ -843,9 +843,13 @@ def _feedback_reply(message: str, session_id: str) -> str:
 
 def _unknown_reply(intent: dict[str, Any]) -> str:
     return (
-        "我还不确定你这句话想让我做什么。\n\n"
-        f"当前判断：{intent['intent']}，置信度 {intent['confidence']:.0%}。\n\n"
-        "你可以说明你是想：规划学习路径、解释知识点、生成学习资源，还是反馈学习进度。"
+        "我还不太确定你想让我做什么，请选择一个方向。\n\n"
+        "你可以告诉我你是想：\n"
+        "• 生成我的学习画像\n"
+        "• 规划学习路径\n"
+        "• 推荐学习资源\n"
+        "• 诊断薄弱点\n"
+        "• 反馈学习进度"
     )
 
 
@@ -1022,9 +1026,9 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
                 # profile_update triggered agents — show completed stages
                 for stage_key, stage_label, pct in GEN_STAGES:
                     yield f"data: {json.dumps({'stage': stage_label, 'agentName': stage_key, 'progress': pct, 'done': False}, ensure_ascii=False)}\n\n"
-            else:
-                intent_line = f"意图识别：{intent['intent']}（{intent['confidence']:.0%}）\n\n"
-                yield f"data: {json.dumps({'content': intent_line, 'done': False}, ensure_ascii=False)}\n\n"
+            elif intent.get("intent") == "unknown":
+                # 低置信度 unknown — 告知前端展示 clarification 交互面板
+                yield f"data: {json.dumps({'isClarification': True, 'done': False}, ensure_ascii=False)}\n\n"
             for chunk in reply.splitlines(keepends=True):
                 yield f"data: {json.dumps({'content': chunk, 'done': False}, ensure_ascii=False)}\n\n"
 

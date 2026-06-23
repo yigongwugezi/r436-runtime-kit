@@ -77,6 +77,9 @@ export function useStreamChat() {
                     done: payload.done,
                   });
                 }
+                if (payload.isClarification) {
+                  updateLastAssistant((m) => ({ ...m, isClarification: true }));
+                }
                 if (payload.content) {
                   appendToLastAssistant(payload.content);
                 }

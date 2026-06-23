@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import Markdown from '../utils/markdown';
 import ChatHistorySidebar from '../components/chat/ChatHistorySidebar';
+import ChatClarification from '../components/chat/ChatClarification';
 
 /* ===================================================================
  * 生成流程管线定义
@@ -27,7 +28,7 @@ const GEN_PIPELINE: { key: string; label: string }[] = [
 /* ===================================================================
  * 消息气泡 — 优化版
  * =================================================================== */
-function MessageBubble({ msg }: { msg: ChatMessage }) {
+function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onClarificationSelect?: (prompt: string) => void }) {
   const isUser = msg.role === 'user';
   const [copied, setCopied] = useState(false);
 
@@ -82,6 +83,10 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
                     <p className="text-xs text-red-400 mt-0.5">{msg.error}</p>
                   </div>
                 </div>
+              )}
+              {/* 低置信度澄清引导 */}
+              {msg.isClarification && onClarificationSelect && (
+                <ChatClarification onSelect={onClarificationSelect} />
               )}
             </div>
           )}
@@ -516,7 +521,7 @@ export default function ChatPage() {
 
         {messages.map((msg, idx) => (
           <div key={msg.id} ref={el => { msgRefs.current[idx] = el; }}>
-            <MessageBubble msg={msg} />
+            <MessageBubble msg={msg} onClarificationSelect={send} />
           </div>
         ))}
 
