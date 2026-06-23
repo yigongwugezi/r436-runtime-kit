@@ -12,6 +12,29 @@ class PlannerAgent(BaseAgent):
     agent_id = "planner_agent"
     agent_name = "学习路径规划智能体"
 
+    def get_fallback(self, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Return safe defaults for estimatedDays and learning_path.
+
+        When the planner cannot produce real output (timeout, LLM error),
+        callers must still receive a reasonable integer for estimatedDays
+        — not an empty dict or None.
+        """
+        return {
+            "agent_step": {
+                "agent_id": self.agent_id,
+                "agent_name": self.agent_name,
+                "status": "failed",
+                "summary": f"Agent '{self.agent_id}' fell back to defaults.",
+                "started_at": None,
+                "finished_at": None,
+            },
+            "learning_path": [],
+            "estimatedDays": self._infer_days(
+                str((context or {}).get("user_message", "")),
+                (context or {}).get("profile", {}),
+            ),
+        }
+
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         weak_points = list(context.get("diagnosis", {}).get("weak_knowledge_points", []))
         profile = context.get("profile", {})
@@ -256,20 +279,23 @@ class PlannerAgent(BaseAgent):
         text = self._normalize_cn_number_time(text)
 
         # --- Arabic-digit patterns (already normalised from Chinese) ---
-        hour_match = re.search(r"(\d+)\s*(?:小时|h|H)", text)
+        # Allow optional measure-word "个" between digit and unit
+        # (e.g. "2个小时" → 2, "1个星期" → 7)
+        hour_match = re.search(r"(\d+)\s*个?\s*(?:小时|h|H)", text)
         if hour_match and "每天" not in text:
             return max(1, ceil(int(hour_match.group(1)) / 24))
         day_match = re.search(r"(\d+)\s*(?:天|日)", text)
         if day_match:
             return max(1, min(60, int(day_match.group(1))))
-        week_match = re.search(r"(\d+)\s*(?:周|星期)", text)
+        week_match = re.search(r"(\d+)\s*个?\s*(?:周|星期)", text)
         if week_match:
             return max(1, min(60, int(week_match.group(1)) * 7))
 
-        # --- Compound Chinese numbers that _normalize_cn_number_time can't handle ---
+        # --- Compound Chinese numbers (fallback for edge cases that
+        #     _normalize_cn_number_time may miss) ---
         # e.g. "十二天" (12), "二十五天" (25), "二十天" (20)
         cn_compound_match = re.search(
-            r"([一二两三四五六七八九])?十([一二三四五六七八九])?\s*(天|日|周|星期)",
+            r"([一二两三四五六七八九])?十([一二三四五六七八九])?\s*个?\s*(天|日|周|星期)",
             text,
         )
         if cn_compound_match:
@@ -283,9 +309,9 @@ class PlannerAgent(BaseAgent):
                 return max(1, min(60, total * 7))
             return max(1, min(60, total))
 
-        # --- Simple Chinese number + time unit (fallback, already handled above normally) ---
+        # --- Simple Chinese number + time unit (fallback) ---
         cn_simple_match = re.search(
-            r"([一二两三四五六七八九])\s*(天|日|周|星期)", text
+            r"([一二两三四五六七八九])\s*个?\s*(天|日|周|星期)", text
         )
         if cn_simple_match:
             cn_map = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
@@ -295,10 +321,10 @@ class PlannerAgent(BaseAgent):
                 return max(1, min(60, total * 7))
             return max(1, min(60, total))
 
-        if "两周" in text or "二周" in text:
-            return 14
-        if "一周" in text:
-            return 7
+        # Default: no time information found — use a reasonable default.
+        # 14 days is a typical two-week study plan; not hardcoded to any
+        # specific course or user — callers should always prefer
+        # user-provided time budget when available.
         return 14
 
     def _normalize_cn_number_time(self, text: str) -> str:
@@ -307,6 +333,10 @@ class PlannerAgent(BaseAgent):
                       "五": "5", "六": "6", "七": "7", "八": "8", "九": "9"}
         time_units = r"(?:天|日|周|星期|个小时|小时|个月|分钟)"
         tu = time_units  # shorthand
+
+        # 0. Strip measure-word "个" between a Chinese number and a time unit
+        #    so that "一个星期" → "一星期", "两个小时" → "两小时", etc.
+        text = re.sub(rf"([{cn_all}十])\s*个\s*({tu})", r"\1\2", text)
 
         # Order matters: most-specific patterns first to avoid partial matches.
         #

@@ -1,4 +1,4 @@
-import sys
+﻿import sys
 from pathlib import Path
 
 
@@ -235,6 +235,184 @@ def test_intent_找学习资源_is_resource_request() -> None:
     assert result["should_run_agents"] is True
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Time budget parsing regression tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_three_day_plan_estimated_days_is_3() -> None:
+    sid = "regression_three_day_plan"
+    conversation_store.reset(sid)
+
+    reply(
+        sid,
+        zh(
+            r"\u6211\u662f\u8f6f\u4ef6\u5de5\u7a0b\u5927\u4e8c\u5b66\u751f"
+            r"\uff0c\u60f3\u5b66\u4e60\u6570\u636e\u7ed3\u6784"
+            r"\uff0c\u4e3a\u4e86\u8003\u8bd5\u901a\u8fc7"
+        ),
+    )
+
+    time_message = zh(r"\u6211\u67093\u5929\u65f6\u95f4")
+    time_intent = classify(time_message)
+    assert time_intent["intent"] == "profile_update"
+    reply(sid, time_message)
+
+    content = reply(sid, zh(r"\u5f00\u59cb\u751f\u6210\u5b66\u4e60\u65b9\u6848"))
+    state = conversation_store.get(sid)
+    assert state.last_result is not None
+    path = product._to_learning_path(state.last_result)
+    assert path["estimatedDays"] == 3, f"Expected 3 days, got {path['estimatedDays']}"
+    assert_contains(content, zh(r"\u5b66\u4e60\u65b9\u6848\u5df2\u751f\u6210"))
+
+
+def test_one_week_plan_estimated_days_is_7() -> None:
+    sid = "regression_one_week_plan"
+    conversation_store.reset(sid)
+
+    reply(
+        sid,
+        zh(
+            r"\u6211\u662f\u8f6f\u4ef6\u5de5\u7a0b\u5927\u4e8c\u5b66\u751f"
+            r"\uff0c\u60f3\u5b66\u4e60\u4eba\u5de5\u667a\u80fd\u5bfc\u8bba"
+            r"\uff0c\u4e3a\u4e86\u5165\u95e8"
+        ),
+    )
+
+    time_message = zh(r"\u6211\u6709\u4e00\u5468\u65f6\u95f4")
+    time_intent = classify(time_message)
+    assert time_intent["intent"] == "profile_update"
+    reply(sid, time_message)
+
+    content = reply(sid, zh(r"\u5f00\u59cb\u751f\u6210\u5b66\u4e60\u65b9\u6848"))
+    state = conversation_store.get(sid)
+    assert state.last_result is not None
+    path = product._to_learning_path(state.last_result)
+    assert path["estimatedDays"] == 7, f"Expected 7 days, got {path['estimatedDays']}"
+    assert_contains(content, zh(r"\u5b66\u4e60\u65b9\u6848\u5df2\u751f\u6210"))
+
+
+def test_ten_day_plan_estimated_days_is_10() -> None:
+    sid = "regression_ten_day_plan"
+    conversation_store.reset(sid)
+
+    reply(
+        sid,
+        zh(
+            r"\u6211\u662f\u8f6f\u4ef6\u5de5\u7a0b\u5927\u4e8c\u5b66\u751f"
+            r"\uff0c\u60f3\u5b66\u4e60\u6570\u636e\u7ed3\u6784"
+            r"\uff0c\u4e3a\u4e86\u8003\u8bd5\u901a\u8fc7"
+        ),
+    )
+
+    time_message = zh(r"\u6211\u670910\u5929\u65f6\u95f4")
+    time_intent = classify(time_message)
+    assert time_intent["intent"] == "profile_update"
+    reply(sid, time_message)
+
+    content = reply(sid, zh(r"\u5f00\u59cb\u751f\u6210\u5b66\u4e60\u65b9\u6848"))
+    state = conversation_store.get(sid)
+    assert state.last_result is not None
+    path = product._to_learning_path(state.last_result)
+    assert path["estimatedDays"] == 10, f"Expected 10 days, got {path['estimatedDays']}"
+    assert_contains(content, zh(r"\u5b66\u4e60\u65b9\u6848\u5df2\u751f\u6210"))
+
+
+def test_no_time_plan_uses_reasonable_default() -> None:
+    """When user provides no time info, estimatedDays should be a reasonable
+    default (14), NOT hardcoded to 2 or any other small number."""
+    sid = "regression_no_time_plan"
+    conversation_store.reset(sid)
+
+    reply(
+        sid,
+        zh(
+            r"\u6211\u662f\u8f6f\u4ef6\u5de5\u7a0b\u5927\u4e8c\u5b66\u751f"
+            r"\uff0c\u60f3\u5b66\u4e60\u6570\u636e\u7ed3\u6784"
+            r"\uff0c\u4e3a\u4e86\u8003\u8bd5\u901a\u8fc7"
+        ),
+    )
+
+    # No time message — just generate the plan directly
+    content = reply(sid, zh(r"\u5f00\u59cb\u751f\u6210\u5b66\u4e60\u65b9\u6848"))
+    state = conversation_store.get(sid)
+    assert state.last_result is not None
+    path = product._to_learning_path(state.last_result)
+
+    # Must not be hardcoded to 2
+    assert path["estimatedDays"] != 2, (
+        f"estimatedDays MUST NOT be hardcoded to 2. Got {path['estimatedDays']}"
+    )
+    # The default should be >= 7
+    assert path["estimatedDays"] >= 7, (
+        f"Default estimatedDays should be >= 7 (reasonable study plan)."
+        f" Got {path['estimatedDays']}"
+    )
+    assert_contains(content, zh(r"\u5b66\u4e60\u65b9\u6848\u5df2\u751f\u6210"))
+
+
+def test_multi_course_time_budget_stable() -> None:
+    """Regression: different courses must each parse their own time budgets
+    correctly.  A data-structures plan with '两天' must not interfere with
+    an AI plan with '一周'."""
+    # ── Course A: data_structures, 2 days ──
+    sid_a = "regression_multi_course_a"
+    conversation_store.reset(sid_a)
+    reply(
+        sid_a,
+        zh(
+            r"\u6211\u662f\u8f6f\u4ef6\u5de5\u7a0b\u5927\u4e8c\u5b66\u751f"
+            r"\uff0c\u60f3\u5b66\u4e60\u6570\u636e\u7ed3\u6784"
+            r"\uff0c\u4e3a\u4e86\u8003\u8bd5\u901a\u8fc7"
+        ),
+    )
+    reply(sid_a, zh(r"\u6211\u6709\u4e24\u5929\u65f6\u95f4"))
+    reply(sid_a, zh(r"\u5f00\u59cb\u751f\u6210\u5b66\u4e60\u65b9\u6848"))
+    state_a = conversation_store.get(sid_a)
+    path_a = product._to_learning_path(state_a.last_result)
+    assert path_a["estimatedDays"] == 2, (
+        f"Course A (data_structures) should be 2 days, got {path_a['estimatedDays']}"
+    )
+
+    # ── Course B: ai_intro, one week ──
+    sid_b = "regression_multi_course_b"
+    conversation_store.reset(sid_b)
+    reply(
+        sid_b,
+        zh(
+            r"\u6211\u662f\u8f6f\u4ef6\u5de5\u7a0b\u5927\u4e8c\u5b66\u751f"
+            r"\uff0c\u60f3\u5b66\u4e60\u4eba\u5de5\u667a\u80fd\u5bfc\u8bba"
+            r"\uff0c\u4e3a\u4e86\u5165\u95e8"
+        ),
+    )
+    reply(sid_b, zh(r"\u6211\u6709\u4e00\u5468\u65f6\u95f4"))
+    reply(sid_b, zh(r"\u5f00\u59cb\u751f\u6210\u5b66\u4e60\u65b9\u6848"))
+    state_b = conversation_store.get(sid_b)
+    path_b = product._to_learning_path(state_b.last_result)
+    assert path_b["estimatedDays"] == 7, (
+        f"Course B (ai_intro) should be 7 days, got {path_b['estimatedDays']}"
+    )
+
+    # ── Course C: ai_intro, 10 days ──
+    sid_c = "regression_multi_course_c"
+    conversation_store.reset(sid_c)
+    reply(
+        sid_c,
+        zh(
+            r"\u6211\u662f\u8f6f\u4ef6\u5de5\u7a0b\u5927\u4e8c\u5b66\u751f"
+            r"\uff0c\u60f3\u5b66\u4e60\u4eba\u5de5\u667a\u80fd\u5bfc\u8bba"
+            r"\uff0c\u4e3a\u4e86\u5165\u95e8"
+        ),
+    )
+    reply(sid_c, zh(r"\u6211\u670910\u5929\u65f6\u95f4"))
+    reply(sid_c, zh(r"\u5f00\u59cb\u751f\u6210\u5b66\u4e60\u65b9\u6848"))
+    state_c = conversation_store.get(sid_c)
+    path_c = product._to_learning_path(state_c.last_result)
+    assert path_c["estimatedDays"] == 10, (
+        f"Course C (ai_intro) should be 10 days, got {path_c['estimatedDays']}"
+    )
+
+
 if __name__ == "__main__":
     tests = [
         test_fresh_start_has_no_fake_profile,
@@ -255,6 +433,11 @@ if __name__ == "__main__":
         test_intent_生成学习路径_is_learning_plan,
         test_intent_根据路径推荐资源_is_resource_request,
         test_intent_找学习资源_is_resource_request,
+        test_three_day_plan_estimated_days_is_3,
+        test_one_week_plan_estimated_days_is_7,
+        test_ten_day_plan_estimated_days_is_10,
+        test_no_time_plan_uses_reasonable_default,
+        test_multi_course_time_budget_stable,
     ]
     for test in tests:
         test()

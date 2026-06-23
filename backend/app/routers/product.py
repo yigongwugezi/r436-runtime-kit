@@ -352,7 +352,7 @@ def _source_label(source: str) -> str:
     """Map internal source labels to frontend-compatible labels."""
     if not source:
         return "system_inferred"
-    if source in ("user_input", "agent_generated", "system_inferred", "fallback"):
+    if source in ("user_input", "agent_generated", "system_inferred", "fallback", "rule_based_fallback"):
         return source
     return _SOURCE_MAP.get(source, "system_inferred")
 
@@ -485,7 +485,13 @@ def _to_learning_path(result: dict[str, Any]) -> dict[str, Any]:
     course_name = course.get("course_name") or ("人工智能导论" if course_id == "ai_intro" else str(course_id))
     raw_stages = result.get("learning_path", [])
     stages = _raw_stages_to_nodes(raw_stages)
-    estimated_days = _estimated_path_days(raw_stages)
+    # computed fallback from stage durations
+    fallback_days = _estimated_path_days(raw_stages)
+    raw_est = result.get("estimatedDays")
+    if isinstance(raw_est, int) and raw_est > 0:
+        estimated_days = raw_est
+    else:
+        estimated_days = fallback_days
 
     return {
         "id": f"path_{course_id}",
@@ -495,7 +501,7 @@ def _to_learning_path(result: dict[str, Any]) -> dict[str, Any]:
         "stages": stages,
         "createdAt": int(time.time() * 1000),
         "overallProgress": result.get("overallProgress", 0),
-        "estimatedDays": result.get("estimatedDays", estimated_days),
+        "estimatedDays": estimated_days,
         "source": "agent_generated",
     }
 

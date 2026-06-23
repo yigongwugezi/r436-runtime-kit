@@ -121,6 +121,18 @@ def _estimated_path_days(stages: list[dict[str, Any]]) -> int:
     return max_day or 14
 
 
+def _safe_estimated_days(raw_estimated: Any, stages: list[dict[str, Any]]) -> int:
+    """Return *raw_estimated* if it is a positive integer, otherwise
+    compute from *stages*.
+
+    Guards against non-integer values (empty dicts, None, str, etc.) that
+    can leak into the result when the planner agent fails.
+    """
+    if isinstance(raw_estimated, int) and raw_estimated > 0:
+        return raw_estimated
+    return _estimated_path_days(stages)
+
+
 @dataclass
 class ConversationState:
     session_id: str
@@ -374,7 +386,9 @@ class ConversationStore:
                         "description": result.get("diagnosis", {}).get("recommended_strategy", ""),
                         "stages": stages,
                         "overallProgress": result.get("overallProgress", 0),
-                        "estimatedDays": result.get("estimatedDays", _estimated_path_days(stages)),
+                        "estimatedDays": _safe_estimated_days(
+                            result.get("estimatedDays"), stages
+                        ),
                     }
                     save_learning_path(db, state.session_id, path_data)
 
@@ -545,17 +559,19 @@ class ConversationStore:
 
         # Normalize Chinese single-digit numbers + time units to Arabic
         # so that "两天" → "2天", "一小时" → "1小时", etc.
+        # Also strip measure-word "个" so "一个星期" → "1星期",
+        # "两个小时" → "2小时".
         _cn_map = {"一": "1", "二": "2", "两": "2", "三": "3", "四": "4",
                    "五": "5", "六": "6", "七": "7", "八": "8", "九": "9"}
         time_text = re.sub(
-            r"([一二两三四五六七八九])\s*(天|周|个月|小时|分钟)",
+            r"([一二两三四五六七八九])\s*个?\s*(天|周|个月|小时|分钟|星期)",
             lambda m: _cn_map[m.group(1)] + m.group(2),
             text,
         )
 
         time_match = re.search(
-            r"(\d+\s*(天|周|个月|小时|分钟)|"
-            r"[一二两三四五六七八九十半]+天|"
+            r"(\d+\s*个?\s*(天|日|周|星期|个月|小时|分钟)|"
+            r"[一二两三四五六七八九十半]+(?:个)?(?:天|星期)|"
             r"一周|两周|半个月|一个月|半小时|一个半小时|两个小时|两小时)"
             r"(内|左右|以内|以上|完成)?",
             time_text,
