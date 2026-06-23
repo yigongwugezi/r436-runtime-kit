@@ -266,7 +266,11 @@ class DiagnosisAgent(BaseAgent):
         return candidates
 
     def _split_topics(self, value: str) -> list[str]:
-        if not value or "哪里比较薄弱" in value or "哪里薄弱" in value:
+        normalized = re.sub(r"[\s：:，,。！？!?]", "", value)
+        if not value or any(
+            phrase in normalized
+            for phrase in ("哪里比较薄", "哪里薄弱", "薄弱点是什么", "哪些知识漏洞")
+        ):
             return []
         parts = re.split(r"[、，,；;/]|以及|和|与", value)
         suffixes = ("比较薄弱", "掌握不牢", "不熟", "不会", "不懂", "薄弱", "较弱", "容易出错")
@@ -277,6 +281,7 @@ class DiagnosisAgent(BaseAgent):
                 if topic.endswith(suffix):
                     topic = topic[: -len(suffix)].strip()
                     break
+            topic = topic.strip(" 。！？!?：:")
             if topic and topic not in {"我", "哪里", "比较", "基础一般", "一般"}:
                 topics.append(topic)
         return list(dict.fromkeys(topics))
@@ -476,7 +481,7 @@ class DiagnosisAgent(BaseAgent):
 
         if not event_count:
             limitations.append(
-                "当前 session 暂无测验、练习、反馈或进度事件，本次诊断主要基于画像与学习路径推断，行为数据仍为空。"
+                "当前 session 暂无测验、练习、反馈或进度等学习事件，本次诊断主要基于画像与学习路径推断，行为数据仍为空。"
             )
         elif diagnostic_count and not has_topic:
             limitations.append(

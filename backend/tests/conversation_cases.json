@@ -492,7 +492,7 @@
     "expect_facts": {
       "background": "软件工程大二学生",
       "target_course": "数据结构",
-      "time_budget": "两天"
+      "time_budget": "2天"
     },
     "expect_ready_to_plan": false
   }
