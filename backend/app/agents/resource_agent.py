@@ -10,6 +10,10 @@ from app.services.llm_client import LLMClientError
 RESOURCE_TYPES = ["lecture", "mindmap", "quiz", "reading", "practice", "multimodal"]
 SOURCE_LLM = "llm_generated"
 SOURCE_FALLBACK = "rule_based_fallback"
+SOURCE_TYPE_COURSE_KB = "course_knowledge_base"
+SOURCE_TYPE_AGENT = "agent_generated"
+
+QUALITY_STATUSES = {"passed", "warning", "fallback", "insufficient_context"}
 
 
 class ResourceAgent(BaseAgent):
@@ -23,11 +27,35 @@ class ResourceAgent(BaseAgent):
         profile = context.get("profile", {})
 
         if not stages or not knowledge_points:
-            return {"resources": [], "agent_step": self.agent_step()}
+            missing = []
+            if not stages:
+                missing.append("learning_path stages")
+            if not knowledge_points:
+                missing.append("course chapters or knowledge points")
+            return {
+                "resources": [],
+                "limitations": [f"Resource generation needs {', '.join(missing)}."],
+                "agent_step": self.agent_step(),
+            }
 
         resources = self._generate_with_llm(context, course, stages, knowledge_points, profile)
         if not resources:
-            resources = self._build_rule_fallback(course, stages, knowledge_points, profile)
+            fallback_reason = (
+                "LLM client is not configured; deterministic rule resources were generated."
+                if not self.llm_client
+                else "LLM output was unavailable or invalid; deterministic rule resources were generated."
+            )
+            if course.get("_source_type") != SOURCE_TYPE_COURSE_KB:
+                fallback_reason += " No verified course knowledge-base match was available."
+            if any(stage.get("_inferred") for stage in stages):
+                fallback_reason += " Learning stages were inferred from diagnosis because no explicit learning path was available."
+            resources = self._build_rule_fallback(
+                course,
+                stages,
+                knowledge_points,
+                profile,
+                fallback_reason,
+            )
 
         resources = self._scope_resource_ids(resources, str(context.get("session_id") or ""))
         return {"resources": resources, "agent_step": self.agent_step()}
@@ -82,7 +110,8 @@ class ResourceAgent(BaseAgent):
                     "Create at least five resources covering lecture, mindmap, quiz, reading, practice, and optionally "
                     "multimodal video_script. Every resource must include resource_id, type, title, description, "
                     "content_format, content or items, related_stage_id, related_chapter, related_knowledge_points, "
-                    "quality_status, and reason. Do not invent external books, papers, links, or chapters."
+                    "quality_status, reason, and evidence. Use only stage IDs and course chapters present in the input. "
+                    "Do not invent external books, papers, links, chapters, or provenance claims."
                 ),
             },
             {
@@ -100,7 +129,7 @@ class ResourceAgent(BaseAgent):
         resources = parsed.get("resources") if isinstance(parsed, dict) else None
         if not isinstance(resources, list):
             return []
-        return self._normalize_llm_resources(resources, stages, knowledge_points)
+        return self._normalize_llm_resources(resources, stages, knowledge_points, course)
 
     def _build_rule_fallback(
         self,
@@ -108,6 +137,7 @@ class ResourceAgent(BaseAgent):
         stages: list[dict[str, Any]],
         knowledge_points: list[dict[str, Any]],
         profile: dict[str, Any],
+        fallback_reason: str,
     ) -> list[dict[str, Any]]:
         """Generate resources per learning path: stage-level + per-task.
 
@@ -150,6 +180,22 @@ class ResourceAgent(BaseAgent):
                 elif extra == "video":
                     resources.append(self._video_script_for_task(course, binding, task, task_id))
 
+        source_type = str(course.get("_source_type") or SOURCE_TYPE_AGENT)
+        quality_status = "fallback" if source_type == SOURCE_TYPE_COURSE_KB else "insufficient_context"
+        for resource in resources:
+            resource.update(
+                {
+                    "source_type": source_type,
+                    "generation_mode": "fallback",
+                    "quality_status": quality_status,
+                    "fallback_reason": fallback_reason,
+                }
+            )
+            resource["evidence"] = self._resource_evidence(
+                resource,
+                generation="rule_based_fallback",
+                fallback_reason=fallback_reason,
+            )
         return resources
 
     def _normalize_llm_resources(
@@ -157,6 +203,7 @@ class ResourceAgent(BaseAgent):
         resources: list[Any],
         stages: list[dict[str, Any]],
         knowledge_points: list[dict[str, Any]],
+        course: dict[str, Any],
     ) -> list[dict[str, Any]]:
         """Normalize LLM output and auto-fill ``task_id`` when missing.
 
@@ -168,6 +215,7 @@ class ResourceAgent(BaseAgent):
         fallback_bindings = self._stage_bindings(stages, knowledge_points)
         normalized: list[dict[str, Any]] = []
         seen_types: set[str] = set()
+        seen_stage_ids: set[str] = set()
 
         for index, item in enumerate(resources[:8], start=1):
             if not isinstance(item, dict):
@@ -175,10 +223,14 @@ class ResourceAgent(BaseAgent):
             resource_type = self._clean_type(item.get("type"))
             if resource_type not in RESOURCE_TYPES:
                 continue
-            binding = fallback_bindings[min(index - 1, len(fallback_bindings) - 1)]
-            stage_id = str(item.get("related_stage_id") or binding["stage_id"])
+            default_binding = fallback_bindings[min(index - 1, len(fallback_bindings) - 1)]
+            stage_id = str(item.get("related_stage_id") or default_binding["stage_id"])
             if stage_id not in stage_ids:
-                stage_id = binding["stage_id"]
+                stage_id = default_binding["stage_id"]
+            binding = next(
+                (candidate for candidate in fallback_bindings if candidate["stage_id"] == stage_id),
+                default_binding,
+            )
             knowledge = self._clean_list(item.get("related_knowledge_points")) or binding["knowledge_points"]
             content_format = str(item.get("content_format") or self._format_for_type(resource_type))
             content = str(item.get("content") or "").strip()
@@ -194,9 +246,28 @@ class ResourceAgent(BaseAgent):
                     task_idx = (index - 1) % len(tasks)
                     task_id = f"{stage_id}_node_{task_idx + 1}"
 
-            normalized.append(
-                {
-                    "resource_id": str(item.get("resource_id") or f"res_{resource_type}_{index:03d}"),
+            resource_id = str(item.get("resource_id") or f"res_{resource_type}_{index:03d}")
+            requested_chapter = str(item.get("related_chapter") or "").strip()
+            chapter_is_grounded = self._chapter_is_grounded(requested_chapter, knowledge_points)
+            related_chapter = requested_chapter if chapter_is_grounded else binding["chapter"]
+            stage_is_inferred = any(
+                str(stage.get("stage_id") or "") == stage_id and stage.get("_inferred")
+                for stage in stages
+            )
+            used_inferred_binding = (
+                not item.get("related_stage_id")
+                or not chapter_is_grounded
+                or stage_is_inferred
+            )
+            source_type = str(course.get("_source_type") or SOURCE_TYPE_AGENT)
+            requested_quality = str(item.get("quality_status") or "passed")
+            quality_status = requested_quality if requested_quality in QUALITY_STATUSES else "warning"
+            if source_type != SOURCE_TYPE_COURSE_KB or used_inferred_binding:
+                quality_status = "warning"
+            generation_mode = "mixed" if used_inferred_binding else "llm"
+            normalized_item = {
+                    "id": resource_id,
+                    "resource_id": resource_id,
                     "type": resource_type,
                     "title": str(item.get("title") or f"{binding['title']} resource").strip(),
                     "description": str(item.get("description") or "").strip(),
@@ -204,19 +275,29 @@ class ResourceAgent(BaseAgent):
                     "content": content,
                     "items": quiz_items,
                     "related_stage_id": stage_id,
-                    "related_chapter": str(item.get("related_chapter") or binding["chapter"]),
+                    "related_chapter": related_chapter,
                     "related_knowledge_points": knowledge,
+                    "knowledge_points": knowledge,
                     "source": SOURCE_LLM,
-                    "quality_status": str(item.get("quality_status") or "passed"),
+                    "source_type": source_type,
+                    "generation_mode": generation_mode,
+                    "quality_status": quality_status,
                     "task_id": task_id,
                     "reason": str(item.get("reason") or item.get("generation_reason") or binding["reason"]),
                     "generation_reason": str(item.get("generation_reason") or item.get("reason") or binding["reason"]),
                     "difficulty": str(item.get("difficulty") or binding["difficulty"]),
+                    "fallback_reason": "",
                 }
+            normalized_item["evidence"] = self._resource_evidence(
+                normalized_item,
+                generation="llm_generated with rule binding" if used_inferred_binding else "llm_generated",
             )
+            normalized.append(normalized_item)
             seen_types.add(resource_type)
+            seen_stage_ids.add(stage_id)
 
-        return normalized if len(normalized) >= 5 and len(seen_types) >= 5 else []
+        has_stage_coverage = stage_ids.issubset(seen_stage_ids)
+        return normalized if len(normalized) >= 5 and len(seen_types) >= 5 and has_stage_coverage else []
 
     def _lecture(self, course: dict[str, Any], binding: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
         base = self._profile_value(profile, ["knowledge_base", "coding_ability", "programming_ability"], "基础未明确")
@@ -485,7 +566,8 @@ class ResourceAgent(BaseAgent):
         difficulty: str | None = None,
         task_id: str | None = None,
     ) -> dict[str, Any]:
-        return {
+        resource = {
+            "id": resource_id,
             "resource_id": resource_id,
             "type": resource_type,
             "title": title,
@@ -496,24 +578,36 @@ class ResourceAgent(BaseAgent):
             "related_stage_id": binding["stage_id"],
             "related_chapter": binding["chapter"],
             "related_knowledge_points": binding["knowledge_points"],
+            "knowledge_points": binding["knowledge_points"],
             "source": SOURCE_FALLBACK,
-            "quality_status": "fallback_passed",
+            "source_type": SOURCE_TYPE_AGENT,
+            "generation_mode": "fallback",
+            "quality_status": "fallback",
             "reason": reason or binding["reason"],
             "generation_reason": reason or binding["reason"],
+            "evidence": [],
+            "fallback_reason": "",
             "difficulty": difficulty or binding["difficulty"],
             "task_id": task_id or "",
         }
+        return resource
 
     def _course_context(self, context: dict[str, Any]) -> dict[str, Any]:
         course_id = str(context.get("course_id") or context.get("knowledge_context", {}).get("course_id") or "")
         catalog_course = course_catalog.get_course(course_id) if course_id else None
         knowledge = context.get("knowledge_context", {})
         if catalog_course:
-            return catalog_course
+            return {**catalog_course, "_source_type": SOURCE_TYPE_COURSE_KB}
+        knowledge_source = str(knowledge.get("source") or "")
         return {
             "course_id": knowledge.get("course_id", course_id),
             "course_name": knowledge.get("course_name", course_id or "课程"),
             "chapters": knowledge.get("retrieved_points", []),
+            "_source_type": (
+                SOURCE_TYPE_COURSE_KB
+                if knowledge_source == SOURCE_TYPE_COURSE_KB and knowledge.get("retrieved_points")
+                else SOURCE_TYPE_AGENT
+            ),
         }
 
     def _knowledge_points(
@@ -535,18 +629,25 @@ class ResourceAgent(BaseAgent):
                     "difficulty": chapter.get("difficulty", "medium"),
                     "prerequisites": chapter.get("prerequisites", []),
                     "content_excerpt": str(detail.get("content", ""))[:600],
+                    "_origin": str(course.get("_source_type") or SOURCE_TYPE_AGENT),
                 }
             )
 
         retrieved = context.get("knowledge_context", {}).get("retrieved_points", [])
         for item in retrieved:
             if isinstance(item, dict):
-                self._append_unique_point(points, item)
+                self._append_unique_point(
+                    points,
+                    item,
+                    str(context.get("knowledge_context", {}).get("source") or SOURCE_TYPE_AGENT),
+                )
 
-        weak_points = context.get("diagnosis", {}).get("weak_knowledge_points", [])
+        diagnosis = context.get("diagnosis", {})
+        weak_points = list(diagnosis.get("weak_knowledge_points", []) or [])
+        weak_points.extend(diagnosis.get("weak_topics", []) or [])
         for item in weak_points:
             if isinstance(item, dict):
-                self._append_unique_point(points, item)
+                self._append_unique_point(points, item, "diagnosis")
 
         if points:
             return points
@@ -557,12 +658,18 @@ class ResourceAgent(BaseAgent):
                 "name": str(stage.get("title") or f"Stage {index}"),
                 "difficulty": "medium",
                 "prerequisites": [],
+                "_origin": "learning_path_inference",
             }
             for index, stage in enumerate(stages, start=1)
         ]
 
-    def _append_unique_point(self, points: list[dict[str, Any]], item: dict[str, Any]) -> None:
-        name = str(item.get("title") or item.get("name") or "").strip()
+    def _append_unique_point(
+        self,
+        points: list[dict[str, Any]],
+        item: dict[str, Any],
+        origin: str = SOURCE_TYPE_AGENT,
+    ) -> None:
+        name = str(item.get("title") or item.get("name") or item.get("topic") or "").strip()
         if not name:
             return
         if any(str(point.get("name") or point.get("title")) == name for point in points):
@@ -575,6 +682,7 @@ class ResourceAgent(BaseAgent):
                 "difficulty": item.get("difficulty", item.get("priority", "medium")),
                 "prerequisites": item.get("prerequisites", []),
                 "content_excerpt": item.get("content_excerpt", ""),
+                "_origin": origin,
             }
         )
 
@@ -582,9 +690,15 @@ class ResourceAgent(BaseAgent):
         result = []
         stage_count = max(1, len(stages))
         for index, stage in enumerate(stages, start=1):
-            start = round((index - 1) * len(knowledge_points) / stage_count)
-            end = round(index * len(knowledge_points) / stage_count)
-            group = knowledge_points[start:end] or [knowledge_points[min(index - 1, len(knowledge_points) - 1)]]
+            matched = self._matching_stage_points(stage, knowledge_points)
+            if matched:
+                group = matched
+                binding_mode = "context_match"
+            else:
+                start = round((index - 1) * len(knowledge_points) / stage_count)
+                end = round(index * len(knowledge_points) / stage_count)
+                group = knowledge_points[start:end] or [knowledge_points[min(index - 1, len(knowledge_points) - 1)]]
+                binding_mode = "path_order_inference"
             names = [str(item.get("name") or item.get("title")) for item in group if item.get("name") or item.get("title")]
             chapter = "、".join(
                 f"{item.get('chapter_id', '')} {item.get('title') or item.get('name')}".strip()
@@ -599,21 +713,78 @@ class ResourceAgent(BaseAgent):
                     "difficulty": self._difficulty(group),
                     "reason": str(stage.get("reason") or stage.get("goal") or "根据学习路径阶段和课程章节生成。"),
                     "tasks": stage.get("tasks", []),
+                    "binding_mode": binding_mode,
                 }
             )
         return result
+
+    def _matching_stage_points(
+        self,
+        stage: dict[str, Any],
+        knowledge_points: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        explicit_values = [
+            stage.get("chapter_id"),
+            stage.get("related_chapter"),
+            *self._clean_list(stage.get("knowledge_points")),
+            *self._clean_list(stage.get("related_knowledge_points")),
+        ]
+        stage_text = " ".join(
+            str(value)
+            for value in [stage.get("title"), stage.get("goal"), *(stage.get("tasks") or []), *explicit_values]
+            if value
+        )
+        normalized_stage = self._normalize_binding_text(stage_text)
+        if not normalized_stage:
+            return []
+        matches = []
+        for point in knowledge_points:
+            candidates = [point.get("chapter_id"), point.get("title"), point.get("name")]
+            if any(
+                normalized
+                and (normalized in normalized_stage or normalized_stage in normalized)
+                for normalized in (self._normalize_binding_text(value) for value in candidates)
+            ):
+                matches.append(point)
+        return matches[:3]
+
+    def _normalize_binding_text(self, value: Any) -> str:
+        return re.sub(r"[^\w\u4e00-\u9fff]+", "", str(value or "").casefold())
+
+    def _chapter_is_grounded(
+        self,
+        related_chapter: str,
+        knowledge_points: list[dict[str, Any]],
+    ) -> bool:
+        normalized = self._normalize_binding_text(related_chapter)
+        if not normalized:
+            return False
+        for point in knowledge_points:
+            chapter_id = self._normalize_binding_text(point.get("chapter_id"))
+            title = self._normalize_binding_text(point.get("title") or point.get("name"))
+            if title and (title in normalized or normalized in title):
+                return True
+            if chapter_id and re.search(
+                rf"(^|\D)0*{re.escape(chapter_id.lstrip('0') or '0')}(\D|$)",
+                related_chapter,
+            ):
+                return True
+        return False
 
     def _stages(self, context: dict[str, Any]) -> list[dict[str, Any]]:
         stages = [stage for stage in context.get("learning_path", []) if isinstance(stage, dict)]
         if stages:
             return stages
-        points = context.get("diagnosis", {}).get("weak_knowledge_points", [])
+        diagnosis = context.get("diagnosis", {})
+        points = list(diagnosis.get("weak_knowledge_points", []) or [])
+        points.extend(diagnosis.get("weak_topics", []) or [])
         return [
             {
                 "stage_id": f"stage_{index}",
-                "title": str(point.get("name") or f"阶段 {index}"),
+                "title": str(point.get("name") or point.get("topic") or f"阶段 {index}"),
                 "goal": "补齐诊断出的薄弱知识点。",
-                "tasks": [str(point.get("name") or f"知识点 {index}")],
+                "tasks": [str(point.get("name") or point.get("topic") or f"知识点 {index}")],
+                "_inferred": True,
             }
             for index, point in enumerate(points[:3], start=1)
             if isinstance(point, dict)
@@ -625,8 +796,32 @@ class ResourceAgent(BaseAgent):
         for item in resources:
             resource_id = str(item.get("resource_id", ""))
             if resource_id and not resource_id.startswith(f"{session_id}_"):
-                item["resource_id"] = f"{session_id}_{resource_id}"
+                resource_id = f"{session_id}_{resource_id}"
+                item["resource_id"] = resource_id
+            item["id"] = resource_id
         return resources
+
+    def _resource_evidence(
+        self,
+        resource: dict[str, Any],
+        *,
+        generation: str,
+        fallback_reason: str = "",
+    ) -> list[str]:
+        evidence = [
+            f"Learning stage: {resource.get('related_stage_id') or 'unresolved'}",
+            f"Course chapter: {resource.get('related_chapter') or 'unresolved'}",
+            f"Generation: {generation}",
+        ]
+        points = resource.get("related_knowledge_points") or resource.get("knowledge_points") or []
+        if points:
+            evidence.append(f"Knowledge points: {', '.join(str(point) for point in points[:5])}")
+        reason = str(resource.get("reason") or "").strip()
+        if reason:
+            evidence.append(f"Recommendation reason: {reason}")
+        if fallback_reason:
+            evidence.append(f"Fallback: {fallback_reason}")
+        return evidence
 
     def _parse_json(self, text: str) -> dict[str, Any]:
         stripped = text.strip()

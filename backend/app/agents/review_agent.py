@@ -20,6 +20,8 @@ class ReviewAgent(BaseAgent):
         "窃取",
     }
     trusted_resource_sources = {"llm_generated", "rule_based_fallback"}
+    trusted_source_types = {"course_knowledge_base", "agent_generated"}
+    resource_quality_statuses = {"passed", "warning", "fallback", "insufficient_context", "fallback_passed"}
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         checks = [
@@ -260,15 +262,29 @@ class ReviewAgent(BaseAgent):
         for resource in self._dict_items(context.get("resources")):
             label = self._resource_label(resource)
             source = str(resource.get("source") or "").strip()
+            source_type = str(resource.get("source_type") or "").strip()
+            generation_mode = str(resource.get("generation_mode") or "").strip()
             quality = str(resource.get("quality_status") or "").strip()
             if source not in self.trusted_resource_sources:
                 warnings.append(f"{label} source={source or 'empty'}")
+            if source_type and source_type not in self.trusted_source_types:
+                warnings.append(f"{label} source_type={source_type}")
+            if generation_mode and generation_mode not in {"llm", "rule_based", "fallback", "mixed"}:
+                warnings.append(f"{label} generation_mode={generation_mode}")
             if not quality:
                 warnings.append(f"{label} 缺少 quality_status")
-            elif source == "rule_based_fallback" and quality != "fallback_passed":
+            elif quality not in self.resource_quality_statuses:
+                warnings.append(f"{label} quality_status={quality} 不在支持范围内")
+            elif source == "rule_based_fallback" and quality not in {"fallback", "insufficient_context", "fallback_passed"}:
                 warnings.append(f"{label} fallback 来源与 quality_status={quality} 不自洽")
-            elif source == "llm_generated" and quality == "fallback_passed":
-                warnings.append(f"{label} LLM 来源却标记为 fallback_passed")
+            elif source == "llm_generated" and quality in {"fallback", "insufficient_context", "fallback_passed"}:
+                warnings.append(f"{label} LLM 来源却标记为 {quality}")
+            if source_type == "course_knowledge_base" and knowledge_source != "course_knowledge_base":
+                warnings.append(f"{label} 声称课程知识库来源，但 knowledge_context 未提供对应依据")
+            if source_type == "agent_generated" and quality == "passed":
+                warnings.append(f"{label} 仅有 Agent 推断依据却标记为 passed")
+            if source == "rule_based_fallback" and "fallback_reason" in resource and not str(resource.get("fallback_reason") or "").strip():
+                warnings.append(f"{label} fallback 缺少 fallback_reason")
 
         if warnings:
             return self._check(

@@ -35,7 +35,12 @@ def _resource(resource_type: str, resource_id: str, chapter: str = "03 栈、队
         "related_chapter": chapter,
         "related_knowledge_points": ["栈", "队列"],
         "source": "rule_based_fallback",
-        "quality_status": "fallback_passed",
+        "source_type": "course_knowledge_base",
+        "generation_mode": "fallback",
+        "quality_status": "fallback",
+        "reason": "Matches the current learning stage and course chapter.",
+        "evidence": ["Learning stage: stage_1", f"Course chapter: {chapter}"],
+        "fallback_reason": "LLM client is not configured; deterministic rule resources were generated.",
     }
 
 

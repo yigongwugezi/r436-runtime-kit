@@ -318,7 +318,31 @@ class DiagnosisAgent(BaseAgent):
         item["evidence"].extend(
             self._mapped_supporting_evidence(topic, stage_id, resource_ids, analytics)
         )
+        item["evidence"].extend(
+            self._resource_provenance_evidence(resource_ids, resources)
+        )
         return item
+
+    def _resource_provenance_evidence(
+        self,
+        resource_ids: list[str],
+        resources: list[dict[str, Any]],
+    ) -> list[str]:
+        selected = set(resource_ids)
+        evidence = []
+        for resource in resources:
+            resource_id = str(resource.get("resource_id") or resource.get("id") or "")
+            if resource_id not in selected:
+                continue
+            source = str(resource.get("source") or "unknown")
+            source_type = str(resource.get("source_type") or "unknown")
+            stage_id = str(resource.get("related_stage_id") or "unresolved")
+            chapter = str(resource.get("related_chapter") or "unresolved")
+            evidence.append(
+                f"Resource provenance: {resource_id}, source={source}, source_type={source_type}, "
+                f"stage={stage_id}, chapter={chapter}"
+            )
+        return evidence
 
     def _matching_stage(self, topic: str, stages: list[dict[str, Any]]) -> dict[str, Any] | None:
         for stage in stages:

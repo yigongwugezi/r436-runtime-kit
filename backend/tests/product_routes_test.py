@@ -72,12 +72,24 @@ def test_resource_source_preserves_rule_fallback_label() -> None:
             "content": "content",
             "content_format": "markdown",
             "source": "rule_based_fallback",
+            "source_type": "course_knowledge_base",
+            "generation_mode": "fallback",
+            "quality_status": "fallback",
+            "reason": "Matches stage_1.",
+            "evidence": ["Learning stage: stage_1"],
+            "fallback_reason": "LLM client unavailable.",
             "related_stage_id": "stage_1",
         },
         session_id="product_source_session",
     )
 
     assert_true(resource["source"] == "rule_based_fallback", "resource source should not be overwritten as agent_generated")
+    assert_true(resource["sourceType"] == "course_knowledge_base", "resource source type should be preserved")
+    assert_true(resource["generationMode"] == "fallback", "resource generation mode should be preserved")
+    assert_true(resource["qualityStatus"] == "fallback", "resource quality status should be preserved")
+    assert_true(resource["reason"] == "Matches stage_1.", "resource recommendation reason should be preserved")
+    assert_true(resource["evidence"] == ["Learning stage: stage_1"], "resource evidence should be preserved")
+    assert_true(resource["fallbackReason"] == "LLM client unavailable.", "resource fallback reason should be preserved")
 
 
 def test_profile_route_preserves_structured_dimension_fields() -> None:

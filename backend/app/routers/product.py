@@ -459,6 +459,11 @@ def _to_resource(
         "relatedChapter": related_chapter,
         "relatedKnowledgePoints": related_knowledge_points if isinstance(related_knowledge_points, list) else [related_knowledge_points],
         "qualityStatus": quality_status,
+        "sourceType": item.get("source_type", ""),
+        "generationMode": item.get("generation_mode", ""),
+        "reason": item.get("reason", ""),
+        "evidence": item.get("evidence", []),
+        "fallbackReason": item.get("fallback_reason", ""),
     }
 
 
@@ -1644,6 +1649,11 @@ def get_resources(
             "relatedChapter": item.get("relatedChapter", item.get("related_chapter", "")),
             "relatedKnowledgePoints": item.get("relatedKnowledgePoints", item.get("related_knowledge_points", [])),
             "qualityStatus": item.get("qualityStatus", item.get("quality_status", "")),
+            "sourceType": item.get("sourceType", item.get("source_type", "")),
+            "generationMode": item.get("generationMode", item.get("generation_mode", "")),
+            "reason": item.get("reason", ""),
+            "evidence": item.get("evidence", []),
+            "fallbackReason": item.get("fallbackReason", item.get("fallback_reason", "")),
         }
 
     # Merge DB resources with in-memory resources.

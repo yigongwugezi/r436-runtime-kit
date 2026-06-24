@@ -74,6 +74,23 @@ def test_agents_generate_from_course_knowledge_base() -> None:
         all(item.get("related_stage_id") and item.get("related_knowledge_points") for item in result["resources"]),
         "resources should be bound to stages and knowledge points",
     )
+    provenance_fields = {
+        "id",
+        "source_type",
+        "generation_mode",
+        "quality_status",
+        "reason",
+        "evidence",
+        "fallback_reason",
+    }
+    assert_true(
+        all(provenance_fields.issubset(item) for item in result["resources"]),
+        "resources should expose stable P1 provenance fields",
+    )
+    assert_true(
+        all(item["source_type"] == "course_knowledge_base" for item in result["resources"]),
+        "course-grounded resources should disclose the course knowledge base",
+    )
     assert_true(
         {"lecture", "mindmap", "quiz", "reading", "practice", "multimodal"}.issubset(
             {item["type"] for item in result["resources"]}
@@ -134,7 +151,10 @@ def test_diagnosis_uses_profile_path_and_resources() -> None:
                     "resource_id": "session_res_linked_list",
                     "title": "链表代码案例",
                     "related_stage_id": "stage_linked_list",
+                    "related_chapter": "02 线性表、链表与顺序表",
                     "related_knowledge_points": ["链表"],
+                    "source": "rule_based_fallback",
+                    "source_type": "course_knowledge_base",
                 }
             ],
             "analytics": {"eventCount": 0, "weakTopics": []},
@@ -147,6 +167,10 @@ def test_diagnosis_uses_profile_path_and_resources() -> None:
     assert_true(
         topic["recommended_resource_ids"] == ["session_res_linked_list"],
         "topic should bind to a matching session resource",
+    )
+    assert_true(
+        any("Resource provenance: session_res_linked_list" in item for item in diagnosis["evidence"]),
+        "diagnosis evidence should retain recommended-resource provenance",
     )
     assert_true(
         any("行为数据" in item for item in diagnosis["limitations"]),
