@@ -1832,7 +1832,7 @@ def bookmark_resource(resource_id: str, sessionId: str = "", subjectId: str = ""
     try:
         db = SessionLocal()
         # Ensure resource exists in DB before toggling bookmark
-        from app.db.repository import get_resource as repo_get_resource, save_resource as repo_save_resource
+        from app.db.repository import get_resource as repo_get_resource, upsert_resource as repo_upsert_resource
         state = conversation_store.get(session_id)
         if state.last_result:
             for item in state.last_result.get("resources", []):
@@ -1845,8 +1845,8 @@ def bookmark_resource(resource_id: str, sessionId: str = "", subjectId: str = ""
                         "content": item.get("content", ""),
                     })
                     break
-        resource = repo_get_resource(db, resource_id)
-        if resource is None or resource.session_id != session_id:
+        resource = repo_get_resource(db, session_id, resource_id)
+        if resource is None:
             return _product_response(
                 {"bookmarked": False, "ok": False, "error": "resource does not belong to this session"},
                 session_id=session_id,
@@ -1855,7 +1855,7 @@ def bookmark_resource(resource_id: str, sessionId: str = "", subjectId: str = ""
                 message="resource does not belong to this session",
                 source="user_action",
             )
-        bookmarked = toggle_bookmark(db, resource_id)
+        bookmarked = toggle_bookmark(db, session_id, resource_id)
         return _product_response(
             {"bookmarked": bool(bookmarked), "ok": True},
             session_id=session_id,

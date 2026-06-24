@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 
 from app.db import init_db
 from app.db.engine import SessionLocal
-from app.db.repository import save_resource
+from app.db.repository import upsert_resource
 from app.main import app
 from app.services.learning_tracker import learning_tracker
 
@@ -265,7 +265,7 @@ def test_resource_status_cross_session() -> None:
     res_id = f"{SESSION}_cross_session_res"
     db = SessionLocal()
     try:
-        save_resource(db, SESSION, {
+        upsert_resource(db, SESSION, {
             "id": res_id,
             "type": "lecture",
             "title": "Session-owned resource",
