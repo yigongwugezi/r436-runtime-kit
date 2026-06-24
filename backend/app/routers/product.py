@@ -1619,7 +1619,7 @@ def get_resources(
             from app.db.repository import delete_resource as repo_delete_resource
             db = SessionLocal()
             for oid in orphaned_ids:
-                repo_delete_resource(db, oid)
+                repo_delete_resource(db, session_id, oid)
             db.close()
         except Exception:
             logger.warning("Failed to clean up orphaned resources in get_resources")
@@ -1757,12 +1757,12 @@ def bookmark_resource(resource_id: str, sessionId: str = "", subjectId: str = ""
     try:
         db = SessionLocal()
         # Ensure resource exists in DB before toggling bookmark
-        from app.db.repository import save_resource as repo_save_resource
+        from app.db.repository import upsert_resource as repo_upsert_resource
         state = conversation_store.get(session_id)
         if state.last_result:
             for item in state.last_result.get("resources", []):
                 if item.get("resource_id") == resource_id:
-                    repo_save_resource(db, session_id, {
+                    repo_upsert_resource(db, session_id, {
                         "id": resource_id,
                         "type": item.get("type", "lecture"),
                         "title": item.get("title", "学习资源"),
@@ -1770,7 +1770,7 @@ def bookmark_resource(resource_id: str, sessionId: str = "", subjectId: str = ""
                         "content": item.get("content", ""),
                     })
                     break
-        bookmarked = toggle_bookmark(db, resource_id)
+        bookmarked = toggle_bookmark(db, session_id, resource_id)
         return _product_response({"bookmarked": bookmarked if bookmarked is not None else True}, session_id=session_id, subject_id=subjectId, source="user_action")
     finally:
         db.close()
@@ -1783,14 +1783,10 @@ def update_resource_study_status(resource_id: str, payload: dict[str, Any], sess
     study_status = str(payload.get("studyStatus", "completed"))
     try:
         db = SessionLocal()
-        from app.db.repository import get_resource as repo_get_resource, save_resource as repo_save_resource
-        resource = repo_get_resource(db, resource_id)
+        from app.db.repository import get_resource as repo_get_resource, upsert_resource as repo_upsert_resource, update_resource_study_status as repo_update_status
+        resource = repo_get_resource(db, session_id, resource_id)
         if resource:
-            # 校验资源属于当前 session，防止跨 session 修改
-            if resource.session_id != session_id:
-                return _product_response({"ok": False}, session_id=session_id, subject_id=subjectId, status="error", message="resource does not belong to this session", source="user_action")
-            resource.study_status = study_status
-            db.commit()
+            repo_update_status(db, session_id, resource_id, study_status)
         else:
             # 尚未入库，尝试从内存找完整数据再存
             state = conversation_store.get(session_id)
@@ -1798,7 +1794,7 @@ def update_resource_study_status(resource_id: str, payload: dict[str, Any], sess
                 for item in state.last_result.get("resources", []):
                     rid = item.get("resource_id") or item.get("id", "")
                     if rid == resource_id:
-                        repo_save_resource(db, session_id, {
+                        repo_upsert_resource(db, session_id, {
                             "id": resource_id,
                             "type": item.get("type", "lecture"),
                             "title": item.get("title", "学习资源"),
@@ -2227,7 +2223,7 @@ def log_study_event(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             from app.db.repository import get_resource as _get_res
             db = SessionLocal()
-            res = _get_res(db, payload["resourceId"])
+            res = _get_res(db, session_id, payload["resourceId"])
             if res and res.estimated_minutes and not payload.get("duration"):
                 payload["duration"] = res.estimated_minutes
             db.close()

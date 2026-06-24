@@ -10,6 +10,7 @@ from typing import Any
 import uuid
 
 from sqlalchemy import desc, func
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db.models import (
@@ -40,13 +41,11 @@ def get_or_create_session(db: Session, session_id: str) -> SessionModel:
     return sess
 
 
-def list_sessions(db: Session, status: str = "active") -> list[SessionModel]:
-    return (
-        db.query(SessionModel)
-        .filter(SessionModel.status == status)
-        .order_by(desc(SessionModel.updated_at))
-        .all()
-    )
+def list_sessions(db: Session, status: str = "active", learner_id: str | None = None) -> list[SessionModel]:
+    q = db.query(SessionModel).filter(SessionModel.status == status)
+    if learner_id:
+        q = q.filter(SessionModel.learner_id == learner_id)
+    return q.order_by(desc(SessionModel.updated_at)).all()
 
 
 def delete_session(db: Session, session_id: str) -> bool:
@@ -227,7 +226,7 @@ def get_latest_profile(db: Session, session_id: str) -> ProfileSnapshotModel | N
 
 # ── Learning Paths ───────────────────────────────────────────────────────
 
-def save_learning_path(
+def upsert_learning_path(
     db: Session,
     session_id: str,
     path_data: dict[str, Any],
@@ -273,22 +272,12 @@ def get_latest_learning_path(db: Session, session_id: str) -> LearningPathModel 
 
 # ── Resources ────────────────────────────────────────────────────────────
 
-def save_resource(
+def upsert_resource(
     db: Session,
     session_id: str,
     resource_data: dict[str, Any],
 ) -> ResourceModel:
     get_or_create_session(db, session_id)
-
-    def _json_list(value: Any) -> list | None:
-        """Normalise a value to a JSON-storable list, or None."""
-        if value is None:
-            return None
-        if isinstance(value, list):
-            return value
-        if isinstance(value, str):
-            return [value]
-        return None
 
     res = ResourceModel(
         id=resource_data.get("id", f"res_{_utcnow().timestamp()}"),
@@ -353,31 +342,56 @@ def get_resources(db: Session, session_id: str) -> list[ResourceModel]:
     )
 
 
-def get_resource(db: Session, resource_id: str) -> ResourceModel | None:
-    return db.get(ResourceModel, resource_id)
+def get_resource(db: Session, session_id: str, resource_id: str) -> ResourceModel | None:
+    return (
+        db.query(ResourceModel)
+        .filter(ResourceModel.id == resource_id, ResourceModel.session_id == session_id)
+        .first()
+    )
 
 
-def delete_resource(db: Session, resource_id: str) -> None:
-    """Delete a resource by ID."""
-    resource = db.query(ResourceModel).filter(ResourceModel.id == resource_id).first()
+def delete_resource(db: Session, session_id: str, resource_id: str) -> bool:
+    """Delete a resource by ID, scoped to session. Returns True if deleted."""
+    resource = (
+        db.query(ResourceModel)
+        .filter(ResourceModel.id == resource_id, ResourceModel.session_id == session_id)
+        .first()
+    )
     if resource:
         db.delete(resource)
         db.commit()
+        return True
+    return False
 
 
-def update_resource_study_status(db: Session, resource_id: str, study_status: str) -> None:
-    """Update the study status of a resource (new / in_progress / completed)."""
-    resource = db.query(ResourceModel).filter(ResourceModel.id == resource_id).first()
+def update_resource_study_status(db: Session, session_id: str, resource_id: str, study_status: str) -> bool:
+    """Update the study status of a resource (new / in_progress / completed).
+
+    Scoped to session — only modifies the resource if it belongs to the given session.
+    Returns True if a resource was found and updated, False otherwise.
+    """
+    resource = (
+        db.query(ResourceModel)
+        .filter(ResourceModel.id == resource_id, ResourceModel.session_id == session_id)
+        .first()
+    )
     if resource:
         resource.study_status = study_status
         if study_status == "completed":
             resource.completed_at = _utcnow()
         elif study_status == "new":
             resource.completed_at = None
+        db.commit()
+        return True
+    return False
 
 
-def toggle_bookmark(db: Session, resource_id: str) -> bool | None:
-    res = db.get(ResourceModel, resource_id)
+def toggle_bookmark(db: Session, session_id: str, resource_id: str) -> bool | None:
+    res = (
+        db.query(ResourceModel)
+        .filter(ResourceModel.id == resource_id, ResourceModel.session_id == session_id)
+        .first()
+    )
     if res is None:
         return None
     res.bookmarked = not res.bookmarked
@@ -413,7 +427,7 @@ def batch_update_study_status(
             ResourceModel.session_id == session_id,
             ResourceModel.id.in_(resource_ids),
         )
-        .update({"study_status": study_status}, synchronize_session=False)
+        .update({"study_status": study_status}, synchronize_session="fetch")
     )
     db.commit()
     return updated
@@ -433,7 +447,7 @@ def batch_set_bookmark(
             ResourceModel.session_id == session_id,
             ResourceModel.id.in_(resource_ids),
         )
-        .update({"bookmarked": bookmarked}, synchronize_session=False)
+        .update({"bookmarked": bookmarked}, synchronize_session="fetch")
     )
     db.commit()
     return updated
@@ -657,9 +671,11 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
                     resource_type_counts.get(rtype, 0),
                     resource_counts.get(rid, 0),
                 )
-    except Exception:
+    except SQLAlchemyError:
         import logging
-        logging.getLogger("app.db.repository").warning("Failed to resolve resource types for analytics")
+        logging.getLogger("app.db.repository").warning(
+            "Failed to resolve resource types for analytics", exc_info=True
+        )
 
     top_resources = sorted(resource_counts.items(), key=lambda x: x[1], reverse=True)[:5]
 

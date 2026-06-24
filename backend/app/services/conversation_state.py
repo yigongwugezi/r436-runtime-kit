@@ -15,8 +15,8 @@ from app.db.repository import (
     get_or_create_session,
     save_message,
     save_profile_snapshot,
-    save_learning_path,
-    save_resource,
+    upsert_learning_path,
+    upsert_resource,
     get_latest_profile,
     get_latest_learning_path,
     get_resources as repo_get_resources,
@@ -399,7 +399,7 @@ class ConversationStore:
                             result.get("estimatedDays"), stages
                         ),
                     }
-                    save_learning_path(db, state.session_id, path_data)
+                    upsert_learning_path(db, state.session_id, path_data)
 
                 # Save resources if present — persist full structured data
                 for item in result.get("resources", []):
@@ -423,7 +423,7 @@ class ConversationStore:
                     if item.get("related_stage_id"):
                         related_points.append(str(item.get("related_stage_id")))
 
-                    save_resource(db, state.session_id, {
+                    upsert_resource(db, state.session_id, {
                         "id": resource_id,
                         "type": item.get("type", "lecture"),
                         "title": item.get("title", "学习资源"),
