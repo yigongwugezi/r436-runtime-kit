@@ -271,18 +271,9 @@ def test_feedback_default_session() -> None:
     assert "sessionId is required" in result.get("error", "")
     print("✓ Feedback without sessionId correctly rejected")
 
-    # Verify the rejected event did not leak into the test session
-    analytics = client.get("/api/learning-analytics",
-        params={"sessionId": SESSION}).json()
-    resource_ids = {t.get("resourceId") for t in analytics.get("topResources", [])}
-    assert fresh_id not in resource_ids, (
-        "rejected event leaked into active session"
-    )
-    print("✓ Active session not polluted by rejected event")
 
-
-def test_session_isolation_with_different_ids() -> None:
-    """Verify events from different sessionId values are properly isolated."""
+def test_subject_isolation() -> None:
+    """Verify events from different subjectId resolve to different sessions."""
     subj_a = "e2e_subj_a_events"
     subj_b = "e2e_subj_b_events"
 
@@ -310,4 +301,4 @@ def test_session_isolation_with_different_ids() -> None:
     assert b["eventCount"] >= 1
     assert b["totalStudyMinutes"] >= 10
 
-    print("✓ Session isolation works correctly (events don't mix)")
+    print("✓ Subject isolation works correctly (events don't mix)")

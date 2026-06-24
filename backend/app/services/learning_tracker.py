@@ -35,11 +35,12 @@ class LearningTracker:
     # ── Public API ────────────────────────────────────────────────────
 
     def log(self, event: dict[str, Any], session_id: str | None = None) -> dict[str, Any]:
-        if not session_id:
-            raise ValueError("session_id is required")
+        sid = session_id or event.get("sessionId") or ""
+        if not sid or not sid.strip():
+            raise ValueError("sessionId is required and must not be empty")
         normalized = {
             **event,
-            "sessionId": session_id,
+            "sessionId": sid.strip(),
             "timestamp": event.get("timestamp") or time.time(),
         }
 
@@ -82,17 +83,12 @@ class LearningTracker:
         return filtered[-limit:]
 
     def summary(self, session_id: str | None = None) -> dict[str, Any]:
-        if not session_id:
-            return {
-                "eventCount": 0, "totalStudyMinutes": 0, "activeResourceCount": 0,
-                "eventBreakdown": {}, "topResources": [], "quizAccuracy": None,
-                "weakTopics": [], "recommendations": [], "recentEvents": [],
-                "lastStudyDate": 0, "completedTopics": [], "streak": 0,
-            }
+        if not session_id or not session_id.strip():
+            return {}
         if self._db_enabled:
             try:
                 db = self._db_session()
-                return get_event_analytics(db, session_id)
+                return get_event_analytics(db, session_id.strip())
             finally:
                 db.close()
 
@@ -143,23 +139,29 @@ class LearningTracker:
         }
 
     def reset(self, session_id: str | None = None) -> None:
-        if not session_id:
-            return  # no-op for empty session_id
+        if session_id is None:
+            self._events.clear()
+            return
+        sid = session_id.strip()
+        if not sid:
+            return
         if self._db_enabled:
             try:
                 db = self._db_session()
-                delete_session(db, session_id)
+                delete_session(db, sid)
             finally:
                 db.close()
-
-        self._events = [event for event in self._events if event.get("sessionId") != session_id]
+        self._events = [event for event in self._events if event.get("sessionId") != sid]
 
     # ── Internal helpers ──────────────────────────────────────────────
 
     def _filter(self, session_id: str | None = None) -> list[dict[str, Any]]:
-        if not session_id:
+        if session_id is None:
             return []
-        return [event for event in self._events if event.get("sessionId") == session_id]
+        sid = session_id.strip()
+        if not sid:
+            return []
+        return [event for event in self._events if event.get("sessionId") == sid]
 
     def _duration_minutes(self, event: dict[str, Any]) -> int:
         value = event.get("duration") or event.get("durationMinutes") or 0

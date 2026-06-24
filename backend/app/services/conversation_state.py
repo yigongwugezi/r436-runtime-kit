@@ -253,11 +253,11 @@ class ConversationStore:
     def get(self, session_id: str | None) -> ConversationState:
         """Get or create the conversation state for *session_id*.
 
-        Raises ValueError when *session_id* is empty — sessionId is the sole
-        data-ownership key and must always be provided.
+        Raises ValueError if session_id is None or empty — sessionId is
+        the data ownership key and must always be provided.
         """
         if not session_id or not session_id.strip():
-            raise ValueError("session_id is required and must be non-empty")
+            raise ValueError("session_id is required and must not be empty")
         sid = session_id.strip()
         if sid not in self._sessions:
             state = ConversationState(session_id=sid)
@@ -292,7 +292,7 @@ class ConversationStore:
     def reset(self, session_id: str | None) -> ConversationState:
         """Reset all state for a session (in-memory + DB)."""
         if not session_id or not session_id.strip():
-            raise ValueError("session_id is required and must be non-empty")
+            raise ValueError("session_id is required and must not be empty")
         sid = session_id.strip()
         self._sessions[sid] = ConversationState(session_id=sid)
         if self._db_enabled:

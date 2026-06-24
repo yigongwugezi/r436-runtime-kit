@@ -147,8 +147,6 @@ def _run_agents(
     progress_callback: Callable | None = None,
 ) -> dict[str, Any]:
     """Trigger the full multi-agent pipeline via AgentService and persist results."""
-    if not session_id:
-        raise ValueError("_run_agents requires a non-empty session_id")
     state = conversation_store.get(session_id)
     user_topic = state.facts.get("target_course") or message
     selected_course = course_catalog.match_course(user_topic)
@@ -601,8 +599,6 @@ def _learning_plan_reply(result: dict[str, Any], intent: dict[str, Any]) -> str:
 
 
 def _casual_reply(session_id: str = "") -> str:
-    if not session_id:
-        raise ValueError("session_id is required for _casual_reply")
     state = conversation_store.get(session_id)
     known = "\n".join(conversation_store.known_lines(state))
     if known:
@@ -941,7 +937,9 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
     message = str(payload.get("message", "我想学习人工智能导论"))
     session_id = str(payload.get("sessionId", "")).strip()
     if not session_id:
-        raise HTTPException(status_code=400, detail="sessionId is required")
+        raise HTTPException(status_code=422, detail={
+            "ok": False, "error": "sessionId is required", "code": "MISSING_SESSION_ID",
+        })
 
     conversation_store.append_message(session_id, "user", message)
     intent = _classify_intent(message)
@@ -1052,7 +1050,9 @@ def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
     message = str(payload.get("message", "我想学习人工智能导论"))
     session_id = str(payload.get("sessionId", "")).strip()
     if not session_id:
-        raise HTTPException(status_code=400, detail="sessionId is required")
+        raise HTTPException(status_code=422, detail={
+            "ok": False, "error": "sessionId is required", "code": "MISSING_SESSION_ID",
+        })
 
     conversation_store.append_message(session_id, "user", message)
     intent = _classify_intent(message)
@@ -1139,20 +1139,37 @@ def generation_progress(task_id: str) -> dict[str, Any]:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _resolve_session_id(sessionId: str = "", _subjectId: str = "") -> str:
-    """Validate sessionId for query-param endpoints. subjectId is accepted for API compat
-    but NEVER used as a sessionId substitute — sessionId is the sole data-ownership key."""
-    sid = sessionId.strip()
+def _resolve_session_id(sessionId: str = "", subjectId: str = "") -> str:
+    """Resolve session_id from query parameters.
+
+    sessionId is the data ownership key. subjectId is course context only
+    and MUST NOT be used as a session identifier.
+    Raises HTTPException(422) if sessionId is empty.
+    """
+    sid = sessionId.strip() if sessionId else ""
     if not sid:
-        raise HTTPException(status_code=400, detail="sessionId is required")
+        raise HTTPException(status_code=422, detail={
+            "ok": False,
+            "error": "sessionId is required",
+            "code": "MISSING_SESSION_ID",
+        })
     return sid
 
 
 def _payload_session_id(payload: dict[str, Any]) -> str:
-    """Validate sessionId from request body. subjectId is NOT consulted."""
-    sid = str(payload.get("sessionId", "")).strip()
+    """Extract session_id from a request body.
+
+    Only sessionId from the payload is accepted. subjectId in the body
+    is NOT used as a sessionId fallback.
+    Raises HTTPException(422) if sessionId is missing or empty.
+    """
+    sid = str(payload.get("sessionId") or "").strip()
     if not sid:
-        raise HTTPException(status_code=400, detail="sessionId is required")
+        raise HTTPException(status_code=422, detail={
+            "ok": False,
+            "error": "sessionId is required",
+            "code": "MISSING_SESSION_ID",
+        })
     return sid
 
 

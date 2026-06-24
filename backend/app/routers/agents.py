@@ -24,6 +24,13 @@ def run_agents(payload: AgentRunRequest) -> dict[str, Any]:
     Returns the orchestrator result with per-agent step metadata,
     overall status, and generated profile / diagnosis / learning_path / resources.
     """
+    if not payload.session_id:
+        return {
+            "code": -1,
+            "message": "sessionId is required",
+            "data": None,
+            "request_id": f"req_agents_run_{int(time.time() * 1000)}",
+        }
     session_id = payload.session_id
     course_id = payload.course_id
 

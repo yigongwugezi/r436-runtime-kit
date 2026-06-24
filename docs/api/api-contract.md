@@ -1,5 +1,10 @@
 # Runtime Kit API Contract
 
+> **sessionId 合约 (v0.2.1)**: `sessionId` 是所有产品 API 的**必填数据归属键**。
+> 为空时返回 **HTTP 422** `{"detail": {"error": "sessionId is required", "code": "MISSING_SESSION_ID"}}`。
+> `subjectId` 仅作为课程上下文参数，**不作为** sessionId 的替代或 fallback。
+> 前端始终通过 `chatStore.currentSessionId` 生成并传递唯一 `sessionId`。
+
 ## 1. Base URLs
 
 Frontend:
@@ -69,7 +74,7 @@ Request:
 
 ```json
 {
-  "sessionId": "session_abc123",
+  "sessionId": "demo_session_001",
   "message": "我是电子信息大二学生，Python基础一般，想两周入门人工智能。"
 }
 ```
@@ -92,7 +97,7 @@ Response:
 
 ```json
 {
-  "sessionId": "session_abc123",
+  "sessionId": "demo_session_001",
   "reply": {
     "id": "assistant_msg_001",
     "role": "assistant",
@@ -106,14 +111,14 @@ Response:
 
 Purpose: get the current student profile. Reads from database — never triggers agents. Returns empty structure with `source: "none"` when no data exists.
 
-Query: `?sessionId=session_abc123`
+Query: `?sessionId=demo_session_001`
 
 Response:
 
 ```json
 {
   "profile": {
-    "id": "session_abc123",
+    "id": "demo_session_001",
     "learnerId": null,
     "nickname": "学习者",
     "createdAt": 1781235059000,
@@ -155,7 +160,7 @@ Request:
 
 ```json
 {
-  "sessionId": "session_abc123",
+  "sessionId": "demo_session_001",
   "message": "我是软件工程大三学生，线性代数比较弱，想十天学懂神经网络。"
 }
 ```
@@ -165,7 +170,7 @@ Response:
 ```json
 {
   "profile": {
-    "id": "session_abc123",
+    "id": "demo_session_001",
     "learnerId": null,
     "nickname": "学习者",
     "dimensions": [...],
@@ -186,7 +191,7 @@ Request:
 
 ```json
 {
-  "sessionId": "session_abc123",
+  "sessionId": "demo_session_001",
   "nickname": "新昵称"
 }
 ```
@@ -203,7 +208,7 @@ Response:
 
 Purpose: get the current study path. Reads from database — never triggers agents.
 
-Query: `?sessionId=session_abc123`
+Query: `?sessionId=demo_session_001`
 
 Response:
 
@@ -250,7 +255,7 @@ Request:
 
 ```json
 {
-  "sessionId": "session_abc123"
+  "sessionId": "demo_session_001"
 }
 ```
 
@@ -270,7 +275,7 @@ Request:
 
 ```json
 {
-  "sessionId": "session_abc123",
+  "sessionId": "demo_session_001",
   "status": "completed"
 }
 ```
@@ -313,7 +318,7 @@ Response:
 
 Purpose: get generated learning resources. Reads from database — never triggers agents.
 
-Query: `?sessionId=session_abc123`
+Query: `?sessionId=demo_session_001`
 
 Response:
 
@@ -343,7 +348,7 @@ Response:
   ],
   "total": 6,
   "page": 1,
-  "sessionId": "session_abc123"
+  "sessionId": "demo_session_001"
 }
 ```
 
@@ -359,7 +364,7 @@ Request:
 
 ```json
 {
-  "sessionId": "session_abc123",
+  "sessionId": "demo_session_001",
   "topic": "链表",
   "type": "quiz"
 }
@@ -377,7 +382,7 @@ Response:
 
 Purpose: toggle the bookmarked state of a resource.
 
-Query: `?sessionId=session_abc123`
+Query: `?sessionId=demo_session_001`
 
 Response:
 
@@ -409,7 +414,7 @@ Response:
 {
   "sessions": [
     {
-      "id": "session_abc123",
+      "id": "demo_session_001",
       "title": "未命名会话",
       "status": "active",
       "createdAt": 1781235059000,
@@ -427,7 +432,7 @@ Response:
 
 ```json
 {
-  "sessionId": "session_abc123",
+  "sessionId": "demo_session_001",
   "messages": [
     {
       "id": "msg_1",
@@ -448,7 +453,7 @@ Response:
 ```json
 {
   "ok": true,
-  "sessionId": "session_abc123"
+  "sessionId": "demo_session_001"
 }
 ```
 
@@ -492,7 +497,7 @@ Request:
 
 ```json
 {
-  "sessionId": "session_abc123",
+  "sessionId": "demo_session_001",
   "content": "这道题太简单了"
 }
 ```

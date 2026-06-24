@@ -19,7 +19,7 @@
 
 ```json
 {
-  "sessionId": "session_abc123",
+  "sessionId": "demo_session_001",
   "event": "quiz_result",
   "resourceId": "res_quiz_001",
   "duration": 15,
@@ -43,7 +43,7 @@
 
 ### 查询学习分析
 
-`GET /api/learning-analytics?sessionId=session_abc123`
+`GET /api/learning-analytics?sessionId=demo_session_001`
 
 返回字段：
 
