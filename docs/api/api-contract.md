@@ -866,8 +866,30 @@ Response:
     }
   ],
   "recommendations": [
-    "练习正确率偏低，建议降低资源难度并增加图解讲解。",
-    "优先复习薄弱知识点：线性回归。"
+    {
+      "recommendation_type": "incomplete_resource",
+      "title": "完成未学完的资源：机器学习基础入门讲义",
+      "reason": "资源「机器学习基础入门讲义」尚未完成学习（状态：in_progress）",
+      "target_resource_id": "res_lecture_001",
+      "target_stage_id": "stage_1",
+      "priority": "medium",
+      "source": "db",
+      "confidence": 0.9,
+      "evidence": "Resource 'res_lecture_001' of type 'lecture' has study_status='in_progress' in current session",
+      "quality_status": "passed"
+    },
+    {
+      "recommendation_type": "low_accuracy_topic",
+      "title": "复习薄弱知识点：线性回归",
+      "reason": "知识点「线性回归」正确率偏低（3/5 错误），建议重新学习相关资源",
+      "target_resource_id": "res_quiz_002",
+      "target_stage_id": "stage_1",
+      "priority": "high",
+      "source": "analytics",
+      "confidence": 0.4,
+      "evidence": "Topic '线性回归': 3 wrong out of 5 attempts (risk=0.6)",
+      "quality_status": "passed"
+    }
   ],
   "completionTrend": [
     {"date": "2026-06-10", "count": 0},
@@ -893,6 +915,9 @@ Response:
 `weakTopics[].priority` is `"high"` when risk > 0.5, otherwise `"medium"`.
 `completionTrend` covers the last 14 days.
 `quizTrend` returns the last 20 quiz/practice results.
+`recommendations` is an array of structured recommendation objects (not plain strings).
+Each item contains: `recommendation_type` (one of `incomplete_resource`, `low_accuracy_topic`, `incomplete_practice`, `stage_incomplete`, `frequent_weak_topic`), `title`, `reason`, `target_resource_id` (nullable), `target_stage_id` (nullable), `priority` (`high`/`medium`/`low`), `source`, `confidence` (0-1), `evidence`, and `quality_status`.
+Empty array when no data or no actionable recommendations exist.
 
 ### GET /learning-events/timeline
 

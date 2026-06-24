@@ -605,16 +605,27 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
         if wrong > 0
     ]
 
-    # Recommendations
-    recommendations: list[str] = []
-    if total_minutes < 30:
-        recommendations.append("学习时长还偏少，建议先完成一个核心讲义和一组基础练习。")
-    if quiz_accuracy is not None and quiz_accuracy < 70:
-        recommendations.append("练习正确率偏低，建议降低资源难度并增加图解讲解。")
-    if weak_topics:
-        recommendations.append(f"优先复习薄弱知识点：{weak_topics[0]['topic']}。")
-    if not recommendations:
-        recommendations.append("当前学习节奏稳定，可以继续推进下一阶段任务。")
+    # ── Structured recommendations from 5 sources ──
+    try:
+        session_resources = get_resources(db, session_id)
+    except SQLAlchemyError:
+        session_resources = []
+
+    try:
+        session_path = get_latest_learning_path(db, session_id)
+    except SQLAlchemyError:
+        session_path = None
+
+    from app.services.recommendation_engine import generate_recommendations
+
+    recommendations_raw = generate_recommendations(
+        session_id=session_id,
+        weak_topics=weak_topics,
+        resources=session_resources,
+        learning_path=session_path,
+        db=db,
+    )
+    recommendations = recommendations_raw
 
     # ── Chart data: completion trend (last 14 days) ──
     from collections import defaultdict as _dd

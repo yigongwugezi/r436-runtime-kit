@@ -47,6 +47,31 @@ export interface RecentEvent {
   metadata?: Record<string, unknown>;
 }
 
+/** 结构化学习推荐项 — 来自后端 /learning-analytics */
+export interface RecommendationItem {
+  /** 推荐类型 */
+  recommendation_type: 'incomplete_resource' | 'low_accuracy_topic'
+    | 'incomplete_practice' | 'stage_incomplete' | 'frequent_weak_topic';
+  /** 推荐标题 */
+  title: string;
+  /** 推荐原因 */
+  reason: string;
+  /** 目标资源 ID（可导航） */
+  target_resource_id: string | null;
+  /** 目标阶段 ID（可导航） */
+  target_stage_id: string | null;
+  /** 优先级 */
+  priority: 'high' | 'medium' | 'low';
+  /** 数据来源 */
+  source: 'db' | 'event' | 'analytics';
+  /** 置信度 0-1 */
+  confidence: number;
+  /** 支持证据 */
+  evidence: string;
+  /** 质量状态 */
+  quality_status: string;
+}
+
 /** 学习分析汇总 — 后端 /learning-analytics 返回 */
 export interface AnalyticsSummary {
   eventCount: number;
@@ -68,7 +93,7 @@ export interface AnalyticsSummary {
   topResources: TopResource[];
   quizAccuracy: number | null;
   weakTopics: WeakTopic[];
-  recommendations: string[];
+  recommendations: RecommendationItem[];
   completionTrend: CompletionTrendPoint[];
   quizTrend: QuizTrendPoint[];
   resourceTypeBreakdown: Record<string, number>;

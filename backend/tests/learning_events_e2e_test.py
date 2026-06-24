@@ -246,12 +246,29 @@ def test_recent_events_reverse_chronological_order() -> None:
 
 
 def test_recommendations() -> None:
-    """recommendations should contain actionable advice strings."""
+    """recommendations should contain structured objects with required fields."""
     analytics = _get_analytics()
     recs = analytics["recommendations"]
-    assert len(recs) >= 1, "Should have at least 1 recommendation"
-    assert all(isinstance(r, str) for r in recs)
-    print(f"PASS recommendations ({len(recs)} items)")
+    assert isinstance(recs, list), "recommendations should be a list"
+    # With quiz data posted, we should get structured recommendations
+    if recs:
+        rec = recs[0]
+        assert isinstance(rec, dict), "each recommendation should be a dict"
+        required_fields = [
+            "recommendation_type", "title", "reason",
+            "target_resource_id", "target_stage_id",
+            "priority", "source", "confidence", "evidence", "quality_status",
+        ]
+        for field in required_fields:
+            assert field in rec, f"recommendation missing field '{field}'"
+        assert rec["recommendation_type"] in (
+            "incomplete_resource", "low_accuracy_topic", "incomplete_practice",
+            "stage_incomplete", "frequent_weak_topic",
+        ), f"unknown recommendation_type: {rec['recommendation_type']}"
+        assert rec["priority"] in ("high", "medium", "low"), f"unknown priority: {rec['priority']}"
+        assert isinstance(rec["confidence"], (int, float)), "confidence should be numeric"
+        assert 0.0 <= rec["confidence"] <= 1.0, f"confidence out of range: {rec['confidence']}"
+    print(f"PASS recommendations ({len(recs)} structured items)")
 
 
 def test_event_breakdown_labels() -> None:
@@ -508,6 +525,9 @@ def test_empty_analytics_returns_default_structure() -> None:
     assert data["quizAccuracy"] is None
     assert data["weakTopics"] == []
     assert isinstance(data["recommendations"], list)
+    assert len(data["recommendations"]) == 0, (
+        "empty data should produce no recommendations"
+    )
     assert data["recentEvents"] == []
 
     print("PASS Empty analytics returns default structure with zero values")

@@ -154,6 +154,23 @@ class ResourceListData(BaseModel):
 # ── Learning analytics response ────────────────────────────────────────────
 
 
+class RecommendationItem(BaseModel):
+    """A single structured recommendation for the learner."""
+
+    recommendation_type: str = ""
+    # One of: incomplete_resource | low_accuracy_topic | incomplete_practice
+    #         | stage_incomplete | frequent_weak_topic
+    title: str = ""
+    reason: str = ""
+    target_resource_id: str | None = None
+    target_stage_id: str | None = None
+    priority: str = "medium"  # high | medium | low
+    source: str = "analytics"  # db | event | analytics
+    confidence: float = 0.0
+    evidence: str = ""
+    quality_status: str = "passed"
+
+
 class LearningAnalyticsData(BaseModel):
     """Learning analytics summary returned by GET /learning-analytics."""
 
@@ -167,7 +184,7 @@ class LearningAnalyticsData(BaseModel):
     topResources: list[dict[str, Any]] = Field(default_factory=list)
     quizAccuracy: int | None = None
     weakTopics: list[dict[str, Any]] = Field(default_factory=list)
-    recommendations: list[str] = Field(default_factory=list)
+    recommendations: list[RecommendationItem] = Field(default_factory=list)
     recentEvents: list[dict[str, Any]] = Field(default_factory=list)
     summary: str = ""
 

@@ -43,7 +43,16 @@ def main() -> None:
     assert_equal(summary["practiceCount"], 1, "practiceCount")
     assert_equal(summary["quizAccuracy"], 60, "quizAccuracy")
     assert_equal(summary["weakTopics"][0]["topic"], "stack", "weak topic")
-    assert_true(summary["recommendations"], "recommendations should not be empty")
+    recs = summary["recommendations"]
+    assert_true(len(recs) >= 1, "recommendations should not be empty")
+    rec = recs[0]
+    assert_true("recommendation_type" in rec, "rec has recommendation_type")
+    assert_true("title" in rec, "rec has title")
+    assert_true("reason" in rec, "rec has reason")
+    assert_true("priority" in rec, "rec has priority")
+    assert_true("confidence" in rec, "rec has confidence")
+    assert_true("evidence" in rec, "rec has evidence")
+    assert_true("quality_status" in rec, "rec has quality_status")
 
     # Verify recentEvents in reverse chronological order
     recent = summary["recentEvents"]

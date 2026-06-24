@@ -11,7 +11,7 @@ import {
 } from '../components/common/PageState';
 import { formatDuration } from '../utils/format';
 import { useLearningAnalytics } from '../hooks/useLearningAnalytics';
-import type { AnalyticsSummary } from '../types/analytics';
+import type { AnalyticsSummary, RecommendationItem } from '../types/analytics';
 import { useSubjectStore } from '../store/subjectStore';
 import DiagnosisPanel from '../components/analytics/DiagnosisPanel';
 import { useChatStore } from '../store/chatStore';
@@ -438,12 +438,46 @@ export default function LearningAnalyticsPage() {
             <p className="text-xs text-gray-400">暂无建议，持续学习后系统将自动生成</p>
           ) : (
             <div className="space-y-2">
-              {analytics.recommendations.map((rec, i) => (
-                <div key={i} className="flex items-start gap-2 p-2.5 bg-brand-50/50 rounded-xl">
-                  <ArrowRight className="w-4 h-4 text-brand-500 flex-shrink-0 mt-0.5" />
-                  <p className="text-xs text-brand-700 leading-relaxed">{rec}</p>
-                </div>
-              ))}
+              {analytics.recommendations.map((rec: RecommendationItem, i: number) => {
+                const typeConfig: Record<string, { icon: string; color: string }> = {
+                  incomplete_resource: { icon: '📖', color: 'blue' },
+                  low_accuracy_topic:  { icon: '🎯', color: 'amber' },
+                  incomplete_practice: { icon: '💻', color: 'cyan' },
+                  stage_incomplete:    { icon: '📋', color: 'purple' },
+                  frequent_weak_topic: { icon: '🔥', color: 'red' },
+                };
+                const cfg = typeConfig[rec.recommendation_type] || { icon: '💡', color: 'brand' };
+                const priorityClass =
+                  rec.priority === 'high' ? 'bg-red-100 text-red-600' :
+                  rec.priority === 'medium' ? 'bg-amber-100 text-amber-600' :
+                  'bg-gray-100 text-gray-500';
+                const priorityLabel =
+                  rec.priority === 'high' ? '高优先' :
+                  rec.priority === 'medium' ? '中优先' : '低优先';
+
+                return (
+                  <div key={i} className="flex items-start gap-2 p-2.5 rounded-xl bg-brand-50/50 border border-gray-100">
+                    <span className="text-sm flex-shrink-0 mt-0.5">{cfg.icon}</span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-semibold text-gray-800">{rec.title}</p>
+                      <p className="text-[10px] text-gray-500 mt-0.5">{rec.reason}</p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className={`text-[9px] font-medium px-1.5 py-0.5 rounded-full ${priorityClass}`}>
+                          {priorityLabel}
+                        </span>
+                        {rec.target_resource_id && (
+                          <button
+                            onClick={() => navigate(`/resources?resourceId=${rec.target_resource_id}`)}
+                            className="text-[9px] font-medium text-brand-500 hover:text-brand-700 underline"
+                          >
+                            查看资源
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -645,7 +679,7 @@ export default function LearningAnalyticsPage() {
             {analytics.recommendations.length > 0 && (
               <div className="mt-2 p-3 bg-brand-50/50 rounded-xl">
                 <p className="text-xs text-brand-700 leading-relaxed">
-                  💡 {analytics.recommendations[0]}
+                  💡 {analytics.recommendations[0]?.title}
                 </p>
               </div>
             )}

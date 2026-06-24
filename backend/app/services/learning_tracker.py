@@ -258,17 +258,23 @@ class LearningTracker:
         total_minutes: int,
         quiz_accuracy: int | None,
         weak_topics: list[dict[str, Any]],
-    ) -> list[str]:
-        recommendations: list[str] = []
-        if total_minutes < 30:
-            recommendations.append("学习时长还偏少，建议先完成一个核心讲义和一组基础练习。")
-        if quiz_accuracy is not None and quiz_accuracy < 70:
-            recommendations.append("练习正确率偏低，建议降低资源难度并增加图解讲解。")
-        if weak_topics:
-            recommendations.append(f"优先复习薄弱知识点：{weak_topics[0]['topic']}。")
-        if not recommendations:
-            recommendations.append("当前学习节奏稳定，可以继续推进下一阶段任务。")
-        return recommendations
+    ) -> list[dict[str, Any]]:
+        """Generate structured recommendations from in-memory event data.
+
+        Uses the shared recommendation engine.  In-memory mode does not have
+        DB access for ResourceModel / LearningPathModel, so resource-backed
+        sources (1, 3, 4) produce no output.  Sources 2 & 5 (weak-topic-based)
+        still generate actionable recommendations.
+        """
+        from app.services.recommendation_engine import generate_recommendations
+
+        return generate_recommendations(
+            session_id="",
+            weak_topics=weak_topics,
+            resources=[],
+            learning_path=None,
+            db=None,
+        )
 
 
 learning_tracker = LearningTracker()
