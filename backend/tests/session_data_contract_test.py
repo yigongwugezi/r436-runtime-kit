@@ -348,13 +348,13 @@ def test_profile_isolation_via_api() -> None:
 
         r_a = client.get("/api/profile", params={"sessionId": session_a})
         assert r_a.status_code == 200, f"profile A: expected 200 got {r_a.status_code}"
-        profile_a = r_a.json().get("profile", {})
+        profile_a = r_a.json()["data"].get("profile", {})
         assert profile_a.get("id") == session_a, \
             f"profile id should match session A ({session_a}), got {profile_a.get('id')}"
 
         r_b = client.get("/api/profile", params={"sessionId": session_b})
         assert r_b.status_code == 200
-        profile_b = r_b.json().get("profile", {})
+        profile_b = r_b.json()["data"].get("profile", {})
         assert profile_b.get("id") == session_b
 
         assert profile_a.get("id") != profile_b.get("id"), \
@@ -380,8 +380,7 @@ def test_path_isolation_via_api() -> None:
 
         r_a = client.get("/api/learning-path", params={"sessionId": session_a})
         assert r_a.status_code == 200
-        # The response key may be "path" or "learningPath"
-        data_a = r_a.json()
+        data_a = r_a.json()["data"]
         path_id_a = data_a.get("id") or data_a.get("path", {}).get("id", "")
         assert path_id_a, f"path A should have an id, got {list(data_a.keys())}"
         assert path_id_a.startswith(f"path_{session_a}_"), \
@@ -389,7 +388,7 @@ def test_path_isolation_via_api() -> None:
 
         r_b = client.get("/api/learning-path", params={"sessionId": session_b})
         assert r_b.status_code == 200
-        data_b = r_b.json()
+        data_b = r_b.json()["data"]
         path_id_b = data_b.get("id") or data_b.get("path", {}).get("id", "")
         assert path_id_b.startswith(f"path_{session_b}_"), \
             f"path B id should start with path_{session_b}_, got {path_id_b}"
@@ -414,11 +413,11 @@ def test_resources_isolation_via_api() -> None:
 
         r_a = client.get("/api/resources", params={"sessionId": session_a})
         assert r_a.status_code == 200
-        resources_a = r_a.json().get("resources", [])
+        resources_a = r_a.json()["data"].get("resources", [])
 
         r_b = client.get("/api/resources", params={"sessionId": session_b})
         assert r_b.status_code == 200
-        resources_b = r_b.json().get("resources", [])
+        resources_b = r_b.json()["data"].get("resources", [])
 
         ids_a = {r.get("id", "") for r in resources_a if r.get("id")}
         ids_b = {r.get("id", "") for r in resources_b if r.get("id")}
@@ -451,12 +450,12 @@ def test_analytics_isolation_via_api() -> None:
 
         r_a = client.get("/api/learning-analytics", params={"sessionId": session_a})
         assert r_a.status_code == 200
-        analytics_a = r_a.json()
+        analytics_a = r_a.json()["data"]
         assert "eventCount" in analytics_a, f"analytics A should have eventCount"
 
         r_b = client.get("/api/learning-analytics", params={"sessionId": session_b})
         assert r_b.status_code == 200
-        analytics_b = r_b.json()
+        analytics_b = r_b.json()["data"]
         assert "eventCount" in analytics_b, f"analytics B should have eventCount"
 
         # Different sessions should have independent analytics
@@ -562,7 +561,7 @@ def test_multi_session_multi_subject_no_leak() -> None:
         for sid, expected_course in sessions_subjects.items():
             r = client.get("/api/learning-path", params={"sessionId": sid})
             assert r.status_code == 200
-            data = r.json()
+            data = r.json()["data"]
             path_id = data.get("id") or data.get("path", {}).get("id", "")
             assert path_id.startswith(f"path_{sid}_"), \
                 f"API: session {sid} path id should contain session id, got {path_id}"
@@ -588,6 +587,88 @@ def test_no_frontend_session_001_in_app_source() -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Envelope structure validation
+# ═══════════════════════════════════════════════════════════════════════
+
+
+REQUIRED_ENVELOPE_FIELDS = {"status", "data", "message", "warnings", "source", "sessionId", "subjectId"}
+
+
+def test_product_response_envelope_structure() -> None:
+    """Verify that product endpoints return the unified envelope with all required fields."""
+    session_id = f"envelope_{uuid.uuid4().hex[:6]}"
+    _cleanup([session_id])
+
+    try:
+        agent_service.run_agents(
+            session_id=session_id,
+            course_id="data_structures",
+            user_message="我是大二学生，想学数据结构",
+        )
+
+        # Profile envelope
+        r = client.get("/api/profile", params={"sessionId": session_id})
+        assert r.status_code == 200
+        env = r.json()
+        for field in REQUIRED_ENVELOPE_FIELDS:
+            assert field in env, f"GET /profile: envelope missing field '{field}'"
+        assert env["status"] == "success", f"GET /profile: expected status=success, got {env['status']}"
+        assert "profile" in env["data"], f"GET /profile: data missing 'profile' key"
+        assert env["sessionId"] == session_id, f"GET /profile: sessionId mismatch"
+        assert isinstance(env["warnings"], list), "GET /profile: warnings should be a list"
+
+        # Learning path envelope
+        r = client.get("/api/learning-path", params={"sessionId": session_id})
+        assert r.status_code == 200
+        env = r.json()
+        for field in REQUIRED_ENVELOPE_FIELDS:
+            assert field in env, f"GET /learning-path: envelope missing field '{field}'"
+        assert env["status"] == "success"
+        assert "path" in env["data"], f"GET /learning-path: data missing 'path' key"
+
+        # Resources envelope
+        r = client.get("/api/resources", params={"sessionId": session_id})
+        assert r.status_code == 200
+        env = r.json()
+        for field in REQUIRED_ENVELOPE_FIELDS:
+            assert field in env, f"GET /resources: envelope missing field '{field}'"
+        assert env["status"] == "success"
+        assert "resources" in env["data"], f"GET /resources: data missing 'resources' key"
+        assert "total" in env["data"], f"GET /resources: data missing 'total' key"
+
+        # Analytics envelope
+        r = client.get("/api/learning-analytics", params={"sessionId": session_id})
+        assert r.status_code == 200
+        env = r.json()
+        for field in REQUIRED_ENVELOPE_FIELDS:
+            assert field in env, f"GET /learning-analytics: envelope missing field '{field}'"
+        assert env["status"] == "success"
+        assert "eventCount" in env["data"], f"GET /learning-analytics: data missing 'eventCount' key"
+
+        # Timeline envelope
+        r = client.get("/api/learning-events/timeline", params={"sessionId": session_id})
+        assert r.status_code == 200
+        env = r.json()
+        for field in REQUIRED_ENVELOPE_FIELDS:
+            assert field in env, f"GET /learning-events/timeline: envelope missing field '{field}'"
+        assert env["status"] == "success"
+        assert "events" in env["data"], f"GET /learning-events/timeline: data missing 'events' key"
+
+        # Empty profile session should also return envelope
+        empty_id = f"envelope_empty_{uuid.uuid4().hex[:6]}"
+        _cleanup([empty_id])
+        r = client.get("/api/profile", params={"sessionId": empty_id})
+        assert r.status_code == 200
+        env = r.json()
+        assert env["status"] == "success", f"empty profile: expected success, got {env}"
+        assert env["source"] == "none", f"empty profile: expected source=none, got {env['source']}"
+        assert "profile" in env["data"], f"empty profile: data should have profile"
+
+    finally:
+        _cleanup([session_id])
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Runner
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -609,6 +690,7 @@ if __name__ == "__main__":
         test_empty_session_id_rejected_chat_stream,
         test_multi_session_multi_subject_no_leak,
         test_no_frontend_session_001_in_app_source,
+        test_product_response_envelope_structure,
     ]
     failed = 0
     for test in tests:

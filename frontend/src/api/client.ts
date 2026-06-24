@@ -43,6 +43,21 @@ const STATUS_MESSAGES: Record<number, string> = {
   503: '服务暂不可用，请稍后重试',
 };
 
+// ── ProductApiResponse 信封解包 ────────────────────────────────────
+// 透明解包：将后端统一信封 {status, data, message, ...} 还原为 data 内容。
+// 前端无需任何代码变更即可继续使用 res.profile / res.path 等字段。
+client.interceptors.response.use((res) => {
+  const body = res.data;
+  if (body && typeof body === 'object' && 'status' in body && 'data' in body) {
+    if (body.status === 'error') {
+      log.warn(`← ${res.config.method?.toUpperCase()} ${res.config.url} biz err: ${body.message}`);
+    }
+    // 透明解包：用信封内的 data 替换整个响应体
+    res.data = body.data;
+  }
+  return res;
+});
+
 // ── 响应拦截：统一错误处理 ──────────────────────────────────────────
 client.interceptors.response.use(
   (res) => {

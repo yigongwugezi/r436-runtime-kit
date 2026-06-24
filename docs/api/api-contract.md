@@ -5,6 +5,30 @@
 > `subjectId` 仅作为课程上下文参数，**不作为** sessionId 的替代或 fallback。
 > 前端始终通过 `chatStore.currentSessionId` 生成并传递唯一 `sessionId`。
 
+> **统一响应信封 (v0.4.0)**: 所有 Product API（第 3 节）的响应均包裹在统一信封中：
+> ```json
+> {
+>   "status": "success",
+>   "data": { /* 各端点原有响应体 */ },
+>   "message": "success",
+>   "warnings": [],
+>   "source": "db",
+>   "sessionId": "demo_session_001",
+>   "subjectId": ""
+> }
+> ```
+> - `status`: `"success"` 或 `"error"`。
+> - `data`: 端点原有响应体（与下文各端点文档中的结构一致）。
+> - `message`: 人类可读的结果说明。
+> - `warnings`: 非阻塞性提示信息列表。
+> - `source`: 数据来源标识（`"db"`, `"agent"`, `"user_action"`, `"mock"`, `"none"`）。
+> - `sessionId` / `subjectId`: 请求中的数据归属键和课程上下文键。
+>
+> **前端无感**：Axios 响应拦截器自动解包信封，将 `res.data` 替换为 `body.data`，
+> 因此前端 API 调用代码无需任何修改。
+>
+> **注意**：HTTP 级错误（如缺少 sessionId 返回 422）不包裹在信封中。
+
 ## 1. Base URLs
 
 Frontend:

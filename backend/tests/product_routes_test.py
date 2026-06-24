@@ -31,9 +31,10 @@ def _cleanup(session_id: str) -> None:
 def test_resource_graph_missing_resource_is_empty() -> None:
     result = product.resource_knowledge_graph("missing_resource_for_test", sessionId="graph_missing_session")
 
-    assert_true(result["mermaidDef"] == "", "missing resource should not return a hardcoded graph")
-    assert_true(result["source"] == "none", "missing resource source should be none")
-    assert_true("人工智能导论" not in str(result), "hardcoded AI intro graph must not leak")
+    assert_true(result["status"] == "success", "envelope status should be success")
+    assert_true(result["data"]["mermaidDef"] == "", "missing resource should not return a hardcoded graph")
+    assert_true(result["data"]["source"] == "none", "missing resource source should be none")
+    assert_true("人工智能导论" not in str(result["data"]), "hardcoded AI intro graph must not leak")
 
 
 def test_path_stage_estimated_days_come_from_duration() -> None:
@@ -90,7 +91,9 @@ def test_profile_route_preserves_structured_dimension_fields() -> None:
             course_id="data_structures",
             user_message="我是软件工程大三学生，C 语言基础一般，想用 48 小时复习数据结构，希望多给图解和代码案例。",
         )
-        profile = product.get_profile(sessionId=session_id)["profile"]
+        response = product.get_profile(sessionId=session_id)
+        assert_true(response["status"] == "success", "profile envelope status should be success")
+        profile = response["data"]["profile"]
         dimensions = profile["dimensions"]
 
         assert_true(len(dimensions) == 10, "/profile should return 10 dimensions")
