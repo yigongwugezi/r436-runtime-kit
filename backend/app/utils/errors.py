@@ -97,6 +97,16 @@ class MissingSubjectIdError(ValidationError):
         )
 
 
+class InvalidEventTypeError(ValidationError):
+    """``event_type`` is not in the set of allowed event types."""
+
+    def __init__(self, event_type: str) -> None:
+        super().__init__(
+            message=f"不支持的事件类型: {event_type}",
+            code="INVALID_EVENT_TYPE",
+        )
+
+
 class NotFoundError(AppError):
     """Requested resource does not exist."""
 

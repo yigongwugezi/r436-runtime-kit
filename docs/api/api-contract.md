@@ -17,6 +17,22 @@
 > `subjectId` 仅作为课程上下文参数，**不作为** sessionId 的替代或 fallback。
 > 前端始终通过 `chatStore.currentSessionId` 生成并传递唯一 `sessionId`。
 
+> **事件类型校验 (v0.5.0)**: `POST /feedback/event` 的 `event` 字段必须是以下六种类型之一:
+> `resource_view`, `resource_complete`, `quiz_result`, `practice_result`, `node_progress`, `feedback`。
+> 非法事件类型返回 **HTTP 422**，响应体为:
+> ```json
+> {
+>   "status": "error",
+>   "data": null,
+>   "message": "不支持的事件类型: xxx",
+>   "code": "INVALID_EVENT_TYPE",
+>   "is_user_error": true,
+>   "sessionId": "",
+>   "subjectId": ""
+> }
+> ```
+> `stage_complete` 和 `chat_feedback` 为后端内部事件类型，不通过此公开接口写入。
+
 > **统一响应信封 (v0.4.0)**: 所有 Product API（第 3 节）的响应均包裹在统一信封中：
 > ```json
 > {
@@ -787,10 +803,14 @@ Response:
 
 Purpose: record learning behavior events for tracking and evaluation.
 
+Valid event types: `resource_view`, `resource_complete`, `quiz_result`, `practice_result`, `node_progress`, `feedback`. Invalid types return HTTP 422 with `INVALID_EVENT_TYPE`.
+
 Request:
 
 ```json
 {
+  "sessionId": "demo_session_001",
+  "subjectId": "ai_intro",
   "event": "resource_view",
   "resourceId": "res_lecture_001",
   "duration": 5,

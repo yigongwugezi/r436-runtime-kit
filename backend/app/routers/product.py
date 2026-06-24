@@ -47,7 +47,7 @@ from app.services.agent_service import (
     get_resources as ag_get_resources,
     run_agents as ag_run_agents,
 )
-from app.utils.errors import MissingSessionIdError, NotFoundError
+from app.utils.errors import InvalidEventTypeError, MissingSessionIdError, NotFoundError
 from app.utils.profile_normalizer import PROFILE_DIMENSION_LABELS, normalize_profile_dimensions
 from app.services.conversation_state import conversation_store
 from app.services.course_catalog import course_catalog
@@ -1872,33 +1872,56 @@ def update_resource_study_status(resource_id: str, payload: dict[str, Any], sess
     """Update the study status of a resource. Only updates existing DB records."""
     session_id = _resolve_session_id(sessionId, subjectId)
     study_status = str(payload.get("studyStatus", "completed"))
+    db = SessionLocal()
     try:
-        db = SessionLocal()
         from app.db.repository import get_resource as repo_get_resource, upsert_resource as repo_upsert_resource, update_resource_study_status as repo_update_status
         resource = repo_get_resource(db, session_id, resource_id)
         if resource:
             repo_update_status(db, session_id, resource_id, study_status)
-        else:
-            # 尚未入库，尝试从内存找完整数据再存
-            state = conversation_store.get(session_id)
-            if state and state.last_result:
-                for item in state.last_result.get("resources", []):
-                    rid = item.get("resource_id") or item.get("id", "")
-                    if rid == resource_id:
-                        repo_upsert_resource(db, session_id, {
-                            "id": resource_id,
-                            "type": item.get("type", "lecture"),
-                            "title": item.get("title", "学习资源"),
-                            "description": item.get("description", ""),
-                            "content": item.get("content", ""),
-                            "difficulty": item.get("difficulty", "easy"),
-                            "source": item.get("source", "agent_generated"),
-                            "study_status": study_status,
-                        })
-                        break
+            return _product_response({"ok": True, "studyStatus": study_status}, session_id=session_id, subject_id=subjectId, source="user_action")
+
+        # Resource not found for this session — check if it exists at all
+        from app.db.models import ResourceModel
+        resource_any = db.get(ResourceModel, resource_id)
+        if resource_any:
+            return _product_response(
+                {"ok": False},
+                session_id=session_id,
+                subject_id=subjectId,
+                status="error",
+                message="resource does not belong to this session",
+                source="user_action",
+            )
+
+        # 尚未入库，尝试从内存找完整数据再存
+        state = conversation_store.get(session_id)
+        if state and state.last_result:
+            for item in state.last_result.get("resources", []):
+                rid = item.get("resource_id") or item.get("id", "")
+                if rid == resource_id:
+                    repo_upsert_resource(db, session_id, {
+                        "id": resource_id,
+                        "type": item.get("type", "lecture"),
+                        "title": item.get("title", "学习资源"),
+                        "description": item.get("description", ""),
+                        "content": item.get("content", ""),
+                        "difficulty": item.get("difficulty", "easy"),
+                        "source": item.get("source", "agent_generated"),
+                        "study_status": study_status,
+                    })
+                    return _product_response({"ok": True, "studyStatus": study_status}, session_id=session_id, subject_id=subjectId, source="user_action")
+
+        # Resource not found anywhere
+        return _product_response(
+            {"ok": False},
+            session_id=session_id,
+            subject_id=subjectId,
+            status="error",
+            message="resource not found",
+            source="user_action",
+        )
     finally:
         db.close()
-    return _product_response({"ok": True, "studyStatus": study_status}, session_id=session_id, subject_id=subjectId, source="user_action")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -2306,15 +2329,38 @@ def submit_feedback(payload: dict[str, Any]) -> dict[str, Any]:
     return _product_response({"ok": True}, session_id=session_id, source="user_action")
 
 
+# Allowed event types for the public POST /feedback/event endpoint.
+# Internal-only event types (stage_complete, chat_feedback) are NOT
+# included — they are only logged by backend code directly.
+_VALID_EVENT_TYPES: frozenset[str] = frozenset({
+    "resource_view", "resource_complete", "quiz_result",
+    "practice_result", "node_progress", "feedback",
+})
+
+
 @router.post("/feedback/event")
 def log_study_event(payload: dict[str, Any]) -> dict[str, Any]:
     session_id = _payload_session_id(payload)
+
+    # Validate event_type — only known types are accepted via the public API
+    event_type = payload.get("event", "")
+    if event_type not in _VALID_EVENT_TYPES:
+        raise InvalidEventTypeError(event_type)
+
+    # Record subject_id in event metadata for multi-subject analytics
+    if payload.get("subjectId"):
+        metadata = payload.get("metadata")
+        if isinstance(metadata, dict):
+            metadata = dict(metadata)
+            metadata["subjectId"] = payload["subjectId"]
+            payload["metadata"] = metadata
+
     # Auto-fill duration from resource's estimated_minutes for completion events
     if payload.get("event") == "resource_complete" and payload.get("resourceId"):
         try:
             from app.db.repository import get_resource as _get_res
             db = SessionLocal()
-            res = _get_res(db, payload["resourceId"])
+            res = _get_res(db, session_id, payload["resourceId"])
             if (
                 res
                 and res.session_id == session_id

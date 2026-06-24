@@ -374,6 +374,58 @@ def test_subject_id_cannot_replace_session_id() -> None:
     print("PASS subjectId cannot substitute for sessionId")
 
 
+def test_invalid_event_type_rejected() -> None:
+    """Verify invalid event_type returns 422 with INVALID_EVENT_TYPE."""
+    invalid_types = [
+        ("invalid_type", "completely unknown type"),
+        ("", "empty string"),
+        ("random_string", "random string"),
+        ("stage_complete", "internal-only type"),
+    ]
+    for evt_type, _desc in invalid_types:
+        r = client.post("/api/feedback/event", json={
+            "sessionId": SESSION,
+            "event": evt_type,
+            "resourceId": "test_res",
+        })
+        assert r.status_code == 422, (
+            f"Expected 422 for event_type='{evt_type}', got {r.status_code}"
+        )
+        result = r.json()
+        assert result.get("code") == "INVALID_EVENT_TYPE", (
+            f"Expected INVALID_EVENT_TYPE for '{evt_type}', got {result.get('code')}"
+        )
+        assert "不支持的事件类型" in result.get("message", ""), (
+            f"Expected Chinese error message, got {result.get('message')}"
+        )
+    print("PASS invalid event types correctly rejected with INVALID_EVENT_TYPE")
+
+
+def test_subject_id_recorded_in_event() -> None:
+    """Verify subjectId sent with event is stored in event metadata."""
+    subj_id = "e2e_subject_event_test"
+    r = client.post("/api/feedback/event", json={
+        "sessionId": SESSION,
+        "event": "resource_view",
+        "resourceId": "subj_meta_res",
+        "subjectId": subj_id,
+        "metadata": {"type": "lecture"},
+    })
+    assert r.status_code == 200
+    assert _response_data(r)["ok"] is True
+
+    # Verify in recent events timeline
+    r2 = client.get("/api/learning-events/timeline", params={"sessionId": SESSION, "limit": 10})
+    events = r2.json().get("data", {}).get("events", [])
+    found = any(
+        e.get("metadata", {}).get("subjectId") == subj_id
+        for e in events
+        if isinstance(e, dict) and e.get("resourceId") == "subj_meta_res"
+    )
+    assert found, "subjectId was not recorded in event metadata"
+    print("PASS subject_id recorded in event metadata")
+
+
 if __name__ == "__main__":
     tests = [
         test_all_six_event_types_logged,
@@ -393,6 +445,8 @@ if __name__ == "__main__":
         test_feedback_default_session,
         test_session_isolation_with_different_ids,
         test_subject_id_cannot_replace_session_id,
+        test_invalid_event_type_rejected,
+        test_subject_id_recorded_in_event,
     ]
     for test in tests:
         test()
