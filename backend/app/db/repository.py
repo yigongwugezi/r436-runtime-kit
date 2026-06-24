@@ -658,7 +658,8 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
                     resource_counts.get(rid, 0),
                 )
     except Exception:
-        pass
+        import logging
+        logging.getLogger("app.db.repository").warning("Failed to resolve resource types for analytics")
 
     top_resources = sorted(resource_counts.items(), key=lambda x: x[1], reverse=True)[:5]
 

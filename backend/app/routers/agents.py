@@ -5,6 +5,7 @@ Stage 2: Uses ``agent_service`` to trigger and track agent pipeline runs.
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
@@ -13,6 +14,9 @@ from fastapi import APIRouter
 from app.schemas.agent import AgentRunRequest
 from app.schemas.common import ApiResponse
 from app.services import agent_service
+from app.utils.errors import MissingSessionIdError
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["agents"])
 
@@ -25,12 +29,8 @@ def run_agents(payload: AgentRunRequest) -> dict[str, Any]:
     overall status, and generated profile / diagnosis / learning_path / resources.
     """
     if not payload.session_id:
-        return {
-            "code": -1,
-            "message": "sessionId is required",
-            "data": None,
-            "request_id": f"req_agents_run_{int(time.time() * 1000)}",
-        }
+        raise MissingSessionIdError()
+
     session_id = payload.session_id
     course_id = payload.course_id
 
@@ -61,9 +61,10 @@ def run_agents(payload: AgentRunRequest) -> dict[str, Any]:
             "request_id": f"req_agents_run_{int(time.time() * 1000)}",
         }
     except Exception as exc:
+        logger.error("Agent orchestrator failed for session %s: %s", session_id, exc, exc_info=exc)
         return {
             "code": -1,
-            "message": f"Agent orchestrator failed: {exc}",
+            "message": "Agent orchestrator failed, please try again",
             "data": None,
             "request_id": f"req_agents_run_{int(time.time() * 1000)}",
         }

@@ -1,4 +1,6 @@
+import logging
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -19,6 +21,9 @@ from app.db.repository import (
     get_latest_learning_path,
     get_resources as repo_get_resources,
 )
+from app.utils.errors import MissingSessionIdError
+
+logger = logging.getLogger(__name__)
 from app.services.profile_extractor import GRADE_PATTERNS, MAJOR_ALIASES, extract_profile_facts
 from app.utils.profile_normalizer import normalize_profile_dimensions
 
@@ -158,6 +163,7 @@ class ConversationStore:
     def __init__(self) -> None:
         self._sessions: dict[str, ConversationState] = {}
         self._db_enabled: bool = False
+        self._lock = threading.Lock()
 
     # ── DB lifecycle ─────────────────────────────────────────────────
 
@@ -253,18 +259,19 @@ class ConversationStore:
     def get(self, session_id: str | None) -> ConversationState:
         """Get or create the conversation state for *session_id*.
 
-        Raises ValueError if session_id is None or empty — sessionId is
-        the data ownership key and must always be provided.
+        Raises MissingSessionIdError if session_id is None or empty — sessionId
+        is the data ownership key and must always be provided.
         """
         if not session_id or not session_id.strip():
-            raise ValueError("session_id is required and must not be empty")
+            raise MissingSessionIdError()
         sid = session_id.strip()
-        if sid not in self._sessions:
-            state = ConversationState(session_id=sid)
-            self._sessions[sid] = state
-            if self._db_enabled:
-                self._hydrate_from_db(state)
-        return self._sessions[sid]
+        with self._lock:
+            if sid not in self._sessions:
+                state = ConversationState(session_id=sid)
+                self._sessions[sid] = state
+                if self._db_enabled:
+                    self._hydrate_from_db(state)
+            return self._sessions[sid]
 
     def get_state_or_none(self, session_id: str) -> ConversationState | None:
         """Return the state for *session_id* if it exists, otherwise *None*.

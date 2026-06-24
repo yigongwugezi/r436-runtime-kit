@@ -11,6 +11,7 @@ Design principles (Stage 2):
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 import threading
@@ -18,7 +19,9 @@ from datetime import datetime, timezone
 from queue import Queue, Empty
 from typing import Any, Callable
 
-from fastapi import APIRouter, HTTPException
+logger = logging.getLogger(__name__)
+
+from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from app.agents.intent_agent import IntentAgent
@@ -43,6 +46,7 @@ from app.services.agent_service import (
     get_resources as ag_get_resources,
     run_agents as ag_run_agents,
 )
+from app.utils.errors import MissingSessionIdError, NotFoundError
 from app.utils.profile_normalizer import PROFILE_DIMENSION_LABELS, normalize_profile_dimensions
 from app.services.conversation_state import conversation_store
 from app.services.course_catalog import course_catalog
@@ -99,6 +103,41 @@ def _product_response(
         "sessionId": session_id,
         "subjectId": subject_id,
     }
+
+
+def _validate_message(message: str) -> None:
+    """Validate the *message* field for chat/agent-trigger endpoints.
+
+    Raises:
+        ValidationError: if message is empty or exceeds the length limit.
+    """
+    from app.utils.errors import ValidationError
+
+    if not message or not message.strip():
+        raise ValidationError(
+            "消息内容不能为空",
+            code="EMPTY_MESSAGE",
+        )
+    if len(message) > 10_000:
+        raise ValidationError(
+            f"消息内容过长（{len(message)}/{10_000} 字符）",
+            code="MESSAGE_TOO_LONG",
+        )
+
+
+def _validate_subject_id(subject_id: str | None) -> None:
+    """Validate that *subject_id* is non-empty when required.
+
+    Raises:
+        ValidationError: if subject_id is missing or empty.
+    """
+    from app.utils.errors import ValidationError
+
+    if not subject_id or not str(subject_id).strip():
+        raise ValidationError(
+            "subjectId 不能为空",
+            code="MISSING_SUBJECT_ID",
+        )
 
 
 def _apply_state_facts_to_result(result: dict[str, Any], state, course: dict[str, Any] | None = None) -> None:
@@ -313,7 +352,7 @@ def _to_profile(result: dict[str, Any]) -> dict[str, Any]:
                     learner_id = learner.id
                     nickname = learner.nickname
         except Exception:
-            pass
+            logger.warning("Failed to look up learner info from session %s", session_id)
         finally:
             db.close()
 
@@ -907,7 +946,7 @@ def _reply_for_intent(
                 _run_agents(message, session_id=session_id, progress_callback=progress_callback)
                 ran_agents = True
             except Exception:
-                pass  # Don't block chat reply if agent run fails
+                logger.warning("Agent run failed during profile_update reply for session %s", session_id)
         reply = _profile_update_reply(session_id)
         return reply, ran_agents
     if name == "start_advice":
@@ -961,9 +1000,8 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
     message = str(payload.get("message", "我想学习人工智能导论"))
     session_id = str(payload.get("sessionId", "")).strip()
     if not session_id:
-        raise HTTPException(status_code=422, detail={
-            "ok": False, "error": "sessionId is required", "code": "MISSING_SESSION_ID",
-        })
+        raise MissingSessionIdError()
+    _validate_message(message)
 
     conversation_store.append_message(session_id, "user", message)
     intent = _classify_intent(message)
@@ -1074,9 +1112,8 @@ def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
     message = str(payload.get("message", "我想学习人工智能导论"))
     session_id = str(payload.get("sessionId", "")).strip()
     if not session_id:
-        raise HTTPException(status_code=422, detail={
-            "ok": False, "error": "sessionId is required", "code": "MISSING_SESSION_ID",
-        })
+        raise MissingSessionIdError()
+    _validate_message(message)
 
     conversation_store.append_message(session_id, "user", message)
     intent = _classify_intent(message)
@@ -1179,15 +1216,11 @@ def _resolve_session_id(sessionId: str = "", subjectId: str = "") -> str:
 
     sessionId is the data ownership key. subjectId is course context only
     and MUST NOT be used as a session identifier.
-    Raises HTTPException(422) if sessionId is empty.
+    Raises MissingSessionIdError if sessionId is empty.
     """
     sid = sessionId.strip() if sessionId else ""
     if not sid:
-        raise HTTPException(status_code=422, detail={
-            "ok": False,
-            "error": "sessionId is required",
-            "code": "MISSING_SESSION_ID",
-        })
+        raise MissingSessionIdError()
     return sid
 
 
@@ -1196,15 +1229,11 @@ def _payload_session_id(payload: dict[str, Any]) -> str:
 
     Only sessionId from the payload is accepted. subjectId in the body
     is NOT used as a sessionId fallback.
-    Raises HTTPException(422) if sessionId is missing or empty.
+    Raises MissingSessionIdError if sessionId is missing or empty.
     """
     sid = str(payload.get("sessionId") or "").strip()
     if not sid:
-        raise HTTPException(status_code=422, detail={
-            "ok": False,
-            "error": "sessionId is required",
-            "code": "MISSING_SESSION_ID",
-        })
+        raise MissingSessionIdError()
     return sid
 
 
@@ -1235,7 +1264,7 @@ def get_profile(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
                     learner_id = learner.id
                     nickname = learner.nickname
         except Exception:
-            pass
+            logger.warning("Failed to look up learner for session %s in get_profile", session_id)
         finally:
             db.close()
 
@@ -1593,7 +1622,8 @@ def get_resources(
                 repo_delete_resource(db, oid)
             db.close()
         except Exception:
-            pass
+            logger.warning("Failed to clean up orphaned resources in get_resources")
+
         for oid in orphaned_ids:
             db_map.pop(oid, None)
 
@@ -2094,7 +2124,7 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
                 if r.get("study_status") == "completed":
                     stage_resource_stats[matched]["completed"] += 1
         except Exception:
-            pass
+            logger.warning("Failed to compute resource stats for stages")
 
         return {
             "id": base.get("id", f"path_{session_id}"),
@@ -2202,7 +2232,8 @@ def log_study_event(payload: dict[str, Any]) -> dict[str, Any]:
                 payload["duration"] = res.estimated_minutes
             db.close()
         except Exception:
-            pass
+            logger.warning("Failed to auto-fill duration for resource %s in session %s",
+                           payload.get("resourceId", "?"), session_id)
     learning_tracker.log(payload, session_id=session_id)
     return _product_response({"ok": True}, session_id=session_id, source="user_action")
 
@@ -2232,7 +2263,7 @@ def _log_node_progress(session_id: str, node_id: str, status: str) -> None:
                                     break
                             break
             except Exception:
-                pass
+                logger.warning("Failed to enrich stage title for node %s in session %s", node_id, session_id)
         learning_tracker.log({
             "event": "node_progress",
             "resourceId": node_id,
@@ -2246,7 +2277,7 @@ def _log_node_progress(session_id: str, node_id: str, status: str) -> None:
             },
         }, session_id=session_id)
     except Exception:
-        pass
+        logger.warning("Failed to log node progress for session %s", session_id)
 
 
 @router.patch("/learning-path/auto-advance")
@@ -2323,7 +2354,7 @@ def auto_advance_node(payload: dict[str, Any]) -> dict[str, Any]:
                                 },
                             }, session_id=session_id)
         except Exception:
-            pass
+            logger.warning("Failed to track stage completion for session %s", session_id)
     return _product_response({"ok": True}, session_id=session_id, source="system")
 
 
@@ -2456,7 +2487,7 @@ def learning_timeline(
                                         break
                                 break
                 except Exception:
-                    pass
+                    logger.warning("Failed to enrich timeline node for session %s", session_id)
 
         # ── Enrich resource events with knowledge points ──
         if rid and rid in resource_kps:

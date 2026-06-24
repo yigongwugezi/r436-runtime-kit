@@ -84,6 +84,9 @@ class BaseAgent(ABC):
 
         Returns:
             A dict safe for merging into the orchestrator result.
+            Fallback data is always marked with ``source: "rule_based_fallback"``
+            and ``quality_status: "fallback"`` so the frontend can distinguish
+            real generation results from safe defaults.
         """
         return {
             "agent_step": {
@@ -91,6 +94,9 @@ class BaseAgent(ABC):
                 "agent_name": self.agent_name,
                 "status": "failed",
                 "summary": f"Agent '{self.agent_id}' fell back to defaults.",
+                "error_reason": "Agent failed to produce output, using rule-based fallback",
+                "source": "rule_based_fallback",
+                "quality_status": "fallback",
                 "started_at": None,
                 "finished_at": None,
             }

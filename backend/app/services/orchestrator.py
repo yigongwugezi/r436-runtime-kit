@@ -148,12 +148,17 @@ class AgentOrchestrator:
         if not result["agent_steps"]:
             result["overall_status"] = "failed"
             result["overall_error"] = "No agents were executed."
+            result["source"] = "system"
         elif any_failed:
             result["overall_status"] = "partial"
             result["overall_error"] = "; ".join(overall_error_parts) if overall_error_parts else None
+            result["source"] = "partial_with_fallback"
+            result["quality_status"] = "fallback"
+            result["reason"] = "部分智能体生成失败，已使用规则兜底数据"
         else:
             result["overall_status"] = "completed"
             result["overall_error"] = None
+            result["source"] = "agent_pipeline"
 
         # Ensure all expected output keys exist
         for key_list in AGENT_OUTPUT_KEYS.values():
@@ -219,7 +224,8 @@ class AgentOrchestrator:
                         step.update(agent_step)
                         step.update(fallback)
                     except Exception:
-                        pass
+                        import logging
+                        logging.getLogger("app.services.orchestrator").warning("Failed to merge fallback for agent %s", step.get("agent_id", "unknown"))
 
                     return step
 
@@ -253,7 +259,8 @@ class AgentOrchestrator:
                 step.update(agent_step)
                 step.update(fallback)
             except Exception:
-                pass
+                import logging
+                logging.getLogger("app.services.orchestrator").warning("Failed to merge fallback in outer handler for agent %s", step.get("agent_id", "unknown"))
 
         step["finished_at"] = time.time()
         step["duration_ms"] = (step["finished_at"] - start) * 1000

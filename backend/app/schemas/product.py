@@ -20,13 +20,15 @@ class ProductApiResponse(BaseModel, Generic[T]):
     """Unified response envelope for all Product API endpoints.
 
     Fields:
-        status:    ``"success"`` or ``"error"``.
-        data:      The endpoint-specific payload (same shape as before the envelope).
-        message:   Human-readable result description.
-        warnings:  Non-blocking advisory messages for the frontend.
-        source:    Provenance indicator (``"db"``, ``"agent"``, ``"user_action"``, …).
-        sessionId: Data ownership key from the request.
-        subjectId: Course context key from the request (may be empty).
+        status:       ``"success"`` or ``"error"``.
+        data:         The endpoint-specific payload (same shape as before the envelope).
+        message:      Human-readable result description.
+        warnings:     Non-blocking advisory messages for the frontend.
+        source:       Provenance indicator (``"db"``, ``"agent"``, ``"user_action"``, …).
+        sessionId:    Data ownership key from the request.
+        subjectId:    Course context key from the request (may be empty).
+        code:         Machine-readable error code (only set on errors, e.g. ``"MISSING_SESSION_ID"``).
+        is_user_error: ``True`` for user-input errors (4xx), ``False`` for system errors (5xx).
     """
 
     status: str = "success"
@@ -36,3 +38,5 @@ class ProductApiResponse(BaseModel, Generic[T]):
     source: str = "runtime_kit"
     sessionId: str = ""
     subjectId: str = ""
+    code: str | None = Field(default=None)
+    is_user_error: bool | None = Field(default=None)
