@@ -919,6 +919,28 @@ Response:
 Each item contains: `recommendation_type` (one of `incomplete_resource`, `low_accuracy_topic`, `incomplete_practice`, `stage_incomplete`, `frequent_weak_topic`), `title`, `reason`, `target_resource_id` (nullable), `target_stage_id` (nullable), `priority` (`high`/`medium`/`low`), `source`, `confidence` (0-1), `evidence`, and `quality_status`.
 Empty array when no data or no actionable recommendations exist.
 
+`latestQuizScore` and `bestQuizScore` provide explicit clarity on quiz performance: `latestQuizScore` is the most recent result (chronologically last), while `bestQuizScore` is the highest-scoring result. Both contain `score`, `topic`, `timestamp`, `source`, and `quality_status` fields. They are `null` when no quiz events exist.
+
+`feedbackStats` provides explainable feedback statistics: `count` (number of feedback events), `averageRating` (mean of numeric ratings), `source`, `quality_status`, and `evidence`. It is `null` when no feedback events exist.
+
+### Event Deduplication
+
+Since v0.6.0, the backend applies insert-time deduplication to prevent duplicate events from inflating analytics:
+
+- **`resource_complete`** — Idempotent: only the first `resource_complete` event per (sessionId, resourceId) is recorded. Subsequent identical events are silently ignored. This ensures `completedResources` counts unique completed resources, not repeated completions.
+
+- **`resource_view`** — Time-window dedup: a `resource_view` event for the same (sessionId, resourceId) within a 300-second (5-minute) window is treated as a duplicate and silently ignored. Views spaced more than 5 minutes apart are both recorded (cumulative tracking).
+
+- **`quiz_result`, `practice_result`, `feedback`, `node_progress`** — No deduplication: each event is recorded independently. Analytics use appropriate aggregation for these multi-record types (e.g., `latestQuizScore`/`bestQuizScore` for quizzes, `feedbackStats` for feedback).
+
+Deduplication is transparent to the API caller: the response `{"ok": true}` is returned regardless of whether the event was stored or deduped.
+
+Analytics fields after dedup:
+- `completedResources` reflects unique completed resources (one per session + resource).
+- `viewedResources` reflects `resource_view` events after time-window dedup.
+- `eventCount` counts all stored events (the deduped set).
+- `eventBreakdown` counts all stored events per event type (the deduped set).
+
 ### GET /learning-events/timeline
 
 Purpose: get recent learning events as a timeline, enriched with resource metadata (title, type, stage, chapter).

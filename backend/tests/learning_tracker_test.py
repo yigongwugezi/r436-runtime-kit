@@ -60,6 +60,58 @@ def main() -> None:
     # Most recent event (practice_result) should be first
     assert_equal(recent[0]["event"], "practice_result", "newest event first")
 
+    # ── Dedup tests ──────────────────────────────────────────────────
+    # 1. Duplicate resource_complete for same (session, resource) → idempotent
+    tracker.log(
+        {"event": "resource_complete", "resourceId": "res_lecture_001", "duration": 5},
+        session_id="s1",
+    )
+    summary_after_dedup = tracker.summary("s1")
+    assert_equal(summary_after_dedup["completedResources"], 1,
+                 "dedup: completedResources stays 1 after duplicate resource_complete")
+    assert_equal(summary_after_dedup["eventCount"], 4,
+                 "dedup: eventCount stays 4 after duplicate resource_complete skipped")
+
+    # 2. Duplicate resource_view within time window → deduped (same session, same resource)
+    tracker.log(
+        {"event": "resource_view", "resourceId": "res_lecture_001"},
+        session_id="s1",
+    )
+    summary_after_view_dedup = tracker.summary("s1")
+    assert_equal(summary_after_view_dedup["viewedResources"], 1,
+                 "dedup: viewedResources stays 1 after duplicate resource_view within window")
+    assert_equal(summary_after_view_dedup["eventCount"], 4,
+                 "dedup: eventCount stays 4 after duplicate resource_view skipped")
+
+    # 3. quiz_result is NOT deduped — posting a second quiz_result should count both
+    tracker.log(
+        {"event": "quiz_result", "resourceId": "res_quiz_001",
+         "metadata": {"topic": "stack", "correct": 5, "total": 5, "wrong": 0}},
+        session_id="s1",
+    )
+    summary_after_quiz = tracker.summary("s1")
+    assert_equal(summary_after_quiz["eventCount"], 5,
+                 "dedup: eventCount is 5 after second quiz_result (NOT deduped)")
+    assert_equal(summary_after_quiz["eventBreakdown"].get("quiz_result", 0), 2,
+                 "dedup: quiz_result count is 2 (NOT deduped)")
+
+    # 4. Event count consistency after dedup
+    breakdown = summary_after_quiz["eventBreakdown"]
+    assert_equal(summary_after_quiz["eventCount"], sum(breakdown.values()),
+                 "dedup: eventCount == sum(breakdown) after dedup")
+
+    # 5. Verify new analytics fields
+    assert_true("latestQuizScore" in summary_after_quiz, "has latestQuizScore")
+    assert_true("bestQuizScore" in summary_after_quiz, "has bestQuizScore")
+    assert_true("feedbackStats" in summary_after_quiz, "has feedbackStats")
+    # Since we have quiz results, latest/best should not be None
+    assert_true(summary_after_quiz["latestQuizScore"] is not None, "latestQuizScore is populated")
+    assert_true(summary_after_quiz["bestQuizScore"] is not None, "bestQuizScore is populated")
+    assert_equal(summary_after_quiz["latestQuizScore"]["source"], "analytics",
+                 "latestQuizScore has source")
+    assert_equal(summary_after_quiz["bestQuizScore"]["quality_status"], "computed",
+                 "bestQuizScore has quality_status")
+
     tracker.reset("s1")
     s1_after = tracker.summary("s1")
     assert_equal(s1_after["eventCount"], 0, "reset only s1")

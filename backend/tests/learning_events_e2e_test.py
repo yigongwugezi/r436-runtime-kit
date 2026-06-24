@@ -549,6 +549,247 @@ def test_resource_complete_affects_completed_resources() -> None:
     print(f"PASS resource_complete increases completedResources: {before} → {after}")
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Dedup & Anti-Spam Tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _post_event_for(session_id: str, event: str, **kwargs: object) -> dict:
+    """Post an event for a specific session, return response data."""
+    payload: dict[str, object] = {
+        "sessionId": session_id,
+        "event": event,
+        **kwargs,
+    }
+    r = client.post("/api/feedback/event", json=payload)
+    assert r.status_code == 200
+    return _response_data(r)
+
+
+def _analytics_for(session_id: str) -> dict[str, object]:
+    """Get analytics for a specific session."""
+    r = client.get("/api/learning-analytics", params={"sessionId": session_id})
+    assert r.status_code == 200
+    return _response_data(r)
+
+
+def test_resource_complete_dedup_same_resource() -> None:
+    """Duplicate resource_complete for same (session, resource) should be idempotent.
+
+    completedResources must NOT double when the same resource is completed twice.
+    """
+    sid = f"dedup_complete_{uuid.uuid4().hex[:8]}"
+
+    # First completion
+    _post_event_for(sid, "resource_complete",
+                    resourceId="res_unique_01",
+                    metadata={"duration": 10, "title": "Unique Resource"})
+
+    analytics1 = _analytics_for(sid)
+    assert analytics1["completedResources"] == 1, (
+        f"First completion: expected 1, got {analytics1['completedResources']}"
+    )
+
+    # Duplicate completion of the SAME resource
+    _post_event_for(sid, "resource_complete",
+                    resourceId="res_unique_01",
+                    metadata={"duration": 5, "title": "Unique Resource"})
+
+    analytics2 = _analytics_for(sid)
+    assert analytics2["completedResources"] == 1, (
+        f"After duplicate: completedResources should stay 1, got {analytics2['completedResources']}"
+    )
+    # eventCount should NOT increase (duplicate was dropped)
+    assert analytics2["eventCount"] == 1, (
+        f"After duplicate: eventCount should stay 1, got {analytics2['eventCount']}"
+    )
+    print("PASS resource_complete dedup: duplicate completion does not double completedResources")
+
+
+def test_resource_view_dedup_time_window() -> None:
+    """Duplicate resource_view within the dedup window should be dropped."""
+    sid = f"dedup_view_{uuid.uuid4().hex[:8]}"
+
+    # First view
+    _post_event_for(sid, "resource_view",
+                    resourceId="res_view_01",
+                    metadata={"type": "lecture", "title": "View Test"})
+
+    analytics1 = _analytics_for(sid)
+    assert analytics1["viewedResources"] == 1, (
+        f"First view: expected 1, got {analytics1['viewedResources']}"
+    )
+
+    # Duplicate view within the same time window (300s default)
+    _post_event_for(sid, "resource_view",
+                    resourceId="res_view_01",
+                    metadata={"type": "lecture", "title": "View Test"})
+
+    analytics2 = _analytics_for(sid)
+    assert analytics2["viewedResources"] == 1, (
+        f"After duplicate view: viewedResources should stay 1, got {analytics2['viewedResources']}"
+    )
+    assert analytics2["eventCount"] == 1, (
+        f"After duplicate view: eventCount should stay 1, got {analytics2['eventCount']}"
+    )
+    print("PASS resource_view dedup: duplicate view within window is dropped")
+
+
+def test_multiple_quiz_results_allowed() -> None:
+    """Multiple quiz_result events for the same resource are NOT deduped."""
+    sid = f"dedup_quiz_{uuid.uuid4().hex[:8]}"
+
+    _post_event_for(sid, "quiz_result",
+                    resourceId="res_quiz_multi",
+                    metadata={"correct": 3, "total": 5, "wrong": 2, "topic": "堆栈"})
+
+    _post_event_for(sid, "quiz_result",
+                    resourceId="res_quiz_multi",
+                    metadata={"correct": 5, "total": 5, "wrong": 0, "topic": "堆栈"})
+
+    analytics = _analytics_for(sid)
+    # Both quiz_result events should be counted
+    assert analytics["eventCount"] == 2, (
+        f"Expected 2 quiz events, got {analytics['eventCount']}"
+    )
+    assert analytics["eventBreakdown"].get("quiz_result", 0) == 2, (
+        f"Expected 2 in eventBreakdown.quiz_result, got {analytics['eventBreakdown'].get('quiz_result', 0)}"
+    )
+    # latestQuizScore and bestQuizScore should be populated
+    assert analytics.get("latestQuizScore") is not None, "latestQuizScore should be populated"
+    assert analytics.get("bestQuizScore") is not None, "bestQuizScore should be populated"
+    # Best score should be 100 (second quiz had 5/5)
+    assert analytics["bestQuizScore"]["score"] == 100, (
+        f"Expected bestQuizScore=100, got {analytics['bestQuizScore']['score']}"
+    )
+    print("PASS quiz_result: multiple results allowed, latest/best tracked")
+
+
+def test_multiple_feedback_allowed() -> None:
+    """Multiple feedback events are NOT deduped and stats are explainable."""
+    sid = f"dedup_feedback_{uuid.uuid4().hex[:8]}"
+
+    _post_event_for(sid, "feedback",
+                    resourceId="res_fb_01",
+                    metadata={"rating": 4, "difficultyMatch": True})
+
+    _post_event_for(sid, "feedback",
+                    resourceId="res_fb_02",
+                    metadata={"rating": 2, "difficultyMatch": False})
+
+    analytics = _analytics_for(sid)
+    # Both feedback events should be counted
+    assert analytics["eventCount"] == 2, (
+        f"Expected 2 feedback events, got {analytics['eventCount']}"
+    )
+    assert analytics["eventBreakdown"].get("feedback", 0) == 2, (
+        f"Expected 2 in eventBreakdown.feedback, got {analytics['eventBreakdown'].get('feedback', 0)}"
+    )
+    # feedbackStats should be populated with explainable data
+    fb_stats = analytics.get("feedbackStats")
+    assert fb_stats is not None, "feedbackStats should be populated"
+    assert fb_stats["count"] == 2, f"Expected feedbackStats.count=2, got {fb_stats.get('count')}"
+    assert fb_stats["averageRating"] == 3.0, (
+        f"Expected averageRating=3.0, got {fb_stats.get('averageRating')}"
+    )
+    assert fb_stats["source"] == "analytics", "feedbackStats should have source"
+    assert fb_stats["quality_status"] == "computed", "feedbackStats should have quality_status"
+    assert "evidence" in fb_stats, "feedbackStats should have evidence"
+    print("PASS feedback: multiple entries allowed, stats are explainable")
+
+
+def test_resource_complete_different_sessions_not_deduped() -> None:
+    """Same resource completed in two different sessions should both count."""
+    sid_a = f"dedup_cross_a_{uuid.uuid4().hex[:8]}"
+    sid_b = f"dedup_cross_b_{uuid.uuid4().hex[:8]}"
+
+    _post_event_for(sid_a, "resource_complete",
+                    resourceId="res_cross_session",
+                    metadata={"duration": 10, "title": "Cross-Session Resource"})
+
+    _post_event_for(sid_b, "resource_complete",
+                    resourceId="res_cross_session",
+                    metadata={"duration": 15, "title": "Cross-Session Resource"})
+
+    # Session A: should have its completion
+    a = _analytics_for(sid_a)
+    assert a["completedResources"] == 1, (
+        f"Session A: expected completedResources=1, got {a['completedResources']}"
+    )
+
+    # Session B: should ALSO have its completion (different session, not deduped)
+    b = _analytics_for(sid_b)
+    assert b["completedResources"] == 1, (
+        f"Session B: expected completedResources=1, got {b['completedResources']}"
+    )
+    print("PASS cross-session: same resource in different sessions both count")
+
+
+def test_dedup_event_count_consistency() -> None:
+    """After dedup, eventCount must still equal sum(eventBreakdown.values())."""
+    sid = f"dedup_consistency_{uuid.uuid4().hex[:8]}"
+
+    # Post a mix of events including duplicates
+    _post_event_for(sid, "resource_view", resourceId="res_cons_01")
+    _post_event_for(sid, "resource_view", resourceId="res_cons_01")  # duplicate — deduped
+    _post_event_for(sid, "resource_view", resourceId="res_cons_02")  # different resource — NOT deduped
+    _post_event_for(sid, "resource_complete", resourceId="res_cons_01")
+    _post_event_for(sid, "resource_complete", resourceId="res_cons_01")  # duplicate — deduped
+    _post_event_for(sid, "quiz_result", resourceId="res_cons_01",
+                    metadata={"correct": 3, "total": 5, "wrong": 2})
+    _post_event_for(sid, "quiz_result", resourceId="res_cons_01",  # NOT deduped — quiz
+                    metadata={"correct": 4, "total": 5, "wrong": 1})
+
+    analytics = _analytics_for(sid)
+    breakdown = analytics["eventBreakdown"]
+    total = analytics["eventCount"]
+    computed = sum(breakdown.values())
+    assert total == computed, (
+        f"eventCount ({total}) must equal sum(breakdown) ({computed}) after dedup"
+    )
+
+    # Expected: 1 view(res_cons_01 deduped → 1) + 1 view(res_cons_02) + 1 complete + 2 quiz = 5
+    assert analytics["viewedResources"] == analytics["eventBreakdown"].get("resource_view", 0), (
+        "viewedResources should match breakdown after dedup"
+    )
+    assert analytics["completedResources"] == analytics["eventBreakdown"].get("resource_complete", 0), (
+        "completedResources should match breakdown after dedup (unique completions)"
+    )
+    print(f"PASS dedup consistency: eventCount={total} matches sum(breakdown)={computed}")
+
+
+def test_resource_complete_idempotent_analytics() -> None:
+    """Verify that duplicate completions do NOT inflate completedResources in analytics."""
+    sid = f"dedup_idempotent_{uuid.uuid4().hex[:8]}"
+
+    # Post resource_complete for 3 different resources
+    for i in range(3):
+        _post_event_for(sid, "resource_complete",
+                        resourceId=f"res_idem_{i}",
+                        metadata={"duration": 10, "title": f"Resource {i}"})
+
+    analytics_before = _analytics_for(sid)
+    assert analytics_before["completedResources"] == 3, (
+        f"Expected 3 completedResources, got {analytics_before['completedResources']}"
+    )
+
+    # Now duplicate-complete each of the 3 resources
+    for i in range(3):
+        _post_event_for(sid, "resource_complete",
+                        resourceId=f"res_idem_{i}",
+                        metadata={"duration": 10, "title": f"Resource {i}"})
+
+    analytics_after = _analytics_for(sid)
+    # completedResources should STILL be 3 — duplicates were silently dropped
+    assert analytics_after["completedResources"] == 3, (
+        f"Duplicate completions: completedResources should stay 3, got {analytics_after['completedResources']}"
+    )
+    assert analytics_after["eventCount"] == 3, (
+        f"Duplicate completions: eventCount should stay 3, got {analytics_after['eventCount']}"
+    )
+    print("PASS resource_complete idempotent: 3 resources + 3 duplicates = 3 completedResources")
+
+
 if __name__ == "__main__":
     tests = [
         test_all_six_event_types_logged,
@@ -576,6 +817,14 @@ if __name__ == "__main__":
         test_subject_id_cannot_replace_session_id,
         test_invalid_event_type_rejected,
         test_subject_id_recorded_in_event,
+        # Dedup & anti-spam tests
+        test_resource_complete_dedup_same_resource,
+        test_resource_view_dedup_time_window,
+        test_multiple_quiz_results_allowed,
+        test_multiple_feedback_allowed,
+        test_resource_complete_different_sessions_not_deduped,
+        test_dedup_event_count_consistency,
+        test_resource_complete_idempotent_analytics,
     ]
     for test in tests:
         test()

@@ -46,6 +46,49 @@ class LearningTracker:
             raise MissingSessionIdError()
         return sid
 
+    # ── Deduplication ────────────────────────────────────────────────
+
+    def _is_duplicate_event(self, event: dict[str, Any], session_id: str) -> bool:
+        """Check if an event is a duplicate that should be silently skipped.
+
+        Mirrors the DB-level dedup logic in repository.py so in-memory
+        and DB-backed modes behave consistently.
+
+        Dedup policy:
+
+        - ``resource_complete``: idempotent — only first completion per
+          (session, resource) is stored.
+        - ``resource_view``: time-window dedup — duplicates within
+          ``event_dedup_view_window_seconds`` are dropped.
+        - All other event types: never deduped.
+        """
+        event_type = event.get("event", "")
+        resource_id = event.get("resourceId")
+        if not resource_id:
+            return False
+
+        if event_type == "resource_complete":
+            return any(
+                e.get("event") == "resource_complete"
+                and e.get("resourceId") == resource_id
+                and e.get("sessionId") == session_id
+                for e in self._events
+            )
+
+        if event_type == "resource_view":
+            from app.config import settings
+            window = settings.event_dedup_view_window_seconds
+            cutoff = time.time() - window
+            return any(
+                e.get("event") == "resource_view"
+                and e.get("resourceId") == resource_id
+                and e.get("sessionId") == session_id
+                and e.get("timestamp", 0) >= cutoff
+                for e in self._events
+            )
+
+        return False
+
     # ── Public API ────────────────────────────────────────────────────
 
     def log(self, event: dict[str, Any], session_id: str | None = None) -> dict[str, Any]:
@@ -56,16 +99,28 @@ class LearningTracker:
             "timestamp": event.get("timestamp") or time.time(),
         }
 
+        # ── Deduplication check ───────────────────────────────────
+        if self._is_duplicate_event(event, sid):
+            logger.debug(
+                "Dedup: skipped %s event for session=%s resource=%s",
+                event.get("event", "?"), sid, event.get("resourceId", "?"),
+            )
+            return normalized
+
         if self._db_enabled:
             try:
                 db = self._db_session()
-                log_event(
+                result = log_event(
                     db,
                     session_id=normalized["sessionId"],
                     event_type=str(event.get("event", "generic")),
                     resource_id=event.get("resourceId"),
                     metadata=event.get("metadata", event),
                 )
+                # If log_event returned None (DB-side duplicate), do not
+                # add to in-memory either — keep both stores in sync.
+                if result is None:
+                    return normalized
             finally:
                 db.close()
 
@@ -135,10 +190,76 @@ class LearningTracker:
         weak_topics = self._weak_topics(events)
         recommendations = self._recommendations(total_minutes, quiz_accuracy, weak_topics)
 
+        # Quiz latest/best tracking
+        quiz_results: list[dict[str, Any]] = []
+        for event in quiz_events:
+            metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+            pct: float | None = None
+            if "accuracy" in metadata:
+                try:
+                    a = float(metadata["accuracy"])
+                    pct = round(a * 100) if a <= 1 else round(a)
+                except (TypeError, ValueError):
+                    pass
+            if pct is None and "score" in metadata:
+                try:
+                    s = float(metadata["score"])
+                    pct = round(s * 100) if s <= 1 else round(s)
+                except (TypeError, ValueError):
+                    pass
+            if pct is None and "correct" in metadata and "total" in metadata:
+                try:
+                    c = int(metadata["correct"])
+                    t = int(metadata["total"])
+                    if t > 0:
+                        pct = round(c / t * 100)
+                except (TypeError, ValueError):
+                    pass
+            if pct is not None:
+                quiz_results.append({
+                    "score": pct,
+                    "topic": metadata.get("topic") or metadata.get("knowledgePoint") or "",
+                    "timestamp": event.get("timestamp", 0),
+                })
+
+        latest_quiz_score: dict[str, Any] | None = None
+        best_quiz_score: dict[str, Any] | None = None
+        if quiz_results:
+            latest_quiz_score = quiz_results[-1]
+            best_quiz_score = max(quiz_results, key=lambda r: r["score"])
+            latest_quiz_score["source"] = "analytics"
+            latest_quiz_score["quality_status"] = "computed"
+            best_quiz_score["source"] = "analytics"
+            best_quiz_score["quality_status"] = "computed"
+
+        # Feedback explainable stats
+        feedback_events = [e for e in events if e.get("event") == "feedback"]
+        feedback_ratings: list[int] = []
+        for fe in feedback_events:
+            meta = fe.get("metadata") if isinstance(fe.get("metadata"), dict) else {}
+            rating = meta.get("rating")
+            if rating is not None:
+                try:
+                    feedback_ratings.append(int(rating))
+                except (TypeError, ValueError):
+                    pass
+        feedback_stats: dict[str, Any] | None = None
+        if feedback_events:
+            avg_rating = round(sum(feedback_ratings) / len(feedback_ratings), 1) if feedback_ratings else None
+            feedback_stats = {
+                "count": len(feedback_events),
+                "averageRating": avg_rating,
+                "source": "analytics",
+                "quality_status": "computed",
+                "evidence": f"{len(feedback_events)} feedback event(s) with {len(feedback_ratings)} rating(s)",
+            }
+
         return {
             "eventCount": len(events),
             "totalStudyMinutes": total_minutes,
             "activeResourceCount": len(resource_counter),
+            # completedResources counts unique (session, resource) completions
+            # because resource_complete events are deduped at log time.
             "viewedResources": event_counter.get("resource_view", 0),
             "completedResources": event_counter.get("resource_complete", 0),
             "practiceCount": event_counter.get("practice_result", 0),
@@ -150,6 +271,9 @@ class LearningTracker:
             "quizAccuracy": quiz_accuracy,
             "weakTopics": weak_topics,
             "recommendations": recommendations,
+            "latestQuizScore": latest_quiz_score,
+            "bestQuizScore": best_quiz_score,
+            "feedbackStats": feedback_stats,
             "recentEvents": list(reversed(events[-10:])),
         }
 

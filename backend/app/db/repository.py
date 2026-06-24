@@ -5,7 +5,8 @@ This keeps queries close to the ORM while giving callers control over
 transaction boundaries.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import logging
 from typing import Any
 import uuid
 
@@ -22,6 +23,8 @@ from app.db.models import (
     ResourceModel,
     SessionModel,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _utcnow() -> datetime:
@@ -455,13 +458,85 @@ def batch_set_bookmark(
 
 # ── Learning Events ──────────────────────────────────────────────────────
 
+
+def check_resource_complete_duplicate(
+    db: Session, session_id: str, resource_id: str
+) -> bool:
+    """Return True if a resource_complete event already exists for this (session, resource).
+
+    Used to implement idempotent resource_complete semantics: completing the
+    same resource multiple times should only count once.
+    """
+    if not resource_id:
+        return False
+    return db.query(LearningEventModel).filter(
+        LearningEventModel.session_id == session_id,
+        LearningEventModel.event_type == "resource_complete",
+        LearningEventModel.resource_id == resource_id,
+    ).first() is not None
+
+
+def check_resource_view_duplicate(
+    db: Session, session_id: str, resource_id: str, window_seconds: int = 300
+) -> bool:
+    """Return True if a resource_view exists for this (session, resource) within window_seconds.
+
+    Prevents rapid double-clicks from inflating view counts. Views spaced more
+    than window_seconds apart are both recorded (cumulative tracking).
+    """
+    if not resource_id:
+        return False
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=window_seconds)
+    return db.query(LearningEventModel).filter(
+        LearningEventModel.session_id == session_id,
+        LearningEventModel.event_type == "resource_view",
+        LearningEventModel.resource_id == resource_id,
+        LearningEventModel.created_at >= cutoff,
+    ).first() is not None
+
+
 def log_event(
     db: Session,
     session_id: str,
     event_type: str,
     resource_id: str | None = None,
     metadata: dict | None = None,
-) -> LearningEventModel:
+    skip_duplicate_check: bool = False,
+) -> LearningEventModel | None:
+    """Log a learning event, skipping duplicates per dedup policy.
+
+    Returns ``None`` when the event is silently dropped as a duplicate.
+    Callers should handle ``None`` gracefully.
+
+    Dedup policy (applied unless *skip_duplicate_check* is True):
+
+    - ``resource_complete``: idempotent — only the first completion per
+      (session, resource) is stored.
+    - ``resource_view``: time-window dedup — duplicates within
+      ``event_dedup_view_window_seconds`` (default 300 s) are dropped.
+    - All other event types are never deduped.
+    """
+    # ── Deduplication checks ──────────────────────────────────────────
+    if not skip_duplicate_check and event_type == "resource_complete" and resource_id:
+        if check_resource_complete_duplicate(db, session_id, resource_id):
+            logger.debug(
+                "Dedup: skipped duplicate resource_complete session=%s resource=%s",
+                session_id, resource_id,
+            )
+            return None
+
+    if not skip_duplicate_check and event_type == "resource_view" and resource_id:
+        from app.config import settings
+        if check_resource_view_duplicate(
+            db, session_id, resource_id,
+            settings.event_dedup_view_window_seconds,
+        ):
+            logger.debug(
+                "Dedup: skipped duplicate resource_view session=%s resource=%s (within window)",
+                session_id, resource_id,
+            )
+            return None
+
     get_or_create_session(db, session_id)
     evt = LearningEventModel(
         session_id=session_id,
@@ -503,6 +578,12 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
     resource_titles: dict[str, str] = {}
     topic_wrong: dict[str, int] = {}
     topic_total: dict[str, int] = {}
+
+    # Quiz latest/best tracking
+    quiz_results: list[dict[str, Any]] = []  # (score, topic, timestamp) tuples
+    # Feedback stats
+    feedback_ratings: list[int] = []
+    feedback_count: int = 0
 
     # Compute last study time (max timestamp)
     last_study_ts: float | None = None
@@ -552,6 +633,44 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
                     quiz_total += int(meta["total"])
                 except (TypeError, ValueError):
                     pass
+            # Track individual quiz result for latest/best
+            quiz_pct: float | None = None
+            if "accuracy" in meta:
+                try:
+                    a = float(meta["accuracy"])
+                    quiz_pct = round(a * 100) if a <= 1 else round(a)
+                except (TypeError, ValueError):
+                    pass
+            if quiz_pct is None and "score" in meta:
+                try:
+                    s = float(meta["score"])
+                    quiz_pct = round(s * 100) if s <= 1 else round(s)
+                except (TypeError, ValueError):
+                    pass
+            if quiz_pct is None and "correct" in meta and "total" in meta:
+                try:
+                    c = int(meta["correct"])
+                    t = int(meta["total"])
+                    if t > 0:
+                        quiz_pct = round(c / t * 100)
+                except (TypeError, ValueError):
+                    pass
+            if quiz_pct is not None:
+                quiz_results.append({
+                    "score": quiz_pct,
+                    "topic": meta.get("topic") or meta.get("knowledgePoint") or "",
+                    "timestamp": evt.created_at.isoformat() if evt.created_at else "",
+                })
+
+        # Feedback stats
+        if etype == "feedback":
+            feedback_count += 1
+            rating = meta.get("rating")
+            if rating is not None:
+                try:
+                    feedback_ratings.append(int(rating))
+                except (TypeError, ValueError):
+                    pass
 
         # Topic stats
         topic = meta.get("topic") or meta.get("knowledgePoint")
@@ -567,6 +686,29 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
     elif quiz_scores:
         normalized = [s * 100 if s <= 1 else s for s in quiz_scores]
         quiz_accuracy = round(sum(normalized) / len(normalized))
+
+    # Quiz latest/best
+    latest_quiz_score: dict[str, Any] | None = None
+    best_quiz_score: dict[str, Any] | None = None
+    if quiz_results:
+        latest_quiz_score = quiz_results[-1]  # last chronological entry
+        best_quiz_score = max(quiz_results, key=lambda r: r["score"])
+        latest_quiz_score["source"] = "analytics"
+        latest_quiz_score["quality_status"] = "computed"
+        best_quiz_score["source"] = "analytics"
+        best_quiz_score["quality_status"] = "computed"
+
+    # Feedback stats
+    feedback_stats: dict[str, Any] | None = None
+    if feedback_count > 0:
+        avg_rating = round(sum(feedback_ratings) / len(feedback_ratings), 1) if feedback_ratings else None
+        feedback_stats = {
+            "count": feedback_count,
+            "averageRating": avg_rating,
+            "source": "analytics",
+            "quality_status": "computed",
+            "evidence": f"{feedback_count} feedback event(s) with {len(feedback_ratings)} rating(s)",
+        }
 
     # Weak topics — enhanced with source tracking
     topic_sources: dict[str, set[str]] = {}
@@ -721,6 +863,11 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
         "recommendations": recommendations,
         "completionTrend": completion_trend,
         "quizTrend": daily_quiz[-20:],  # last 20 quiz results
+        # Quiz latest/best for explicit clarity (requirement: "latest / best 要清楚")
+        "latestQuizScore": latest_quiz_score,
+        "bestQuizScore": best_quiz_score,
+        # Feedback explainable stats (requirement: "统计要可解释")
+        "feedbackStats": feedback_stats,
         "resourceTypeBreakdown": dict(sorted(resource_type_counts.items(), key=lambda x: x[1], reverse=True)),
         "recentEvents": [
             {
