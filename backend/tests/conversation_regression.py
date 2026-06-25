@@ -214,6 +214,8 @@ def test_intent_classify_diagnosis_question() -> None:
     """Issue #4: 我哪里比较薄弱 is a diagnosis query (explicitly listed as diagnosis example in intent_routes)."""
     result = classify("我哪里比较薄弱")
     assert result["intent"] == "diagnosis"
+    punctuated = classify("我哪里比较薄弱？")
+    assert punctuated["intent"] == "diagnosis"
 
 
 def test_diagnosis_route_returns_structured_result() -> None:
@@ -282,6 +284,69 @@ def test_diagnosis_route_returns_structured_result() -> None:
     assert diagnosis["weak_topics"][0]["recommended_resource_ids"] == [f"{sid}_res_stack"]
     assert any("栈" in item and "错误 3/4" in item for item in diagnosis["evidence"])
     assert any("累计正确率 25%" in item for item in diagnosis["evidence"])
+
+
+def test_diagnosis_route_returns_structured_result_with_punctuation() -> None:
+    sid = "regression_diagnosis_route_punctuated"
+    conversation_store.reset(sid)
+    conversation_store.set_result(
+        sid,
+        {
+            "session_id": sid,
+            "profile": {
+                "error_patterns": {
+                    "value": "Python 基础比较弱",
+                    "score": 48,
+                    "confidence": 0.76,
+                    "explanation": "用户明确反馈 Python 基础较弱",
+                    "evidence": "Python 基础比较弱",
+                    "source": "user_input",
+                }
+            },
+            "learning_path": [
+                {
+                    "stage_id": "stage_python_intro",
+                    "title": "Python 入门",
+                    "goal": "掌握 Python 基础语法",
+                    "tasks": ["完成变量、条件和循环练习"],
+                }
+            ],
+            "resources": [
+                {
+                    "resource_id": f"{sid}_res_python_intro",
+                    "title": "Python 基础练习",
+                    "related_stage_id": "stage_python_intro",
+                    "related_knowledge_points": ["Python 基础"],
+                    "source": "rule_based_fallback",
+                    "source_type": "course_knowledge_base",
+                }
+            ],
+        },
+    )
+
+    response = product.send_chat({"sessionId": sid, "message": "我哪里比较薄弱？"})
+    response = response.get("data", response)
+    diagnosis = response.get("diagnosis") or {}
+
+    assert response["reply"]["content"].startswith("学习诊断结果")
+    for field in (
+        "weak_topics",
+        "reason",
+        "source",
+        "confidence",
+        "next_actions",
+        "limitations",
+        "evidence",
+        "recommended_stage_id",
+        "recommended_resource_ids",
+        "priority",
+    ):
+        assert field in diagnosis
+    assert any("[profile]" in item for item in diagnosis["evidence"]), "profile evidence tag should be returned by /chat/send"
+    assert any("[learning_path]" in item for item in diagnosis["evidence"]), "learning path evidence tag should be returned by /chat/send"
+    assert any("[resources]" in item for item in diagnosis["evidence"]), "resource evidence tag should be returned by /chat/send"
+    assert any("No quiz_result/practice_result" in item for item in diagnosis["limitations"]), "missing behavioral evidence should be disclosed"
+    assert diagnosis["confidence"] <= 0.58, "profile/path/resource-only diagnosis should keep confidence capped"
 
 
 def test_chat_requires_session_id_and_does_not_use_subject_id() -> None:
@@ -527,6 +592,7 @@ if __name__ == "__main__":
         test_intent_classify_profile_keyword_画像,
         test_intent_classify_diagnosis_question,
         test_diagnosis_route_returns_structured_result,
+        test_diagnosis_route_returns_structured_result_with_punctuation,
         test_chat_requires_session_id_and_does_not_use_subject_id,
         test_intent_classify_compound_full_workflow,
         test_intent_画像_with_self_intro_is_profile_update,

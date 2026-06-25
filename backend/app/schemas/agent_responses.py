@@ -206,3 +206,4 @@ class ChatSendResponse(BaseModel):
 
     sessionId: str = ""
     reply: ChatReplyData = Field(default_factory=ChatReplyData)
+    diagnosis: dict[str, Any] = Field(default_factory=dict)

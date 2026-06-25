@@ -979,6 +979,10 @@ def _diagnosis_reply(message: str, session_id: str) -> str:
     )
 
 
+def _looks_like_diagnosis_reply(reply: str) -> bool:
+    return str(reply or "").lstrip().startswith("学习诊断结果")
+
+
 def _feedback_reply(message: str, session_id: str) -> str:
     learning_tracker.log({"event": "chat_feedback", "metadata": {"message": message}}, session_id=session_id)
     return (
@@ -1206,9 +1210,12 @@ def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
             "timestamp": int(time.time() * 1000),
         },
     }
-    if intent["intent"] == "diagnosis":
-        result = conversation_store.get(session_id).last_result or {}
-        response["diagnosis"] = result.get("diagnosis", {})
+    result = conversation_store.get(session_id).last_result or {}
+    diagnosis = result.get("diagnosis", {}) if isinstance(result, dict) else {}
+    if intent["intent"] == "diagnosis" or (
+        isinstance(diagnosis, dict) and diagnosis and _looks_like_diagnosis_reply(reply)
+    ):
+        response["diagnosis"] = diagnosis
     return _product_response(
         response,
         session_id=session_id, source="agent",
