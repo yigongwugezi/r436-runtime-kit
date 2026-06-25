@@ -7,10 +7,10 @@ import {
   HelpCircle, Check, XCircle, RefreshCw, AlertCircle, AlertTriangle, RotateCcw,
   SlidersHorizontal, BookmarkX, Layers, TrendingUp,
   Download, ListChecks, Square, CheckSquare, ChevronUp, ChevronDown,
+  Shield,
 } from 'lucide-react';
 import { useResources } from '../hooks/useResources';
 import { useChatStore } from '../store/chatStore';
-import { useProfileStore } from '../store/profileStore';
 import { useSubjectStore } from '../store/subjectStore';
 import type { Resource, ResourceFilter, SortBy } from '../types/resource';
 import type { ResourceType, DataSource } from '../types/resource';
@@ -29,7 +29,6 @@ import SourceBadge from '../components/common/SourceBadge';
 import ExpandableText from '../components/common/ExpandableText';
 import QualityStatusPopover, {
   ReviewStatusBadge,
-  FallbackNotice,
 } from '../components/common/QualityStatusPopover';
 
 /* ===================================================================
@@ -449,6 +448,27 @@ function QuizAnswerer({ questions, resourceId }: {
   );
 }
 
+/* ── 可信解释字段标签映射 ── */
+function sourceTypeLabel(type: string): string {
+  const map: Record<string, string> = {
+    llm_generated: '大模型生成',
+    rule_based: '规则生成',
+    knowledge_base: '知识库检索',
+    user_input: '用户输入',
+  };
+  return map[type] || type;
+}
+
+function generationModeLabel(mode: string): string {
+  const map: Record<string, string> = {
+    direct_generation: '直接生成',
+    knowledge_retrieval: '知识检索',
+    hybrid: '混合生成',
+    rule_fallback: '规则兜底',
+  };
+  return map[mode] || mode;
+}
+
 /* ===================================================================
  * 主页面
  * =================================================================== */
@@ -493,10 +513,9 @@ export default function ResourceLibrary() {
     : undefined;
 
   const { resources, total, completedCount, incompleteCount, completionRate, loading, error, applyFilter, toggleBookmark, updateResource, refetch } = useResources(initialFilter);
+  const sessionId = useChatStore((state) => state.currentSessionId);
   const dataVersion = useChatStore((state) => state.dataVersion);
   const subjectId = useSubjectStore((s) => s.activeSubject?.id);
-  const profile = useProfileStore((s) => subjectId ? s.profiles[subjectId] ?? null : null);
-  const hasCourse = profile?.dimensions?.some(d => d.key === 'knowledge_base');
 
   const [selected, setSelected] = useState<Resource | null>(null);
   const [search, setSearch] = useState(searchFilter ? decodeURIComponent(searchFilter) : '');
@@ -1040,12 +1059,28 @@ export default function ResourceLibrary() {
       </div>
 
       {/* ========== 列表 ========== */}
-      {loading && resources.length === 0 ? (
+      {!sessionId ? (
+        // 没有当前 session
+        <PageEmpty
+          icon={<MessageSquare className="w-8 h-8" />}
+          title="请先进入学习会话"
+          description="请在对话页开始学习，系统将为你生成个性化学习资源。"
+          action={
+            <button
+              onClick={() => navigate('/chat')}
+              className="mt-3 px-5 py-2.5 bg-gray-900 text-white rounded-xl text-sm font-semibold hover:bg-gray-800 transition-all inline-flex items-center gap-2"
+            >
+              <Sparkles className="w-4 h-4" />
+              去对话页
+            </button>
+          }
+        />
+      ) : loading && resources.length === 0 ? (
         <PageLoading text="加载资源中…" />
       ) : error && resources.length === 0 ? (
         <PageError
           title="资源加载失败"
-          description={error}
+          description={`${error}，请稍后重试。`}
           onRetry={refetch}
           onGoChat={() => navigate('/chat')}
         />
@@ -1078,15 +1113,11 @@ export default function ResourceLibrary() {
               </button>
             </div>
           ) : (
-            // 没有任何资源
+            // 当前 session 下没有资源
             <PageEmpty
               icon={<BookOpen className="w-8 h-8" />}
-              title="暂无资源"
-              description={
-                hasCourse
-                  ? '当前课程暂无资源，在对话中说"生成学习资源"来获得课程材料'
-                  : '在对话中描述你的学习需求，系统会为你整理课程资源'
-              }
+              title="当前会话暂无资源"
+              description="当前学习会话暂无资源，请先生成学习路径和学习资源。"
               action={
                 <button
                   onClick={() => navigate('/chat')}
@@ -1102,6 +1133,15 @@ export default function ResourceLibrary() {
       ) : (
         <div className="relative">
           {loading && <RefreshOverlay />}
+
+          {/* 没有选择科目但当前 session 有资源的提示 */}
+          {!subjectId && (
+            <div className="mb-4 px-4 py-3 bg-blue-50 border border-blue-100 rounded-xl text-sm text-blue-600 flex items-center gap-2">
+              <MessageSquare className="w-4 h-4 flex-shrink-0" />
+              <span>当前显示本学习会话下的全部资源，可选择科目进一步筛选。</span>
+            </div>
+          )}
+
           {/* 选择模式顶部操作栏 */}
           {selectionMode && (
             <div className="flex items-center justify-between mb-3 px-1">
@@ -1312,24 +1352,110 @@ export default function ResourceLibrary() {
               )}
             </div>
 
-            {/* 来源说明 / fallback 提示 */}
-            {selected.source === 'system_inferred' && (
-              <FallbackNotice
-                message="此资源由系统规则生成，内容与当前课程信息的匹配度可能有限。建议在对话中补充详细信息以获取更准确的课程资源。"
-              />
-            )}
-            {selected.source === 'fallback' && (
-              <FallbackNotice subtle />
-            )}
-            {selected.source === 'agent_generated' && (
-              <div className="p-3 bg-green-50/70 border border-green-100 rounded-xl">
-                <p className="text-xs text-green-600 font-medium mb-0.5">💡 推荐理由</p>
-                <p className="text-[10px] text-green-500">
-                  此资源基于当前课程阶段「{selected.relatedChapter || selected.relatedStageId || '当前课程'}」
-                  和知识短板整理，与学习路径直接关联。
-                </p>
+            {/* ═══════════════════════════════════════════════════
+             *  可信解释面板
+             *  ═══════════════════════════════════════════════════ */}
+            <div className="border border-gray-100 rounded-xl overflow-hidden">
+              {/* 标题栏 */}
+              <div className="px-4 py-2.5 bg-gray-50/80 border-b border-gray-100 flex items-center gap-2">
+                <Shield className="w-4 h-4 text-gray-500" />
+                <span className="text-xs font-semibold text-gray-600">可信解释</span>
+                <span className="text-[10px] text-gray-400 ml-auto">
+                  帮助你判断此资源的可信度与适用性
+                </span>
               </div>
-            )}
+              <div className="p-4 space-y-3">
+                {/* 1. 推荐理由 */}
+                {(selected as any).reason ? (
+                  <div className="p-3 bg-blue-50/70 border border-blue-100 rounded-xl">
+                    <p className="text-xs font-semibold text-blue-700 mb-1">💡 推荐理由</p>
+                    <p className="text-[11px] text-blue-600 leading-relaxed">{(selected as any).reason}</p>
+                  </div>
+                ) : selected.source === 'agent_generated' && (
+                  <div className="p-3 bg-blue-50/70 border border-blue-100 rounded-xl">
+                    <p className="text-xs font-semibold text-blue-700 mb-1">💡 推荐理由</p>
+                    <p className="text-[11px] text-blue-600 leading-relaxed">
+                      此资源基于当前{selected.relatedChapter ? `「${selected.relatedChapter}」` : ''}阶段
+                      {selected.relatedStageId ? `（${selected.relatedStageId}）` : ''}
+                      的学习目标和知识短板生成。
+                    </p>
+                  </div>
+                )}
+
+                {/* 2. 来源与生成方式 */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="flex items-start gap-2">
+                    <div className="w-6 h-6 rounded-lg bg-gray-100 flex items-center justify-center flex-shrink-0">
+                      <span className="text-[10px] font-bold text-gray-500">源</span>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-gray-400 font-medium">来源类型</p>
+                      <p className="text-xs font-semibold text-gray-700 mt-0.5">
+                        {(selected as any).sourceType
+                          ? sourceTypeLabel((selected as any).sourceType)
+                          : (selected.source === 'agent_generated' ? '智能体生成' :
+                             selected.source === 'system_inferred' ? '系统推断' :
+                             selected.source === 'fallback' ? '兜底' :
+                             selected.source === 'user_input' ? '用户输入' : '未知')}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <div className="w-6 h-6 rounded-lg bg-gray-100 flex items-center justify-center flex-shrink-0">
+                      <span className="text-[10px] font-bold text-gray-500">式</span>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-gray-400 font-medium">生成方式</p>
+                      <p className="text-xs font-semibold text-gray-700 mt-0.5">
+                        {(selected as any).generationMode
+                          ? generationModeLabel((selected as any).generationMode)
+                          : (selected.source === 'system_inferred' || selected.source === 'fallback' ? '规则兜底' : '大模型生成')}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 3. 兜底原因（仅 fallback 类资源显示） */}
+                {(selected as any).fallbackReason && (
+                  <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-xl">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
+                      <span className="text-xs font-semibold text-amber-700">兜底说明</span>
+                    </div>
+                    <p className="text-[11px] text-amber-600 leading-relaxed">{(selected as any).fallbackReason}</p>
+                  </div>
+                )}
+
+                {/* 4. 证据/依据 */}
+                {(selected as any).evidence && Array.isArray((selected as any).evidence) && (selected as any).evidence.length > 0 && (
+                  <div>
+                    <p className="text-[10px] text-gray-400 font-medium mb-1.5">📋 依据来源</p>
+                    <ul className="space-y-1">
+                      {(selected as any).evidence.map((ev: string, i: number) => (
+                        <li key={i} className="flex items-start gap-1.5 text-[11px] text-gray-600">
+                          <span className="text-gray-300 mt-0.5">•</span>
+                          <span>{ev}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* 5. 质量状态 */}
+                {selected.qualityStatus && (
+                  <div className="flex items-center gap-2 text-[11px]">
+                    <span className="text-gray-400">质检状态：</span>
+                    <span className={`font-semibold ${
+                      selected.qualityStatus === 'passed' ? 'text-green-600' :
+                      selected.qualityStatus === 'fallback_passed' ? 'text-amber-600' : 'text-red-600'
+                    }`}>
+                      {selected.qualityStatus === 'passed' ? '已通过 ✓' :
+                       selected.qualityStatus === 'fallback_passed' ? '兜底通过 🛡' : '需人工复核 ⚠'}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
 
             {/* 知识点标签 */}
             <div className="flex flex-wrap gap-1.5">

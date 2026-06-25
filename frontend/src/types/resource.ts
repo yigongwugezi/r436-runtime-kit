@@ -86,6 +86,18 @@ export interface Resource {
   reviewIssues?: ReviewIssue[];
   /** 审核建议 */
   reviewSuggestions?: string[];
+  /** ── 可信解释字段 ── */
+
+  /** 来源类型：llm_generated / rule_based / knowledge_base / user_input */
+  sourceType?: string;
+  /** 生成方式：direct_generation / knowledge_retrieval / hybrid / rule_fallback */
+  generationMode?: string;
+  /** 推荐理由 */
+  reason?: string;
+  /** 证据/依据列表 */
+  evidence?: string[];
+  /** 兜底原因（仅 fallback 资源有） */
+  fallbackReason?: string;
 }
 
 export interface CodeBlock {

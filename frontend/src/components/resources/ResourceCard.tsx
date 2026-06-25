@@ -130,6 +130,47 @@ export default function ResourceCard({ resource, onClick, searchQuery, selected,
           </div>
         )}
 
+        {/* ── 可信解释区 ── */}
+        <div className="mb-2 space-y-1">
+          {/* 来源类型 + 生成方式 */}
+          {(resource.sourceType || resource.generationMode) && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {resource.sourceType && (
+                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-medium bg-gray-50 text-gray-500 border border-gray-100"
+                  title="来源类型">
+                  🏷️ {resource.sourceType === 'llm_generated' ? '大模型生成' :
+                         resource.sourceType === 'rule_based' ? '规则生成' :
+                         resource.sourceType === 'knowledge_base' ? '知识库检索' :
+                         resource.sourceType === 'user_input' ? '用户输入' :
+                         resource.sourceType}
+                </span>
+              )}
+              {resource.generationMode && (
+                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-medium bg-gray-50 text-gray-500 border border-gray-100"
+                  title="生成方式">
+                  ⚙️ {resource.generationMode === 'direct_generation' ? '直接生成' :
+                        resource.generationMode === 'knowledge_retrieval' ? '知识检索' :
+                        resource.generationMode === 'hybrid' ? '混合生成' :
+                        resource.generationMode === 'rule_fallback' ? '规则兜底' :
+                        resource.generationMode}
+                </span>
+              )}
+            </div>
+          )}
+          {/* 推荐理由 */}
+          {resource.reason && (
+            <p className="text-[10px] text-gray-500 leading-relaxed line-clamp-2">
+              💡 <span className="font-medium text-gray-600">推荐理由：</span>{resource.reason}
+            </p>
+          )}
+          {/* 兜底原因 */}
+          {resource.fallbackReason && (
+            <p className="text-[10px] text-amber-600 leading-relaxed line-clamp-2">
+              ⚠️ <span className="font-medium">兜底说明：</span>{resource.fallbackReason}
+            </p>
+          )}
+        </div>
+
         <div className="flex items-center justify-between text-[10px] text-gray-400 pt-1">
           <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{formatDuration(resource.estimatedMinutes)}</span>
           <div className="flex items-center gap-2">

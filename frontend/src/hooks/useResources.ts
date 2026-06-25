@@ -18,12 +18,11 @@ export function useResources(initialFilter?: ResourceFilter) {
   const [filter, setFilter] = useState<ResourceFilter>(initialFilter || {});
   const lastReadKeyRef = useRef<string | undefined>(undefined);
   const lastInitialFilterRef = useRef<string | undefined>(undefined);
-  const lastVersionRef = useRef<number>(0);
   const fetchingRef = useRef(false);
   const pendingFilterRef = useRef<ResourceFilter | undefined>(undefined);
 
   const doFetch = useCallback(async (f: ResourceFilter) => {
-    if (!subjectId) return;
+    if (!sessionId) return;
     if (fetchingRef.current) {
       pendingFilterRef.current = f;
       return;
@@ -33,7 +32,9 @@ export function useResources(initialFilter?: ResourceFilter) {
     setLoading(true);
     setError(null);
     try {
-      const res = await resourcesApi.getResources({ ...f, sessionId, subjectId });
+      const params: Record<string, any> = { ...f, sessionId };
+      if (subjectId) params.subjectId = subjectId;
+      const res = await resourcesApi.getResources(params as any);
       if (pendingFilterRef.current === undefined) {
         setResources(res?.resources || []);
         setTotal(res?.total || 0);
@@ -59,31 +60,29 @@ export function useResources(initialFilter?: ResourceFilter) {
     }
   }, [sessionId, subjectId]);
 
-  // Fetch on mount / subject change / initialFilter change
+  // ── 统一触发获取：mount / session / subject / dataVersion / initialFilter 任一变化 → 拉数据
+  // 用 session 级 version 做 readKey，确保：
+  //   1. 首次挂载时必拉（lastReadKeyRef 初始为 undefined）
+  //   2. 切换 sessionId 时必拉（readKey 含 sessionId）
+  //   3. dataVersion 变化时必拉（dataVersion 含在 readKey 中）
+  //   4. subjectId 作为可选过滤（含在 readKey 中）
+  const readKey = sessionId
+    ? `${sessionId}:${dataVersion}:${subjectId || ''}`
+    : undefined;
   useEffect(() => {
-    const readKey = subjectId ? `${sessionId}:${subjectId}` : undefined;
     const initialFilterKey = JSON.stringify(initialFilter || {});
-    const shouldFetch = readKey && (
-      lastReadKeyRef.current !== readKey ||
-      lastInitialFilterRef.current !== initialFilterKey
-    );
-    if (shouldFetch) {
+    if (
+      readKey &&
+      (lastReadKeyRef.current !== readKey ||
+        lastInitialFilterRef.current !== initialFilterKey)
+    ) {
       lastReadKeyRef.current = readKey;
       lastInitialFilterRef.current = initialFilterKey;
       const f = initialFilter || {};
       setFilter(f);
       doFetch(f);
     }
-  }, [sessionId, subjectId, doFetch, initialFilter]);
-
-  useEffect(() => {
-    if (dataVersion <= 0 || dataVersion === lastVersionRef.current) return;
-    lastVersionRef.current = dataVersion;
-    setFilter(prev => {
-      doFetch(prev);
-      return prev;
-    });
-  }, [dataVersion, doFetch]);
+  }, [readKey, doFetch, initialFilter]);
 
   const applyFilter = useCallback(
     (updates: Partial<ResourceFilter>) => {
@@ -97,7 +96,9 @@ export function useResources(initialFilter?: ResourceFilter) {
   );
 
   const toggleBookmark = useCallback(async (id: string) => {
-    const res = await resourcesApi.toggleBookmark(id, { sessionId, subjectId });
+    const params: Record<string, string> = { sessionId };
+    if (subjectId) params.subjectId = subjectId;
+    const res = await resourcesApi.toggleBookmark(id, params as any);
     setResources((prev) =>
       prev.map((resource) => (resource.id === id ? { ...resource, bookmarked: res.bookmarked } : resource)),
     );
