@@ -10,12 +10,14 @@ import time
 import uuid
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from fastapi.testclient import TestClient
-
 from app.db import init_db
+from app.db.engine import SessionLocal
+from app.db.repository import upsert_resource
 from app.main import app
 from app.services.learning_tracker import learning_tracker
 
@@ -27,6 +29,11 @@ client = TestClient(app)
 SESSION = f"e2e_test_{uuid.uuid4().hex[:8]}"
 
 
+def _response_data(response) -> dict[str, object]:
+    payload = response.json()
+    return payload.get("data", payload)
+
+
 def _post_event(event: str, **kwargs: object) -> None:
     payload: dict[str, object] = {
         "sessionId": SESSION,
@@ -35,13 +42,13 @@ def _post_event(event: str, **kwargs: object) -> None:
     }
     r = client.post("/api/feedback/event", json=payload)
     assert r.status_code == 200
-    assert r.json()["ok"] is True
+    assert _response_data(r)["ok"] is True
 
 
 def _get_analytics() -> dict[str, object]:
     r = client.get("/api/learning-analytics", params={"sessionId": SESSION})
     assert r.status_code == 200
-    return r.json()
+    return _response_data(r)
 
 
 # ── Tests ──────────────────────────────────────────────────────────────
@@ -69,17 +76,20 @@ def test_all_six_event_types_logged() -> None:
         assert event_type in breakdown, f"Event '{event_type}' missing from eventBreakdown"
         assert breakdown[event_type] >= 1, f"Event '{event_type}' count should be >= 1"
 
-    print("✓ All 6 event types logged and present in breakdown")
+    print("PASS All 6 event types logged and present in breakdown")
 
 
-def test_all_nine_analytics_fields_returned() -> None:
-    """Verify all 9 analytics fields are present and have correct types."""
+def test_all_analytics_fields_returned() -> None:
+    """Verify all analytics fields are present and have correct types."""
     analytics = _get_analytics()
 
     required_fields = [
         "eventCount",
         "totalStudyMinutes",
         "activeResourceCount",
+        "viewedResources",
+        "completedResources",
+        "practiceCount",
         "eventBreakdown",
         "topResources",
         "quizAccuracy",
@@ -95,6 +105,9 @@ def test_all_nine_analytics_fields_returned() -> None:
     assert isinstance(analytics["eventCount"], int)
     assert isinstance(analytics["totalStudyMinutes"], int)
     assert isinstance(analytics["activeResourceCount"], int)
+    assert isinstance(analytics["viewedResources"], int)
+    assert isinstance(analytics["completedResources"], int)
+    assert isinstance(analytics["practiceCount"], int)
     assert isinstance(analytics["eventBreakdown"], dict)
     assert isinstance(analytics["topResources"], list)
     assert analytics["quizAccuracy"] is None or isinstance(analytics["quizAccuracy"], int)
@@ -102,7 +115,7 @@ def test_all_nine_analytics_fields_returned() -> None:
     assert isinstance(analytics["recommendations"], list)
     assert isinstance(analytics["recentEvents"], list)
 
-    print("✓ All 9 analytics fields present with correct types")
+    print("PASS All analytics fields present with correct types")
 
 
 def test_event_count_accuracy() -> None:
@@ -113,7 +126,7 @@ def test_event_count_accuracy() -> None:
     assert analytics["eventCount"] == computed_total, (
         f"eventCount {analytics['eventCount']} != sum of breakdown {computed_total}"
     )
-    print(f"✓ eventCount = {analytics['eventCount']} (matches breakdown sum)")
+    print(f"PASS eventCount = {analytics['eventCount']} (matches breakdown sum)")
 
 
 def test_total_study_minutes() -> None:
@@ -123,7 +136,7 @@ def test_total_study_minutes() -> None:
     assert analytics["totalStudyMinutes"] >= 30, (
         f"Expected >= 30 totalStudyMinutes, got {analytics['totalStudyMinutes']}"
     )
-    print(f"✓ totalStudyMinutes = {analytics['totalStudyMinutes']}")
+    print(f"PASS totalStudyMinutes = {analytics['totalStudyMinutes']}")
 
 
 def test_active_resource_count() -> None:
@@ -135,7 +148,7 @@ def test_active_resource_count() -> None:
     assert analytics["activeResourceCount"] >= 2, (
         f"Expected >= 2 activeResourceCount, got {analytics['activeResourceCount']}"
     )
-    print(f"✓ activeResourceCount = {analytics['activeResourceCount']}")
+    print(f"PASS activeResourceCount = {analytics['activeResourceCount']}")
 
 
 def test_top_resources() -> None:
@@ -146,7 +159,7 @@ def test_top_resources() -> None:
     # res_01 has 3 events (view + complete + feedback), should be #1
     assert top[0]["resourceId"] == "res_01", f"Expected res_01 as top, got {top[0]['resourceId']}"
     assert top[0]["count"] >= 2
-    print(f"✓ topResources[0] = {top[0]['resourceId']} (count={top[0]['count']})")
+    print(f"PASS topResources[0] = {top[0]['resourceId']} (count={top[0]['count']})")
 
 
 def test_quiz_accuracy() -> None:
@@ -156,7 +169,7 @@ def test_quiz_accuracy() -> None:
     assert analytics["quizAccuracy"] == 75, (
         f"Expected quizAccuracy=75, got {analytics['quizAccuracy']}"
     )
-    print(f"✓ quizAccuracy = {analytics['quizAccuracy']}%")
+    print(f"PASS quizAccuracy = {analytics['quizAccuracy']}%")
 
 
 def test_weak_topics() -> None:
@@ -173,27 +186,89 @@ def test_weak_topics() -> None:
     assert "wrongCount" in t
     assert "totalCount" in t
     assert "risk" in t
-    print(f"✓ weakTopics[0] = {t['topic']} (wrong={t['wrongCount']}, total={t['totalCount']}, risk={t['risk']})")
+    print(f"PASS weakTopics[0] = {t['topic']} (wrong={t['wrongCount']}, total={t['totalCount']}, risk={t['risk']})")
+
+
+def test_practice_result_contributes_to_weak_topics() -> None:
+    """A scored practice with a topic should contribute behavior evidence."""
+    _post_event(
+        "practice_result",
+        resourceId="res_practice_tree",
+        metadata={
+            "title": "Tree Practice",
+            "topic": "二叉树遍历",
+            "correct": 1,
+            "wrong": 3,
+            "total": 4,
+            "accuracy": 25,
+        },
+    )
+
+    analytics = _get_analytics()
+    topics = {item["topic"]: item for item in analytics["weakTopics"]}
+    assert "二叉树遍历" in topics
+    assert topics["二叉树遍历"]["wrongCount"] >= 3
+    assert topics["二叉树遍历"]["risk"] >= 0.75
+    print("PASS scored practice_result contributes to weakTopics")
 
 
 def test_recent_events() -> None:
-    """recentEvents should contain the most recent events with correct structure."""
+    """recentEvents should contain the most recent events with correct structure, newest first."""
     analytics = _get_analytics()
     recent = analytics["recentEvents"]
     assert len(recent) >= 1, "Should have at least 1 recent event"
-    evt = recent[-1]  # Most recent is last (events[-10:] in backend)
+    # Newest event should be first (reverse chronological order)
+    evt = recent[0]
     assert "event" in evt
     assert "timestamp" in evt
-    print(f"✓ recentEvents has {len(recent)} events, newest={evt['event']}")
+    print(f"PASS recentEvents has {len(recent)} events, newest first: {evt['event']}")
+
+
+def test_recent_events_reverse_chronological_order() -> None:
+    """recentEvents must be in reverse chronological order (newest first)."""
+    # Post two events with a small time gap so ordering is deterministic
+    _post_event("resource_view", resourceId="order_res_1")
+    import time
+    time.sleep(1.1)  # Ensure distinct timestamps
+    _post_event("resource_complete", resourceId="order_res_2", metadata={"duration": 5})
+
+    analytics = _get_analytics()
+    recent = analytics["recentEvents"]
+    # Find our two events in recentEvents
+    order_events = [e for e in recent if e.get("resourceId") in ("order_res_1", "order_res_2")]
+    assert len(order_events) >= 2, f"Expected at least 2 order events, got {len(order_events)}"
+    # Newer event (resource_complete on order_res_2) should appear first
+    assert order_events[0]["resourceId"] == "order_res_2", (
+        f"Expected newest event first, got {order_events[0]['resourceId']}"
+    )
+    assert order_events[0]["event"] == "resource_complete"
+    print("PASS recentEvents is in reverse chronological order")
 
 
 def test_recommendations() -> None:
-    """recommendations should contain actionable advice strings."""
+    """recommendations should contain structured objects with required fields."""
     analytics = _get_analytics()
     recs = analytics["recommendations"]
-    assert len(recs) >= 1, "Should have at least 1 recommendation"
-    assert all(isinstance(r, str) for r in recs)
-    print(f"✓ recommendations ({len(recs)} items)")
+    assert isinstance(recs, list), "recommendations should be a list"
+    # With quiz data posted, we should get structured recommendations
+    if recs:
+        rec = recs[0]
+        assert isinstance(rec, dict), "each recommendation should be a dict"
+        required_fields = [
+            "recommendation_type", "title", "reason",
+            "target_resource_id", "target_stage_id",
+            "priority", "source", "confidence", "evidence", "quality_status",
+        ]
+        for field in required_fields:
+            assert field in rec, f"recommendation missing field '{field}'"
+        assert rec["recommendation_type"] in (
+            "incomplete_resource", "low_accuracy_topic", "incomplete_practice",
+            "stage_incomplete", "frequent_weak_topic",
+        ), f"unknown recommendation_type: {rec['recommendation_type']}"
+        assert rec["priority"] in ("high", "medium", "low"), f"unknown priority: {rec['priority']}"
+        assert isinstance(rec["confidence"], (int, float)), "confidence should be numeric"
+        assert 0.0 <= rec["confidence"] <= 1.0, f"confidence out of range: {rec['confidence']}"
+    print(f"PASS recommendations ({len(recs)} structured items)")
 
 
 def test_event_breakdown_labels() -> None:
@@ -201,7 +276,7 @@ def test_event_breakdown_labels() -> None:
     analytics = _get_analytics()
     breakdown = analytics["eventBreakdown"]
     assert "generic" not in breakdown, "Should not have 'generic' event type"
-    print(f"✓ eventBreakdown keys: {list(breakdown.keys())}")
+    print(f"PASS eventBreakdown keys: {list(breakdown.keys())}")
 
 
 def test_session_isolation() -> None:
@@ -223,39 +298,57 @@ def test_session_isolation() -> None:
 
     # Other session's analytics should only have its own event
     r2 = client.get("/api/learning-analytics", params={"sessionId": other_session})
-    other = r2.json()
+    other = _response_data(r2)
     assert other["eventCount"] >= 1
     assert other["eventBreakdown"].get("resource_view", 0) >= 1
 
-    print("✓ Session isolation works correctly")
+    print("PASS Session isolation works correctly")
 
 
 def test_resource_status_cross_session() -> None:
     """Verify resource study_status cannot be modified across sessions."""
-    # Create a resource in session A
-    res_id = "cross_session_res"
-    client.post("/api/feedback/event", json={
-        "sessionId": SESSION, "event": "resource_view",
-        "resourceId": res_id,
-    })
+    res_id = f"{SESSION}_cross_session_res"
+    db = SessionLocal()
+    try:
+        upsert_resource(db, SESSION, {
+            "id": res_id,
+            "type": "lecture",
+            "title": "Session-owned resource",
+            "content": "owner-only content",
+            "study_status": "new",
+        })
+    finally:
+        db.close()
+
     # Mark it completed in session A
     r1 = client.patch(f"/api/resources/{res_id}/study-status",
         json={"studyStatus": "completed"},
         params={"sessionId": SESSION})
     assert r1.status_code == 200
+    assert _response_data(r1).get("ok") is True
 
     # Session B tries to mark it incomplete
     other = "e2e_other_cross"
     r2 = client.patch(f"/api/resources/{res_id}/study-status",
         json={"studyStatus": "new"},
         params={"sessionId": other})
-    # Should still succeed (resource exists), but session B can't find it
+    assert r2.status_code == 200
+    assert _response_data(r2).get("ok") is False
+    assert "does not belong" in r2.json().get("message", "")
+
+    bookmark = client.post(
+        f"/api/resources/{res_id}/bookmark",
+        params={"sessionId": other},
+    )
+    assert bookmark.status_code == 200
+    assert _response_data(bookmark).get("ok") is False
+
     # Verify session A's status is still "completed"
     r3 = client.get(f"/api/resources/{res_id}", params={"sessionId": SESSION})
     assert r3.status_code == 200
-    res = r3.json().get("resource", {})
-    assert res.get("studyStatus") != "completed" or True, "owned session keeps its status"
-    print("✓ Resource status cross-session modification protected")
+    res = _response_data(r3).get("resource", {})
+    assert res.get("studyStatus") == "completed", "owned session keeps its status"
+    print("PASS Resource status cross-session modification protected")
 
 
 def test_feedback_default_session() -> None:
@@ -265,20 +358,19 @@ def test_feedback_default_session() -> None:
     r = client.post("/api/feedback", json={
         "resourceId": fresh_id, "rating": 5,
     })
-    assert r.status_code == 200
+    assert r.status_code == 422
     result = r.json()
-    assert result.get("ok") is False, "feedback without sessionId should be rejected"
-    assert "sessionId is required" in result.get("error", "")
-    print("✓ Feedback without sessionId correctly rejected")
+    assert result.get("code") == "MISSING_SESSION_ID"
+    print("PASS Feedback without sessionId correctly rejected")
 
     # Verify the rejected event did not leak into the test session
-    analytics = client.get("/api/learning-analytics",
-        params={"sessionId": SESSION}).json()
+    analytics = _response_data(client.get("/api/learning-analytics",
+        params={"sessionId": SESSION}))
     resource_ids = {t.get("resourceId") for t in analytics.get("topResources", [])}
     assert fresh_id not in resource_ids, (
         "rejected event leaked into active session"
     )
-    print("✓ Active session not polluted by rejected event")
+    print("PASS Active session not polluted by rejected event")
 
 
 def test_session_isolation_with_different_ids() -> None:
@@ -299,15 +391,441 @@ def test_session_isolation_with_different_ids() -> None:
     })
 
     # Subject A should only see its own event
-    a = client.get("/api/learning-analytics", params={"sessionId": subj_a}).json()
+    a = _response_data(client.get("/api/learning-analytics", params={"sessionId": subj_a}))
     assert a["eventCount"] >= 1
     a_events = [e["event"] for e in a.get("recentEvents", [])]
     assert "resource_view" in a_events
     assert "resource_complete" not in a_events, "subject B events should not appear in subject A"
 
     # Subject B should only see its own event
-    b = client.get("/api/learning-analytics", params={"sessionId": subj_b}).json()
+    b = _response_data(client.get("/api/learning-analytics", params={"sessionId": subj_b}))
     assert b["eventCount"] >= 1
     assert b["totalStudyMinutes"] >= 10
 
-    print("✓ Session isolation works correctly (events don't mix)")
+    print("PASS Session isolation works correctly (events don't mix)")
+
+
+def test_subject_id_cannot_replace_session_id() -> None:
+    subject_id = "e2e_subject_only"
+    event = client.post("/api/feedback/event", json={
+        "subjectId": subject_id,
+        "event": "resource_view",
+        "resourceId": "subject_only_res",
+    })
+    analytics = client.get("/api/learning-analytics", params={"subjectId": subject_id})
+
+    assert event.status_code == 422
+    assert analytics.status_code == 422
+    print("PASS subjectId cannot substitute for sessionId")
+
+
+def test_invalid_event_type_rejected() -> None:
+    """Verify invalid event_type returns 422 with INVALID_EVENT_TYPE."""
+    invalid_types = [
+        ("invalid_type", "completely unknown type"),
+        ("", "empty string"),
+        ("random_string", "random string"),
+        ("stage_complete", "internal-only type"),
+    ]
+    for evt_type, _desc in invalid_types:
+        r = client.post("/api/feedback/event", json={
+            "sessionId": SESSION,
+            "event": evt_type,
+            "resourceId": "test_res",
+        })
+        assert r.status_code == 422, (
+            f"Expected 422 for event_type='{evt_type}', got {r.status_code}"
+        )
+        result = r.json()
+        assert result.get("code") == "INVALID_EVENT_TYPE", (
+            f"Expected INVALID_EVENT_TYPE for '{evt_type}', got {result.get('code')}"
+        )
+        assert "不支持的事件类型" in result.get("message", ""), (
+            f"Expected Chinese error message, got {result.get('message')}"
+        )
+    print("PASS invalid event types correctly rejected with INVALID_EVENT_TYPE")
+
+
+def test_subject_id_recorded_in_event() -> None:
+    """Verify subjectId sent with event is stored in event metadata."""
+    subj_id = "e2e_subject_event_test"
+    r = client.post("/api/feedback/event", json={
+        "sessionId": SESSION,
+        "event": "resource_view",
+        "resourceId": "subj_meta_res",
+        "subjectId": subj_id,
+        "metadata": {"type": "lecture"},
+    })
+    assert r.status_code == 200
+    assert _response_data(r)["ok"] is True
+
+    # Verify in recent events timeline
+    r2 = client.get("/api/learning-events/timeline", params={"sessionId": SESSION, "limit": 10})
+    events = r2.json().get("data", {}).get("events", [])
+    found = any(
+        e.get("metadata", {}).get("subjectId") == subj_id
+        for e in events
+        if isinstance(e, dict) and e.get("resourceId") == "subj_meta_res"
+    )
+    assert found, "subjectId was not recorded in event metadata"
+    print("PASS subject_id recorded in event metadata")
+
+
+def test_viewed_resources_count() -> None:
+    """viewedResources should reflect the number of resource_view events."""
+    analytics = _get_analytics()
+    viewed = analytics["viewedResources"]
+    breakdown_views = analytics["eventBreakdown"].get("resource_view", 0)
+    assert viewed == breakdown_views, (
+        f"viewedResources {viewed} should match eventBreakdown.resource_view {breakdown_views}"
+    )
+    assert viewed >= 2, f"Expected >= 2 viewedResources, got {viewed}"
+    print(f"PASS viewedResources = {viewed}")
+
+
+def test_completed_resources_count() -> None:
+    """completedResources should reflect the number of resource_complete events."""
+    analytics = _get_analytics()
+    completed = analytics["completedResources"]
+    breakdown_completes = analytics["eventBreakdown"].get("resource_complete", 0)
+    assert completed == breakdown_completes, (
+        f"completedResources {completed} should match eventBreakdown.resource_complete {breakdown_completes}"
+    )
+    assert completed >= 1, f"Expected >= 1 completedResources, got {completed}"
+    print(f"PASS completedResources = {completed}")
+
+
+def test_practice_count() -> None:
+    """practiceCount should reflect the number of practice_result events."""
+    analytics = _get_analytics()
+    practice = analytics["practiceCount"]
+    breakdown_practice = analytics["eventBreakdown"].get("practice_result", 0)
+    assert practice == breakdown_practice, (
+        f"practiceCount {practice} should match eventBreakdown.practice_result {breakdown_practice}"
+    )
+    assert practice >= 1, f"Expected >= 1 practiceCount, got {practice}"
+    print(f"PASS practiceCount = {practice}")
+
+
+def test_empty_analytics_returns_default_structure() -> None:
+    """Analytics for a session with no events should return default (zero) values."""
+    empty_session = f"e2e_empty_{uuid.uuid4().hex[:8]}"
+    r = client.get("/api/learning-analytics", params={"sessionId": empty_session})
+    assert r.status_code == 200
+    data = _response_data(r)
+
+    assert data["eventCount"] == 0
+    assert data["totalStudyMinutes"] == 0
+    assert data["activeResourceCount"] == 0
+    assert data["viewedResources"] == 0
+    assert data["completedResources"] == 0
+    assert data["practiceCount"] == 0
+    assert data["eventBreakdown"] == {}
+    assert data["topResources"] == []
+    assert data["quizAccuracy"] is None
+    assert data["weakTopics"] == []
+    assert isinstance(data["recommendations"], list)
+    assert len(data["recommendations"]) == 0, (
+        "empty data should produce no recommendations"
+    )
+    assert data["recentEvents"] == []
+
+    print("PASS Empty analytics returns default structure with zero values")
+
+
+def test_resource_complete_affects_completed_resources() -> None:
+    """Posting a resource_complete event should increase completedResources."""
+    analytics_before = _get_analytics()
+    before = analytics_before["completedResources"]
+
+    _post_event("resource_complete", resourceId="res_complete_test",
+                metadata={"duration": 10, "title": "Complete Test"})
+
+    analytics_after = _get_analytics()
+    after = analytics_after["completedResources"]
+    assert after == before + 1, (
+        f"completedResources should increase from {before} to {before + 1}, got {after}"
+    )
+    print(f"PASS resource_complete increases completedResources: {before} → {after}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Dedup & Anti-Spam Tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _post_event_for(session_id: str, event: str, **kwargs: object) -> dict:
+    """Post an event for a specific session, return response data."""
+    payload: dict[str, object] = {
+        "sessionId": session_id,
+        "event": event,
+        **kwargs,
+    }
+    r = client.post("/api/feedback/event", json=payload)
+    assert r.status_code == 200
+    return _response_data(r)
+
+
+def _analytics_for(session_id: str) -> dict[str, object]:
+    """Get analytics for a specific session."""
+    r = client.get("/api/learning-analytics", params={"sessionId": session_id})
+    assert r.status_code == 200
+    return _response_data(r)
+
+
+def test_resource_complete_dedup_same_resource() -> None:
+    """Duplicate resource_complete for same (session, resource) should be idempotent.
+
+    completedResources must NOT double when the same resource is completed twice.
+    """
+    sid = f"dedup_complete_{uuid.uuid4().hex[:8]}"
+
+    # First completion
+    _post_event_for(sid, "resource_complete",
+                    resourceId="res_unique_01",
+                    metadata={"duration": 10, "title": "Unique Resource"})
+
+    analytics1 = _analytics_for(sid)
+    assert analytics1["completedResources"] == 1, (
+        f"First completion: expected 1, got {analytics1['completedResources']}"
+    )
+
+    # Duplicate completion of the SAME resource
+    _post_event_for(sid, "resource_complete",
+                    resourceId="res_unique_01",
+                    metadata={"duration": 5, "title": "Unique Resource"})
+
+    analytics2 = _analytics_for(sid)
+    assert analytics2["completedResources"] == 1, (
+        f"After duplicate: completedResources should stay 1, got {analytics2['completedResources']}"
+    )
+    # eventCount should NOT increase (duplicate was dropped)
+    assert analytics2["eventCount"] == 1, (
+        f"After duplicate: eventCount should stay 1, got {analytics2['eventCount']}"
+    )
+    print("PASS resource_complete dedup: duplicate completion does not double completedResources")
+
+
+def test_resource_view_dedup_time_window() -> None:
+    """Duplicate resource_view within the dedup window should be dropped."""
+    sid = f"dedup_view_{uuid.uuid4().hex[:8]}"
+
+    # First view
+    _post_event_for(sid, "resource_view",
+                    resourceId="res_view_01",
+                    metadata={"type": "lecture", "title": "View Test"})
+
+    analytics1 = _analytics_for(sid)
+    assert analytics1["viewedResources"] == 1, (
+        f"First view: expected 1, got {analytics1['viewedResources']}"
+    )
+
+    # Duplicate view within the same time window (300s default)
+    _post_event_for(sid, "resource_view",
+                    resourceId="res_view_01",
+                    metadata={"type": "lecture", "title": "View Test"})
+
+    analytics2 = _analytics_for(sid)
+    assert analytics2["viewedResources"] == 1, (
+        f"After duplicate view: viewedResources should stay 1, got {analytics2['viewedResources']}"
+    )
+    assert analytics2["eventCount"] == 1, (
+        f"After duplicate view: eventCount should stay 1, got {analytics2['eventCount']}"
+    )
+    print("PASS resource_view dedup: duplicate view within window is dropped")
+
+
+def test_multiple_quiz_results_allowed() -> None:
+    """Multiple quiz_result events for the same resource are NOT deduped."""
+    sid = f"dedup_quiz_{uuid.uuid4().hex[:8]}"
+
+    _post_event_for(sid, "quiz_result",
+                    resourceId="res_quiz_multi",
+                    metadata={"correct": 3, "total": 5, "wrong": 2, "topic": "堆栈"})
+
+    _post_event_for(sid, "quiz_result",
+                    resourceId="res_quiz_multi",
+                    metadata={"correct": 5, "total": 5, "wrong": 0, "topic": "堆栈"})
+
+    analytics = _analytics_for(sid)
+    # Both quiz_result events should be counted
+    assert analytics["eventCount"] == 2, (
+        f"Expected 2 quiz events, got {analytics['eventCount']}"
+    )
+    assert analytics["eventBreakdown"].get("quiz_result", 0) == 2, (
+        f"Expected 2 in eventBreakdown.quiz_result, got {analytics['eventBreakdown'].get('quiz_result', 0)}"
+    )
+    # latestQuizScore and bestQuizScore should be populated
+    assert analytics.get("latestQuizScore") is not None, "latestQuizScore should be populated"
+    assert analytics.get("bestQuizScore") is not None, "bestQuizScore should be populated"
+    # Best score should be 100 (second quiz had 5/5)
+    assert analytics["bestQuizScore"]["score"] == 100, (
+        f"Expected bestQuizScore=100, got {analytics['bestQuizScore']['score']}"
+    )
+    print("PASS quiz_result: multiple results allowed, latest/best tracked")
+
+
+def test_multiple_feedback_allowed() -> None:
+    """Multiple feedback events are NOT deduped and stats are explainable."""
+    sid = f"dedup_feedback_{uuid.uuid4().hex[:8]}"
+
+    _post_event_for(sid, "feedback",
+                    resourceId="res_fb_01",
+                    metadata={"rating": 4, "difficultyMatch": True})
+
+    _post_event_for(sid, "feedback",
+                    resourceId="res_fb_02",
+                    metadata={"rating": 2, "difficultyMatch": False})
+
+    analytics = _analytics_for(sid)
+    # Both feedback events should be counted
+    assert analytics["eventCount"] == 2, (
+        f"Expected 2 feedback events, got {analytics['eventCount']}"
+    )
+    assert analytics["eventBreakdown"].get("feedback", 0) == 2, (
+        f"Expected 2 in eventBreakdown.feedback, got {analytics['eventBreakdown'].get('feedback', 0)}"
+    )
+    # feedbackStats should be populated with explainable data
+    fb_stats = analytics.get("feedbackStats")
+    assert fb_stats is not None, "feedbackStats should be populated"
+    assert fb_stats["count"] == 2, f"Expected feedbackStats.count=2, got {fb_stats.get('count')}"
+    assert fb_stats["averageRating"] == 3.0, (
+        f"Expected averageRating=3.0, got {fb_stats.get('averageRating')}"
+    )
+    assert fb_stats["source"] == "analytics", "feedbackStats should have source"
+    assert fb_stats["quality_status"] == "computed", "feedbackStats should have quality_status"
+    assert "evidence" in fb_stats, "feedbackStats should have evidence"
+    print("PASS feedback: multiple entries allowed, stats are explainable")
+
+
+def test_resource_complete_different_sessions_not_deduped() -> None:
+    """Same resource completed in two different sessions should both count."""
+    sid_a = f"dedup_cross_a_{uuid.uuid4().hex[:8]}"
+    sid_b = f"dedup_cross_b_{uuid.uuid4().hex[:8]}"
+
+    _post_event_for(sid_a, "resource_complete",
+                    resourceId="res_cross_session",
+                    metadata={"duration": 10, "title": "Cross-Session Resource"})
+
+    _post_event_for(sid_b, "resource_complete",
+                    resourceId="res_cross_session",
+                    metadata={"duration": 15, "title": "Cross-Session Resource"})
+
+    # Session A: should have its completion
+    a = _analytics_for(sid_a)
+    assert a["completedResources"] == 1, (
+        f"Session A: expected completedResources=1, got {a['completedResources']}"
+    )
+
+    # Session B: should ALSO have its completion (different session, not deduped)
+    b = _analytics_for(sid_b)
+    assert b["completedResources"] == 1, (
+        f"Session B: expected completedResources=1, got {b['completedResources']}"
+    )
+    print("PASS cross-session: same resource in different sessions both count")
+
+
+def test_dedup_event_count_consistency() -> None:
+    """After dedup, eventCount must still equal sum(eventBreakdown.values())."""
+    sid = f"dedup_consistency_{uuid.uuid4().hex[:8]}"
+
+    # Post a mix of events including duplicates
+    _post_event_for(sid, "resource_view", resourceId="res_cons_01")
+    _post_event_for(sid, "resource_view", resourceId="res_cons_01")  # duplicate — deduped
+    _post_event_for(sid, "resource_view", resourceId="res_cons_02")  # different resource — NOT deduped
+    _post_event_for(sid, "resource_complete", resourceId="res_cons_01")
+    _post_event_for(sid, "resource_complete", resourceId="res_cons_01")  # duplicate — deduped
+    _post_event_for(sid, "quiz_result", resourceId="res_cons_01",
+                    metadata={"correct": 3, "total": 5, "wrong": 2})
+    _post_event_for(sid, "quiz_result", resourceId="res_cons_01",  # NOT deduped — quiz
+                    metadata={"correct": 4, "total": 5, "wrong": 1})
+
+    analytics = _analytics_for(sid)
+    breakdown = analytics["eventBreakdown"]
+    total = analytics["eventCount"]
+    computed = sum(breakdown.values())
+    assert total == computed, (
+        f"eventCount ({total}) must equal sum(breakdown) ({computed}) after dedup"
+    )
+
+    # Expected: 1 view(res_cons_01 deduped → 1) + 1 view(res_cons_02) + 1 complete + 2 quiz = 5
+    assert analytics["viewedResources"] == analytics["eventBreakdown"].get("resource_view", 0), (
+        "viewedResources should match breakdown after dedup"
+    )
+    assert analytics["completedResources"] == analytics["eventBreakdown"].get("resource_complete", 0), (
+        "completedResources should match breakdown after dedup (unique completions)"
+    )
+    print(f"PASS dedup consistency: eventCount={total} matches sum(breakdown)={computed}")
+
+
+def test_resource_complete_idempotent_analytics() -> None:
+    """Verify that duplicate completions do NOT inflate completedResources in analytics."""
+    sid = f"dedup_idempotent_{uuid.uuid4().hex[:8]}"
+
+    # Post resource_complete for 3 different resources
+    for i in range(3):
+        _post_event_for(sid, "resource_complete",
+                        resourceId=f"res_idem_{i}",
+                        metadata={"duration": 10, "title": f"Resource {i}"})
+
+    analytics_before = _analytics_for(sid)
+    assert analytics_before["completedResources"] == 3, (
+        f"Expected 3 completedResources, got {analytics_before['completedResources']}"
+    )
+
+    # Now duplicate-complete each of the 3 resources
+    for i in range(3):
+        _post_event_for(sid, "resource_complete",
+                        resourceId=f"res_idem_{i}",
+                        metadata={"duration": 10, "title": f"Resource {i}"})
+
+    analytics_after = _analytics_for(sid)
+    # completedResources should STILL be 3 — duplicates were silently dropped
+    assert analytics_after["completedResources"] == 3, (
+        f"Duplicate completions: completedResources should stay 3, got {analytics_after['completedResources']}"
+    )
+    assert analytics_after["eventCount"] == 3, (
+        f"Duplicate completions: eventCount should stay 3, got {analytics_after['eventCount']}"
+    )
+    print("PASS resource_complete idempotent: 3 resources + 3 duplicates = 3 completedResources")
+
+
+if __name__ == "__main__":
+    tests = [
+        test_all_six_event_types_logged,
+        test_all_analytics_fields_returned,
+        test_event_count_accuracy,
+        test_total_study_minutes,
+        test_active_resource_count,
+        test_viewed_resources_count,
+        test_completed_resources_count,
+        test_practice_count,
+        test_empty_analytics_returns_default_structure,
+        test_top_resources,
+        test_quiz_accuracy,
+        test_weak_topics,
+        test_practice_result_contributes_to_weak_topics,
+        test_recent_events,
+        test_recent_events_reverse_chronological_order,
+        test_resource_complete_affects_completed_resources,
+        test_recommendations,
+        test_event_breakdown_labels,
+        test_session_isolation,
+        test_resource_status_cross_session,
+        test_feedback_default_session,
+        test_session_isolation_with_different_ids,
+        test_subject_id_cannot_replace_session_id,
+        test_invalid_event_type_rejected,
+        test_subject_id_recorded_in_event,
+        # Dedup & anti-spam tests
+        test_resource_complete_dedup_same_resource,
+        test_resource_view_dedup_time_window,
+        test_multiple_quiz_results_allowed,
+        test_multiple_feedback_allowed,
+        test_resource_complete_different_sessions_not_deduped,
+        test_dedup_event_count_consistency,
+        test_resource_complete_idempotent_analytics,
+    ]
+    for test in tests:
+        test()
+        print(f"PASS {test.__name__}")

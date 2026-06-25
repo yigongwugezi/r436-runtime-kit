@@ -27,6 +27,7 @@ try {
     Invoke-PythonTest @("tests\profile_agent_test.py")
     Invoke-PythonTest @("tests\planner_agent_test.py")
     Invoke-PythonTest @("tests\resource_agent_test.py")
+    Invoke-PythonTest @("tests\review_agent_test.py")
     Invoke-PythonTest @("tests\agent_generation_test.py")
     Invoke-PythonTest @("tests\session_data_contract_test.py")
     Invoke-PythonTest @("tests\course_catalog_test.py")

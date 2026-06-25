@@ -18,6 +18,8 @@ class PlannerAgent(BaseAgent):
         When the planner cannot produce real output (timeout, LLM error),
         callers must still receive a reasonable integer for estimatedDays
         — not an empty dict or None.
+        Fallback data is marked with ``source: "rule_based_fallback"`` and
+        ``quality_status: "fallback"``.
         """
         return {
             "agent_step": {
@@ -25,10 +27,16 @@ class PlannerAgent(BaseAgent):
                 "agent_name": self.agent_name,
                 "status": "failed",
                 "summary": f"Agent '{self.agent_id}' fell back to defaults.",
+                "error_reason": "Planner agent failed, returning empty learning path",
+                "source": "rule_based_fallback",
+                "quality_status": "fallback",
                 "started_at": None,
                 "finished_at": None,
             },
             "learning_path": [],
+            "source": "rule_based_fallback",
+            "quality_status": "fallback",
+            "reason": "智能体生成失败，使用规则兜底",
             "estimatedDays": self._infer_days(
                 str((context or {}).get("user_message", "")),
                 (context or {}).get("profile", {}),

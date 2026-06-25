@@ -19,7 +19,7 @@
 
 ```json
 {
-  "sessionId": "session_abc123",
+  "sessionId": "demo_session_001",
   "event": "quiz_result",
   "resourceId": "res_quiz_001",
   "duration": 15,
@@ -43,19 +43,22 @@
 
 ### 查询学习分析
 
-`GET /api/learning-analytics?sessionId=session_abc123`
+`GET /api/learning-analytics?sessionId=demo_session_001`
 
 返回字段：
 
 - `eventCount`: 事件数量
 - `totalStudyMinutes`: 累计学习分钟数
 - `activeResourceCount`: 使用过的资源数量
+- `viewedResources`: 查看资源次数
+- `completedResources`: 完成资源次数
+- `practiceCount`: 实践练习次数
 - `eventBreakdown`: 事件类型统计
 - `topResources`: 高频资源
 - `quizAccuracy`: 练习正确率
 - `weakTopics`: 根据错题统计出的薄弱知识点
 - `recommendations`: 系统给出的调整建议
-- `recentEvents`: 最近学习事件
+- `recentEvents`: 最近学习事件（按时间倒序）
 
 ## 前端接入建议
 

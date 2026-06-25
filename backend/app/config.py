@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     llm_request_timeout: int = 15  # seconds for a single LLM HTTP request
     enable_mock_fallback: bool = False  # demo_result fallback is opt-in for local demos only
 
+    # Learning event deduplication
+    event_dedup_view_window_seconds: int = 300  # 5-minute window for resource_view dedup
+
     project_root: Path = Field(default_factory=lambda: Path(__file__).resolve().parents[2])
 
     model_config = SettingsConfigDict(

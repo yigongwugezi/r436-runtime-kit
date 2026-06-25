@@ -495,6 +495,8 @@ class IntentAgent(BaseAgent):
                 str(parsed.get("reason", "LLM classified the user intent.")),
             )
         except Exception:
+            import logging
+            logging.getLogger("app.agents.intent_agent").warning("LLM intent classification failed, returning None")
             return None
 
     def _load_json(self, content: str) -> dict[str, Any]:

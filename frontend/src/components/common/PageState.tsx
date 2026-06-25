@@ -162,22 +162,29 @@ export function SourceTag({
  * 错误状态
  * =================================================================== */
 export function PageError({
-  title = '加载失败',
+  title,
   description,
   onRetry,
   onGoChat,
+  isUserError = false,
 }: {
   title?: string;
   description?: string | null;
   onRetry: () => void;
   onGoChat?: () => void;
+  isUserError?: boolean;
 }) {
+  const displayTitle = title ?? (isUserError ? '输入有误' : '加载失败');
   return (
     <div className="flex flex-col items-center justify-center py-20 px-6 text-center animate-fade-in-up">
-      <div className="w-20 h-20 rounded-3xl bg-gradient-to-br from-red-50 to-red-100 flex items-center justify-center mb-6 shadow-inner">
-        <AlertCircle className="w-9 h-9 text-red-400" />
+      <div className={`w-20 h-20 rounded-3xl flex items-center justify-center mb-6 shadow-inner ${
+        isUserError
+          ? 'bg-gradient-to-br from-amber-50 to-amber-100'
+          : 'bg-gradient-to-br from-red-50 to-red-100'
+      }`}>
+        <AlertCircle className={`w-9 h-9 ${isUserError ? 'text-amber-400' : 'text-red-400'}`} />
       </div>
-      <h3 className="text-lg font-bold text-gray-700 mb-2">{title}</h3>
+      <h3 className="text-lg font-bold text-gray-700 mb-2">{displayTitle}</h3>
       {description && (
         <p className="text-sm text-gray-400 max-w-sm mb-8 leading-relaxed">{description}</p>
       )}

@@ -43,6 +43,80 @@ const STATUS_MESSAGES: Record<number, string> = {
   503: '服务暂不可用，请稍后重试',
 };
 
+// ── ProductApiResponse 信封解包 ────────────────────────────────────
+// 透明解包：将后端统一信封 {status, data, message, ...} 还原为 data 内容。
+// 前端无需任何代码变更即可继续使用 res.profile / res.path 等字段。
+client.interceptors.response.use((res) => {
+  const body = res.data;
+  if (body && typeof body === 'object' && 'status' in body && 'data' in body) {
+    if (body.status === 'error') {
+      log.warn(`← ${res.config.method?.toUpperCase()} ${res.config.url} biz err: ${body.message}`);
+    }
+    // 透明解包：用信封内的 data 替换整个响应体
+    res.data = body.data;
+  }
+  return res;
+});
+
+// ── 结构化 API 错误类型 ──────────────────────────────────────────
+export interface ApiError {
+  message: string;
+  code?: string;
+  isUserError: boolean;
+  statusCode?: number;
+}
+
+function extractApiError(err: any): ApiError {
+  let message = '请求失败，请稍后重试';
+  let code: string | undefined;
+  let isUserError = false;
+
+  if (err.response) {
+    const status = err.response.status;
+    const body = err.response.data;
+
+    log.warn(`← ${err.config?.method?.toUpperCase()} ${err.config?.url} ${status}`, body);
+
+    // 提取后端结构化错误字段
+    isUserError = body?.is_user_error === true;
+    code = body?.code;
+
+    // 优先使用后端返回的安全消息（detail/message/error）
+    const detail = body?.detail || body?.message || body?.error || null;
+
+    if (detail && typeof detail === 'string') {
+      message = detail;
+    } else if (STATUS_MESSAGES[status]) {
+      message = STATUS_MESSAGES[status];
+    } else if (status >= 500) {
+      message = '服务器出了点问题，请稍后重试';
+    } else if (status >= 400) {
+      message = '请求出了点问题，请检查后重试';
+    }
+
+    // 对 404 补充具体资源信息
+    if (status === 404 && body?.resource) {
+      message = `${body.resource} ${body.resource_id || ''} 不存在`.trim();
+    }
+
+    return { message, code, isUserError, statusCode: status };
+  }
+
+  // 网络错误：未收到响应
+  if (err.request) {
+    if ((err.message || '').includes('timeout')) {
+      message = '请求超时，服务器响应较慢，请稍后重试';
+      log.warn(`请求超时: ${err.config?.url}`);
+    } else {
+      message = '无法连接到服务器，请确认后端服务已启动';
+      log.error(`网络错误: ${err.config?.url}`, err.message);
+    }
+    isUserError = false;
+  }
+
+  return { message, code, isUserError };
+}
+
 // ── 响应拦截：统一错误处理 ──────────────────────────────────────────
 client.interceptors.response.use(
   (res) => {
@@ -50,46 +124,8 @@ client.interceptors.response.use(
     return res;
   },
   (err) => {
-    // 绝不暴露原始堆栈给用户
-    let message = '请求失败，请稍后重试';
-
-    if (err.response) {
-      const status = err.response.status;
-      const body = err.response.data;
-
-      log.warn(`← ${err.config?.method?.toUpperCase()} ${err.config?.url} ${status}`, body);
-
-      // 优先尝试后端返回的结构化消息
-      // 兼容多种后端格式: {detail}, {message}, {error}, ApiResponse {code, message, data}
-      const detail = body?.detail || body?.message || body?.error || null;
-
-      if (detail && typeof detail === 'string') {
-        message = detail;
-      } else if (STATUS_MESSAGES[status]) {
-        message = STATUS_MESSAGES[status];
-      } else if (status >= 500) {
-        message = '服务器出了点问题，请稍后重试';
-      } else if (status >= 400) {
-        message = '请求出了点问题，请检查后重试';
-      }
-
-      // 对 404 补充具体资源信息（如果有 resource_id 或 path）
-      if (status === 404 && err.config?.url) {
-        const path = err.config.url.replace(/\/resources\//, '资源 ');
-        message = `${path} 不存在或已删除`;
-      }
-    } else if (err.request) {
-      // 请求已发出但没有收到响应
-      if ((err.message || '').includes('timeout')) {
-        message = '请求超时，服务器响应较慢，请稍后重试';
-        log.warn(`请求超时: ${err.config?.url}`);
-      } else {
-        message = '无法连接到服务器，请确认后端服务已启动';
-        log.error(`网络错误: ${err.config?.url}`, err.message);
-      }
-    }
-
-    return Promise.reject(new Error(message));
+    const apiError = extractApiError(err);
+    return Promise.reject(new Error(apiError.message));
   },
 );
 

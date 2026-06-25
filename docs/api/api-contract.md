@@ -1,5 +1,66 @@
 # Runtime Kit API Contract
 
+> **sessionId 合约 (v0.2.1)**: `sessionId` 是所有产品 API 的**必填数据归属键**。
+> 为空时返回 **HTTP 422**，响应体为完整的错误信封：
+> ```json
+> {
+>   "status": "error",
+>   "data": null,
+>   "message": "sessionId 不能为空",
+>   "detail": "sessionId 不能为空",
+>   "code": "MISSING_SESSION_ID",
+>   "is_user_error": true,
+>   "sessionId": "",
+>   "subjectId": ""
+> }
+> ```
+> `subjectId` 仅作为课程上下文参数，**不作为** sessionId 的替代或 fallback。
+> 前端始终通过 `chatStore.currentSessionId` 生成并传递唯一 `sessionId`。
+
+> **事件类型校验 (v0.5.0)**: `POST /feedback/event` 的 `event` 字段必须是以下六种类型之一:
+> `resource_view`, `resource_complete`, `quiz_result`, `practice_result`, `node_progress`, `feedback`。
+> 非法事件类型返回 **HTTP 422**，响应体为:
+> ```json
+> {
+>   "status": "error",
+>   "data": null,
+>   "message": "不支持的事件类型: xxx",
+>   "code": "INVALID_EVENT_TYPE",
+>   "is_user_error": true,
+>   "sessionId": "",
+>   "subjectId": ""
+> }
+> ```
+> `stage_complete` 和 `chat_feedback` 为后端内部事件类型，不通过此公开接口写入。
+
+> **统一响应信封 (v0.4.0)**: 所有 Product API（第 3 节）的响应均包裹在统一信封中：
+> ```json
+> {
+>   "status": "success",
+>   "data": { /* 各端点原有响应体 */ },
+>   "message": "success",
+>   "warnings": [],
+>   "source": "runtime_kit",
+>   "sessionId": "demo_session_001",
+>   "subjectId": "",
+>   "code": null,
+>   "is_user_error": null
+> }
+> ```
+> - `status`: `"success"` 或 `"error"`。
+> - `data`: 端点原有响应体（与下文各端点文档中的结构一致）。`status: "error"` 时为 `null`。
+> - `message`: 人类可读的结果说明。错误时为错误描述。
+> - `warnings`: 非阻塞性提示信息列表。
+> - `source`: 数据来源标识。可能值：`"runtime_kit"`（默认）、`"db"`、`"agent"`、`"agent_generated"`、`"user_action"`、`"user_input"`、`"system"`、`"generated"`、`"memory"`、`"mock"`、`"none"`。
+> - `sessionId` / `subjectId`: 请求中的数据归属键和课程上下文键。错误时均为空字符串。
+> - `code`: 机器可读错误码（如 `"MISSING_SESSION_ID"`）。成功时为 `null`。
+> - `is_user_error`: 用户输入错误（4xx）时为 `true`，系统错误（5xx）时为 `false`。成功时为 `null`。
+>
+> **前端无感**：Axios 响应拦截器自动解包信封，将 `res.data` 替换为 `body.data`，
+> 因此前端 API 调用代码无需任何修改。
+>
+> **注意**：HTTP 级错误（如缺少 sessionId 返回 422）同样使用以上信封格式（`status: "error"`, `data: null`）。
+
 ## 1. Base URLs
 
 Frontend:
@@ -69,7 +130,7 @@ Request:
 
 ```json
 {
-  "sessionId": "session_abc123",
+  "sessionId": "demo_session_001",
   "message": "我是电子信息大二学生，Python基础一般，想两周入门人工智能。"
 }
 ```
@@ -92,7 +153,7 @@ Response:
 
 ```json
 {
-  "sessionId": "session_abc123",
+  "sessionId": "demo_session_001",
   "reply": {
     "id": "assistant_msg_001",
     "role": "assistant",
@@ -106,19 +167,32 @@ Response:
 
 Purpose: get the current student profile. Reads from database — never triggers agents. Returns empty structure with `source: "none"` when no data exists.
 
-Query: `?sessionId=session_abc123`
+Query: `?sessionId=demo_session_001`
 
 Response:
 
 ```json
 {
   "profile": {
-    "id": "session_abc123",
+    "id": "demo_session_001",
     "learnerId": null,
     "nickname": "学习者",
     "createdAt": 1781235059000,
     "updatedAt": 1781321459000,
-    "dimensions": [],
+    "dimensions": [
+      {
+        "key": "major_background",
+        "label": "专业背景",
+        "value": "软件工程",
+        "score": 70,
+        "confidence": 0.85,
+        "description": "软件工程大三学生",
+        "explanation": "软件工程大三学生",
+        "evidence": "软件工程大三学生",
+        "source": "user_input",
+        "updatedAt": 1781321459000
+      }
+    ],
     "weaknesses": [],
     "preferences": {
       "preferredFormats": ["text"],
@@ -145,7 +219,17 @@ Response:
 }
 ```
 
-The `source` field indicates data provenance: `"db"` (from SQLite), `"agent"` (in-memory last result), `"none"` (no data yet).
+The profile-level `source` field indicates overall data provenance: `"db"` (from SQLite), `"agent"` (in-memory last result), `"none"` (no data yet).
+
+Each dimension object includes:
+- `key`, `label`: dimension identifier and display name.
+- `value`: the extracted value (text).
+- `score`: numeric score (0-100) for visualization.
+- `confidence`: 0.0-1.0 confidence estimate.
+- `description`, `explanation`: human-readable descriptions.
+- `evidence`: supporting evidence text for the dimension value.
+- `source`: dimension-level provenance. Values: `"user_input"`, `"inferred"`, `"llm_generated"`, `"rule_based_fallback"`, `"diagnosis"`, `"feedback"`.
+- `updatedAt`: timestamp (milliseconds) of last update.
 
 ### POST /profile/build
 
@@ -155,7 +239,7 @@ Request:
 
 ```json
 {
-  "sessionId": "session_abc123",
+  "sessionId": "demo_session_001",
   "message": "我是软件工程大三学生，线性代数比较弱，想十天学懂神经网络。"
 }
 ```
@@ -165,7 +249,7 @@ Response:
 ```json
 {
   "profile": {
-    "id": "session_abc123",
+    "id": "demo_session_001",
     "learnerId": null,
     "nickname": "学习者",
     "dimensions": [...],
@@ -186,7 +270,7 @@ Request:
 
 ```json
 {
-  "sessionId": "session_abc123",
+  "sessionId": "demo_session_001",
   "nickname": "新昵称"
 }
 ```
@@ -203,7 +287,7 @@ Response:
 
 Purpose: get the current study path. Reads from database — never triggers agents.
 
-Query: `?sessionId=session_abc123`
+Query: `?sessionId=demo_session_001`
 
 Response:
 
@@ -234,6 +318,10 @@ Response:
         "estimatedDays": 3
       }
     ],
+    "stageResourceStats": {
+      "stage_1": {"total": 3, "completed": 1},
+      "stage_2": {"total": 2, "completed": 0}
+    },
     "createdAt": 1781321459000,
     "overallProgress": 18,
     "estimatedDays": 14,
@@ -250,7 +338,7 @@ Request:
 
 ```json
 {
-  "sessionId": "session_abc123"
+  "sessionId": "demo_session_001"
 }
 ```
 
@@ -270,10 +358,35 @@ Request:
 
 ```json
 {
-  "sessionId": "session_abc123",
+  "sessionId": "demo_session_001",
   "status": "completed"
 }
 ```
+
+Response:
+
+```json
+{
+  "ok": true
+}
+```
+
+### PATCH /learning-path/auto-advance
+
+Purpose: auto-advance node progress based on user interaction events. When a resource is viewed, the corresponding node is set to in-progress; when completed, the node is marked mastered and the next node in the stage is unlocked.
+
+Request:
+
+```json
+{
+  "sessionId": "demo_session_001",
+  "relatedStageId": "stage_1",
+  "taskId": "stage_1_node_1",
+  "event": "resource_complete"
+}
+```
+
+`event` values: `"resource_view"` (starts node as `in_progress`), `"resource_complete"` (marks node `mastered` and unlocks next node).
 
 Response:
 
@@ -313,7 +426,9 @@ Response:
 
 Purpose: get generated learning resources. Reads from database — never triggers agents.
 
-Query: `?sessionId=session_abc123`
+Query: `?sessionId=demo_session_001`
+
+Additional optional query parameters: `type`, `difficulty`, `source`, `search`, `knowledgePoint`, `relatedStageId`, `resourceIds`, `taskId`, `chapter`, `qualityStatus`, `studyStatus`, `bookmarked`, `sortBy`.
 
 Response:
 
@@ -327,7 +442,7 @@ Response:
       "description": "适合具备 Python 基础但机器学习较薄弱的学生",
       "content": "## 1. 为什么要先学机器学习基础...",
       "knowledgePoints": ["stage_1"],
-      "tags": ["markdown", "mock"],
+      "tags": ["markdown", "agent_generated", "passed"],
       "difficulty": "easy",
       "estimatedMinutes": 20,
       "format": "text",
@@ -338,18 +453,76 @@ Response:
       "createdAt": 1781321459000,
       "bookmarked": false,
       "studyStatus": "new",
-      "source": "db"
+      "completedAt": null,
+      "source": "system_inferred",
+      "relatedStageId": "stage_1",
+      "taskId": "stage_1_node_1",
+      "relatedChapter": "第1章-机器学习基础",
+      "relatedKnowledgePoints": ["线性回归", "梯度下降"],
+      "qualityStatus": "passed",
+      "sourceType": "",
+      "generationMode": "",
+      "reason": "",
+      "evidence": [],
+      "fallbackReason": ""
     }
   ],
   "total": 6,
   "page": 1,
-  "sessionId": "session_abc123"
+  "sessionId": "demo_session_001"
 }
 ```
 
-Resource `type` values: `lecture`, `mindmap`, `quiz`, `reading`, `practice` (case_study), `multimodal` (video script).
+Resource `type` values: `lecture`, `mindmap`, `quiz`, `reading`, `case_study`, `video`.
 
 Resource `format` values: `text`, `diagram` (for mindmap mermaid content), `code` (for practice).
+
+Per-resource `source` values (mapped by backend): `"user_input"`, `"agent_generated"`, `"system_inferred"`, `"fallback"`, `"rule_based_fallback"`.
+
+`qualityStatus` values: `"passed"`, `"warning"`, `"blocked"`, `"fallback"`, `"insufficient_context"`, `"fallback_passed"`.
+
+`studyStatus` values: `"new"`, `"in_progress"`, `"completed"`.
+
+`completedAt`: timestamp (milliseconds) when study was completed, or `null`.
+
+`evidence`: array of strings providing provenance evidence for the resource.
+
+`fallbackReason`: populated when the resource was generated via fallback rather than by an agent.
+
+### GET /resources/{resource_id}
+
+Purpose: get a single resource by ID. Tries database first, then in-memory fallback.
+
+Query: `?sessionId=demo_session_001`
+
+Response (envelope `data` field):
+
+```json
+{
+  "resource": {
+    "id": "res_lecture_001",
+    "type": "lecture",
+    "title": "机器学习基础入门讲义",
+    "description": "适合具备 Python 基础但机器学习较薄弱的学生",
+    "content": "## 1. 为什么要先学机器学习基础...",
+    "knowledgePoints": ["stage_1"],
+    "tags": ["markdown", "agent_generated", "passed"],
+    "difficulty": "easy",
+    "estimatedMinutes": 20,
+    "format": "text",
+    "mermaidDef": null,
+    "codeBlocks": null,
+    "questions": null,
+    "pptOutline": null,
+    "createdAt": 1781321459000,
+    "bookmarked": false,
+    "studyStatus": "new",
+    "source": "agent_generated"
+  }
+}
+```
+
+Envelope `source` for this endpoint: `"db"` (from database), `"memory"` (in-memory fallback), `"none"` (resource not found).
 
 ### POST /resources/generate
 
@@ -359,7 +532,7 @@ Request:
 
 ```json
 {
-  "sessionId": "session_abc123",
+  "sessionId": "demo_session_001",
   "topic": "链表",
   "type": "quiz"
 }
@@ -377,13 +550,114 @@ Response:
 
 Purpose: toggle the bookmarked state of a resource.
 
-Query: `?sessionId=session_abc123`
+Query: `?sessionId=demo_session_001`
 
 Response:
 
 ```json
 {
+  "bookmarked": true,
+  "ok": true
+}
+```
+
+### PATCH /resources/{resource_id}/study-status
+
+Purpose: update the study status of a resource.
+
+Query: `?sessionId=demo_session_001`
+
+Request:
+
+```json
+{
+  "studyStatus": "completed"
+}
+```
+
+`studyStatus` values: `"new"`, `"in_progress"`, `"completed"`.
+
+Response:
+
+```json
+{
+  "ok": true,
+  "studyStatus": "completed"
+}
+```
+
+Note: This endpoint creates a minimal DB record if the resource has not been persisted yet.
+
+### POST /resources/batch/study-status
+
+Purpose: batch update study status for multiple resources in a session.
+
+Request:
+
+```json
+{
+  "sessionId": "demo_session_001",
+  "resourceIds": ["res_lecture_001", "res_quiz_002"],
+  "studyStatus": "completed"
+}
+```
+
+Response:
+
+```json
+{
+  "ok": true,
+  "updated": 2,
+  "studyStatus": "completed"
+}
+```
+
+### POST /resources/batch/bookmark
+
+Purpose: batch bookmark or unbookmark multiple resources.
+
+Request:
+
+```json
+{
+  "sessionId": "demo_session_001",
+  "resourceIds": ["res_lecture_001", "res_quiz_002"],
   "bookmarked": true
+}
+```
+
+Response:
+
+```json
+{
+  "ok": true,
+  "updated": 2,
+  "bookmarked": true
+}
+```
+
+### POST /resources/batch/export
+
+Purpose: export resource titles as a formatted text list. Optionally filter by resourceIds.
+
+Request:
+
+```json
+{
+  "sessionId": "demo_session_001",
+  "resourceIds": ["res_lecture_001"]
+}
+```
+
+If `resourceIds` is omitted or empty, all resources for the session are exported.
+
+Response:
+
+```json
+{
+  "ok": true,
+  "export": "EduAgent 资源导出 — 2026-06-24 10:00\n共 1 项资源\n---------------------------------------------\n  1. [lecture] 机器学习基础入门讲义 (easy) — 未开始",
+  "count": 1
 }
 ```
 
@@ -391,13 +665,33 @@ Response:
 
 Purpose: get the Mermaid mindmap definition for a resource.
 
+Query: `?sessionId=demo_session_001`
+
 Response:
 
 ```json
 {
-  "mermaidDef": "mindmap\n  root((人工智能导论))\n    ..."
+  "mermaidDef": "mindmap\n  root((人工智能导论))\n    ...",
+  "source": "generated",
+  "resourceId": "res_lecture_001"
 }
 ```
+
+`source` values: `"db"` (from stored mermaid_def in database), `"generated"` (generated on-the-fly from resource metadata), `"none"` (resource not found).
+
+### GET /resources/{resource_id}/knowledge-graph-legacy
+
+Purpose: legacy mock knowledge graph endpoint. Returns a static mindmap for demonstration and backward compatibility.
+
+Response:
+
+```json
+{
+  "mermaidDef": "mindmap\n  root((人工智能导论))\n    机器学习基础\n    神经网络\n    自然语言处理\n    资源 res_lecture_001"
+}
+```
+
+Note: This endpoint always returns mock data. New integrations should use `GET /resources/{resource_id}/knowledge-graph` instead, which returns real data from the database.
 
 ### GET /chat/sessions
 
@@ -409,7 +703,7 @@ Response:
 {
   "sessions": [
     {
-      "id": "session_abc123",
+      "id": "demo_session_001",
       "title": "未命名会话",
       "status": "active",
       "createdAt": 1781235059000,
@@ -427,7 +721,7 @@ Response:
 
 ```json
 {
-  "sessionId": "session_abc123",
+  "sessionId": "demo_session_001",
   "messages": [
     {
       "id": "msg_1",
@@ -448,7 +742,7 @@ Response:
 ```json
 {
   "ok": true,
-  "sessionId": "session_abc123"
+  "sessionId": "demo_session_001"
 }
 ```
 
@@ -492,7 +786,7 @@ Request:
 
 ```json
 {
-  "sessionId": "session_abc123",
+  "sessionId": "demo_session_001",
   "content": "这道题太简单了"
 }
 ```
@@ -509,10 +803,14 @@ Response:
 
 Purpose: record learning behavior events for tracking and evaluation.
 
+Valid event types: `resource_view`, `resource_complete`, `quiz_result`, `practice_result`, `node_progress`, `feedback`. Invalid types return HTTP 422 with `INVALID_EVENT_TYPE`.
+
 Request:
 
 ```json
 {
+  "sessionId": "demo_session_001",
+  "subjectId": "ai_intro",
   "event": "resource_view",
   "resourceId": "res_lecture_001",
   "duration": 5,
@@ -532,18 +830,167 @@ Response:
 
 ### GET /learning-analytics
 
-Purpose: return basic learning behavior analytics.
+Purpose: return learning behavior analytics computed from tracked events.
+
+Query: `?sessionId=demo_session_001`
 
 Response:
 
 ```json
 {
-  "eventCount": 1,
-  "totalStudyMinutes": 5,
-  "recentEvents": [],
+  "eventCount": 42,
+  "totalStudyMinutes": 125,
+  "activeResourceCount": 3,
+  "resourceViewCount": 30,
+  "resourceCompleteCount": 5,
+  "lastStudyTime": 1781321459000,
+  "eventBreakdown": {
+    "resource_view": 30,
+    "resource_complete": 5,
+    "quiz_submit": 3,
+    "feedback": 2,
+    "node_progress": 2
+  },
+  "topResources": [
+    {"resourceId": "res_lecture_001", "count": 15, "title": "机器学习基础入门讲义"}
+  ],
+  "quizAccuracy": 75,
+  "weakTopics": [
+    {
+      "topic": "线性回归",
+      "wrongCount": 3,
+      "totalCount": 5,
+      "risk": 0.6,
+      "source": ["quiz", "diagnosis"],
+      "priority": "high"
+    }
+  ],
+  "recommendations": [
+    {
+      "recommendation_type": "incomplete_resource",
+      "title": "完成未学完的资源：机器学习基础入门讲义",
+      "reason": "资源「机器学习基础入门讲义」尚未完成学习（状态：in_progress）",
+      "target_resource_id": "res_lecture_001",
+      "target_stage_id": "stage_1",
+      "priority": "medium",
+      "source": "db",
+      "confidence": 0.9,
+      "evidence": "Resource 'res_lecture_001' of type 'lecture' has study_status='in_progress' in current session",
+      "quality_status": "passed"
+    },
+    {
+      "recommendation_type": "low_accuracy_topic",
+      "title": "复习薄弱知识点：线性回归",
+      "reason": "知识点「线性回归」正确率偏低（3/5 错误），建议重新学习相关资源",
+      "target_resource_id": "res_quiz_002",
+      "target_stage_id": "stage_1",
+      "priority": "high",
+      "source": "analytics",
+      "confidence": 0.4,
+      "evidence": "Topic '线性回归': 3 wrong out of 5 attempts (risk=0.6)",
+      "quality_status": "passed"
+    }
+  ],
+  "completionTrend": [
+    {"date": "2026-06-10", "count": 0},
+    {"date": "2026-06-11", "count": 1}
+  ],
+  "quizTrend": [
+    {"date": "2026-06-20", "accuracy": 80, "topic": "梯度下降", "timestamp": "2026-06-20T10:00:00"}
+  ],
+  "resourceTypeBreakdown": {
+    "lecture": 15,
+    "quiz": 5
+  },
+  "recentEvents": [
+    {"event": "resource_view", "resourceId": "res_lecture_001", "metadata": {}, "timestamp": "2026-06-24T10:00:00"}
+  ],
   "summary": "已接入学习事件追踪，可用于后续动态调整画像、资源推荐和学习路径。"
 }
 ```
+
+`lastStudyTime` is a timestamp in milliseconds, or `null` if no events exist.
+`quizAccuracy` is a percentage (0-100), or `null` if no quiz data.
+`weakTopics[].source` lists the event types that contributed to this topic (e.g. `"quiz"`, `"diagnosis"`, `"feedback"`).
+`weakTopics[].priority` is `"high"` when risk > 0.5, otherwise `"medium"`.
+`completionTrend` covers the last 14 days.
+`quizTrend` returns the last 20 quiz/practice results.
+`recommendations` is an array of structured recommendation objects (not plain strings).
+Each item contains: `recommendation_type` (one of `incomplete_resource`, `low_accuracy_topic`, `incomplete_practice`, `stage_incomplete`, `frequent_weak_topic`), `title`, `reason`, `target_resource_id` (nullable), `target_stage_id` (nullable), `priority` (`high`/`medium`/`low`), `source`, `confidence` (0-1), `evidence`, and `quality_status`.
+Empty array when no data or no actionable recommendations exist.
+
+`latestQuizScore` and `bestQuizScore` provide explicit clarity on quiz performance: `latestQuizScore` is the most recent result (chronologically last), while `bestQuizScore` is the highest-scoring result. Both contain `score`, `topic`, `timestamp`, `source`, and `quality_status` fields. They are `null` when no quiz events exist.
+
+`feedbackStats` provides explainable feedback statistics: `count` (number of feedback events), `averageRating` (mean of numeric ratings), `source`, `quality_status`, and `evidence`. It is `null` when no feedback events exist.
+
+### Event Deduplication
+
+Since v0.6.0, the backend applies insert-time deduplication to prevent duplicate events from inflating analytics:
+
+- **`resource_complete`** — Idempotent: only the first `resource_complete` event per (sessionId, resourceId) is recorded. Subsequent identical events are silently ignored. This ensures `completedResources` counts unique completed resources, not repeated completions.
+
+- **`resource_view`** — Time-window dedup: a `resource_view` event for the same (sessionId, resourceId) within a 300-second (5-minute) window is treated as a duplicate and silently ignored. Views spaced more than 5 minutes apart are both recorded (cumulative tracking).
+
+- **`quiz_result`, `practice_result`, `feedback`, `node_progress`** — No deduplication: each event is recorded independently. Analytics use appropriate aggregation for these multi-record types (e.g., `latestQuizScore`/`bestQuizScore` for quizzes, `feedbackStats` for feedback).
+
+Deduplication is transparent to the API caller: the response `{"ok": true}` is returned regardless of whether the event was stored or deduped.
+
+Analytics fields after dedup:
+- `completedResources` reflects unique completed resources (one per session + resource).
+- `viewedResources` reflects `resource_view` events after time-window dedup.
+- `eventCount` counts all stored events (the deduped set).
+- `eventBreakdown` counts all stored events per event type (the deduped set).
+
+### GET /learning-events/timeline
+
+Purpose: get recent learning events as a timeline, enriched with resource metadata (title, type, stage, chapter).
+
+Query: `?sessionId=demo_session_001&limit=50&type=resource_view&range=7`
+
+Parameters:
+- `sessionId` (required): session identifier.
+- `subjectId` (optional): subject identifier.
+- `limit` (optional, default 50): max events to return.
+- `type` (optional): filter by event type. Values: `resource_view`, `resource_complete`, `quiz_result`, `practice_result`, `feedback`, `stage_complete`, `node_progress`.
+- `range` (optional): time range in days. 0 = all, 1 = today, 7 = last 7 days, 30 = last 30 days.
+
+Response:
+
+```json
+{
+  "events": [
+    {
+      "id": 1,
+      "event": "resource_view",
+      "label": "查看了资源",
+      "icon": "👁️",
+      "color": "blue",
+      "resourceId": "res_lecture_001",
+      "resourceTitle": "机器学习基础入门讲义",
+      "resourceType": "lecture",
+      "relatedStageId": "stage_1",
+      "relatedChapter": "第1章-机器学习基础",
+      "metadata": {
+        "knowledgePoints": ["线性回归"]
+      },
+      "timestamp": 1781321459000
+    }
+  ],
+  "total": 1
+}
+```
+
+Event types and their display config:
+
+| event | label | icon | color |
+|-------|-------|------|-------|
+| `resource_view` | 查看了资源 | 👁️ | blue |
+| `resource_complete` | 完成了资源 | ✅ | green |
+| `quiz_result` | 提交了练习 | 📝 | amber |
+| `practice_result` | 提交了实操 | 💻 | cyan |
+| `feedback` | 提交了反馈 | 💬 | purple |
+| `stage_complete` | 完成了阶段 | 🎯 | rose |
+| `node_progress` | 学习节点更新 | 📌 | gray |
 
 ## 4. Agent Workflow
 
@@ -604,7 +1051,13 @@ progress_feedback, unsafe, unknown
 
 ---
 
-## 4. 多科目架构 (Multi-Subject Architecture) — v0.3.0
+## 4. 多科目架构 (Multi-Subject Architecture) — v0.3.0 [TARGET / PLANNED]
+
+> **Status**: The endpoints and data models in this section describe the **target architecture**.
+> They have **NOT yet been implemented** in the backend. Current product APIs (Section 3)
+> operate under a single default subject (`subject_default`), with `subjectId` accepted
+> as a pass-through parameter for future compatibility.
+> **Frontend should NOT depend on these endpoints** until backend implementation is complete.
 
 ### 4.1 核心概念
 

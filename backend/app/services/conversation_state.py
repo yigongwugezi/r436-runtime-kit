@@ -1,4 +1,6 @@
+import logging
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -13,12 +15,15 @@ from app.db.repository import (
     get_or_create_session,
     save_message,
     save_profile_snapshot,
-    save_learning_path,
-    save_resource,
+    upsert_learning_path,
+    upsert_resource,
     get_latest_profile,
     get_latest_learning_path,
     get_resources as repo_get_resources,
 )
+from app.utils.errors import MissingSessionIdError
+
+logger = logging.getLogger(__name__)
 from app.services.profile_extractor import GRADE_PATTERNS, MAJOR_ALIASES, extract_profile_facts
 from app.utils.profile_normalizer import normalize_profile_dimensions
 
@@ -158,6 +163,7 @@ class ConversationStore:
     def __init__(self) -> None:
         self._sessions: dict[str, ConversationState] = {}
         self._db_enabled: bool = False
+        self._lock = threading.Lock()
 
     # ── DB lifecycle ─────────────────────────────────────────────────
 
@@ -250,21 +256,23 @@ class ConversationStore:
 
     # ── Public API ────────────────────────────────────────────────────
 
-    def get(self, session_id: str | None) -> ConversationState:
-        """Get or create the conversation state for *session_id*.
+    @staticmethod
+    def _require_session_id(session_id: str | None) -> str:
+        sid = str(session_id or "").strip()
+        if not sid:
+            raise MissingSessionIdError()
+        return sid
 
-        Raises ValueError when *session_id* is empty — sessionId is the sole
-        data-ownership key and must always be provided.
-        """
-        if not session_id or not session_id.strip():
-            raise ValueError("session_id is required and must be non-empty")
-        sid = session_id.strip()
-        if sid not in self._sessions:
-            state = ConversationState(session_id=sid)
-            self._sessions[sid] = state
-            if self._db_enabled:
-                self._hydrate_from_db(state)
-        return self._sessions[sid]
+    def get(self, session_id: str | None) -> ConversationState:
+        """Get or create conversation state for an explicit session id."""
+        sid = self._require_session_id(session_id)
+        with self._lock:
+            if sid not in self._sessions:
+                state = ConversationState(session_id=sid)
+                self._sessions[sid] = state
+                if self._db_enabled:
+                    self._hydrate_from_db(state)
+            return self._sessions[sid]
 
     def get_state_or_none(self, session_id: str) -> ConversationState | None:
         """Return the state for *session_id* if it exists, otherwise *None*.
@@ -273,7 +281,7 @@ class ConversationStore:
         Use this when you want to check whether a session already has data
         without creating phantom sessions.
         """
-        sid = session_id.strip()
+        sid = str(session_id or "").strip()
         if not sid:
             return None
         if sid in self._sessions:
@@ -291,9 +299,7 @@ class ConversationStore:
 
     def reset(self, session_id: str | None) -> ConversationState:
         """Reset all state for a session (in-memory + DB)."""
-        if not session_id or not session_id.strip():
-            raise ValueError("session_id is required and must be non-empty")
-        sid = session_id.strip()
+        sid = self._require_session_id(session_id)
         self._sessions[sid] = ConversationState(session_id=sid)
         if self._db_enabled:
             try:
@@ -392,7 +398,7 @@ class ConversationStore:
                             result.get("estimatedDays"), stages
                         ),
                     }
-                    save_learning_path(db, state.session_id, path_data)
+                    upsert_learning_path(db, state.session_id, path_data)
 
                 # Save resources if present — persist full structured data
                 for item in result.get("resources", []):
@@ -416,7 +422,7 @@ class ConversationStore:
                     if item.get("related_stage_id"):
                         related_points.append(str(item.get("related_stage_id")))
 
-                    save_resource(db, state.session_id, {
+                    upsert_resource(db, state.session_id, {
                         "id": resource_id,
                         "type": item.get("type", "lecture"),
                         "title": item.get("title", "学习资源"),
@@ -447,6 +453,15 @@ class ConversationStore:
             finally:
                 if db is not None:
                     db.close()
+
+    def set_diagnosis(self, session_id: str, diagnosis: dict[str, Any]) -> None:
+        """Attach a diagnosis to the current session without regenerating other artifacts."""
+        state = self.get(session_id)
+        result = dict(state.last_result or {})
+        result.setdefault("session_id", state.session_id)
+        result["diagnosis"] = diagnosis
+        state.last_result = result
+        state.updated_at = time.time()
 
     # ── Fact extraction (unchanged, pure processing logic) ─────────────
 

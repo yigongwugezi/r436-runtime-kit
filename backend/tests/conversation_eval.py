@@ -2,6 +2,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -9,10 +10,30 @@ sys.path.insert(0, str(ROOT))
 
 from app.agents.intent_agent import IntentAgent  # noqa: E402
 from app.routers import product  # noqa: E402
+from app.services import agent_service  # noqa: E402
 from app.services.conversation_state import conversation_store  # noqa: E402
+from app.services.llm_client import MockLLMClient  # noqa: E402
+from app.services.orchestrator import AgentOrchestrator  # noqa: E402
+
+
+class DeterministicTestOrchestrator(AgentOrchestrator):
+    """Keep conversation evaluation independent from external LLM behavior."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.llm_client = MockLLMClient()
 
 
 CASES_PATH = Path(__file__).with_name("conversation_cases.json")
+REQUIRED_INTENT_CASES = {
+    "帮我构建学习画像": "profile_update",
+    "我是计算机新生，帮我构建学习画像": "profile_update",
+    "帮我生成学习路径": "learning_plan",
+    "根据我的学习路径推荐资源": "resource_request",
+    "帮我找学习资源": "resource_request",
+    "帮我构建学习画像、学习路径和学习资源": "full_workflow",
+    "我哪里比较薄弱": "diagnosis",
+}
 
 
 def classify(message: str) -> dict[str, Any]:
@@ -23,7 +44,8 @@ def reply(session_id: str, message: str) -> tuple[dict[str, Any], str]:
     conversation_store.append_message(session_id, "user", message)
     intent = classify(message)
     conversation_store.set_intent(session_id, intent)
-    content, _ = product._reply_for_intent(message, intent, session_id)
+    with patch.object(agent_service, "AgentOrchestrator", DeterministicTestOrchestrator):
+        content, _ = product._reply_for_intent(message, intent, session_id)
     conversation_store.append_message(session_id, "assistant", content)
     return intent, content
 
@@ -93,6 +115,22 @@ def main() -> None:
     for case in cases:
         assert_case(case)
         print(f"PASS {case['name']}")
+
+    seen_intents: dict[str, str] = {}
+    for case in cases:
+        for turn in case.get("turns", []):
+            message = turn.get("message")
+            intent = turn.get("intent")
+            if isinstance(message, str) and isinstance(intent, str):
+                seen_intents.setdefault(message, intent)
+
+    for message, expected_intent in REQUIRED_INTENT_CASES.items():
+        actual_intent = seen_intents.get(message)
+        if actual_intent != expected_intent:
+            raise AssertionError(
+                f"required intent case {message!r} expected {expected_intent!r}, got {actual_intent!r}"
+            )
+
     print(f"PASS {len(cases)} conversation evaluation cases")
 
 

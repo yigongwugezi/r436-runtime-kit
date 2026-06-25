@@ -1,13 +1,26 @@
 ﻿import sys
 from pathlib import Path
-
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.agents.intent_agent import IntentAgent  # noqa: E402
 from app.routers import product  # noqa: E402
+from app.services import agent_service  # noqa: E402
 from app.services.conversation_state import conversation_store  # noqa: E402
+from app.services.learning_tracker import learning_tracker  # noqa: E402
+from app.services.llm_client import MockLLMClient  # noqa: E402
+from app.services.orchestrator import AgentOrchestrator  # noqa: E402
+from app.utils.errors import MissingSessionIdError  # noqa: E402
+
+
+class DeterministicTestOrchestrator(AgentOrchestrator):
+    """Keep routing regressions independent from external LLM latency and output."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.llm_client = MockLLMClient()
 
 
 def classify(message: str) -> dict:
@@ -18,7 +31,8 @@ def reply(session_id: str, message: str) -> str:
     state = conversation_store.append_message(session_id, "user", message)
     intent = classify(message)
     conversation_store.set_intent(session_id, intent)
-    content, _ = product._reply_for_intent(message, intent, session_id)
+    with patch.object(agent_service, "AgentOrchestrator", DeterministicTestOrchestrator):
+        content, _ = product._reply_for_intent(message, intent, session_id)
     conversation_store.append_message(session_id, "assistant", content)
     assert state.session_id == session_id
     return content
@@ -200,6 +214,90 @@ def test_intent_classify_diagnosis_question() -> None:
     """Issue #4: 我哪里比较薄弱 is a diagnosis query (explicitly listed as diagnosis example in intent_routes)."""
     result = classify("我哪里比较薄弱")
     assert result["intent"] == "diagnosis"
+
+
+def test_diagnosis_route_returns_structured_result() -> None:
+    sid = "regression_diagnosis_route"
+    conversation_store.reset(sid)
+    learning_tracker.enable_db()
+    learning_tracker.reset(sid)
+    conversation_store.set_result(
+        sid,
+        {
+            "session_id": sid,
+            "profile": {
+                "error_patterns": {
+                    "value": "栈不熟",
+                    "score": 42,
+                    "confidence": 0.8,
+                    "explanation": "用户明确反馈栈掌握较弱",
+                    "evidence": "栈不熟",
+                    "source": "user_input",
+                }
+            },
+            "learning_path": [
+                {
+                    "stage_id": "stage_stack",
+                    "title": "栈与队列",
+                    "goal": "掌握栈的基本操作",
+                    "tasks": ["实现顺序栈"],
+                }
+            ],
+            "resources": [
+                {
+                    "resource_id": f"{sid}_res_stack",
+                    "title": "栈代码练习",
+                    "related_stage_id": "stage_stack",
+                    "related_knowledge_points": ["栈"],
+                }
+            ],
+        },
+    )
+    learning_tracker.log(
+        {
+            "event": "quiz_result",
+            "resourceId": f"{sid}_res_stack",
+            "metadata": {
+                "topic": "栈",
+                "wrong": 3,
+                "correct": 1,
+                "total": 4,
+                "accuracy": 25,
+            },
+        },
+        session_id=sid,
+    )
+
+    response = product.send_chat({"sessionId": sid, "message": "我哪里比较薄弱"})
+    response = response.get("data", response)
+    content = response["reply"]["content"]
+    diagnosis = response.get("diagnosis") or {}
+
+    assert_contains(content, "学习诊断结果")
+    assert_not_contains(content, "收到你的学习反馈了")
+    for field in ("weak_topics", "reason", "source", "confidence", "next_actions", "limitations"):
+        assert field in diagnosis
+    assert diagnosis["weak_topics"][0]["topic"] == "栈"
+    assert diagnosis["weak_topics"][0]["recommended_stage_id"] == "stage_stack"
+    assert diagnosis["weak_topics"][0]["recommended_resource_ids"] == [f"{sid}_res_stack"]
+    assert any("栈" in item and "错误 3/4" in item for item in diagnosis["evidence"])
+    assert any("累计正确率 25%" in item for item in diagnosis["evidence"])
+
+
+def test_chat_requires_session_id_and_does_not_use_subject_id() -> None:
+    for payload in (
+        {"message": "hello"},
+        {"subjectId": "regression_subject_only", "message": "hello"},
+    ):
+        try:
+            product.send_chat(payload)
+        except MissingSessionIdError as exc:
+            assert exc.status_code == 422
+            assert exc.code == "MISSING_SESSION_ID"
+        else:
+            raise AssertionError("chat must reject requests without an explicit sessionId")
+
+    assert conversation_store.get_state_or_none("regression_subject_only") is None
 
 
 def test_intent_classify_compound_full_workflow() -> None:
@@ -428,6 +526,8 @@ if __name__ == "__main__":
         test_data_structure_two_day_plan_uses_correct_course_and_duration,
         test_intent_classify_profile_keyword_画像,
         test_intent_classify_diagnosis_question,
+        test_diagnosis_route_returns_structured_result,
+        test_chat_requires_session_id_and_does_not_use_subject_id,
         test_intent_classify_compound_full_workflow,
         test_intent_画像_with_self_intro_is_profile_update,
         test_intent_生成学习路径_is_learning_plan,

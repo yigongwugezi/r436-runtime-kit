@@ -54,7 +54,7 @@ class OrchestratorResult(BaseModel):
 class AgentRunRequest(BaseModel):
     """Request body for triggering a full multi-agent pipeline run."""
 
-    session_id: str = Field(default="", alias="sessionId")
+    session_id: str = Field(alias="sessionId", min_length=1)
     user_message: str = Field(default="我想学习人工智能导论")
     course_id: str | None = Field(default=None)
 
@@ -154,17 +154,37 @@ class ResourceListData(BaseModel):
 # ── Learning analytics response ────────────────────────────────────────────
 
 
+class RecommendationItem(BaseModel):
+    """A single structured recommendation for the learner."""
+
+    recommendation_type: str = ""
+    # One of: incomplete_resource | low_accuracy_topic | incomplete_practice
+    #         | stage_incomplete | frequent_weak_topic
+    title: str = ""
+    reason: str = ""
+    target_resource_id: str | None = None
+    target_stage_id: str | None = None
+    priority: str = "medium"  # high | medium | low
+    source: str = "analytics"  # db | event | analytics
+    confidence: float = 0.0
+    evidence: str = ""
+    quality_status: str = "passed"
+
+
 class LearningAnalyticsData(BaseModel):
     """Learning analytics summary returned by GET /learning-analytics."""
 
     eventCount: int = 0
     totalStudyMinutes: int = 0
     activeResourceCount: int = 0
+    viewedResources: int = 0
+    completedResources: int = 0
+    practiceCount: int = 0
     eventBreakdown: dict[str, int] = Field(default_factory=dict)
     topResources: list[dict[str, Any]] = Field(default_factory=list)
     quizAccuracy: int | None = None
     weakTopics: list[dict[str, Any]] = Field(default_factory=list)
-    recommendations: list[str] = Field(default_factory=list)
+    recommendations: list[RecommendationItem] = Field(default_factory=list)
     recentEvents: list[dict[str, Any]] = Field(default_factory=list)
     summary: str = ""
 

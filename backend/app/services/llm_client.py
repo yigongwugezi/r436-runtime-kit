@@ -235,6 +235,8 @@ class DeepSeekLLMClient(BaseLLMClient):
             )
             return True
         except Exception:
+            import logging
+            logging.getLogger("app.services.llm_client").debug("LLM availability check failed")
             return False
 
     # ── Internal ───────────────────────────────────────────────────────
