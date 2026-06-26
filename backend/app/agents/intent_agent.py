@@ -766,7 +766,9 @@ class IntentAgent(BaseAgent):
                 "primary_intent": primary,
                 "secondary_intents": secondary,
                 "confidence": max(0.0, min(1.0, float(result.get("confidence", 0.0)))),
-                "should_run_agents": bool(result.get("should_run_agents", intent in ROUTE_AGENT_INTENTS)),
+                "should_run_agents": bool(result.get("should_run_agents"))
+                or intent in ROUTE_AGENT_INTENTS
+                or intent == "diagnosis",
                 "should_run_full_workflow": primary == "full_workflow" or intent == "full_workflow",
                 "needs_subject": needs_subject,
                 "needs_clarification": needs_clarification,
