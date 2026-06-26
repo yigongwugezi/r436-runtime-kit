@@ -44,6 +44,10 @@ def classify(message: str) -> dict[str, Any]:
     return IntentAgent(llm_client=MockLLMClient()).classify(message)
 
 
+def classify_with_context(message: str, context: dict[str, Any]) -> dict[str, Any]:
+    return IntentAgent(llm_client=MockLLMClient()).classify(message, context=context)
+
+
 def assert_true(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
@@ -218,6 +222,100 @@ def test_subject_extraction_examples_are_stable() -> None:
         assert_true(result["extracted"]["subject_name"] == expected_subject, f"{message} extracted {result}")
 
 
+def test_p3_context_aware_routing_cases() -> None:
+    plan_context = {
+        "last_intent": "learning_plan",
+        "has_learning_path": True,
+        "recent_stage_id": "stage_1",
+        "recent_messages": [{"role": "assistant", "content": "已生成学习路径"}],
+    }
+    resource_context = {
+        "last_intent": "resource_request",
+        "has_resources": True,
+        "recent_resource_ids": ["res_intro"],
+    }
+    diagnosis_context = {
+        "last_intent": "diagnosis",
+        "has_diagnosis": True,
+        "recent_weak_topics": ["递归"],
+    }
+    full_context = {
+        "last_intent": "learning_plan",
+        "has_learning_path": True,
+        "has_resources": True,
+        "has_diagnosis": True,
+        "recent_stage_id": "stage_2",
+        "recent_resource_ids": ["res_tree"],
+        "recent_weak_topics": ["二叉树"],
+    }
+
+    cases = [
+        ("继续", plan_context, "learning_plan", False, {}, []),
+        ("继续", {}, "unknown", True, {}, []),
+        ("下一步", diagnosis_context, "diagnosis", False, {}, ["learning_plan"]),
+        ("下一步", plan_context, "learning_plan", False, {}, ["resource_request"]),
+        ("下一步", {}, "unknown", True, {}, []),
+        ("换简单点", plan_context, "learning_plan", False, {"difficulty_preference": "easier"}, []),
+        ("换简单点", resource_context, "resource_request", False, {"difficulty_preference": "easier"}, []),
+        ("换简单点", {}, "unknown", True, {}, []),
+        ("太难了", full_context, "diagnosis", False, {"feedback": "too_difficult"}, ["resource_request"]),
+        ("太难了", {}, "diagnosis", False, {"feedback": "too_difficult"}, []),
+        ("我还是不懂", diagnosis_context, "diagnosis", False, {"feedback": "still_confused"}, ["resource_request"]),
+        ("我还是不懂", {}, "diagnosis", False, {"feedback": "still_confused"}, []),
+        ("给我那个资源", resource_context, "resource_request", False, {"resource_reference": "recent"}, []),
+        ("给我那个资源", {}, "unknown", True, {}, []),
+        ("按刚才那个薄弱点安排", diagnosis_context, "learning_plan", False, {"plan_revision": "from_recent_weak_topic"}, ["resource_request"]),
+        ("按刚才那个薄弱点安排", {}, "unknown", True, {}, []),
+        ("重新生成", plan_context, "learning_plan", False, {"plan_revision": "regenerate"}, []),
+        ("重新生成", resource_context, "resource_request", False, {"plan_revision": "regenerate"}, []),
+        ("重新诊断", diagnosis_context, "diagnosis", False, {"plan_revision": "regenerate"}, []),
+        ("重新生成", {}, "unknown", True, {}, []),
+        ("换一个", resource_context, "resource_request", False, {"plan_revision": "alternative"}, []),
+        ("换一个", plan_context, "learning_plan", False, {"plan_revision": "alternative"}, []),
+        ("换一个", diagnosis_context, "diagnosis", False, {"plan_revision": "alternative"}, []),
+        ("换一个", {}, "unknown", True, {}, []),
+        ("不要太多", plan_context, "learning_plan", False, {"constraint": "fewer_items"}, []),
+        ("不要太多", resource_context, "resource_request", False, {"constraint": "fewer_items"}, []),
+        ("不要太多", {}, "unknown", True, {}, []),
+        ("太简单了", resource_context, "resource_request", False, {"difficulty_preference": "harder"}, []),
+        ("这个讲得不好", resource_context, "diagnosis", False, {"feedback": "poor_explanation"}, ["resource_request"]),
+        ("好的", full_context, "casual_chat", False, {}, []),
+        ("明白了", full_context, "casual_chat", False, {}, []),
+        ("在吗", full_context, "casual_chat", False, {}, []),
+    ]
+
+    assert_true(len(cases) >= 30, "P3 context-aware regression should cover at least 30 cases")
+    for message, context, expected_intent, should_clarify, expected_extracted, expected_secondary in cases:
+        result = classify_with_context(message, context)
+        assert_true(result["intent"] == expected_intent, f"{message} expected {expected_intent}, got {result}")
+        assert_true(result["needs_clarification"] is should_clarify, f"{message} clarification mismatch: {result}")
+        if context and expected_intent != "casual_chat":
+            assert_true(result["source"] == "context_aware", f"{message} should use context-aware source: {result}")
+        for key, value in expected_extracted.items():
+            assert_true(result["extracted"].get(key) == value, f"{message} expected extracted {key}={value}: {result}")
+        for secondary in expected_secondary:
+            assert_true(secondary in result["secondary_intents"], f"{message} missing secondary {secondary}: {result}")
+        if should_clarify:
+            assert_true(result["clarification_question"], f"{message} should include clarification question")
+            assert_true(result["confidence"] < 0.75, f"{message} clarification confidence should stay low: {result}")
+        if result["source"] == "context_aware":
+            assert_true(result["confidence"] <= 0.95, f"{message} context confidence should not exceed 0.95")
+
+
+def test_p3_run_accepts_context_without_breaking_agent_contract() -> None:
+    output = IntentAgent(llm_client=MockLLMClient()).run(
+        {
+            "user_message": "继续",
+            "last_intent": "learning_plan",
+            "has_learning_path": True,
+            "recent_stage_id": "stage_1",
+        }
+    )
+    intent = output["intent"]
+    assert_intent(intent, "learning_plan")
+    assert_true(intent["source"] == "context_aware", f"run() should pass context into classify: {intent}")
+
+
 if __name__ == "__main__":
     test_explicit_diagnosis_is_stable()
     test_diagnosis_plus_resources_is_multi_intent()
@@ -232,4 +330,6 @@ if __name__ == "__main__":
     test_p2_semantic_example_library_has_enough_coverage()
     test_p2_semantic_example_regression_routes_all_samples()
     test_subject_extraction_examples_are_stable()
+    test_p3_context_aware_routing_cases()
+    test_p3_run_accepts_context_without_breaking_agent_contract()
     print("PASS intent_agent_test")

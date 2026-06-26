@@ -65,6 +65,10 @@ class IntentAgent(BaseAgent):
         "在吗",
         "谢谢",
         "感谢",
+        "好的",
+        "好",
+        "明白了",
+        "知道了",
         "你是谁",
         "介绍一下",
     }
@@ -73,7 +77,7 @@ class IntentAgent(BaseAgent):
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         message = str(context.get("user_message", "")).strip()
-        intent = self.classify(message)
+        intent = self.classify(message, context=context)
         return {
             "intent": intent,
             "agent_step": {
@@ -86,8 +90,10 @@ class IntentAgent(BaseAgent):
             },
         }
 
-    def classify(self, message: str) -> dict[str, Any]:
+    def classify(self, message: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        context_data = self._normalize_context(context)
         rule_result = self._high_precision_rules(message)
+        context_result = self._resolve_context_intent(message, context_data)
         semantic_result = self._route_by_semantic_examples(message)
         route_result = self._route_by_examples(message)
         llm_seed = semantic_result if semantic_result["confidence"] >= route_result["confidence"] else route_result
@@ -99,6 +105,7 @@ class IntentAgent(BaseAgent):
         result = self._arbitrate_results(
             message=message,
             rule_result=rule_result,
+            context_result=context_result,
             semantic_result=semantic_result,
             route_result=route_result,
             llm_result=llm_result,
@@ -453,6 +460,320 @@ class IntentAgent(BaseAgent):
 
         return None
 
+    def _normalize_context(self, context: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(context, dict):
+            return {}
+        normalized = dict(context)
+        last_intent = normalized.get("last_intent")
+        if isinstance(last_intent, dict):
+            normalized["last_intent"] = last_intent.get("intent") or last_intent.get("primary_intent")
+        last_result = normalized.get("last_agent_result") or normalized.get("last_result")
+        if isinstance(last_result, dict):
+            normalized.setdefault("has_learning_path", bool(last_result.get("learning_path")))
+            normalized.setdefault("has_resources", bool(last_result.get("resources")))
+            normalized.setdefault("has_diagnosis", bool(last_result.get("diagnosis")))
+            normalized.setdefault("recent_resource_ids", self._resource_ids_from_result(last_result))
+            normalized.setdefault("recent_weak_topics", self._weak_topics_from_result(last_result))
+            normalized.setdefault("recent_stage_id", self._stage_id_from_result(last_result))
+        return normalized
+
+    def _resolve_context_intent(self, message: str, context: dict[str, Any]) -> dict[str, Any] | None:
+        text = message.strip().lower()
+        compact = "".join(text.split())
+        if not compact:
+            return None
+
+        if self._is_continue_request(compact):
+            if self._has_path_context(context):
+                return self._context_result(
+                    self._intent_from_last(context, default="learning_plan"),
+                    0.82,
+                    "继续当前学习路径或最近阶段。",
+                    context,
+                    extracted={"context_used": True, "plan_revision": "continue"},
+                )
+            return self._context_clarification("你想继续哪个科目或学习计划？")
+
+        if self._is_next_step_request(compact):
+            if self._has_diagnosis_context(context):
+                return self._context_result(
+                    "diagnosis",
+                    0.82,
+                    "根据最近诊断判断下一步补救动作。",
+                    context,
+                    secondary_intents=["learning_plan", "resource_request"],
+                    extracted={"context_used": True, "plan_revision": "next_step"},
+                )
+            if self._has_path_context(context):
+                return self._context_result(
+                    "learning_plan",
+                    0.8,
+                    "根据已有学习路径安排下一步。",
+                    context,
+                    secondary_intents=["resource_request"],
+                    extracted={"context_used": True, "plan_revision": "next_step"},
+                )
+            return self._context_clarification("你想让我基于哪个学习路径或诊断结果安排下一步？")
+
+        if self._is_easier_request(compact):
+            last_intent = self._intent_from_last(context)
+            if last_intent in {"learning_plan", "resource_request"}:
+                return self._context_result(
+                    last_intent,
+                    0.82,
+                    "沿用上一轮任务并降低难度。",
+                    context,
+                    extracted={
+                        "context_used": True,
+                        "difficulty_preference": "easier",
+                        "feedback": "too_difficult",
+                    },
+                )
+            return self._context_clarification("你想把哪个计划或资源换得更简单一些？")
+
+        if self._is_too_difficult_feedback(compact):
+            if self._has_path_context(context) or self._has_resource_context(context):
+                return self._context_result(
+                    "diagnosis",
+                    0.78,
+                    "用户反馈当前阶段或资源过难，需要诊断并调整资源。",
+                    context,
+                    secondary_intents=["resource_request", "learning_plan"],
+                    extracted={
+                        "context_used": True,
+                        "feedback": "too_difficult",
+                        "difficulty_preference": "easier",
+                    },
+                )
+            return self._context_result(
+                "diagnosis",
+                0.66,
+                "用户表达学习内容过难，但缺少具体阶段或资源上下文。",
+                context,
+                secondary_intents=["learning_plan"],
+                extracted={"context_used": False, "feedback": "too_difficult"},
+            )
+
+        if self._is_still_confused(compact):
+            secondary = ["resource_request"]
+            confidence = 0.78 if self._has_diagnosis_context(context) or self._has_path_context(context) else 0.68
+            return self._context_result(
+                "diagnosis",
+                confidence,
+                "用户表达仍然没有理解，需要重新诊断理解困难点。",
+                context,
+                secondary_intents=secondary,
+                extracted={"context_used": bool(context), "feedback": "still_confused"},
+            )
+
+        if self._is_resource_reference(compact):
+            if self._has_resource_context(context):
+                return self._context_result(
+                    "resource_request",
+                    0.84,
+                    "用户引用最近生成或查看过的资源。",
+                    context,
+                    extracted={"context_used": True, "resource_reference": "recent"},
+                )
+            return self._context_clarification("你说的是刚才哪一个资源？")
+
+        if self._is_weak_topic_reference(compact):
+            if self._has_diagnosis_context(context):
+                return self._context_result(
+                    "learning_plan",
+                    0.84,
+                    "用户要求基于刚才的薄弱点安排后续学习。",
+                    context,
+                    secondary_intents=["resource_request"],
+                    extracted={"context_used": True, "plan_revision": "from_recent_weak_topic"},
+                )
+            return self._context_clarification("你想基于哪个薄弱点来安排学习？")
+
+        if self._is_regenerate_request(compact):
+            target_intent = self._intent_from_last(context)
+            if "诊断" in text:
+                target_intent = "diagnosis"
+            if target_intent in {"learning_plan", "resource_request", "diagnosis"}:
+                return self._context_result(
+                    target_intent,
+                    0.82,
+                    "用户要求重新生成上一轮对应结果。",
+                    context,
+                    extracted={"context_used": True, "plan_revision": "regenerate"},
+                )
+            return self._context_clarification("你想重新生成学习路径、资源，还是诊断结果？")
+
+        if self._is_change_one_request(compact):
+            target_intent = self._intent_from_last(context)
+            if target_intent in {"learning_plan", "resource_request", "diagnosis"}:
+                return self._context_result(
+                    target_intent,
+                    0.8,
+                    "用户要求替换上一轮对应结果。",
+                    context,
+                    extracted={"context_used": True, "plan_revision": "alternative"},
+                )
+            return self._context_clarification("你想换一个学习计划、资源，还是诊断结果？")
+
+        if self._is_fewer_items_request(compact):
+            target_intent = self._intent_from_last(context)
+            if target_intent in {"learning_plan", "resource_request"}:
+                return self._context_result(
+                    target_intent,
+                    0.8,
+                    "用户要求减少上一轮输出数量。",
+                    context,
+                    extracted={"context_used": True, "constraint": "fewer_items"},
+                )
+            return self._context_clarification("你想让我减少学习计划阶段，还是减少资源数量？")
+
+        if self._is_too_easy_feedback(compact):
+            target_intent = self._intent_from_last(context, default="learning_plan")
+            return self._context_result(
+                target_intent if target_intent in {"learning_plan", "resource_request"} else "diagnosis",
+                0.72,
+                "用户反馈内容过于简单，需要调整难度或重新诊断。",
+                context,
+                secondary_intents=["learning_plan"],
+                extracted={
+                    "context_used": bool(context),
+                    "feedback": "too_easy",
+                    "difficulty_preference": "harder",
+                },
+            )
+
+        if self._is_poor_explanation_feedback(compact):
+            return self._context_result(
+                "diagnosis",
+                0.7,
+                "用户反馈解释质量不好，需要诊断理解阻塞并换资源。",
+                context,
+                secondary_intents=["resource_request"],
+                extracted={"context_used": bool(context), "feedback": "poor_explanation"},
+            )
+
+        return None
+
+    def _context_result(
+        self,
+        intent: str,
+        confidence: float,
+        reason: str,
+        context: dict[str, Any],
+        *,
+        secondary_intents: list[str] | None = None,
+        extracted: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        data = {
+            "context_used": bool(extracted or context),
+            **(extracted or {}),
+        }
+        return self._result(
+            intent,
+            min(confidence, 0.95),
+            intent in ROUTE_AGENT_INTENTS or intent == "diagnosis",
+            f"Context-aware routing: {reason}",
+            source="context_aware",
+            secondary_intents=secondary_intents,
+            extracted=data,
+        )
+
+    def _context_clarification(self, question: str) -> dict[str, Any]:
+        return self._result(
+            "unknown",
+            0.42,
+            False,
+            "Context-aware routing needs clarification because the utterance depends on missing context.",
+            source="context_aware",
+            needs_clarification=True,
+            clarification_question=question,
+            extracted={"context_used": False},
+        )
+
+    def _intent_from_last(self, context: dict[str, Any], default: str = "unknown") -> str:
+        intent = str(context.get("last_intent") or default)
+        if intent == "full_workflow":
+            return "learning_plan"
+        return intent if intent in {"learning_plan", "resource_request", "diagnosis"} else default
+
+    def _has_path_context(self, context: dict[str, Any]) -> bool:
+        return bool(context.get("has_learning_path") or context.get("recent_stage_id"))
+
+    def _has_resource_context(self, context: dict[str, Any]) -> bool:
+        return bool(context.get("has_resources") or context.get("recent_resource_ids"))
+
+    def _has_diagnosis_context(self, context: dict[str, Any]) -> bool:
+        return bool(context.get("has_diagnosis") or context.get("recent_weak_topics"))
+
+    def _resource_ids_from_result(self, result: dict[str, Any]) -> list[str]:
+        ids: list[str] = []
+        for item in result.get("resources") or []:
+            if isinstance(item, dict):
+                resource_id = item.get("id") or item.get("resource_id")
+                if resource_id:
+                    ids.append(str(resource_id))
+        return ids
+
+    def _weak_topics_from_result(self, result: dict[str, Any]) -> list[str]:
+        diagnosis = result.get("diagnosis") if isinstance(result.get("diagnosis"), dict) else {}
+        topics: list[str] = []
+        for item in diagnosis.get("weak_topics") or diagnosis.get("weak_knowledge_points") or []:
+            if isinstance(item, dict):
+                topic = item.get("name") or item.get("topic") or item.get("title")
+            else:
+                topic = item
+            if topic:
+                topics.append(str(topic))
+        return topics
+
+    def _stage_id_from_result(self, result: dict[str, Any]) -> str | None:
+        diagnosis = result.get("diagnosis") if isinstance(result.get("diagnosis"), dict) else {}
+        if diagnosis.get("recommended_stage_id"):
+            return str(diagnosis.get("recommended_stage_id"))
+        stages = result.get("learning_path") or []
+        if stages and isinstance(stages[0], dict):
+            stage_id = stages[0].get("id") or stages[0].get("stage_id")
+            return str(stage_id) if stage_id else None
+        return None
+
+    def _is_continue_request(self, compact: str) -> bool:
+        return compact in {"继续", "继续吧", "接着", "接着来", "往下继续", "继续学习"}
+
+    def _is_next_step_request(self, compact: str) -> bool:
+        return compact in {"下一步", "下一步呢", "接下来", "然后呢", "后面呢", "接下来呢"}
+
+    def _is_easier_request(self, compact: str) -> bool:
+        return any(phrase in compact for phrase in ("换简单点", "简单点", "容易点", "降低难度", "别太难", "换个简单"))
+
+    def _is_too_difficult_feedback(self, compact: str) -> bool:
+        return any(phrase in compact for phrase in ("太难", "太复杂", "难懂", "看不懂", "跟不上"))
+
+    def _is_still_confused(self, compact: str) -> bool:
+        return any(phrase in compact for phrase in ("我还是不懂", "还是不懂", "不明白", "没懂", "听不懂"))
+
+    def _is_resource_reference(self, compact: str) -> bool:
+        return any(phrase in compact for phrase in ("那个资源", "刚才那个资源", "给我那个", "这个资源"))
+
+    def _is_weak_topic_reference(self, compact: str) -> bool:
+        return "刚才" in compact and any(word in compact for word in ("薄弱点", "弱点", "短板")) and any(
+            word in compact for word in ("安排", "计划", "资源")
+        )
+
+    def _is_regenerate_request(self, compact: str) -> bool:
+        return any(phrase in compact for phrase in ("重新生成", "重新来", "重来", "再生成", "重新诊断"))
+
+    def _is_change_one_request(self, compact: str) -> bool:
+        return any(phrase in compact for phrase in ("换一个", "换个", "另一个", "换一份", "换一版"))
+
+    def _is_fewer_items_request(self, compact: str) -> bool:
+        return any(phrase in compact for phrase in ("不要太多", "少一点", "少点", "精简一点", "简短点"))
+
+    def _is_too_easy_feedback(self, compact: str) -> bool:
+        return any(phrase in compact for phrase in ("太简单", "太容易", "不够难"))
+
+    def _is_poor_explanation_feedback(self, compact: str) -> bool:
+        return any(phrase in compact for phrase in ("讲得不好", "解释不好", "讲不清楚"))
+
     def _route_by_semantic_examples(self, message: str) -> dict[str, Any]:
         query_tokens = self._tokenize(message)
         if not query_tokens:
@@ -624,11 +945,16 @@ class IntentAgent(BaseAgent):
         *,
         message: str,
         rule_result: dict[str, Any] | None,
+        context_result: dict[str, Any] | None,
         semantic_result: dict[str, Any],
         route_result: dict[str, Any],
         llm_result: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        candidates = [candidate for candidate in (rule_result, semantic_result, route_result, llm_result) if candidate]
+        candidates = [
+            candidate
+            for candidate in (rule_result, context_result, semantic_result, route_result, llm_result)
+            if candidate
+        ]
         if not candidates:
             return self._result(
                 "unknown",
@@ -644,6 +970,17 @@ class IntentAgent(BaseAgent):
             and float(rule_result.get("confidence", 0.0)) >= 0.9
         ):
             return dict(rule_result)
+
+        if context_result and context_result.get("needs_clarification"):
+            return self._merge_candidate_metadata(dict(context_result), candidates, message)
+
+        if (
+            context_result
+            and context_result.get("source") == "context_aware"
+            and float(context_result.get("confidence", 0.0)) >= 0.66
+            and self._candidate_primary(context_result) != "unknown"
+        ):
+            return self._merge_candidate_metadata(dict(context_result), candidates, message)
 
         semantic_label = str(semantic_result.get("semantic_label", ""))
         if semantic_label in {"general_chat", "ambiguous", "off_topic"} and semantic_result["confidence"] >= 0.72:
@@ -752,6 +1089,9 @@ class IntentAgent(BaseAgent):
             result["secondary_intents"] = []
         if result.get("semantic_label") == "ambiguous":
             result["needs_clarification"] = True
+            result["should_run_agents"] = False
+            result["secondary_intents"] = []
+        if result.get("source") == "context_aware" and result.get("needs_clarification"):
             result["should_run_agents"] = False
             result["secondary_intents"] = []
         return result
@@ -1110,6 +1450,12 @@ class IntentAgent(BaseAgent):
             "current_level": None,
             "weak_topic": None,
             "requested_outputs": [],
+            "difficulty_preference": None,
+            "feedback": None,
+            "resource_reference": None,
+            "plan_revision": None,
+            "constraint": None,
+            "context_used": False,
         }
         if isinstance(existing, dict):
             for key in extracted:

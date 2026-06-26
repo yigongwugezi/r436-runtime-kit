@@ -576,6 +576,23 @@ def test_multi_course_time_budget_stable() -> None:
     )
 
 
+def test_product_intent_classification_uses_session_context() -> None:
+    sid = "regression_context_aware_intent"
+    state = conversation_store.reset(sid)
+    state.last_intent = {"intent": "learning_plan"}
+    state.last_result = {
+        "course_id": "data_structures",
+        "learning_path": [{"id": "stage_1", "title": "递归基础"}],
+        "resources": [{"id": "res_1", "title": "递归练习"}],
+        "diagnosis": {"weak_topics": ["递归"], "recommended_stage_id": "stage_1"},
+    }
+
+    intent = product._classify_intent("继续", sid)
+    assert intent["intent"] == "learning_plan", intent
+    assert intent["source"] == "context_aware", intent
+    assert intent["extracted"]["context_used"] is True, intent
+
+
 if __name__ == "__main__":
     tests = [
         test_fresh_start_has_no_fake_profile,
@@ -604,6 +621,7 @@ if __name__ == "__main__":
         test_ten_day_plan_estimated_days_is_10,
         test_no_time_plan_uses_reasonable_default,
         test_multi_course_time_budget_stable,
+        test_product_intent_classification_uses_session_context,
     ]
     for test in tests:
         test()
