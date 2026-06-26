@@ -66,6 +66,8 @@ const syncMessagesToSession = (sessionId: string, messages: ChatMessage[]) => {
 
 interface ChatStore {
   currentSessionId: string;
+  /** 科目级数据查询用的稳定 sessionId，新建对话时不改变 */
+  dataSessionId: string;
   sessions: ChatSession[];
   messages: ChatMessage[];
   quickCommands: QuickCommand[];
@@ -210,6 +212,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     const id = createSessionId();
     persistSessionId(id);
     set({ currentSessionId: id, messages: [] });
+    // dataSessionId 不变，保持科目级数据查询稳定
   },
   removeLastMessage: () =>
     set((s) => {
@@ -242,7 +245,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     // 尝试从缓存恢复消息
     const cachedSession = sessions.find(s => s.id === id);
     const cachedMessages = cachedSession?.messages || [];
-    set({ currentSessionId: id, sessions, messages: cachedMessages });
+    set({ currentSessionId: id, dataSessionId: id, sessions, messages: cachedMessages });
   },
 }));
 

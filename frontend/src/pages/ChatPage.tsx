@@ -148,7 +148,17 @@ function AgentPipelineProgress({
   const currentKey = progress.agentName || '';
   const currentIdx = GEN_PIPELINE.findIndex((s) => s.key === currentKey);
   const isError = !!progress.error;
+  const [doneVisible, setDoneVisible] = useState(false);
   const isDone = progress.done && !progress.error;
+
+  // 完成时延迟 1.5 秒再显示跳转按钮，避免闪烁
+  useEffect(() => {
+    if (isDone) {
+      const t = setTimeout(() => setDoneVisible(true), 1500);
+      return () => clearTimeout(t);
+    }
+    setDoneVisible(false);
+  }, [isDone]);
 
   // 计时器 — 长时间等待提示
   useEffect(() => {
@@ -194,28 +204,14 @@ function AgentPipelineProgress({
             <Check className="w-4 h-4 text-green-600" />
           </div>
           <span className="text-sm font-semibold text-green-700">生成完成</span>
+          {!doneVisible && <span className="text-xs text-green-500 animate-pulse">处理中…</span>}
         </div>
-        {/* 跳转入口 */}
-        {onNavigate && (
-          <div className="flex flex-wrap gap-2 pt-1">
-            <button
-              onClick={() => onNavigate('/profile')}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-green-200 rounded-lg text-xs font-medium text-green-700 hover:bg-green-50 transition-colors"
-            >
-              📋 查看画像
-            </button>
-            <button
-              onClick={() => onNavigate('/path')}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-green-200 rounded-lg text-xs font-medium text-green-700 hover:bg-green-50 transition-colors"
-            >
-              🗺️ 查看路径
-            </button>
-            <button
-              onClick={() => onNavigate('/resources')}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-green-200 rounded-lg text-xs font-medium text-green-700 hover:bg-green-50 transition-colors"
-            >
-              📚 查看资源
-            </button>
+        {/* 跳转入口（延迟 1.5s 显示） */}
+        {onNavigate && doneVisible && (
+          <div className="flex flex-wrap gap-2 pt-1 animate-fade-in-up">
+            <button onClick={() => onNavigate('/profile')} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-green-200 rounded-lg text-xs font-medium text-green-700 hover:bg-green-50 transition-colors">📋 查看画像</button>
+            <button onClick={() => onNavigate('/path')} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-green-200 rounded-lg text-xs font-medium text-green-700 hover:bg-green-50 transition-colors">🗺️ 查看路径</button>
+            <button onClick={() => onNavigate('/resources')} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-green-200 rounded-lg text-xs font-medium text-green-700 hover:bg-green-50 transition-colors">📚 查看资源</button>
           </div>
         )}
       </div>

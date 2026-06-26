@@ -345,7 +345,7 @@ def get_resources(db: Session, session_id: str) -> list[ResourceModel]:
     )
 
 
-def get_resource(db: Session, session_id: str, resource_id: str) -> ResourceModel | None:
+def get_resource(db: Session, resource_id: str, session_id: str) -> ResourceModel | None:
     return (
         db.query(ResourceModel)
         .filter(ResourceModel.id == resource_id, ResourceModel.session_id == session_id)

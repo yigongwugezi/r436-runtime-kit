@@ -2,6 +2,9 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Brain, Sparkles, User, ArrowRight, Check, Trash2, Plus } from 'lucide-react';
 import { readStorageJson, writeStorageJson, runtimeStorageKeys } from '../utils/storageKeys';
+import { useSubjectStore } from '../store/subjectStore';
+import { useChatStore } from '../store/chatStore';
+import { useProfileStore } from '../store/profileStore';
 
 /* ===================================================================
  * 多学习者管理
@@ -40,6 +43,9 @@ export function getCurrentLearner(): Learner | null {
 
 export function logoutLearner() {
   try { localStorage.removeItem(runtimeStorageKeys.activeLearner.primary); } catch { /* noop */ }
+  useSubjectStore.getState().load();
+  useChatStore.getState().reloadSession();
+  useProfileStore.getState().clearAll();
 }
 
 /* ===================================================================
@@ -63,6 +69,11 @@ export default function LoginPage() {
     );
     saveLearners(list);
 
+    // 重新加载各 store 数据
+    useSubjectStore.getState().load();
+    useChatStore.getState().reloadSession();
+    useProfileStore.getState().clearAll();
+
     navigate('/');
   };
 
@@ -85,6 +96,12 @@ export default function LoginPage() {
     setLearners(list);
     setNewName('');
     setShowCreate(false);
+
+    // 新用户 → 清空所有 store
+    useSubjectStore.getState().load();
+    useChatStore.getState().reloadSession();
+    useProfileStore.getState().clearAll();
+
     navigate('/');
   };
 

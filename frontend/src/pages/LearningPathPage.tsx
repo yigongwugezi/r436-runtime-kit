@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useLearningPath } from '../hooks/useLearningPath';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
+import { useChatPanel } from '../components/layout/AppLayout';
 import type { PathNode, LearningStage, PathNodeStatus, StageStatus } from '../types/learningPath';
 import { RESOURCE_TYPE_LABELS } from '../utils/constants';
 import {
@@ -428,6 +429,7 @@ function StageSection({ stage, defaultExpanded, onStatusChange, onViewResources,
  * =================================================================== */
 export default function LearningPathPage() {
   const navigate = useNavigate();
+  const chatPanel = useChatPanel();
   const [searchParams] = useSearchParams();
   const { path, loading, error, fetchPath, updateNodeStatus } = useLearningPath();
   const dataVersion = useChatStore((state) => state.dataVersion);
@@ -460,7 +462,7 @@ export default function LearningPathPage() {
         title="路径加载失败"
         description={error}
         onRetry={fetchPath}
-        onGoChat={() => navigate('/chat')}
+        onGoChat={() => chatPanel.setOpen(true)}
       />
     );
   }
@@ -474,7 +476,7 @@ export default function LearningPathPage() {
         description="通过对话让系统为你规划学习路径"
         action={
           <button
-            onClick={() => navigate('/chat')}
+            onClick={() => chatPanel.setOpen(true)}
             className="mt-3 px-5 py-2.5 bg-gray-900 text-white rounded-xl text-sm font-semibold hover:bg-gray-800 transition-all inline-flex items-center gap-2"
           >
             <Sparkles className="w-4 h-4" />
@@ -494,7 +496,7 @@ export default function LearningPathPage() {
         description={'当前会话还没有真实生成的学习路径。请先在 AI 对话中补充学习目标、基础和时间安排，然后说\u201C开始生成学习方案\u201D。'}
         action={
           <button
-            onClick={() => navigate('/chat')}
+            onClick={() => chatPanel.setOpen(true)}
             className="mt-3 px-5 py-2.5 bg-gray-900 text-white rounded-xl text-sm font-semibold hover:bg-gray-800 transition-all inline-flex items-center gap-2"
           >
             <Sparkles className="w-4 h-4" />

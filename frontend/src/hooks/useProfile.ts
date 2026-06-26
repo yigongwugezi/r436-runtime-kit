@@ -8,7 +8,7 @@ import type { StudentProfile } from '../types/profile';
 export function useProfile() {
   const store = useProfileStore();
   const subjectId = useSubjectStore((s) => s.activeSubject?.id);
-  const sessionId = useChatStore((state) => state.currentSessionId);
+  const sessionId = useChatStore((state) => state.dataSessionId);
   const dataVersion = useChatStore((state) => state.dataVersion);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -17,6 +17,7 @@ export function useProfile() {
 
   const fetchProfile = useCallback(async () => {
     if (!subjectId) return;
+    if (!sessionId) return;
     setLoading(true);
     setError(null);
     store.setLoading(subjectId, true);
@@ -41,6 +42,7 @@ export function useProfile() {
   const buildProfile = useCallback(
     async (message: string): Promise<StudentProfile | null> => {
       if (!subjectId) return null;
+      if (!sessionId) return null;
       setLoading(true);
       try {
         const res = await profileApi.buildProfile({ message, sessionId, subjectId });

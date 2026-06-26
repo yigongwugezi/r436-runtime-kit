@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useChatStore } from '../../store/chatStore';
 import { useSubjectStore } from '../../store/subjectStore';
-import { getCurrentLearner, logoutLearner } from '../../pages/LoginPage';
+import { getCurrentLearner } from '../../pages/LoginPage';
 import SettingsModal from '../common/SettingsModal';
 import { readStorageJson, writeStorageJson, runtimeStorageKeys } from '../../utils/storageKeys';
 import {
@@ -103,11 +103,6 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
               title="学习路径" aria-label="前往学习路径">
               <GitFork className="w-4.5 h-4.5" />
             </button>
-            <button onClick={() => navigate('/chat')}
-              className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/chat' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
-              title="AI 对话" aria-label="前往 AI 对话">
-              <MessageSquare className="w-4.5 h-4.5" />
-            </button>
             <button onClick={() => navigate('/profile')}
               className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/profile' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
               title="学习画像" aria-label="前往学习画像">
@@ -188,7 +183,7 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
                 </button>
               </div>
             </div>
-            <button onClick={() => { logoutLearner(); useChatStore.getState().newSession(); window.location.href = '/login'; }}
+            <button onClick={() => { window.location.href = '/login'; }}
               className="p-1.5 rounded-lg hover:bg-gray-800 text-gray-600 hover:text-red-400 transition-all">
               <LogOut className="w-3.5 h-3.5" />
             </button>
@@ -230,7 +225,6 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
 
         <div className="border-t border-gray-800/40 my-2" />
         <p className="text-[9px] text-gray-600 uppercase tracking-wider font-semibold px-3 mb-1">工具台</p>
-        <NavBtn path="/chat" label="对话" icon={MessageSquare} active={location.pathname.startsWith('/chat')} navigate={navigate} />
         <NavBtn path="/profile" label="画像" icon={User} active={location.pathname === '/profile'} navigate={navigate} />
         <NavBtn path="/analytics" label="分析" icon={TrendingUp} active={location.pathname === '/analytics'} navigate={navigate} />
         <NavBtn path="/timeline" label="时间线" icon={Clock} active={location.pathname === '/timeline'} navigate={navigate} />
@@ -321,7 +315,7 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
               <MenuItem icon={Gift} label="套餐购买" />
               <MenuItem icon={Settings} label="设置" onClick={() => { setSettingsOpen(true); setProfileOpen(false); }} />
               <MenuItem icon={Share2} label="邀请好友" />
-              <MenuItem icon={LogOut} label="切换账号" onClick={() => { logoutLearner(); useChatStore.getState().newSession(); window.location.href = '/login'; }} />
+              <MenuItem icon={LogOut} label="切换账号" onClick={() => { window.location.href = '/login'; }} />
 
               <div className="border-t border-gray-700/50 mt-1 pt-1">
                 <div className="relative">
@@ -340,7 +334,7 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
               </div>
 
               <div className="border-t border-gray-700/50 mt-1 pt-1">
-                <MenuItem icon={LogOut} label="登出账户" onClick={() => { logoutLearner(); useChatStore.getState().newSession(); window.location.href = '/login'; }} />
+                <MenuItem icon={LogOut} label="登出账户" onClick={() => { window.location.href = '/login'; }} />
               </div>
             </div>
           )}

@@ -26,7 +26,7 @@ function statusToMastery(status: PathNodeStatus): number {
 export function useLearningPath() {
   const location = useLocation();
   const subjectId = useSubjectStore((s) => s.activeSubject?.id);
-  const sessionId = useChatStore((state) => state.currentSessionId);
+  const sessionId = useChatStore((state) => state.dataSessionId);
   const dataVersion = useChatStore((state) => state.dataVersion);
   const [path, setPath] = useState<LearningPath | null>(null);
   const [loading, setLoading] = useState(true);
@@ -36,6 +36,7 @@ export function useLearningPath() {
 
   const fetchPath = useCallback(async () => {
     if (!subjectId) return;
+    if (!sessionId) return;
     setLoading(true);
     setError(null);
     try {

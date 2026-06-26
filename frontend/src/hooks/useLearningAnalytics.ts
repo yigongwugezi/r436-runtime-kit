@@ -18,7 +18,7 @@ import { useSubjectStore } from '../store/subjectStore';
 export function useLearningAnalytics() {
   const location = useLocation();
   const subjectId = useSubjectStore((s) => s.activeSubject?.id);
-  const sessionId = useChatStore((state) => state.currentSessionId);
+  const sessionId = useChatStore((state) => state.dataSessionId);
   const dataVersion = useChatStore((state) => state.dataVersion);
   const [analytics, setAnalytics] = useState<AnalyticsSummary | null>(null);
   const [loading, setLoading] = useState(true);

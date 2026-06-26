@@ -7,7 +7,7 @@ import { setSessionIdProvider } from './api/client';
 import { useChatStore } from './store/chatStore';
 
 // 注册 sessionId 提供者，使 API 层可以统一获取当前会话
-setSessionIdProvider(() => useChatStore.getState().currentSessionId || '');
+setSessionIdProvider(() => useChatStore.getState().dataSessionId || '');
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

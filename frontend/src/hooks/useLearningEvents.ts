@@ -14,7 +14,7 @@ import { useSubjectStore } from '../store/subjectStore';
  * - 内置不重复请求保护
  */
 export function useLearningEvents(limit = 100, type?: string, range?: number) {
-  const sessionId = useChatStore((s) => s.currentSessionId);
+  const sessionId = useChatStore((s) => s.dataSessionId);
   const subjectId = useSubjectStore((s) => s.activeSubject?.id);
   const [events, setEvents] = useState<TimelineEvent[]>([]);
   const [total, setTotal] = useState(0);

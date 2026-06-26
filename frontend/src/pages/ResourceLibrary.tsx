@@ -12,6 +12,7 @@ import {
 import { useResources } from '../hooks/useResources';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
+import { useChatPanel } from '../components/layout/AppLayout';
 import type { Resource, ResourceFilter, SortBy } from '../types/resource';
 import type { ResourceType, DataSource } from '../types/resource';
 import { RESOURCE_TYPE_LABELS } from '../utils/constants';
@@ -474,6 +475,7 @@ function generationModeLabel(mode: string): string {
  * =================================================================== */
 export default function ResourceLibrary() {
   const navigate = useNavigate();
+  const chatPanel = useChatPanel();
   const params = useParams<{ id: string }>();
 
   // ── 从 URL 读取所有筛选参数 ──
@@ -1067,7 +1069,7 @@ export default function ResourceLibrary() {
           description="请在对话页开始学习，系统将为你生成个性化学习资源。"
           action={
             <button
-              onClick={() => navigate('/chat')}
+              onClick={() => chatPanel.setOpen(true)}
               className="mt-3 px-5 py-2.5 bg-gray-900 text-white rounded-xl text-sm font-semibold hover:bg-gray-800 transition-all inline-flex items-center gap-2"
             >
               <Sparkles className="w-4 h-4" />
@@ -1082,7 +1084,7 @@ export default function ResourceLibrary() {
           title="资源加载失败"
           description={`${error}，请稍后重试。`}
           onRetry={refetch}
-          onGoChat={() => navigate('/chat')}
+          onGoChat={() => chatPanel.setOpen(true)}
         />
       ) : !resources || resources.length === 0 ? (
         <div className="relative">
@@ -1120,7 +1122,7 @@ export default function ResourceLibrary() {
               description="当前学习会话暂无资源，请先生成学习路径和学习资源。"
               action={
                 <button
-                  onClick={() => navigate('/chat')}
+                  onClick={() => chatPanel.setOpen(true)}
                   className="mt-3 px-5 py-2.5 bg-gray-900 text-white rounded-xl text-sm font-semibold hover:bg-gray-800 transition-all inline-flex items-center gap-2"
                 >
                   <Sparkles className="w-4 h-4" />

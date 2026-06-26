@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { useProfile } from '../hooks/useProfile';
 import { getCurrentLearner } from './LoginPage';
+import { useChatPanel } from '../components/layout/AppLayout';
 import ProfileDimensionCard from '../components/profile/ProfileDimensionCard';
 import { DIMENSION_COLORS } from '../utils/constants';
 import { formatDuration, timeAgo } from '../utils/format';
@@ -139,6 +140,7 @@ function DimensionBar({ dim, index }: { dim: ProfileDimension; index: number }) 
 
 export default function ProfilePage() {
   const navigate = useNavigate();
+  const chatPanel = useChatPanel();
   const { profile, loading, error, fetchProfile } = useProfile();
 
   // —— Loading（首次无数据） ——
@@ -153,7 +155,7 @@ export default function ProfilePage() {
         title="画像加载失败"
         description={error}
         onRetry={fetchProfile}
-        onGoChat={() => navigate('/chat')}
+        onGoChat={() => chatPanel.setOpen(true)}
       />
     );
   }
@@ -167,7 +169,7 @@ export default function ProfilePage() {
         description="先去聊天页输入你的专业背景、学习基础和目标，系统会自动构建 10 维专属学习画像"
         action={(
           <button
-            onClick={() => navigate('/chat')}
+            onClick={() => chatPanel.setOpen(true)}
             className="mt-3 px-5 py-2.5 bg-gray-900 text-white rounded-xl text-sm font-semibold hover:bg-gray-800 transition-all inline-flex items-center gap-2"
           >
             <Sparkles className="w-4 h-4" />
@@ -299,7 +301,7 @@ export default function ProfilePage() {
             <ArrowRight className="w-3 h-3" />
           </button>
           <button
-            onClick={() => navigate('/chat')}
+            onClick={() => chatPanel.setOpen(true)}
             className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all"
           >
             <Sparkles className="w-3.5 h-3.5" />
@@ -341,7 +343,7 @@ export default function ProfilePage() {
               </div>
             </div>
             <button
-              onClick={() => navigate('/chat')}
+              onClick={() => chatPanel.setOpen(true)}
               className="flex items-center gap-1 px-3 py-1.5 bg-amber-500 text-white rounded-lg text-xs font-medium hover:bg-amber-600 transition-colors flex-shrink-0"
             >
               去补充
