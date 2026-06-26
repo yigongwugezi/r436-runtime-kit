@@ -151,3 +151,10 @@ app.include_router(courses.router, prefix="/api")
 app.include_router(agents.router, prefix="/api")
 app.include_router(product.router)
 app.include_router(product.router, prefix="/api")
+
+# ── RAG router (guarded by settings.rag_enabled) ─────────────────────
+if settings.rag_enabled:
+    from app.routers.rag import router as rag_router
+
+    app.include_router(rag_router, prefix="/api")
+    logger.info("RAG router registered at /api/rag/*")

@@ -34,6 +34,17 @@ class Settings(BaseSettings):
     search_timeout: int = 10            # seconds for HTTP request
     search_cache_ttl: int = 300         # in-memory cache TTL in seconds
 
+    # ── RAG / Vector Search ───────────────────────────────────────────
+    rag_enabled: bool = True
+    """When False the RAG router is not registered and the query engine
+    returns empty results — useful for development without a built RAG DB."""
+
+    rag_milvus_uri: str = "./data/milvus/eduagent_knowledge.db"
+    """Milvus Lite file path (embedded mode — no server needed)."""
+
+    hf_home: str = "./data/huggingface_cache"
+    """HuggingFace model cache directory (overrides ``HF_HOME`` env var at runtime)."""
+
     project_root: Path = Field(default_factory=lambda: Path(__file__).resolve().parents[2])
 
     model_config = SettingsConfigDict(

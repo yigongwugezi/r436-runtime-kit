@@ -51,7 +51,7 @@
 > - `data`: 端点原有响应体（与下文各端点文档中的结构一致）。`status: "error"` 时为 `null`。
 > - `message`: 人类可读的结果说明。错误时为错误描述。
 > - `warnings`: 非阻塞性提示信息列表。
-> - `source`: 数据来源标识。可能值：`"runtime_kit"`（默认）、`"db"`、`"agent"`、`"agent_generated"`、`"user_action"`、`"user_input"`、`"system"`、`"generated"`、`"memory"`、`"mock"`、`"none"`。
+> - `source`: 数据来源标识。可能值：`"runtime_kit"`（默认）、`"db"`、`"agent"`、`"agent_generated"`、`"user_action"`、`"user_input"`、`"system"`、`"generated"`、`"memory"`、`"mock"`、`"none"`、`"rag"`。
 > - `sessionId` / `subjectId`: 请求中的数据归属键和课程上下文键。错误时均为空字符串。
 > - `code`: 机器可读错误码（如 `"MISSING_SESSION_ID"`）。成功时为 `null`。
 > - `is_user_error`: 用户输入错误（4xx）时为 `true`，系统错误（5xx）时为 `false`。成功时为 `null`。
@@ -210,6 +210,124 @@ Configuration (``.env``):
 | SEARCH_MAX_RESULTS | 5 | Default max results per search |
 | SEARCH_TIMEOUT | 10 | HTTP request timeout (seconds) |
 | SEARCH_CACHE_TTL | 300 | In-memory cache TTL (seconds) |
+
+### GET /api/rag/search
+
+> **Added v1.0.0** — 语义向量检索端点，查询本地 Wikipedia 知识库。
+
+Purpose: execute a semantic search over the pre-built RAG vector database (Chinese Wikipedia knowledge base).
+
+Request (query parameters):
+
+```
+GET /api/rag/search?q=神经网络&top_k=5&sessionId=demo_session_001
+```
+
+| Field | Type | Required | Default | Constraint | Description |
+|-------|------|----------|---------|------------|-------------|
+| q | string | yes | — | 1-500 chars | Natural-language search query |
+| top_k | int | no | 5 | 1-20 | Maximum results to return |
+| sessionId | string | no | "" | Session context (optional) |
+
+Response envelope (results found):
+
+```json
+{
+  "status": "success",
+  "data": {
+    "query": "神经网络",
+    "results": [
+      {
+        "id": "node_abc123",
+        "text": "反向传播算法是人工神经网络中...",
+        "title": "反向传播",
+        "url": "https://zh.wikipedia.org/wiki/反向传播",
+        "source_file": "AA/wiki_00",
+        "score": 0.8743
+      }
+    ],
+    "total": 5
+  },
+  "message": "success",
+  "warnings": [],
+  "source": "rag",
+  "sessionId": "demo_session_001",
+  "subjectId": "",
+  "code": null,
+  "is_user_error": null
+}
+```
+
+Response when RAG database has not been built (graceful degradation):
+
+```json
+{
+  "status": "success",
+  "data": {
+    "query": "神经网络",
+    "results": [],
+    "total": 0
+  },
+  "message": "知识库未就绪",
+  "warnings": ["知识库尚未构建，请先运行 scripts/build_rag_db.py 构建 RAG 数据库。"],
+  "source": "rag",
+  "sessionId": "",
+  "subjectId": "",
+  "code": null,
+  "is_user_error": null
+}
+```
+
+Error response (embedding model or Milvus failure):
+
+```json
+{
+  "status": "error",
+  "data": null,
+  "message": "知识库检索服务暂不可用",
+  "code": "RAG_SERVICE_ERROR",
+  "is_user_error": false,
+  "sessionId": "",
+  "subjectId": ""
+}
+```
+
+| Error code | HTTP status | Meaning |
+|------------|-------------|---------|
+| RAG_SERVICE_ERROR | 503 | RAG knowledge base is unavailable |
+
+### GET /api/rag/status
+
+> **Added v1.0.0** — RAG 数据库健康检查。
+
+Purpose: return RAG collection metadata — does not trigger a build.
+
+Response:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "collection": "eduagent_knowledge",
+    "exists": true,
+    "num_entities": 4267,
+    "embedding_dim": 768,
+    "milvus_uri": "./data/milvus/eduagent_knowledge.db"
+  },
+  "message": "success",
+  "source": "rag",
+  "sessionId": "",
+  "subjectId": ""
+}
+```
+
+Configuration (``.env``):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| RAG_ENABLED | true | When false, RAG router is not registered |
+| RAG_MILVUS_URI | ./data/milvus/eduagent_knowledge.db | Milvus Lite database file path |
+| HF_HOME | ./data/huggingface_cache | HuggingFace model cache directory |
 
 ## 3. Product APIs For React Frontend
 
