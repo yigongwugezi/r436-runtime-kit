@@ -23,6 +23,7 @@ Push-Location $root
 try {
     Invoke-PythonTest @("tests\conversation_eval.py")
     Invoke-PythonTest @("tests\conversation_regression.py")
+    Invoke-PythonTest @("tests\intent_agent_test.py")
     Invoke-PythonTest @("tests\profile_extractor_test.py")
     Invoke-PythonTest @("tests\profile_agent_test.py")
     Invoke-PythonTest @("tests\planner_agent_test.py")

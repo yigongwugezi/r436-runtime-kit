@@ -201,9 +201,32 @@ class ChatReplyData(BaseModel):
     timestamp: int = 0
 
 
+class IntentResultData(BaseModel):
+    """Structured intent classification returned by POST /chat/send."""
+
+    intent: str = ""
+    primary_intent: str = "unknown"
+    secondary_intents: list[str] = Field(default_factory=list)
+    confidence: float = 0.0
+    should_run_agents: bool = False
+    should_run_full_workflow: bool = False
+    needs_subject: bool = False
+    needs_clarification: bool = False
+    clarification_question: str | None = None
+    extracted: dict[str, Any] = Field(default_factory=dict)
+    reason: str = ""
+    source: str = ""
+    tasks: list[dict[str, Any]] = Field(default_factory=list)
+    constraints: dict[str, Any] = Field(default_factory=dict)
+    execution_plan: list[dict[str, Any]] = Field(default_factory=list)
+    decomposition_source: str = "none"
+    decomposition_confidence: float = 0.0
+
+
 class ChatSendResponse(BaseModel):
     """Response for non-streaming chat."""
 
     sessionId: str = ""
     reply: ChatReplyData = Field(default_factory=ChatReplyData)
     diagnosis: dict[str, Any] = Field(default_factory=dict)
+    intent_result: IntentResultData | None = None

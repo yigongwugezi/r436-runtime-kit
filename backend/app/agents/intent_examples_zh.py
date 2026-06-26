@@ -1,0 +1,152 @@
+"""Chinese intent examples for the P2 robust hybrid router.
+
+The library intentionally stays lightweight: it is used by IntentAgent as a
+semantic routing prior before consulting the LLM classifier.
+"""
+
+from __future__ import annotations
+
+
+INTENT_EXAMPLES_ZH: dict[str, list[str]] = {
+    "general_chat": [
+        "你好",
+        "您好",
+        "在吗",
+        "早上好",
+        "晚上好",
+        "谢谢你",
+        "辛苦了",
+        "你是谁",
+        "介绍一下你自己",
+        "先聊两句",
+    ],
+    "full_workflow": [
+        "我是计算机新生，Python 基础比较弱，我想用 2 天入门 Python，请帮我构建学习画像、学习路径和学习资源。",
+        "请根据我的基础生成学习画像、学习计划和配套资源。",
+        "我想系统学习数据结构，帮我先建画像，再规划路径，并推荐资源。",
+        "我基础一般，想一周入门 Java，请给我画像、路径和练习资料。",
+        "请帮我完成从学习画像到学习路径再到资源推荐的完整流程。",
+        "我是大一学生，想学操作系统，帮我生成画像、学习路线和资料。",
+        "我想两天快速入门 Python，需要画像分析、阶段计划和学习资源。",
+        "帮我构建学习画像，生成学习路径，并安排对应的学习资源。",
+        "我对数据库不熟，请给我画像、学习方案和资源清单。",
+        "我想为高等数学制定完整学习方案，包括画像、路径和资料。",
+    ],
+    "profile_update": [
+        "我是计算机专业大一学生。",
+        "我的 Python 基础比较弱。",
+        "我每天大概能学两个小时。",
+        "我更喜欢图解和练习结合的学习方式。",
+        "我之前学过一点 C 语言。",
+        "我不太会递归和指针。",
+        "我准备考研，数学基础一般。",
+        "我希望用项目来学习。",
+        "我现在是零基础。",
+        "我对代码实践比较感兴趣。",
+    ],
+    "learning_plan": [
+        "帮我制定一个 Python 学习计划。",
+        "我想学数据结构，帮我安排路线。",
+        "给我一个两天入门 Python 的学习路径。",
+        "我该怎么系统学习操作系统？",
+        "帮我规划一周的 Java 入门方案。",
+        "我想系统学习高等数学。",
+        "请给我一个数据库复习计划。",
+        "接下来我该按什么顺序学习？",
+        "帮我安排一下学习阶段。",
+        "我想从零开始学机器学习，怎么规划？",
+    ],
+    "resource_request": [
+        "给我一些适合我现在阶段的练习和资料。",
+        "推荐几份 Python 入门资源。",
+        "帮我找一些数据结构练习题。",
+        "有没有适合新手的操作系统资料？",
+        "给我推荐学习路径对应的资源。",
+        "我需要一些视频和阅读材料。",
+        "帮我生成几道练习题。",
+        "给我一些复习资料和实践任务。",
+        "推荐适合当前阶段的学习资源。",
+        "我想要配套的 quiz 和 practice。",
+    ],
+    "diagnosis": [
+        "我哪里比较薄弱？",
+        "我现在的薄弱点是什么？",
+        "帮我诊断一下我哪里不会。",
+        "我哪些知识点掌握得不好？",
+        "我该补哪里？",
+        "我哪里学得不扎实？",
+        "请分析我的弱项。",
+        "我哪些地方风险比较高？",
+        "帮我看看我还差在哪里。",
+        "我现在最需要补的是什么？",
+    ],
+    "diagnosis_resource_combo": [
+        "我哪里比较薄弱？接下来该学什么资源？",
+        "帮我诊断薄弱点，再推荐练习资料。",
+        "我该补哪里，有没有对应资源？",
+        "哪些知识点不牢，下一步做什么练习？",
+        "请分析我的弱项并给我资源。",
+        "我哪里不会，应该看哪些资料？",
+        "帮我找出短板，然后安排复习资源。",
+        "我学得不稳，接下来该做哪些题？",
+        "诊断一下薄弱点，并推荐下一阶段学习材料。",
+        "我哪里风险高，后面该学什么？",
+    ],
+    "subject_create_or_learning_plan": [
+        "我想学操作系统",
+        "我想学 Python",
+        "2 天入门 Python",
+        "学数据结构",
+        "一周入门 Java",
+        "我想系统学习高等数学",
+        "我想学习数据库",
+        "准备开始学机器学习",
+        "帮我学计算机网络",
+        "我想入门线性代数",
+    ],
+    "ambiguous": [
+        "帮我安排一下",
+        "给点建议",
+        "我该怎么办",
+        "帮我看看",
+        "安排一下吧",
+        "你来决定",
+        "我有点迷茫",
+        "先帮我弄一下",
+        "随便给我一个方案",
+        "接下来呢",
+    ],
+    "off_topic": [
+        "今天天气怎么样",
+        "帮我写一首诗",
+        "推荐一部电影",
+        "讲个笑话",
+        "帮我点外卖",
+        "股票今天能买吗",
+        "你会画画吗",
+        "给我做旅游攻略",
+        "帮我写情书",
+        "附近有什么好吃的",
+    ],
+}
+
+
+SEMANTIC_LABEL_TO_INTENT: dict[str, str] = {
+    "general_chat": "casual_chat",
+    "full_workflow": "full_workflow",
+    "profile_update": "profile_update",
+    "learning_plan": "learning_plan",
+    "resource_request": "resource_request",
+    "diagnosis": "diagnosis",
+    "diagnosis_resource_combo": "diagnosis",
+    "subject_create_or_learning_plan": "learning_plan",
+    "ambiguous": "unknown",
+    "off_topic": "unknown",
+}
+
+
+SEMANTIC_LABEL_SECONDARY: dict[str, list[str]] = {
+    "full_workflow": ["profile_update", "learning_plan", "resource_request"],
+    "diagnosis_resource_combo": ["resource_request", "learning_plan"],
+    "subject_create_or_learning_plan": ["learning_plan"],
+}

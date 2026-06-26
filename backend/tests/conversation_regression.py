@@ -349,6 +349,77 @@ def test_diagnosis_route_returns_structured_result_with_punctuation() -> None:
     assert diagnosis["confidence"] <= 0.58, "profile/path/resource-only diagnosis should keep confidence capped"
 
 
+def test_chat_send_returns_intent_result_for_product_chain_followups() -> None:
+    sid = "regression_chat_intent_result"
+    conversation_store.reset(sid)
+
+    workflow = product.send_chat(
+        {
+            "sessionId": sid,
+            "message": "我是计算机新生，Python 基础比较弱，我想用 2 天入门 Python，请帮我构建学习画像、学习路径和学习资源。",
+        }
+    ).get("data", {})
+    workflow_intent = workflow.get("intent_result") or {}
+    assert workflow.get("reply", {}).get("content"), "chat/send should keep reply content"
+    assert workflow_intent.get("primary_intent") == "full_workflow", f"unexpected full workflow intent_result: {workflow_intent}"
+    assert workflow_intent.get("should_run_full_workflow") is True
+    assert "profile_update" in workflow_intent.get("secondary_intents", [])
+    assert "learning_plan" in workflow_intent.get("secondary_intents", [])
+    assert "resource_request" in workflow_intent.get("secondary_intents", [])
+
+    followup = product.send_chat({"sessionId": sid, "message": "继续"}).get("data", {})
+    followup_intent = followup.get("intent_result") or {}
+    assert followup_intent.get("primary_intent") == "learning_plan", f"unexpected continue intent_result: {followup_intent}"
+    assert followup_intent.get("extracted", {}).get("context_used") is True
+
+    simplify = product.send_chat({"sessionId": sid, "message": "换简单点"}).get("data", {})
+    simplify_intent = simplify.get("intent_result") or {}
+    assert simplify_intent.get("primary_intent") in {"learning_plan", "resource_request"}, f"unexpected simplify intent_result: {simplify_intent}"
+    assert simplify_intent.get("needs_clarification") is False, f"simplify should stay actionable with context: {simplify_intent}"
+    assert simplify_intent.get("extracted", {}).get("difficulty_preference") == "easier"
+    assert simplify_intent.get("extracted", {}).get("plan_revision") == "simplify"
+    assert simplify_intent.get("extracted", {}).get("context_used") is True
+
+    greeting = product.send_chat({"sessionId": sid, "message": "你好"}).get("data", {})
+    greeting_intent = greeting.get("intent_result") or {}
+    assert greeting_intent.get("primary_intent") == "general_chat", f"unexpected greeting intent_result: {greeting_intent}"
+    assert greeting_intent.get("should_run_agents") is False
+    assert greeting_intent.get("needs_clarification") is False
+
+
+def test_chat_send_returns_p4_task_decomposition() -> None:
+    sid = "regression_chat_intent_p4_decomposition"
+    conversation_store.reset(sid)
+
+    product.send_chat(
+        {
+            "sessionId": sid,
+            "message": "我是计算机新生，Python 基础比较弱，我想用 2 天入门 Python，请帮我构建学习画像、学习路径和学习资源。",
+        }
+    )
+
+    response = product.send_chat(
+        {
+            "sessionId": sid,
+            "message": "先诊断一下我哪里不会，再给我资源，最后帮我调整明天计划。",
+        }
+    ).get("data", {})
+    intent_result = response.get("intent_result") or {}
+    tasks = intent_result.get("tasks") or []
+    task_types = [task.get("type") for task in tasks]
+
+    assert response.get("reply", {}).get("content"), "chat/send should keep reply content"
+    assert intent_result.get("primary_intent") == "diagnosis", f"unexpected P4 intent_result: {intent_result}"
+    assert task_types == ["diagnosis", "resource_request", "learning_plan_revision"], intent_result
+    assert tasks[0].get("priority") == 1 and tasks[0].get("depends_on") == [], intent_result
+    assert tasks[1].get("depends_on") == ["task_1"], intent_result
+    assert tasks[2].get("depends_on") == ["task_2"], intent_result
+    assert isinstance(intent_result.get("constraints"), dict), intent_result
+    assert isinstance(intent_result.get("execution_plan"), list), intent_result
+    assert intent_result.get("decomposition_source") in {"rule_based_decomposer", "context_aware_decomposer"}, intent_result
+    assert intent_result.get("decomposition_confidence", 0) > 0, intent_result
+
+
 def test_chat_requires_session_id_and_does_not_use_subject_id() -> None:
     for payload in (
         {"message": "hello"},
@@ -576,6 +647,23 @@ def test_multi_course_time_budget_stable() -> None:
     )
 
 
+def test_product_intent_classification_uses_session_context() -> None:
+    sid = "regression_context_aware_intent"
+    state = conversation_store.reset(sid)
+    state.last_intent = {"intent": "learning_plan"}
+    state.last_result = {
+        "course_id": "data_structures",
+        "learning_path": [{"id": "stage_1", "title": "递归基础"}],
+        "resources": [{"id": "res_1", "title": "递归练习"}],
+        "diagnosis": {"weak_topics": ["递归"], "recommended_stage_id": "stage_1"},
+    }
+
+    intent = product._classify_intent("继续", sid)
+    assert intent["intent"] == "learning_plan", intent
+    assert intent["source"] == "context_aware", intent
+    assert intent["extracted"]["context_used"] is True, intent
+
+
 if __name__ == "__main__":
     tests = [
         test_fresh_start_has_no_fake_profile,
@@ -593,6 +681,8 @@ if __name__ == "__main__":
         test_intent_classify_diagnosis_question,
         test_diagnosis_route_returns_structured_result,
         test_diagnosis_route_returns_structured_result_with_punctuation,
+        test_chat_send_returns_intent_result_for_product_chain_followups,
+        test_chat_send_returns_p4_task_decomposition,
         test_chat_requires_session_id_and_does_not_use_subject_id,
         test_intent_classify_compound_full_workflow,
         test_intent_画像_with_self_intro_is_profile_update,
@@ -604,6 +694,7 @@ if __name__ == "__main__":
         test_ten_day_plan_estimated_days_is_10,
         test_no_time_plan_uses_reasonable_default,
         test_multi_course_time_budget_stable,
+        test_product_intent_classification_uses_session_context,
     ]
     for test in tests:
         test()

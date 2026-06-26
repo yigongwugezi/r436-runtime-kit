@@ -152,7 +152,7 @@
       },
       {
         "message": "我想学操作系统",
-        "intent": "profile_update"
+        "intent": "learning_plan"
       },
       {
         "message": "我基础一般，更喜欢视频、图解和练习题",
@@ -178,7 +178,7 @@
       },
       {
         "message": "我想学数据结构",
-        "intent": "profile_update"
+        "intent": "learning_plan"
       },
       {
         "message": "不对，我想学机器学习",
@@ -321,7 +321,7 @@
       },
       {
         "message": "我想学习数据库",
-        "intent": "profile_update"
+        "intent": "learning_plan"
       },
       {
         "message": "每天晚上能学一个半小时",
@@ -482,7 +482,7 @@
       },
       {
         "message": "我想学习数据结构",
-        "intent": "profile_update"
+        "intent": "learning_plan"
       },
       {
         "message": "我有两天时间",

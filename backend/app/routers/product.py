@@ -201,8 +201,87 @@ def _llm_client():
     return get_llm_client(settings.llm_provider)
 
 
-def _classify_intent(message: str) -> dict[str, Any]:
-    return IntentAgent(mock_data={}, llm_client=_llm_client()).classify(message)
+def _intent_context(session_id: str | None = None) -> dict[str, Any]:
+    if not session_id:
+        return {}
+    state = conversation_store.get(session_id)
+    result = state.last_result or {}
+    resources = result.get("resources") if isinstance(result, dict) else []
+    learning_path = result.get("learning_path") if isinstance(result, dict) else []
+    diagnosis = result.get("diagnosis") if isinstance(result, dict) else {}
+    recent_messages = state.messages[-6:] if state.messages else []
+
+    recent_resource_ids = []
+    for item in resources or []:
+        if isinstance(item, dict):
+            resource_id = item.get("id") or item.get("resource_id")
+            if resource_id:
+                recent_resource_ids.append(str(resource_id))
+
+    recent_weak_topics = []
+    if isinstance(diagnosis, dict):
+        for item in diagnosis.get("weak_topics") or diagnosis.get("weak_knowledge_points") or []:
+            if isinstance(item, dict):
+                topic = item.get("name") or item.get("topic") or item.get("title")
+            else:
+                topic = item
+            if topic:
+                recent_weak_topics.append(str(topic))
+
+    recent_stage_id = None
+    if isinstance(diagnosis, dict) and diagnosis.get("recommended_stage_id"):
+        recent_stage_id = str(diagnosis.get("recommended_stage_id"))
+    elif learning_path and isinstance(learning_path[0], dict):
+        stage_id = learning_path[0].get("id") or learning_path[0].get("stage_id")
+        recent_stage_id = str(stage_id) if stage_id else None
+
+    return {
+        "session_id": session_id,
+        "subject_id": result.get("course_id") if isinstance(result, dict) else None,
+        "subject_name": state.facts.get("target_course"),
+        "last_intent": state.last_intent,
+        "last_agent_result": result,
+        "has_profile": bool(state.facts or (isinstance(result, dict) and result.get("profile"))),
+        "has_learning_path": bool(learning_path),
+        "has_resources": bool(resources),
+        "has_diagnosis": bool(diagnosis),
+        "recent_weak_topics": recent_weak_topics,
+        "recent_resource_ids": recent_resource_ids,
+        "recent_stage_id": recent_stage_id,
+        "recent_messages": recent_messages,
+    }
+
+
+def _classify_intent(message: str, session_id: str | None = None) -> dict[str, Any]:
+    return IntentAgent(mock_data={}, llm_client=_llm_client()).classify(
+        message,
+        context=_intent_context(session_id),
+    )
+
+
+def _public_intent_result(intent: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(intent, dict):
+        return {}
+    fields = (
+        "intent",
+        "primary_intent",
+        "secondary_intents",
+        "confidence",
+        "should_run_agents",
+        "should_run_full_workflow",
+        "needs_subject",
+        "needs_clarification",
+        "clarification_question",
+        "extracted",
+        "reason",
+        "source",
+        "tasks",
+        "constraints",
+        "execution_plan",
+        "decomposition_source",
+        "decomposition_confidence",
+    )
+    return {field: intent.get(field) for field in fields}
 
 
 def _run_agents(
@@ -1083,7 +1162,7 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
     _validate_message(message)
 
     conversation_store.append_message(session_id, "user", message)
-    intent = _classify_intent(message)
+    intent = _classify_intent(message, session_id)
     conversation_store.set_intent(session_id, intent)
     run_agents = _will_run_agents(intent, session_id)
 
@@ -1197,7 +1276,7 @@ def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
     _validate_message(message)
 
     conversation_store.append_message(session_id, "user", message)
-    intent = _classify_intent(message)
+    intent = _classify_intent(message, session_id)
     conversation_store.set_intent(session_id, intent)
     reply, _ = _reply_for_intent(message, intent, session_id)
     conversation_store.append_message(session_id, "assistant", reply)
@@ -1209,6 +1288,7 @@ def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
             "content": reply,
             "timestamp": int(time.time() * 1000),
         },
+        "intent_result": _public_intent_result(intent),
     }
     result = conversation_store.get(session_id).last_result or {}
     diagnosis = result.get("diagnosis", {}) if isinstance(result, dict) else {}
