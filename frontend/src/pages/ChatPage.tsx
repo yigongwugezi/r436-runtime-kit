@@ -42,24 +42,22 @@ function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onCla
 
   return (
     <div className={`flex gap-3 ${isUser ? 'justify-end' : 'justify-start'} animate-fade-in-up group`}>
-      {/* 头像 */}
       {!isUser ? (
-        <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center flex-shrink-0 shadow-md shadow-brand-200">
-          <Sparkles className="w-4.5 h-4.5 text-white" />
+        <div className="w-8 h-8 rounded-full bg-accent-600 flex items-center justify-center flex-shrink-0">
+          <Sparkles className="w-4 h-4 text-white" />
         </div>
       ) : (
-        <div className="w-9 h-9 rounded-xl bg-gray-700 flex items-center justify-center flex-shrink-0 text-xs font-bold text-white order-10">
+        <div className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center flex-shrink-0 text-xs font-bold text-white order-10">
           <User className="w-4 h-4" />
         </div>
       )}
 
-      <div className={`flex flex-col gap-1 ${isUser ? 'items-end' : 'items-start'} max-w-[82%]`}>
-        {/* 气泡 */}
+      <div className={`flex flex-col gap-1 ${isUser ? 'items-end' : 'items-start'} max-w-[80%]`}>
         <div
-          className={`rounded-2xl px-4 py-3 text-sm leading-relaxed relative ${
+          className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
             isUser
-              ? 'bg-gray-900 text-white rounded-br-md'
-              : 'bg-white border border-gray-100 shadow-sm rounded-bl-md'
+              ? 'bg-accent-600 text-white rounded-br-md'
+              : 'bg-white rounded-bl-md'
           }`}
         >
           {isUser ? (
@@ -71,13 +69,11 @@ function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onCla
               ) : msg.streaming ? (
                 <span className="text-gray-400 italic">思考中…</span>
               ) : null}
-              {/* 流式光标 */}
               {msg.streaming && msg.content && (
-                <span className="inline-block w-1.5 h-4 bg-brand-500 animate-pulse rounded ml-0.5 align-text-bottom" />
+                <span className="inline-block w-1.5 h-4 bg-accent-400 animate-pulse rounded ml-0.5 align-text-bottom" />
               )}
-              {/* 错误信息 */}
               {msg.error && (
-                <div className="mt-2 p-2.5 bg-red-50 border border-red-100 rounded-xl flex items-start gap-2">
+                <div className="mt-2 p-3 bg-red-50 rounded-xl flex items-start gap-2">
                   <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
                   <div>
                     <p className="text-xs text-red-600 font-medium">生成失败</p>
@@ -85,49 +81,37 @@ function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onCla
                   </div>
                 </div>
               )}
-              {/* 低置信度澄清引导 */}
               {msg.isClarification && onClarificationSelect && (
                 <ChatClarification onSelect={onClarificationSelect} />
               )}
             </div>
           )}
 
-          {/* 复制按钮 (AI消息 hover 时显示) */}
           {!isUser && msg.content && !msg.streaming && (
-            <button
-              onClick={handleCopy}
-              className="absolute -bottom-1 right-2 translate-y-full opacity-0 group-hover:opacity-100 transition-opacity p-1 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 shadow-sm"
-              title="复制"
-            >
+            <button onClick={handleCopy}
+              className="absolute -bottom-1 right-2 translate-y-full opacity-0 group-hover:opacity-100 transition-opacity p-1 bg-white rounded-lg hover:bg-gray-50 shadow-sm border border-gray-100"
+              title="复制">
               {copied ? <Check className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3 text-gray-400" />}
             </button>
           )}
         </div>
 
-        {/* 时间戳 */}
         <span className="text-[10px] text-gray-300 px-1 flex items-center gap-1.5">
           {timeAgo(msg.timestamp)}
           {!isUser && !msg.streaming && msg.content && !msg.error && !msg.isClarification && (
-            <span className="w-1 h-1 rounded-full bg-green-300" title="生成完成" />
+            <span className="w-1 h-1 rounded-full bg-green-300" />
           )}
           {!isUser && msg.streaming && (
-            <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse" title="生成中" />
+            <span className="w-1.5 h-1.5 rounded-full bg-accent-400 animate-pulse" />
           )}
-          {msg.error && (
-            <span className="w-1 h-1 rounded-full bg-red-400" title="生成失败" />
-          )}
+          {msg.error && <span className="w-1 h-1 rounded-full bg-red-400" />}
           {!isUser && msg.isClarification && (
             <span className="text-[9px] text-amber-400">引导</span>
           )}
         </span>
       </div>
 
-      {/* 头像占位 (user 的反侧) */}
-      {isUser ? (
-        <div className="w-9 h-9 flex-shrink-0 order-0" />
-      ) : (
-        <div className="w-9 h-9 flex-shrink-0" />
-      )}
+      {isUser ? <div className="w-8 h-8 flex-shrink-0 order-0" /> : <div className="w-8 h-8 flex-shrink-0" />}
     </div>
   );
 }

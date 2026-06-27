@@ -103,6 +103,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   loading: false,
   agentProgress: null,
   dataVersion: 0,
+  dataSessionId: loadSessionId(),
 
   setCurrentSession: (id) => {
     log.debug(`切换会话: ${id.slice(0, 20)}...`);
