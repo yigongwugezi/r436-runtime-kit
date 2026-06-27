@@ -38,7 +38,10 @@ class ResourceAgent(BaseAgent):
                 "agent_step": self.agent_step(),
             }
 
-        resources = self._generate_with_llm(context, course, stages, knowledge_points, profile)
+        # RAG retrieval (best-effort, graceful fallback)
+        rag_evidence = self._rag_retrieve(context, stages, knowledge_points, profile)
+
+        resources = self._generate_with_llm(context, course, stages, knowledge_points, profile, rag_evidence)
         if not resources:
             fallback_reason = (
                 "LLM client is not configured; deterministic rule resources were generated."
@@ -55,6 +58,7 @@ class ResourceAgent(BaseAgent):
                 knowledge_points,
                 profile,
                 fallback_reason,
+                rag_evidence,
             )
 
         resources = self._scope_resource_ids(resources, str(context.get("session_id") or ""))
@@ -67,9 +71,26 @@ class ResourceAgent(BaseAgent):
         stages: list[dict[str, Any]],
         knowledge_points: list[dict[str, Any]],
         profile: dict[str, Any],
+        rag_evidence: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         if not self.llm_client:
             return []
+
+        rag_evidence = rag_evidence or []
+        rag_context = ""
+        if rag_evidence:
+            lines = []
+            for ev in rag_evidence[:10]:
+                lines.append(
+                    f"- [{ev.get('title','')}] {ev.get('snippet','')[:120]} "
+                    f"(source={ev.get('source','')}, score={ev.get('score',0):.3f})"
+                )
+            rag_context = (
+                "\n## RAG Knowledge Base Evidence\n"
+                + "\n".join(lines)
+                + "\n\nUse the above evidence to ground titles, descriptions, reasons, "
+                "and source references. Do NOT invent external sources.\n"
+            )
 
         payload = {
             "course_id": course.get("course_id") or context.get("course_id"),
@@ -98,6 +119,7 @@ class ResourceAgent(BaseAgent):
             "diagnosis_weak_points": context.get("diagnosis", {}).get("weak_knowledge_points", []),
             "profile": self._compact_profile(profile),
             "profile_facts": context.get("profile_facts", {}),
+            "rag_evidence": rag_evidence[:10],
         }
 
         messages = [
@@ -105,11 +127,13 @@ class ResourceAgent(BaseAgent):
                 "role": "system",
                 "content": (
                     "你是 EduAgent 的资源生成智能体。你必须仅根据提供的课程知识库、学习路径阶段、诊断结果和学习者画像来生成个性化学习资源。"
+                    + (rag_context if rag_context else "") +
                     "只输出 JSON，不要用 Markdown 代码块包裹。JSON 格式为 {\"resources\": [...]}。"
                     "至少生成五种资源，覆盖讲义(lecture)、思维导图(mindmap)、练习题(quiz)、拓展阅读(reading)、实操案例(case_study)，可选视频讲稿(video)或PPT大纲(ppt)。"
                     "每个资源必须包含 resource_id、type、title、description、content_format、content 或 items、related_stage_id、related_chapter、related_knowledge_points、quality_status、reason、evidence。"
                     "只使用输入中存在的阶段ID和课程章节，不要编造外部书籍、论文、链接或章节。"
                     "所有 title、description、content 内容必须使用中文撰写。"
+                    "如使用 RAG evidence，只能基于输入中的片段生成 reason、evidence 和来源说明，不要伪造 provenance claims。"
                 ),
             },
             {
@@ -127,7 +151,7 @@ class ResourceAgent(BaseAgent):
         resources = parsed.get("resources") if isinstance(parsed, dict) else None
         if not isinstance(resources, list):
             return []
-        return self._normalize_llm_resources(resources, stages, knowledge_points, course)
+        return self._normalize_llm_resources(resources, stages, knowledge_points, course, rag_evidence)
 
     def _build_rule_fallback(
         self,
@@ -136,13 +160,14 @@ class ResourceAgent(BaseAgent):
         knowledge_points: list[dict[str, Any]],
         profile: dict[str, Any],
         fallback_reason: str,
+        rag_evidence: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         """Generate resources per learning path: stage-level + per-task.
 
         Architecture:
-        1. For each stage → generate stage-level overview resources (mindmap + reading)
+        1. For each stage -> generate stage-level overview resources (mindmap + reading)
            tagged with ``related_stage_id`` only (no ``task_id``).
-        2. For each task/node within the stage → generate task-specific resources
+        2. For each task/node within the stage -> generate task-specific resources
            (lecture + quiz + case_study) tagged with both ``related_stage_id``
            and ``task_id``.
 
@@ -157,11 +182,11 @@ class ResourceAgent(BaseAgent):
             stage_id = str(binding.get("stage_id", ""))
             tasks = binding.get("tasks", [])
 
-            # ── Stage-level resources (no task_id, show for entire stage) ──
+            # Stage-level resources (no task_id, show for entire stage)
             resources.append(self._mindmap_for_task(course, binding, binding.get("title", ""), stage_id, ""))
             resources.append(self._reading_for_task(course, binding, binding.get("title", ""), stage_id, ""))
 
-            # ── Per-task resources (with task_id, show only for that node) ──
+            # Per-task resources (with task_id, show only for that node)
             for ti, task in enumerate(tasks[:6]):
                 task_id = f"{stage_id}_node_{ti + 1}"
                 # Every task gets lecture + quiz as the base pair
@@ -194,6 +219,7 @@ class ResourceAgent(BaseAgent):
                 generation="rule_based_fallback",
                 fallback_reason=fallback_reason,
             )
+            resource["rag_evidence"] = rag_evidence or []
         return resources
 
     def _normalize_llm_resources(
@@ -202,6 +228,7 @@ class ResourceAgent(BaseAgent):
         stages: list[dict[str, Any]],
         knowledge_points: list[dict[str, Any]],
         course: dict[str, Any],
+        rag_evidence: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         """Normalize LLM output and auto-fill ``task_id`` when missing.
 
@@ -290,6 +317,7 @@ class ResourceAgent(BaseAgent):
                 normalized_item,
                 generation="llm_generated with rule binding" if used_inferred_binding else "llm_generated",
             )
+            normalized_item["rag_evidence"] = rag_evidence or []
             normalized.append(normalized_item)
             seen_types.add(resource_type)
             seen_stage_ids.add(stage_id)
@@ -425,7 +453,7 @@ class ResourceAgent(BaseAgent):
             reason="满足偏好视频/图解的学生，也为后续多模态生成预留结构。",
         )
 
-    # ── Per-task resource generators ──────────────────────────────
+    # Per-task resource generators
     # Each generates a single resource for a specific task within a stage.
 
     def _lecture_for_task(self, course, binding, profile, task, task_id):
@@ -584,6 +612,7 @@ class ResourceAgent(BaseAgent):
             "reason": reason or binding["reason"],
             "generation_reason": reason or binding["reason"],
             "evidence": [],
+            "rag_evidence": [],
             "fallback_reason": "",
             "difficulty": difficulty or binding["difficulty"],
             "task_id": task_id or "",
@@ -607,6 +636,101 @@ class ResourceAgent(BaseAgent):
                 else SOURCE_TYPE_AGENT
             ),
         }
+
+    def _rag_retrieve(
+        self,
+        context: dict[str, Any],
+        stages: list[dict[str, Any]],
+        knowledge_points: list[dict[str, Any]],
+        profile: dict[str, Any],
+        max_queries: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Attempt RAG retrieval for resource enrichment. Graceful fallback on any failure.
+
+        Returns a list of evidence dicts with keys: query, title, snippet, source, score.
+        Returns an empty list when the RAG index is unavailable, retrieval fails, or
+        results are empty -- callers must handle the empty case transparently.
+        """
+        # Build candidate queries from context
+        queries: list[str] = []
+
+        # Diagnosis weak points
+        diagnosis = context.get("diagnosis", {})
+        for wp in diagnosis.get("weak_knowledge_points", []) or []:
+            if isinstance(wp, dict):
+                name = str(wp.get("name") or wp.get("title") or "").strip()
+                if name and len(name) >= 2:
+                    queries.append(name)
+            elif isinstance(wp, str) and wp.strip():
+                queries.append(wp.strip())
+
+        # Stage titles / goals / knowledge_points
+        for stage in stages[:3]:
+            title = str(stage.get("title") or "").strip()
+            goal = str(stage.get("goal") or "").strip()
+            if title and len(title) >= 2:
+                queries.append(title)
+            if goal and len(goal) >= 2 and goal not in queries:
+                queries.append(goal)
+
+        # Knowledge point names
+        for kp in knowledge_points[:5]:
+            name = str(kp.get("name") or kp.get("title") or "").strip()
+            if name and len(name) >= 2 and name not in queries:
+                queries.append(name)
+
+        # Profile target course / learning goal
+        target = str(
+            profile.get("interest_direction", {}).get("value", "")
+            or context.get("course_id", "")
+        ).strip()
+        goal_val = str(
+            profile.get("learning_goal", {}).get("value", "")
+            or profile.get("learning_goal", "")
+        ).strip()
+        if target and len(target) >= 2:
+            queries.append(target)
+        if goal_val and len(goal_val) >= 2 and goal_val not in queries:
+            queries.append(goal_val)
+
+        # Deduplicate and cap
+        seen: set[str] = set()
+        unique_queries: list[str] = []
+        for q in queries:
+            if q not in seen:
+                seen.add(q)
+                unique_queries.append(q)
+        queries = unique_queries[:max_queries]
+
+        if not queries:
+            return []
+
+        # Try loading the RAG query engine
+        try:
+            from app.rag.query_engine import RagQueryEngine
+            engine = RagQueryEngine()
+            if not engine.is_ready():
+                return []
+        except Exception:
+            return []
+
+        # Search and collect results
+        evidence: list[dict[str, Any]] = []
+        for query in queries:
+            try:
+                resp = engine.search(query, top_k=3)
+                for r in resp.results[:3]:
+                    evidence.append({
+                        "query": query,
+                        "title": r.title or "",
+                        "snippet": (r.text or "")[:200],
+                        "source": r.source_file or "",
+                        "score": round(r.score or 0.0, 4),
+                    })
+            except Exception:
+                continue
+
+        return evidence
 
     def _knowledge_points(
         self,
@@ -806,7 +930,7 @@ class ResourceAgent(BaseAgent):
         generation: str,
         fallback_reason: str = "",
     ) -> list[str]:
-        evidence = [
+        evidence: list[str] = [
             f"Learning stage: {resource.get('related_stage_id') or 'unresolved'}",
             f"Course chapter: {resource.get('related_chapter') or 'unresolved'}",
             f"Generation: {generation}",

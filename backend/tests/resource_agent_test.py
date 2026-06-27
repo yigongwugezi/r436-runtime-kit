@@ -199,6 +199,125 @@ def test_ai_intro_resources_stay_on_ai_topics() -> None:
     assert_true(any(term in text for term in expected), "AI intro resources should use AI course topics")
 
 
+def test_rag_unavailable_fallback_still_generates_resources() -> None:
+    """When RAG index is missing, ResourceAgent must still produce valid resources."""
+    import app.agents.resource_agent as ra_module
+
+    # Force _rag_retrieve to return empty (simulating missing index)
+    original_retrieve = ra_module.ResourceAgent._rag_retrieve
+
+    def _empty_retrieve(self, context, stages, kps, profile, **kw):
+        return []
+
+    ra_module.ResourceAgent._rag_retrieve = _empty_retrieve
+
+    try:
+        result = ResourceAgent().run(_context("data_structures"))
+        resources = result["resources"]
+        assert_true(len(resources) >= 5, "fallback must still generate resources when RAG is unavailable")
+        assert_true(all(item["source"] == SOURCE_FALLBACK for item in resources), "resources should be fallback-sourced")
+        assert_true(all(isinstance(item.get("evidence"), list) for item in resources), "evidence must remain a list")
+        # evidence must be list[str] — no dicts mixed in
+        for item in resources:
+            for ev in item["evidence"]:
+                assert_true(isinstance(ev, str), f"evidence item must be str, got {type(ev)}")
+        # rag_evidence must exist and be a list (empty when RAG unavailable)
+        for item in resources:
+            assert_true("rag_evidence" in item, "resource must have rag_evidence field")
+            assert_true(isinstance(item["rag_evidence"], list), "rag_evidence must be a list")
+            assert_true(len(item["rag_evidence"]) == 0, "rag_evidence should be empty when RAG unavailable")
+    finally:
+        ra_module.ResourceAgent._rag_retrieve = original_retrieve
+
+
+def test_mock_rag_evidence_injected_into_resources() -> None:
+    """When RAG returns results, they appear in rag_evidence field, not evidence."""
+    import app.agents.resource_agent as ra_module
+
+    mock_evidence = [
+        {
+            "query": "Stack and queue",
+            "title": "Stack",
+            "snippet": "A stack is a LIFO data structure.",
+            "source": "AE/wiki_00",
+            "score": 0.85,
+        },
+        {
+            "query": "Sorting",
+            "title": "Sorting Algorithm",
+            "snippet": "Sorting arranges data in a specific order.",
+            "source": "AE/wiki_00",
+            "score": 0.72,
+        },
+    ]
+    original_retrieve = ra_module.ResourceAgent._rag_retrieve
+
+    def _mock_retrieve(self, context, stages, kps, profile, **kw):
+        return mock_evidence
+
+    ra_module.ResourceAgent._rag_retrieve = _mock_retrieve
+
+    try:
+        result = ResourceAgent().run(_context("data_structures"))
+        resources = result["resources"]
+        assert_true(len(resources) >= 5, "fallback should still generate resources with RAG enrichment")
+
+        # RAG evidence dicts must be in rag_evidence, NOT in evidence
+        has_rag = False
+        for resource in resources:
+            assert_true("rag_evidence" in resource, "resource must have rag_evidence field")
+            rag_list = resource.get("rag_evidence", [])
+            assert_true(isinstance(rag_list, list), "rag_evidence must be a list")
+            if rag_list:
+                for ev in rag_list:
+                    assert_true(isinstance(ev, dict), f"rag_evidence items must be dict, got {type(ev)}")
+                if any(ev.get("query") == "Stack and queue" for ev in rag_list):
+                    has_rag = True
+            # evidence must still contain only str items
+            for ev in resource.get("evidence", []):
+                assert_true(isinstance(ev, str), f"evidence must contain only str, got {type(ev)}")
+        assert_true(has_rag, "at least one resource should have RAG evidence with query='Stack and queue'")
+    finally:
+        ra_module.ResourceAgent._rag_retrieve = original_retrieve
+
+
+def test_resource_fields_backward_compatible() -> None:
+    """Existing required fields must be present; new rag_evidence field must be stable."""
+    result = ResourceAgent().run(_context("data_structures"))
+    resources = result["resources"]
+
+    required_fields = {
+        "id", "title", "type", "related_stage_id", "related_chapter",
+        "knowledge_points", "source", "source_type", "generation_mode",
+        "quality_status", "reason", "evidence", "fallback_reason",
+    }
+    for item in resources:
+        missing = required_fields - set(item.keys())
+        assert_true(not missing, f"resource missing fields: {missing}")
+        # evidence must be list[str]
+        ev = item.get("evidence")
+        assert_true(isinstance(ev, list), "evidence must be a list")
+        for entry in ev:
+            assert_true(isinstance(entry, str), f"evidence items must be str, got {type(entry)}")
+        # rag_evidence must exist and be a list
+        assert_true("rag_evidence" in item, "resource must have rag_evidence field")
+        rag = item["rag_evidence"]
+        assert_true(isinstance(rag, list), "rag_evidence must be a list")
+        for rag_entry in rag:
+            assert_true(isinstance(rag_entry, dict), f"rag_evidence items must be dict, got {type(rag_entry)}")
+
+    # Verify no behavior drift: source/source_type/generation_mode/quality_status still valid
+    assert_true(len(resources) >= 5, "should still generate at least five resources")
+    assert_true(all(item.get("source") in (SOURCE_FALLBACK, SOURCE_LLM) for item in resources),
+                "source must be llm_generated or rule_based_fallback")
+    assert_true(all(item.get("source_type") in ("course_knowledge_base", "agent_generated") for item in resources),
+                "source_type must be course_knowledge_base or agent_generated")
+    assert_true(all(item.get("generation_mode") in ("fallback", "llm", "mixed") for item in resources),
+                "generation_mode must be fallback, llm, or mixed")
+    assert_true(all(item.get("quality_status") in ("passed", "warning", "fallback", "insufficient_context") for item in resources),
+                "quality_status must be one of the defined statuses")
+
+
 if __name__ == "__main__":
     test_rule_fallback_is_marked_and_stage_bound()
     test_llm_success_is_marked_and_normalized()
@@ -206,4 +325,7 @@ if __name__ == "__main__":
     test_llm_cannot_claim_a_chapter_outside_the_course_catalog()
     test_data_structures_resources_do_not_drift_to_ai_topics()
     test_ai_intro_resources_stay_on_ai_topics()
+    test_rag_unavailable_fallback_still_generates_resources()
+    test_mock_rag_evidence_injected_into_resources()
+    test_resource_fields_backward_compatible()
     print("PASS resource_agent_test")
