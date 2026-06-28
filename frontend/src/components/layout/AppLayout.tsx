@@ -1,8 +1,10 @@
 import { createContext, useContext, useState } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
+import { MessageSquare } from 'lucide-react';
 import { ToastProvider } from '../common/Toast';
 import ConsoleSidebar from './ConsoleSidebar';
 import Header from './Header';
+import ChatPanel from '../chat/ChatPanel';
 
 const ChatPanelCtx = createContext<{ open: boolean; setOpen: (v: boolean) => void; toggle: () => void }>({ open: false, setOpen: () => {}, toggle: () => {} });
 export const useChatPanel = () => useContext(ChatPanelCtx);
@@ -19,10 +21,14 @@ const PAGE_TITLES: Record<string, { title: string; subtitle: string }> = {
   '/settings': { title: '系统设置', subtitle: '个性化你的学习体验' },
 };
 
+const HIDE_CHAT_PANEL = new Set(['/chat', '/settings', '/login']);
+
 export default function AppLayout() {
   const loc = useLocation();
   const info = PAGE_TITLES[loc.pathname] || { title: 'EduAgent', subtitle: '' };
   const [chatOpen, setChatOpen] = useState(false);
+  const [panelWidth, setPanelWidth] = useState(420);
+  const showChat = !HIDE_CHAT_PANEL.has(loc.pathname);
 
   return (
     <ChatPanelCtx.Provider value={{ open: chatOpen, setOpen: setChatOpen, toggle: () => setChatOpen(v => !v) }}>
@@ -36,6 +42,16 @@ export default function AppLayout() {
           <main className="p-6 flex-1 flex flex-col"><Outlet /></main>
         </div>
       </div>
+      {showChat && !chatOpen && (
+        <button
+          onClick={() => setChatOpen(true)}
+          className="fixed bottom-6 right-6 z-50 w-11 h-11 rounded-xl flex items-center justify-center bg-white text-surface-600 hover:bg-primary-50 hover:text-primary-600 shadow-soft transition-all"
+          title="AI 对话"
+        >
+          <MessageSquare size={22} />
+        </button>
+      )}
+      {showChat && <ChatPanel open={chatOpen} onClose={() => setChatOpen(false)} panelWidth={panelWidth} onWidthChange={setPanelWidth} />}
     </ToastProvider>
     </ChatPanelCtx.Provider>
   );

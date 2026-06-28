@@ -772,12 +772,20 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
     # ── Chart data: completion trend (last 14 days) ──
     from collections import defaultdict as _dd
     daily_completions: dict[str, int] = _dd(int)
+    daily_minutes: dict[str, int] = _dd(int)
     daily_quiz: list[dict[str, Any]] = []
     resource_type_counts: dict[str, int] = _dd(int)
 
     for evt in events:
         meta = evt.metadata_ or {}
         day_key = evt.created_at.strftime("%Y-%m-%d") if evt.created_at else ""
+
+        # Daily minutes tracking
+        duration = meta.get("duration") or meta.get("durationMinutes") or 0
+        try:
+            daily_minutes[day_key] += max(0, int(duration))
+        except (TypeError, ValueError):
+            pass
 
         # Completion trend
         if evt.event_type == "resource_complete" and day_key:
@@ -844,9 +852,26 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
             "count": daily_completions.get(ds, 0),
         })
 
+    # ── Today study minutes ──
+    today_str = today.strftime("%Y-%m-%d")
+    today_study_minutes = daily_minutes.get(today_str, 0)
+
+    # ── Streak: consecutive days with any learning activity ──
+    streak = 0
+    check_date = today
+    while True:
+        ds = check_date.strftime("%Y-%m-%d")
+        if daily_minutes.get(ds, 0) > 0 or daily_completions.get(ds, 0) > 0:
+            streak += 1
+            check_date = check_date - _dt.timedelta(days=1)
+        else:
+            break
+
     return {
         "eventCount": len(events),
         "totalStudyMinutes": total_minutes,
+        "todayStudyMinutes": today_study_minutes,
+        "streak": streak,
         "activeResourceCount": len(resource_counts),
         "viewedResources": event_counts.get("resource_view", 0),
         "completedResources": event_counts.get("resource_complete", 0),

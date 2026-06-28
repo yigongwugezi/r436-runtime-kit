@@ -2,13 +2,13 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useChatStore } from '../../store/chatStore';
 import { useStreamChat } from '../../hooks/useStreamChat';
-import { getSessionMessages } from '../../api/chat';
+import { getSessionMessages, getSessions } from '../../api/chat';
 import { DEFAULT_QUICK_COMMANDS } from '../../utils/constants';
 import type { ChatMessage, GenerationProgress } from '../../types/chat';
 import { timeAgo } from '../../utils/format';
 import {
   Send, Sparkles, Square, Copy, Check, AlertCircle,
-  Bot, User, RefreshCw, ChevronDown, XCircle, PanelRightClose, PanelRightOpen, Plus,
+  Bot, User, RefreshCw, ChevronDown, XCircle, PanelRightClose, PanelRightOpen, Plus, MessageCircle, History,
 } from 'lucide-react';
 import Markdown from '../../utils/markdown';
 import ChatClarification from './ChatClarification';
@@ -277,6 +277,98 @@ function StreamingWaitIndicator() {
 }
 
 /* ===================================================================
+ * 对话记录弹窗 — 浏览器标签页风格
+ * =================================================================== */
+function HistoryPopover({ sessions, currentSessionId, onSelect, onDelete, onRename, onNew, onClose }: {
+  sessions: any[];
+  currentSessionId: string;
+  onSelect: (id: string) => void;
+  onDelete: (id: string) => void;
+  onRename: (id: string, title: string) => void;
+  onNew: () => void;
+  onClose: () => void;
+}) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const popRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (popRef.current && !popRef.current.contains(e.target as Node)) onClose();
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [onClose]);
+
+  useEffect(() => {
+    if (editingId) inputRef.current?.focus();
+  }, [editingId]);
+
+  const sorted = sessions.slice().sort((a: any, b: any) => (b.updatedAt || 0) - (a.updatedAt || 0));
+
+  return (
+    <div ref={popRef} className="absolute right-0 top-8 w-72 bg-white rounded-xl shadow-elevated border border-gray-200 z-50 animate-fade-in overflow-hidden">
+      <div className="px-3 py-2 border-b border-gray-100 flex items-center justify-between">
+        <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">对话记录</span>
+        <button onClick={onNew} className="text-[10px] text-brand-600 hover:text-brand-700 font-medium">+ 新建</button>
+      </div>
+      <div className="max-h-[320px] overflow-y-auto">
+        {sorted.length === 0 ? (
+          <p className="text-xs text-gray-400 py-6 text-center">暂无对话</p>
+        ) : sorted.map((ses: any) => {
+          const active = ses.id === currentSessionId;
+          const isEditing = editingId === ses.id;
+          return (
+            <div
+              key={ses.id}
+              onClick={() => { if (!isEditing) onSelect(ses.id); }}
+              onDoubleClick={(e) => { e.stopPropagation(); setEditingId(ses.id); setEditTitle(ses.title || ''); }}
+              className={`w-full text-left transition-colors flex items-stretch group cursor-pointer ${
+                active ? 'bg-brand-50' : 'hover:bg-gray-50'
+              }`}
+              style={{ borderLeft: active ? '3px solid #3b82f6' : '3px solid transparent' }}
+            >
+              <div className="flex-1 min-w-0 px-3 py-2.5">
+                {isEditing ? (
+                  <input
+                    ref={inputRef}
+                    value={editTitle}
+                    onChange={(e) => setEditTitle(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') { onRename(ses.id, editTitle); setEditingId(null); }
+                      if (e.key === 'Escape') setEditingId(null);
+                    }}
+                    onBlur={() => { if (editTitle.trim()) onRename(ses.id, editTitle); setEditingId(null); }}
+                    onClick={(e) => e.stopPropagation()}
+                    className="w-full text-[11px] px-1.5 py-0.5 bg-white border border-brand-300 rounded outline-none focus:ring-1 focus:ring-brand-400"
+                    placeholder="输入名称…"
+                  />
+                ) : (
+                  <>
+                    <p className={`text-[12px] truncate ${active ? 'text-gray-800 font-semibold' : 'text-gray-600'}`}>
+                      {ses.title || '新对话'}
+                    </p>
+                    <p className="text-[9px] text-gray-400 mt-0.5">{timeAgo(ses.updatedAt || ses.createdAt)}</p>
+                  </>
+                )}
+              </div>
+              <button
+                onClick={(e) => { e.stopPropagation(); onDelete(ses.id); }}
+                className="flex-shrink-0 w-7 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-gray-300 hover:text-red-500 hover:bg-red-50"
+                title="删除"
+              >
+                <XCircle className="w-3 h-3" />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ===================================================================
  * ChatPanel — 内嵌于布局右侧的持久化对话面板
  * =================================================================== */
 type AgentProgressInfo = GenerationProgress | null;
@@ -303,6 +395,7 @@ export default function ChatPanel({ open, onClose, panelWidth = 420, onWidthChan
   const { send, abort } = useStreamChat();
   const [input, setInput] = useState('');
   const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -416,6 +509,31 @@ export default function ChatPanel({ open, onClose, panelWidth = 420, onWidthChan
             )}
           </div>
           <div className="flex items-center gap-1">
+            <div className="relative">
+              <button onClick={() => setShowHistory(v => !v)}
+                className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${showHistory ? 'text-brand-600 bg-brand-50' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}
+                title="对话记录" aria-label="对话记录">
+                <History className="w-4 h-4" />
+              </button>
+              {showHistory && (
+                <HistoryPopover
+                  sessions={sessions}
+                  currentSessionId={currentSessionId}
+                  onSelect={async (id: string) => {
+                    setCurrentSession(id);
+                    setShowHistory(false);
+                    try {
+                      const res = await getSessionMessages(id);
+                      if (res?.messages) useChatStore.setState({ messages: res.messages });
+                    } catch { /* ignore */ }
+                  }}
+                  onDelete={(id: string) => useChatStore.getState().removeSession(id)}
+                  onRename={(id: string, title: string) => useChatStore.getState().renameSession(id, title)}
+                  onNew={() => { newSession(); setShowHistory(false); }}
+                  onClose={() => setShowHistory(false)}
+                />
+              )}
+            </div>
             <button onClick={() => newSession()}
               className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:text-brand-600 hover:bg-brand-50 transition-all"
               title="新建对话" aria-label="新建对话">
@@ -428,59 +546,6 @@ export default function ChatPanel({ open, onClose, panelWidth = 420, onWidthChan
             </button>
           </div>
         </div>
-
-        {/* 多会话标签栏（类似浏览器标签页） */}
-        {sessions.length > 0 && (
-          <div className="flex items-stretch gap-0 px-2 pt-1.5 border-b border-gray-200 bg-gray-50/50 overflow-x-hidden flex-shrink-0">
-            {sessions.map((ses) => {
-              const active = ses.id === currentSessionId;
-              return (
-                <div
-                  key={ses.id}
-                  className={`group flex items-center min-w-0 flex-1 max-w-[200px] ${
-                    active
-                      ? 'bg-white border border-gray-200 border-b-white rounded-t-lg shadow-sm -mb-px z-10'
-                      : 'border-b border-transparent'
-                  }`}
-                >
-                  <button
-                    onClick={() => setCurrentSession(ses.id)}
-                    className={`flex-1 min-w-0 text-left px-2.5 py-1.5 text-[11px] transition-all ${
-                      active
-                        ? 'text-gray-800 font-semibold'
-                        : 'text-gray-500 hover:text-gray-700'
-                    }`}
-                    title={ses.title || '新对话'}
-                  >
-                    <span className="block overflow-hidden whitespace-nowrap relative">
-                      {ses.title || '新对话'}
-                      <span className="absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-white to-transparent pointer-events-none" />
-                    </span>
-                  </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); useChatStore.getState().removeSession(ses.id); }}
-                    className={`flex-shrink-0 w-4 h-4 mr-1 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity ${
-                      active
-                        ? 'hover:bg-gray-200 text-gray-400 hover:text-gray-600'
-                        : 'hover:bg-gray-200 text-gray-400 hover:text-gray-600'
-                    }`}
-                    title="删除对话"
-                    aria-label={`删除对话「${ses.title || '新对话'}」`}
-                  >
-                    <XCircle className="w-3 h-3" />
-                  </button>
-                </div>
-              );
-            })}
-            <button
-              onClick={() => newSession()}
-              className="flex items-center justify-center w-7 h-7 mt-0.5 rounded text-gray-400 hover:text-brand-600 hover:bg-gray-100 transition-all flex-shrink-0"
-              title="新建对话"
-            >
-              <Plus className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        )}
 
         {/* 错误横幅 */}
         {hasError && (

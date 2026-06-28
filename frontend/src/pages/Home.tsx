@@ -86,7 +86,7 @@ export default function Home() {
                 <button onClick={() => setShowCreate(false)} className="px-3 py-2.5 text-sm text-surface-400 hover:text-surface-600 whitespace-nowrap">取消</button>
               </div>
             )}
-            <div className="space-y-4">
+            <div className="space-y-3 max-h-[220px] overflow-y-auto pr-1">
               {subjects.length === 0 ? (
                 <p className="text-surface-400 text-sm py-4 text-center">还没有科目，点击"新建科目"创建第一个</p>
               ) : subjects.map((s, idx) => (
@@ -192,9 +192,9 @@ export default function Home() {
           </div>
 
           {/* 最近活动 */}
-          <div className="bg-white rounded-2xl p-6 shadow-soft flex-1 flex flex-col">
+          <div className="bg-white rounded-2xl p-6 shadow-soft flex-1 flex flex-col min-h-0">
             <div className="flex items-center justify-between mb-4"><h3 className="font-display text-lg font-semibold text-surface-800">最近活动</h3></div>
-            <div className="space-y-3 flex-1">
+            <div className="space-y-3 flex-1 overflow-y-auto pr-1">
               {analytics?.recentEvents && analytics.recentEvents.length > 0 ? (
                 analytics.recentEvents.slice(0, 6).map((evt, i) => {
                   const isComplete = evt.event?.includes('complete');

@@ -43,7 +43,20 @@ export default function ProfilePage() {
 
   if (loading && !profile) return <PageLoading text="加载学习画像…" />;
   if (error && !profile) return <PageError title="画像加载失败" description={error} onRetry={fetchProfile} />;
-  if (!profile) return <PageError title="暂无画像数据" description="请先在对话中构建学习画像" onRetry={fetchProfile} />;
+  if (!profile || !profile.dimensions?.length) return (
+    <div className="space-y-6 animate-fade-in">
+      <div className="flex items-center justify-between">
+        <div><h2 className="font-display text-2xl font-bold text-surface-800">学习画像</h2><p className="text-surface-500 mt-1">基于AI对话构建的个性化学习特征分析</p></div>
+        <button onClick={handleRefresh} disabled={isUpdating} className="flex items-center gap-2 px-5 py-2.5 bg-primary-600 text-white rounded-xl font-medium hover:bg-primary-700 transition-colors disabled:opacity-50"><RefreshCw size={18} className={isUpdating ? 'animate-spin' : ''} />{isUpdating ? '更新中...' : '构建画像'}</button>
+      </div>
+      <div className="bg-white rounded-2xl p-12 shadow-soft text-center">
+        <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-primary-100 to-accent-100 flex items-center justify-center mx-auto mb-6"><Brain size={36} className="text-primary-400" /></div>
+        <h3 className="text-lg font-semibold text-surface-700 mb-2">尚未构建学习画像</h3>
+        <p className="text-surface-500 text-sm max-w-md mx-auto mb-6">在对话中告诉 AI 你的专业背景、学习目标和时间安排，系统将自动分析并生成你的个性化学习画像</p>
+        <button onClick={() => chat.setOpen(true)} className="inline-flex items-center gap-2 px-6 py-3 bg-primary-600 text-white rounded-xl font-medium hover:bg-primary-700 transition-colors"><Sparkles size={18} />开始对话</button>
+      </div>
+    </div>
+  );
 
   const dims = profile.dimensions || [];
   const n = dims.length || 1;
@@ -146,7 +159,7 @@ export default function ProfilePage() {
       {profile.weaknesses?.length > 0 && (
         <div className="bg-white rounded-2xl p-6 shadow-soft">
           <h3 className="font-display text-lg font-semibold text-surface-800 mb-4">知识短板</h3>
-          <div className="space-y-3">{profile.weaknesses.map((w, i) => (
+          <div className="space-y-3 max-h-[260px] overflow-y-auto pr-1">{profile.weaknesses.map((w, i) => (
             <div key={i} className="flex items-center gap-4 p-3 rounded-xl bg-surface-50 hover:bg-surface-100 transition-colors group">
               <div className="flex-1 min-w-0"><div className="flex items-center gap-2 mb-1.5"><span className="text-sm font-semibold text-surface-800">{w.topic}</span>{w.priority > 0 && <span className="px-2 py-0.5 bg-error-100 text-error-600 text-[10px] font-bold rounded-full">P{w.priority}</span>}</div><div className="flex items-center gap-3"><div className="flex-1 max-w-[140px] h-2 bg-error-100 rounded-full overflow-hidden"><div className="h-full bg-error-400 rounded-full" style={{ width: `${w.mastery}%` }} /></div><span className="text-xs font-semibold text-error-500 tabular-nums">{w.mastery}%</span></div></div>
               <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity"><button onClick={() => nav(`/resources?knowledgePoint=${encodeURIComponent(w.topic)}`)} className="px-3 py-1.5 bg-primary-50 text-primary-700 rounded-lg text-[11px] font-medium hover:bg-primary-100">资源</button></div>

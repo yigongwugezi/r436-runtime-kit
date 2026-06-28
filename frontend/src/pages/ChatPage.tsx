@@ -4,14 +4,70 @@ import { useChatStore } from '../store/chatStore';
 import { useStreamChat } from '../hooks/useStreamChat';
 import { getSessionMessages } from '../api/chat';
 import { DEFAULT_QUICK_COMMANDS } from '../utils/constants';
+import { timeAgo } from '../utils/format';
 import type { ChatMessage, GenerationProgress } from '../types/chat';
-import { Send, Sparkles, Square, Copy, Check, AlertCircle, Bot, User, RefreshCw, ChevronDown, XCircle, History, Brain, Loader2, BrainCircuit, FileText, Video } from 'lucide-react';
+import { Send, Sparkles, Square, Copy, Check, AlertCircle, Bot, User, RefreshCw, ChevronDown, XCircle, History, Brain, Loader2, BrainCircuit, FileText, Video, Menu } from 'lucide-react';
 import Markdown from '../utils/markdown';
 import ChatHistorySidebar from '../components/chat/ChatHistorySidebar';
 import ChatClarification from '../components/chat/ChatClarification';
 import PromptTemplates from '../components/chat/PromptTemplates';
 
 const GEN_PIPELINE = [{ key: 'understanding', label: '理解需求' }, { key: 'profiling', label: '生成画像' }, { key: 'planning', label: '规划路径' }, { key: 'generating', label: '生成资源' }, { key: 'saving', label: '保存结果' }];
+
+function HistoryPopover({ sessions, currentSessionId, onSelect, onDelete, onRename, onNew, onClose }: {
+  sessions: any[]; currentSessionId: string;
+  onSelect: (id: string) => void; onDelete: (id: string) => void;
+  onRename: (id: string, title: string) => void; onNew: () => void; onClose: () => void;
+}) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const popRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const h = (e: MouseEvent) => { if (popRef.current && !popRef.current.contains(e.target as Node)) onClose(); };
+    document.addEventListener('mousedown', h); return () => document.removeEventListener('mousedown', h);
+  }, [onClose]);
+  useEffect(() => { if (editingId) inputRef.current?.focus(); }, [editingId]);
+  const sorted = sessions.slice().sort((a: any, b: any) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  return (
+    <div ref={popRef} className="absolute left-0 top-14 w-72 bg-white rounded-xl shadow-elevated border border-gray-200 z-50 animate-fade-in overflow-hidden">
+      <div className="px-3 py-2 border-b border-gray-100 flex items-center justify-between">
+        <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">对话记录</span>
+        <button onClick={onNew} className="text-[10px] text-brand-600 hover:text-brand-700 font-medium">+ 新建</button>
+      </div>
+      <div className="max-h-[320px] overflow-y-auto">
+        {sorted.length === 0 ? <p className="text-xs text-gray-400 py-6 text-center">暂无对话</p> : sorted.map((ses: any) => {
+          const active = ses.id === currentSessionId; const isEditing = editingId === ses.id;
+          return (
+            <div key={ses.id} onClick={() => { if (!isEditing) onSelect(ses.id); }}
+              onDoubleClick={(e) => { e.stopPropagation(); setEditingId(ses.id); setEditTitle(ses.title || ''); }}
+              className={`w-full text-left transition-colors flex items-stretch group cursor-pointer ${active ? 'bg-brand-50' : 'hover:bg-gray-50'}`}
+              style={{ borderLeft: active ? '3px solid #3b82f6' : '3px solid transparent' }}>
+              <div className="flex-1 min-w-0 px-3 py-2.5">
+                {isEditing ? (
+                  <input ref={inputRef} value={editTitle} onChange={(e) => setEditTitle(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { onRename(ses.id, editTitle); setEditingId(null); } if (e.key === 'Escape') setEditingId(null); }}
+                    onBlur={() => { if (editTitle.trim()) onRename(ses.id, editTitle); setEditingId(null); }}
+                    onClick={(e) => e.stopPropagation()}
+                    className="w-full text-[11px] px-1.5 py-0.5 bg-white border border-brand-300 rounded outline-none focus:ring-1 focus:ring-brand-400" placeholder="输入名称…" />
+                ) : (
+                  <>
+                    <p className={`text-[12px] truncate ${active ? 'text-gray-800 font-semibold' : 'text-gray-600'}`}>{ses.title || '新对话'}</p>
+                    <p className="text-[9px] text-gray-400 mt-0.5">{timeAgo(ses.updatedAt || ses.createdAt)}</p>
+                  </>
+                )}
+              </div>
+              <button onClick={(e) => { e.stopPropagation(); onDelete(ses.id); }}
+                className="flex-shrink-0 w-7 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-gray-300 hover:text-red-500 hover:bg-red-50" title="删除">
+                <XCircle className="w-3 h-3" />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onClarificationSelect?: (prompt: string) => void }) {
   const isUser = msg.role === 'user'; const [copied, setCopied] = useState(false);
@@ -55,7 +111,7 @@ export default function ChatPage() {
   const { messages, isStreaming, agentProgress, currentSessionId, setLoading } = useChatStore() as any;
   const { send, abort } = useStreamChat();
   const [input, setInput] = useState(''); const [showScrollBtn, setShowScrollBtn] = useState(false);
-  const [messagesLoaded, setMessagesLoaded] = useState(false); const [historyOpen, setHistoryOpen] = useState(false);
+  const [messagesLoaded, setMessagesLoaded] = useState(false); const [menuOpen, setMenuOpen] = useState(false); const [historyOpen, setHistoryOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null); const inputRef = useRef<HTMLTextAreaElement>(null); const bottomRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = useCallback((smooth = false) => { smooth ? bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) : scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }); }, []);
@@ -72,10 +128,44 @@ export default function ChatPage() {
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-4">
           <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-primary-500 to-accent-500 flex items-center justify-center shadow-lg"><Brain className="w-6 h-6 text-white" /></div>
-          <div><h2 className="font-display text-xl font-bold text-surface-800">智能学习助手</h2><div className="flex items-center gap-2 mt-1"><span className="w-2 h-2 bg-success-500 rounded-full animate-pulse" /><span className="text-sm text-surface-500">在线 · 可通过对话构建学习画像</span></div></div>
+          <div>
+            <div className="flex items-center gap-3">
+              <h2 className="font-display text-xl font-bold text-surface-800">智能学习助手</h2>
+              <div className="relative">
+                <button
+                  onClick={() => setMenuOpen(v => !v)}
+                  className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${menuOpen ? 'bg-primary-100 text-primary-600' : 'text-surface-400 hover:text-surface-600 hover:bg-surface-100'}`}
+                  title="对话记录"
+                >
+                  <Menu size={16} />
+                </button>
+                {menuOpen && (
+                  <HistoryPopover
+                    sessions={useChatStore.getState().sessions}
+                    currentSessionId={currentSessionId}
+                    onSelect={async (id: string) => {
+                      setMenuOpen(false);
+                      useChatStore.getState().setCurrentSession(id);
+                      try {
+                        const res = await getSessionMessages(id);
+                        if (res?.messages) useChatStore.setState({ messages: res.messages });
+                      } catch { /* ignore */ }
+                    }}
+                    onDelete={(id: string) => useChatStore.getState().removeSession(id)}
+                    onRename={(id: string, title: string) => useChatStore.getState().renameSession(id, title)}
+                    onNew={() => { useChatStore.getState().newSession(); setMenuOpen(false); }}
+                    onClose={() => setMenuOpen(false)}
+                  />
+                )}
+              </div>
+            </div>
+            <div className="flex items-center gap-2 mt-1"><span className="w-2 h-2 bg-success-500 rounded-full animate-pulse" /><span className="text-sm text-surface-500">在线 · 可通过对话构建学习画像</span></div>
+          </div>
         </div>
         <div className="flex items-center gap-2">
-          {messages.length > 0 && <button onClick={() => setHistoryOpen(true)} className="flex items-center gap-2 px-4 py-2.5 bg-surface-100 text-surface-600 rounded-xl font-medium hover:bg-surface-200 transition-colors"><History size={18} />历史</button>}
+          <button onClick={() => setHistoryOpen(true)} className="w-10 h-10 rounded-xl bg-surface-100 text-surface-500 hover:bg-surface-200 hover:text-surface-700 flex items-center justify-center transition-colors" title="历史记录">
+            <History size={20} />
+          </button>
           <button onClick={() => { useChatStore.getState().newSession(); }} className="flex items-center gap-2 px-4 py-2.5 bg-primary-50 text-primary-600 rounded-xl font-medium hover:bg-primary-100 transition-colors"><Sparkles size={18} />新对话</button>
         </div>
       </div>
@@ -118,7 +208,7 @@ export default function ChatPage() {
           </div>
         </div>
 
-        <div className="w-72 space-y-4 overflow-y-auto hidden xl:block">
+        <div className="w-72 space-y-4 overflow-y-auto hidden xl:block ml-5">
           <div className="bg-white rounded-2xl p-5 shadow-soft">
             <div className="flex items-center gap-2 mb-4"><Bot size={18} className="text-primary-600" /><h3 className="font-semibold text-surface-800">协同智能体</h3></div>
             <div className="space-y-3">
@@ -153,8 +243,8 @@ export default function ChatPage() {
         </div>
       </div>
 
-      <ChatHistorySidebar open={historyOpen} onClose={() => setHistoryOpen(false)} onJump={() => { setHistoryOpen(false); scrollToBottom(true); }} />
       {showScrollBtn && <button onClick={() => scrollToBottom(true)} className="absolute bottom-24 left-1/2 -translate-x-1/2 w-8 h-8 bg-white border border-surface-200 rounded-full flex items-center justify-center shadow-soft hover:shadow-elevated transition-all z-10"><ChevronDown className="w-4 h-4 text-surface-500" /></button>}
+      <ChatHistorySidebar open={historyOpen} onClose={() => setHistoryOpen(false)} onJump={() => { setHistoryOpen(false); scrollToBottom(true); }} />
     </div>
   );
 }

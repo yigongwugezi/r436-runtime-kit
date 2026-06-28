@@ -1,5 +1,5 @@
 import { useNavigate, useLocation } from 'react-router-dom';
-import { LayoutDashboard, User, Route, FolderOpen, MessageCircle, Settings, Sparkles, Bot, GraduationCap } from 'lucide-react';
+import { LayoutDashboard, User, Route, FolderOpen, MessageCircle, Settings, Sparkles, Bot, GraduationCap, History } from 'lucide-react';
 import { getCurrentLearner } from '../../pages/LoginPage';
 
 const NAV = [

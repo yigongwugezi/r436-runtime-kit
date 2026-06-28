@@ -76,6 +76,8 @@ export interface RecommendationItem {
 export interface AnalyticsSummary {
   eventCount: number;
   totalStudyMinutes: number;
+  todayStudyMinutes: number;
+  streak: number;
   activeResourceCount: number;
   /** 查看资源次数（后端直接返回，前端也可从 eventBreakdown 推导） */
   resourceViewCount?: number;
