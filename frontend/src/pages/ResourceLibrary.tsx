@@ -287,6 +287,7 @@ function ResourceListView({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [activeSource, setActiveSource] = useState('');
   const [activeQuality, setActiveQuality] = useState('');
+  const [activeStudyStatus, setActiveStudyStatus] = useState('');
   const [bookmarkedFilter, setBookmarkedFilter] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -295,6 +296,7 @@ function ResourceListView({
     if ('search' in u) setSearch(u.search || '');
     if ('difficulty' in u) setActiveDiff(u.difficulty || '');
     if ('sortBy' in u) setActiveSort(u.sortBy || 'default');
+    if ('studyStatus' in u) setActiveStudyStatus(u.studyStatus || '');
     onApplyFilter(u);
   }, [onApplyFilter]);
 
@@ -345,7 +347,7 @@ function ResourceListView({
       <div className="flex items-center justify-between">
         <div><h2 className="font-display text-2xl font-bold text-surface-800">学习资源库</h2><p className="text-surface-500 mt-1">共 {total} 个学习资源{(search || activeType || activeDiff || bookmarkedFilter || activeSource || activeQuality || activeTaskId || activeStageId) ? '（已筛选）' : ''}</p></div>
         <div className="flex items-center gap-3">
-          {(search || activeType || activeDiff || bookmarkedFilter || activeSource || activeQuality) && <button onClick={() => { setSearch(''); setActiveType(''); setActiveDiff(''); setActiveSource(''); setActiveQuality(''); setBookmarkedFilter(false); setActiveSort('default'); setShowExtra(false); onApplyFilter({ sortBy: 'default', type: undefined, difficulty: undefined, source: undefined, qualityStatus: undefined }); }} className="text-xs text-surface-500 hover:text-surface-700 px-3 py-1.5 rounded-lg border border-surface-200 hover:bg-surface-50"><RotateCcw className="w-3 h-3 inline mr-1" />清空</button>}
+          {(search || activeType || activeDiff || bookmarkedFilter || activeSource || activeQuality || activeStudyStatus) && <button onClick={() => { setSearch(''); setActiveType(''); setActiveDiff(''); setActiveSource(''); setActiveQuality(''); setActiveStudyStatus(''); setBookmarkedFilter(false); setActiveSort('default'); setShowExtra(false); onApplyFilter({ sortBy: 'default', type: undefined, difficulty: undefined, source: undefined, qualityStatus: undefined, studyStatus: undefined }); }} className="text-xs text-surface-500 hover:text-surface-700 px-3 py-1.5 rounded-lg border border-surface-200 hover:bg-surface-50"><RotateCcw className="w-3 h-3 inline mr-1" />清空</button>}
           <button onClick={() => setView('grid')} className={`p-2.5 rounded-lg transition-colors ${view === 'grid' ? 'bg-primary-100 text-primary-600' : 'bg-surface-100 text-surface-500'}`}><LayoutGrid size={18} /></button>
           <button onClick={() => setView('list')} className={`p-2.5 rounded-lg transition-colors ${view === 'list' ? 'bg-primary-100 text-primary-600' : 'bg-surface-100 text-surface-500'}`}><List size={18} /></button>
         </div>
@@ -361,11 +363,11 @@ function ResourceListView({
           <button onClick={() => setShowExtra(!showExtra)} className={`p-2.5 rounded-lg transition-colors ${showExtra ? 'bg-primary-100 text-primary-600' : 'bg-surface-100 text-surface-500'}`}><SlidersHorizontal size={18} /></button>
         </div>
 
-        <div className="flex items-center gap-3 mt-5 overflow-x-auto overflow-y-visible py-1">
+        <div className="flex items-center gap-3 mt-5 overflow-x-auto py-1">
           <span className="text-sm text-surface-500 flex-shrink-0">类型:</span>
           {TYPES.map(t => { const isSel = activeType === t || (!activeType && !t); const c = colorMap[t] || { bg: 'bg-surface-100', text: 'text-surface-500' }; return <button key={t || 'all'} onClick={() => updateFilters({ type: t || undefined })} className={`flex-shrink-0 px-3 py-1.5 rounded-full text-sm font-medium transition-all ${isSel && t ? `${c.bg} ${c.text} ring-2 ring-offset-1` : !t && isSel ? 'bg-surface-800 text-white' : 'bg-surface-100 text-surface-500 hover:bg-surface-200'}`}>{t ? RESOURCE_TYPE_LABELS[t as ResourceType] || t : '全部'}</button>; })}
         </div>
-        <div className="flex items-center gap-3 mt-3 overflow-x-auto">
+        <div className="flex items-center gap-3 mt-3 overflow-x-auto py-1">
           <span className="text-sm text-surface-500 flex-shrink-0">难度:</span>
           {['', 'easy', 'medium', 'hard'].map(d => { const isSel = activeDiff === d || (!activeDiff && !d); return <button key={d || 'all'} onClick={() => updateFilters({ difficulty: d || undefined })} className={`flex-shrink-0 px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${isSel && d ? 'bg-surface-800 text-white' : !d && isSel ? 'bg-surface-800 text-white' : 'bg-surface-100 text-surface-500 hover:bg-surface-200'}`}>{d ? diffLabel[d] || d : '全部'}</button>; })}
           <div className="w-px h-5 bg-surface-200 mx-1" />
@@ -373,16 +375,16 @@ function ResourceListView({
         </div>
 
         {showExtra && (
-          <div className="space-y-3 mt-3 pt-3 border-t border-surface-100">
-            <div className="flex items-center gap-3 overflow-x-auto">
+          <div className="space-y-3 mt-3 pt-3 border-t border-surface-100 pb-1">
+            <div className="flex items-center gap-3 overflow-x-auto py-1">
               <span className="text-sm text-surface-500 flex-shrink-0">状态:</span>
-              {['', 'new', 'in_progress', 'completed'].map(s => <button key={s || 'all'} onClick={() => updateFilters({ studyStatus: s || undefined })} className={`flex-shrink-0 px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${s ? 'bg-surface-100 text-surface-500 hover:bg-surface-200' : 'bg-surface-800 text-white'}`}>{s === 'new' ? '未开始' : s === 'in_progress' ? '学习中' : s === 'completed' ? '已完成' : '全部'}</button>)}
+              {['', 'new', 'in_progress', 'completed'].map(s => { const isSel = activeStudyStatus === s || (!activeStudyStatus && !s); return <button key={s || 'all'} onClick={() => updateFilters({ studyStatus: s || undefined })} className={`flex-shrink-0 px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${isSel ? 'bg-surface-800 text-white' : 'bg-surface-100 text-surface-500 hover:bg-surface-200'}`}>{s === 'new' ? '未开始' : s === 'in_progress' ? '学习中' : s === 'completed' ? '已完成' : '全部'}</button>; })}
             </div>
-            <div className="flex items-center gap-3 overflow-x-auto">
+            <div className="flex items-center gap-3 overflow-x-auto py-1">
               <span className="text-sm text-surface-500 flex-shrink-0">来源:</span>
               {['', 'agent_generated', 'system_inferred', 'fallback', 'user_input'].map(s => <button key={s || 'all'} onClick={() => { setActiveSource(s || ''); onApplyFilter({ source: s || undefined }); }} className={`flex-shrink-0 px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${activeSource === s ? 'bg-surface-800 text-white' : !s && !activeSource ? 'bg-surface-800 text-white' : 'bg-surface-100 text-surface-500 hover:bg-surface-200'}`}>{s === 'agent_generated' ? '智能体' : s === 'system_inferred' ? '系统推断' : s === 'fallback' ? '兜底' : s === 'user_input' ? '用户' : '全部'}</button>)}
             </div>
-            <div className="flex items-center gap-3 overflow-x-auto">
+            <div className="flex items-center gap-3 overflow-x-auto py-1">
               <span className="text-sm text-surface-500 flex-shrink-0">质检:</span>
               {['', 'passed', 'needs_review', 'fallback_passed'].map(s => <button key={s || 'all'} onClick={() => { setActiveQuality(s || ''); onApplyFilter({ qualityStatus: s || undefined }); }} className={`flex-shrink-0 px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${activeQuality === s ? 'bg-surface-800 text-white' : !s && !activeQuality ? 'bg-surface-800 text-white' : 'bg-surface-100 text-surface-500 hover:bg-surface-200'}`}>{s === 'passed' ? '已通过' : s === 'needs_review' ? '需复核' : s === 'fallback_passed' ? '兜底通过' : '全部'}</button>)}
             </div>
