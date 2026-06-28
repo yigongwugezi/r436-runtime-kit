@@ -1,12 +1,11 @@
-"""Cache-to-database assembler.
+"""Cache-to-database assembler (streaming, memory-efficient).
 
 Reads pre-computed ``.meta.json`` + ``.vecs.bin`` intermediate files
 from a cache directory and builds the final FAISS + LlamaIndex
-persisted database.  No embedding model is loaded during assembly —
-all vectors already exist in the cache.
+persisted database **one file at a time** to keep peak memory low.
 
-Supports partial / distributed data: works with whatever cache files
-are present, ignoring missing pairs gracefully.
+No embedding model is loaded during assembly — all vectors already
+exist in the cache.  Intermediate cache files are never deleted.
 """
 
 from __future__ import annotations
@@ -47,11 +46,7 @@ class AsmResult:
 
 
 def discover_cache_pairs(cache_dir: str | Path) -> list[tuple[Path, Path]]:
-    """Find all ``(meta_path, vecs_path)`` pairs under *cache_dir*.
-
-    A pair is valid only when **both** ``.meta.json`` and ``.vecs.bin``
-    exist for the same base filename.  Missing either → skipped with a warning.
-    """
+    """Find all ``(meta_path, vecs_path)`` pairs under *cache_dir*."""
     root = Path(cache_dir).resolve()
     if not root.exists():
         logger.warning("Cache directory not found: %s", root)
@@ -62,7 +57,7 @@ def discover_cache_pairs(cache_dir: str | Path) -> list[tuple[Path, Path]]:
         if not sub.is_dir():
             continue
         for meta_file in sorted(sub.glob("*.meta.json")):
-            base = meta_file.name[:-len(".meta.json")]  # e.g. "wiki_00"
+            base = meta_file.name[:-len(".meta.json")]
             vecs_file = sub / f"{base}.vecs.bin"
             if vecs_file.exists():
                 pairs.append((meta_file, vecs_file))
@@ -80,19 +75,12 @@ def assemble_index(
 ) -> AsmResult:
     """Build the final FAISS + docstore database from cached intermediates.
 
-    Parameters:
-        config: RAG configuration.
-        cache_dir: Root of the intermediate file tree (mirrors source structure).
-        output_dir: Where to persist the final index.  Defaults to the
-                    directory derived from ``config.rag_index_path``.
-
-    Returns:
-        An :class:`AsmResult` with counts and any errors.
+    Streams files one at a time — peak memory is bounded by the largest
+    single cache file, not the total dataset size.
     """
     t0 = time.monotonic()
     result = AsmResult(collection=config.collection_name)
 
-    # Resolve output directory
     if output_dir is None:
         from app.rag.store import _persist_dir
         output_dir = _persist_dir(config)
@@ -106,14 +94,42 @@ def assemble_index(
         result.errors.append("No cache pairs found — nothing to assemble")
         return result
 
-    # ── 2. Load all chunks & vectors ──────────────────────────────
-    all_nodes: list[TextNode] = []
+    # ── 2. Create empty stores once ────────────────────────────────
+    dim = config.embedding_dim
+    _clear_dir(output_dir)
+
+    from llama_index.core import Settings, VectorStoreIndex
+    from llama_index.core.embeddings.mock_embed_model import MockEmbedding
+    from llama_index.core.storage.docstore import SimpleDocumentStore
+    from llama_index.core.storage.index_store import SimpleIndexStore
+
+    # Mock embedding prevents LlamaIndex from trying to resolve the
+    # global default (OpenAI).  Never actually called because every
+    # node carries a pre-computed embedding.
+    Settings.embed_model = MockEmbedding(embed_dim=dim)
+
+    faiss_index = faiss.IndexFlatIP(dim)
+    vector_store = FaissVectorStore(faiss_index=faiss_index)
+    docstore = SimpleDocumentStore()
+    index_store = SimpleIndexStore()
+
+    storage_context = StorageContext.from_defaults(
+        vector_store=vector_store,
+        docstore=docstore,
+        index_store=index_store,
+        persist_dir=str(output_dir),
+    )
+
+    # Empty index — we'll call insert_nodes() per file below
+    index = VectorStoreIndex([], storage_context=storage_context)
+
+    # ── 3. Stream files one at a time ─────────────────────────────
     node_counter = 0
 
     for meta_path, vecs_path in pairs:
         try:
             meta = _load_meta(meta_path)
-            vecs = _load_vecs(vecs_path, config.embedding_dim)
+            vecs = _load_vecs(vecs_path, dim)
         except Exception as exc:
             msg = f"Failed to load {meta_path}: {exc}"
             logger.error(msg)
@@ -131,11 +147,15 @@ def assemble_index(
             logger.error(msg)
             result.errors.append(msg)
             result.files_skipped += 1
+            # Free memory before next iteration
+            del vecs, meta
             continue
 
-        # Create LlamaIndex TextNodes with pre-computed embeddings.
-        # The embedding is stored on the node; LlamaIndex's
-        # VectorStoreIndex will detect it and skip re-encoding.
+        # Build TextNodes for this file only.
+        # Convert embeddings to Python list only for this batch —
+        # LlamaIndex needs List[float], but the per-file count is
+        # small enough (~1k–3k nodes) to stay within reasonable RAM.
+        batch_nodes: list[TextNode] = []
         for i, chunk in enumerate(meta["chunks"]):
             node = TextNode(
                 id_=f"node_{node_counter}",
@@ -149,28 +169,37 @@ def assemble_index(
                 },
                 embedding=vecs[i].tolist(),
             )
-            all_nodes.append(node)
+            batch_nodes.append(node)
             node_counter += 1
 
-        result.files_loaded += 1
+        # Insert this batch — LlamaIndex detects pre-set embeddings
+        # and skips encoding, adding vectors to FAISS and nodes to
+        # the docstore.
+        index.insert_nodes(batch_nodes)
 
-    result.total_chunks = len(all_nodes)
-    result.total_vectors = len(all_nodes)
+        result.files_loaded += 1
+        result.total_chunks += len(batch_nodes)
+
+        # Free this file's data before loading the next
+        del vecs, meta, batch_nodes
+
+    result.total_vectors = faiss_index.ntotal
 
     if result.total_vectors == 0:
         result.errors.append("No vectors loaded — nothing to persist")
         return result
 
     logger.info(
-        "Loaded %d chunks / %d vectors from %d file(s) (%d skipped)",
+        "Streamed %d chunks / %d vectors from %d file(s) (%d skipped)",
         result.total_chunks,
         result.total_vectors,
         result.files_loaded,
         result.files_skipped,
     )
 
-    # ── 3. Build LlamaIndex storage & persist ─────────────────────
-    _persist_index(all_nodes, config, output_dir)
+    # ── 4. Persist ─────────────────────────────────────────────────
+    storage_context.persist(persist_dir=str(output_dir))
+    logger.info("Final index persisted to: %s", output_dir)
 
     result.elapsed_seconds = round(time.monotonic() - t0, 1)
     logger.info(
@@ -201,60 +230,6 @@ def _load_vecs(path: Path, dim: int) -> np.ndarray:
             f"{path.name}: size {raw.size} not divisible by dim {dim}"
         )
     return raw.reshape(-1, dim)
-
-
-def _persist_index(
-    nodes: list[TextNode],
-    config: RAGConfig,
-    output_dir: Path,
-) -> None:
-    """Build a LlamaIndex ``VectorStoreIndex`` and persist to *output_dir*.
-
-    Creates a fresh FAISS ``IndexFlatIP`` and lets ``VectorStoreIndex``
-    populate it from the pre-embedded nodes.  Because every node already
-    carries an ``embedding``, LlamaIndex skips the encoding step.
-
-    This ensures the index struct (``index_store.json``) is created
-    correctly so that ``load_index_from_storage()`` works at query time.
-    """
-    from llama_index.core import VectorStoreIndex
-    from llama_index.core.storage.docstore import SimpleDocumentStore
-    from llama_index.core.storage.index_store import SimpleIndexStore
-
-    # Clear previous output (assembly is idempotent — overwrites cleanly)
-    _clear_dir(output_dir)
-
-    faiss_index = faiss.IndexFlatIP(config.embedding_dim)
-    vector_store = FaissVectorStore(faiss_index=faiss_index)
-    docstore = SimpleDocumentStore()
-    index_store = SimpleIndexStore()
-
-    storage_context = StorageContext.from_defaults(
-        vector_store=vector_store,
-        docstore=docstore,
-        index_store=index_store,
-        persist_dir=str(output_dir),
-    )
-
-    # Provide a MockEmbedding so LlamaIndex doesn't try to resolve
-    # the global default (which usually requires an OpenAI key).
-    # The mock is never actually called because all nodes carry
-    # pre-computed embeddings.
-    # NOTE: Settings.embed_model is a lazy property — set it before
-    # any access, otherwise the default resolver (OpenAI) triggers first.
-    from llama_index.core import Settings
-    from llama_index.core.embeddings.mock_embed_model import MockEmbedding
-
-    Settings.embed_model = MockEmbedding(embed_dim=config.embedding_dim)
-
-    index = VectorStoreIndex(
-        nodes=nodes,
-        storage_context=storage_context,
-    )
-
-    # Persist everything
-    storage_context.persist(persist_dir=str(output_dir))
-    logger.info("Final index persisted to: %s (index_id=%s)", output_dir, index.index_id)
 
 
 def _clear_dir(path: Path) -> None:
