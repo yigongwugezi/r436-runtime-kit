@@ -361,7 +361,7 @@ function ResourceListView({
           <button onClick={() => setShowExtra(!showExtra)} className={`p-2.5 rounded-lg transition-colors ${showExtra ? 'bg-primary-100 text-primary-600' : 'bg-surface-100 text-surface-500'}`}><SlidersHorizontal size={18} /></button>
         </div>
 
-        <div className="flex items-center gap-3 mt-4 overflow-x-auto pb-1">
+        <div className="flex items-center gap-3 mt-5 overflow-x-auto overflow-y-visible py-1">
           <span className="text-sm text-surface-500 flex-shrink-0">类型:</span>
           {TYPES.map(t => { const isSel = activeType === t || (!activeType && !t); const c = colorMap[t] || { bg: 'bg-surface-100', text: 'text-surface-500' }; return <button key={t || 'all'} onClick={() => updateFilters({ type: t || undefined })} className={`flex-shrink-0 px-3 py-1.5 rounded-full text-sm font-medium transition-all ${isSel && t ? `${c.bg} ${c.text} ring-2 ring-offset-1` : !t && isSel ? 'bg-surface-800 text-white' : 'bg-surface-100 text-surface-500 hover:bg-surface-200'}`}>{t ? RESOURCE_TYPE_LABELS[t as ResourceType] || t : '全部'}</button>; })}
         </div>
