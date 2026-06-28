@@ -39,12 +39,12 @@ function LongContent({ content, children }: { content: string; children: React.R
   const [expanded, setExpanded] = useState(content.length <= 1500);
   const isLong = content.length > 1500;
 
-  if (!isLong) return <div className="p-5 bg-gray-50/80 rounded-xl border border-gray-100 prose-custom">{children}</div>;
+  if (!isLong) return <div className="p-5 bg-gray-50 rounded-lg prose-custom">{children}</div>;
 
   return (
     <div>
       <div className={`relative ${expanded ? '' : 'max-h-[500px] overflow-hidden'}`}>
-        <div className={`p-5 bg-gray-50/80 rounded-xl border border-gray-100 prose-custom transition-opacity ${expanded ? '' : 'opacity-40 pointer-events-none'}`}>
+        <div className={`p-5 bg-gray-50 rounded-lg prose-custom transition-opacity ${expanded ? '' : 'opacity-40 pointer-events-none'}`}>
           {children}
         </div>
         {!expanded && (

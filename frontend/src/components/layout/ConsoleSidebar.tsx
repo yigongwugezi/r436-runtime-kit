@@ -1,278 +1,115 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useChatStore } from '../../store/chatStore';
 import { useSubjectStore } from '../../store/subjectStore';
-import { getCurrentLearner } from '../../pages/LoginPage';
+import { getCurrentLearner, logoutLearner } from '../../pages/LoginPage';
 import SettingsModal from '../common/SettingsModal';
-import { readStorageJson, writeStorageJson, runtimeStorageKeys } from '../../utils/storageKeys';
 import {
-  Brain, MessageSquare, Library, GitFork, User, Home, TrendingUp, Clock,
-  LogOut, ChevronLeft, ChevronRight, Edit3, Check, X,
-  Settings, Gift, HelpCircle, GraduationCap, Share2, Plus, Trash2,
+  Brain, MessageSquare, Library, GitFork, User, Home,
+  TrendingUp, Clock, LogOut, Settings, Plus, Trash2, ChevronLeft, ChevronRight
 } from 'lucide-react';
 
-/* ===================================================================
- * 导航按钮
- * =================================================================== */
-function NavBtn({ path, label, icon: Icon, active, navigate }: { path: string; label: string; icon: any; active: boolean; navigate: any }) {
-  return (
-    <button onClick={() => navigate(path)}
-      className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all ${
-        active ? 'bg-brand-500/15 text-brand-400' : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800/50'
-      }`}
-    >
-      <Icon className="w-4.5 h-4.5 flex-shrink-0" />
-      {label}
-      {active && <div className="ml-auto w-1 h-4 rounded-full bg-brand-500" />}
-    </button>
-  );
-}
+const NAV = [
+  { path: '/resources', label: '资源库', icon: Library },
+  { path: '/path', label: '学习路径', icon: GitFork },
+  { path: '/profile', label: '学习画像', icon: User },
+  { path: '/analytics', label: '学习分析', icon: TrendingUp },
+  { path: '/timeline', label: '时间线', icon: Clock },
+];
 
-/* ===================================================================
- * ConsoleSidebar
- * =================================================================== */
-export default function ConsoleSidebar({ collapsed, onToggle }: {
-  collapsed: boolean;
-  onToggle: () => void;
-}) {
-  const navigate = useNavigate();
-  const location = useLocation();
-  const messages = useChatStore((s) => s.messages);
-  const sessions = useChatStore((s) => s.sessions);
-  const setCurrentSession = useChatStore((s) => s.setCurrentSession);
-  const newSession = useChatStore((s) => s.newSession);
-  const { activeSubject, subjects, setActive } = useSubjectStore();
-  const learner = getCurrentLearner();
-  const [editingName, setEditingName] = useState(false);
-  const [nameInput, setNameInput] = useState('');
-  const [profileOpen, setProfileOpen] = useState(false);
-  const [moreOpen, setMoreOpen] = useState(false);
+export default function ConsoleSidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
+  const nav = useNavigate();
+  const loc = useLocation();
+  const sessions = useChatStore(s => s.sessions);
+  const setSession = useChatStore(s => s.setCurrentSession);
+  const { activeSubject, subjects } = useSubjectStore();
+  const user = getCurrentLearner();
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const profileRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (profileRef.current && !profileRef.current.contains(e.target as Node)) {
-        setProfileOpen(false);
-        setMoreOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, []);
+  const isActive = (p: string) => p === '/resources' ? loc.pathname.startsWith('/resources') : loc.pathname === p;
 
-  const handleSaveName = () => {
-    const name = nameInput.trim();
-    if (!name || !learner) return;
-    const learners = readStorageJson(runtimeStorageKeys.learners, [] as any[]);
-    const updated = learners.map((l: any) =>
-      l.id === learner.id ? { ...l, name } : l
-    );
-    writeStorageJson(runtimeStorageKeys.learners, updated);
-    writeStorageJson(runtimeStorageKeys.activeLearner, { ...learner, name });
-    setEditingName(false);
-    window.location.reload();
-  };
-
+  /* ---------- Collapsed ---------- */
   if (collapsed) {
     return (
-      <div className="fixed left-0 top-0 bottom-0 z-50 w-14 bg-gray-900 border-r border-gray-800 flex flex-col items-center py-4 gap-2">
-        <button onClick={onToggle} className="w-9 h-9 rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center shadow-lg mb-4" title="展开侧边栏" aria-label="展开侧边栏">
+      <aside className="fixed left-0 top-0 bottom-0 z-50 w-14 bg-[#11111b] flex flex-col items-center py-4 gap-1">
+        <button onClick={onToggle} className="w-9 h-9 rounded-xl bg-indigo-600 flex items-center justify-center mb-2">
           <Brain className="w-5 h-5 text-white" />
         </button>
-        <button onClick={() => navigate('/')}
-          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
-          title="首页" aria-label="前往首页">
-          <Home className="w-4.5 h-4.5" />
-        </button>
-        {activeSubject && (
-          <>
-            <div className="w-8 border-t border-gray-800/30 my-1" />
-            <button onClick={() => { useChatStore.getState().newSession(); navigate('/chat'); }}
-              className="w-9 h-9 rounded-xl flex items-center justify-center text-green-400 hover:text-green-300 hover:bg-gray-800" title="新建对话">
-              <Plus className="w-4.5 h-4.5" />
-            </button>
-            <div className="w-8 border-t border-gray-800/30 my-1" />
-            <button onClick={() => navigate('/resources')}
-              className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/resources' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
-              title="资源库" aria-label="前往资源库">
-              <Library className="w-4.5 h-4.5" />
-            </button>
-            <button onClick={() => navigate('/path')}
-              className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/path' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
-              title="学习路径" aria-label="前往学习路径">
-              <GitFork className="w-4.5 h-4.5" />
-            </button>
-            <button onClick={() => navigate('/profile')}
-              className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/profile' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
-              title="学习画像" aria-label="前往学习画像">
-              <User className="w-4.5 h-4.5" />
-            </button>
-            <button onClick={() => navigate('/analytics')}
-              className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/analytics' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
-              title="学习分析" aria-label="前往学习分析">
-              <TrendingUp className="w-4.5 h-4.5" />
-            </button>
-          </>
-        )}
-        <div className="w-8 border-t border-gray-800/30 my-1" />
-        <button onClick={() => setSettingsOpen(true)}
-          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all text-gray-500 hover:text-gray-300 hover:bg-gray-800`}
-          title="设置" aria-label="打开设置">
-          <Settings className="w-4.5 h-4.5" />
-        </button>
+        <DotBtn icon={Home} active={loc.pathname === '/'} onClick={() => nav('/')} />
+        {activeSubject && NAV.map(n => <DotBtn key={n.path} icon={n.icon} active={isActive(n.path)} onClick={() => nav(n.path)} />)}
         <div className="flex-1" />
-        <button onClick={onToggle} className="w-9 h-9 rounded-xl flex items-center justify-center text-gray-500 hover:text-gray-300 hover:bg-gray-800">
-          <ChevronRight className="w-4 h-4" />
-        </button>
-      </div>
+        <button onClick={onToggle} className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-600 hover:text-gray-400"><ChevronRight className="w-4 h-4" /></button>
+      </aside>
     );
   }
 
+  /* ---------- Expanded ---------- */
   return (
     <>
-    <div className="fixed left-0 top-0 bottom-0 z-50 w-72 bg-gray-900 border-r border-gray-800 flex flex-col">
-      {/* ===== Logo + 折叠 ===== */}
-      <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
-        <button onClick={() => navigate('/')} className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center shadow-lg">
-            <Brain className="w-4.5 h-4.5 text-white" />
-          </div>
-          <span className="text-base font-extrabold text-white tracking-tight">
-            r436<span className="text-brand-400">-runtime-kit</span>
-          </span>
+    <aside className="fixed left-0 top-0 bottom-0 z-50 w-60 bg-[#11111b] flex flex-col text-sm">
+      {/* Logo */}
+      <div className="flex items-center justify-between px-4 h-14 shrink-0">
+        <button onClick={() => nav('/')} className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-xl bg-indigo-600 flex items-center justify-center"><Brain className="w-4.5 h-4.5 text-white" /></div>
+          <span className="text-base font-bold text-white">EduAgent</span>
         </button>
-        <button onClick={onToggle}
-          className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-600 hover:text-gray-300 hover:bg-gray-800 transition-all">
-          <ChevronLeft className="w-3.5 h-3.5" />
-        </button>
+        <button onClick={onToggle} className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-600 hover:text-gray-400 hover:bg-white/5"><ChevronLeft className="w-4 h-4" /></button>
       </div>
 
-      {/* ===== 用户信息 ===== */}
-      <div className="px-4 py-3 border-b border-gray-800/50">
-        {editingName ? (
-          <div className="flex items-center gap-2">
-            <input
-              value={nameInput}
-              onChange={(e) => setNameInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleSaveName()}
-              className="flex-1 text-sm bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-gray-200 outline-none focus:ring-2 focus:ring-brand-500 placeholder-gray-500"
-              placeholder="输入新昵称"
-              autoFocus
-              maxLength={20}
-            />
-            <button onClick={handleSaveName} className="p-1.5 rounded-lg hover:bg-gray-700 text-brand-400" title="保存昵称" aria-label="保存昵称">
-              <Check className="w-3.5 h-3.5" />
-            </button>
-            <button onClick={() => setEditingName(false)} className="p-1.5 rounded-lg hover:bg-gray-700 text-gray-500" title="取消编辑" aria-label="取消编辑昵称">
-              <X className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        ) : (
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center text-white text-sm font-bold flex-shrink-0 shadow-sm">
-              {learner?.name?.[0] || '?'}
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold text-gray-200 truncate">{learner?.name || '未登录'}</p>
-              <div className="flex items-center gap-1.5">
-                <p className="text-[10px] text-gray-600">学习者</p>
-                <button onClick={() => { setNameInput(learner?.name || ''); setEditingName(true); }}
-                  className="text-gray-600 hover:text-gray-300 transition-colors" title="修改昵称" aria-label="修改昵称">
-                  <Edit3 className="w-3 h-3" />
-                </button>
-              </div>
-            </div>
-            <button onClick={() => { window.location.href = '/login'; }}
-              className="p-1.5 rounded-lg hover:bg-gray-800 text-gray-600 hover:text-red-400 transition-all">
-              <LogOut className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        )}
-      </div>
+      <div className="mx-3 h-px bg-white/5" />
 
-      {/* ===== 当前科目 ===== */}
-      <div className="px-4 py-3 border-b border-gray-800/50">
-        <button onClick={() => navigate('/')}
-          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl bg-gray-800/50 hover:bg-gray-800 transition-all mb-2">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center shadow-sm">
-            <Home className="w-4 h-4 text-white" />
-          </div>
-          <div className="flex-1 text-left">
-            <p className="text-sm font-semibold text-gray-200">个人中心</p>
-            <p className="text-[10px] text-gray-500">科目管理 · 账户设置</p>
-          </div>
-        </button>
-        <div className="flex items-center gap-2 px-1">
-          <div className="w-2 h-2 rounded-full bg-brand-500" />
-          <span className="text-sm font-semibold text-gray-200 truncate">{activeSubject?.name || '选择科目'}</span>
-          <span className="ml-auto text-[10px] text-gray-600 bg-gray-800/30 px-2 py-0.5 rounded-full">{subjects.length} 科</span>
+      {/* User */}
+      <div className="px-3 py-3 shrink-0">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-indigo-600 flex items-center justify-center text-white text-sm font-bold shrink-0">{(user?.name || '?')[0]}</div>
+          <p className="font-medium text-white truncate">{user?.name || '未登录'}</p>
         </div>
       </div>
 
-      {/* ===== 导航（有科目才显示） */}
-      {activeSubject && (
-      <div className="px-3 py-3 space-y-0.5 border-b border-gray-800/30">
-        <button onClick={() => { useChatStore.getState().newSession(); navigate('/chat'); }}
-          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-200 hover:text-white hover:bg-gray-800/50 transition-all border border-dashed border-gray-700/50 mb-2">
-          <div className="w-4.5 h-4.5 flex items-center justify-center"><Plus className="w-4 h-4" /></div>
-          新建对话
-        </button>
-
-        <p className="text-[9px] text-gray-600 uppercase tracking-wider font-semibold px-3 mb-1">资源</p>
-        <NavBtn path="/resources" label="资源库" icon={Library} active={location.pathname.startsWith('/resources')} navigate={navigate} />
-        <NavBtn path="/path" label="学习路径" icon={GitFork} active={location.pathname === '/path'} navigate={navigate} />
-
-        <div className="border-t border-gray-800/40 my-2" />
-        <p className="text-[9px] text-gray-600 uppercase tracking-wider font-semibold px-3 mb-1">工具台</p>
-        <NavBtn path="/profile" label="画像" icon={User} active={location.pathname === '/profile'} navigate={navigate} />
-        <NavBtn path="/analytics" label="分析" icon={TrendingUp} active={location.pathname === '/analytics'} navigate={navigate} />
-        <NavBtn path="/timeline" label="时间线" icon={Clock} active={location.pathname === '/timeline'} navigate={navigate} />
+      {/* Subject */}
+      <div className="px-3 pb-3 shrink-0">
+        <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-white/5">
+          <span className="text-xs text-gray-400 truncate">{activeSubject?.name || '选择科目'}</span>
+          <span className="text-[10px] text-gray-500 bg-white/10 px-2 py-0.5 rounded-full">{subjects.length}</span>
+        </div>
       </div>
+
+      <div className="mx-3 h-px bg-white/5" />
+
+      {/* Nav */}
+      {activeSubject && (
+      <nav className="px-2 py-3 space-y-0.5 shrink-0">
+        <button onClick={() => { useChatStore.getState().newSession(); nav('/chat'); }}
+          className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg font-medium text-indigo-400 hover:bg-indigo-500/10 transition-colors">
+          <Plus className="w-4.5 h-4.5" /> 新建对话
+        </button>
+        <SectionLabel>内容</SectionLabel>
+        {NAV.slice(0, 2).map(n => <NavRow key={n.path} {...n} active={isActive(n.path)} onClick={() => nav(n.path)} />)}
+        <SectionLabel>工具</SectionLabel>
+        {NAV.slice(2).map(n => <NavRow key={n.path} {...n} active={isActive(n.path)} onClick={() => nav(n.path)} />)}
+      </nav>
       )}
 
-      {/* ===== 对话记录（有科目才显示） ===== */}
-      {activeSubject && (
-      <div className="flex-1 overflow-y-auto px-3 py-3">
-        <p className="text-[10px] text-gray-600 uppercase tracking-wider font-semibold px-1 mb-2 flex items-center gap-1.5">
-          <MessageSquare className="w-3 h-3" />
-          对话记录
-        </p>
+      <div className="mx-3 h-px bg-white/5" />
 
+      {/* Sessions */}
+      {activeSubject && (
+      <div className="flex-1 overflow-y-auto px-2 py-3 min-h-0">
+        <p className="px-3 mb-2 text-[10px] font-semibold text-gray-500 uppercase tracking-wider">对话记录</p>
         {sessions.length === 0 ? (
-          <div className="text-center py-8">
-            <p className="text-[11px] text-gray-700">暂无对话</p>
-            <p className="text-[9px] text-gray-700 mt-1">去对话页开始学习</p>
-          </div>
+          <p className="text-xs text-gray-600 text-center py-4">暂无对话</p>
         ) : (
           <div className="space-y-0.5">
-            {sessions.map((ses) => {
-              const active = ses.id === useChatStore.getState().currentSessionId;
+            {sessions.map(s => {
+              const on = s.id === useChatStore.getState().currentSessionId;
               return (
-                <div key={ses.id} className="group relative">
-                  <button
-                    onClick={() => {
-                      setCurrentSession(ses.id);
-                      navigate('/chat');
-                    }}
-                    className={`w-full text-left px-3 py-2 rounded-lg transition-colors ${
-                      active ? 'bg-gray-800/50' : 'hover:bg-gray-800/50'
-                    }`}
-                  >
-                    <p className={`text-[11px] leading-relaxed truncate ${
-                      active ? 'text-gray-200' : 'text-gray-400'
-                    }`}>
-                      {ses.title || '新对话'}
-                    </p>
-                    <p className="text-[9px] text-gray-700 mt-0.5">
-                      {new Date(ses.updatedAt || ses.createdAt).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                    </p>
+                <div key={s.id} className="group relative">
+                  <button onClick={() => { setSession(s.id); nav('/chat'); }}
+                    className={`w-full text-left px-3 py-2 rounded-lg transition-colors ${on ? 'bg-white/10 text-white font-medium' : 'text-gray-400 hover:bg-white/5 hover:text-gray-200'}`}>
+                    <p className="truncate">{s.title || '新对话'}</p>
                   </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); if (confirm('确定删除此对话？')) useChatStore.getState().removeSession(ses.id); }}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-md text-gray-600 hover:text-red-400 hover:bg-gray-800 opacity-0 group-hover:opacity-100 transition-all"
-                    title="删除对话"
-                  >
+                  <button onClick={e => { e.stopPropagation(); if (confirm('删除？')) useChatStore.getState().removeSession(s.id); }}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-md text-gray-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all">
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 </div>
@@ -283,84 +120,39 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
       </div>
       )}
 
-      {/* 无科目时用 flex-1 占位，保持底部栏在底部 */}
       {!activeSubject && <div className="flex-1" />}
 
-      {/* ===== 底部图标栏（紧凑） ===== */}
-      <div className="flex items-center justify-between px-3 py-2 border-t border-gray-800">
-        <div className="flex items-center gap-1">
-          <IconBtn icon={Gift} title="购买" />
-          <button onClick={() => setSettingsOpen(true)}
-            className="w-7 h-7 rounded-lg bg-gray-800/50 flex items-center justify-center text-gray-500 hover:text-gray-200 hover:bg-gray-700 transition-all" title="设置">
-            <Settings className="w-3.5 h-3.5" />
-          </button>
-          <IconBtn icon={GraduationCap} title="新手教学" />
-          <IconBtn icon={HelpCircle} title="问题与帮助" />
-        </div>
-
-        {/* 个人中心 - 圆形 + 弹出菜单 */}
-        <div className="relative" ref={profileRef}>
-          <button onClick={() => setProfileOpen(!profileOpen)}
-            className="w-8 h-8 rounded-full bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center text-white text-xs font-bold shadow-sm hover:shadow-md hover:scale-105 transition-all" title="个人中心">
-            {learner?.name?.[0] || '?'}
-          </button>
-
-          {profileOpen && (
-            <div className="absolute bottom-full right-0 mb-2 w-48 bg-gray-800 border border-gray-700 rounded-xl py-1.5 shadow-xl animate-fade-in-up">
-              <div className="px-4 py-2 border-b border-gray-700/50">
-                <p className="text-xs font-semibold text-gray-200">{learner?.name || '用户'}</p>
-                <p className="text-[9px] text-gray-500">个人中心</p>
-              </div>
-              <MenuItem icon={User} label="完善资料" onClick={() => { navigate('/profile'); setProfileOpen(false); }} />
-              <MenuItem icon={Gift} label="套餐购买" />
-              <MenuItem icon={Settings} label="设置" onClick={() => { setSettingsOpen(true); setProfileOpen(false); }} />
-              <MenuItem icon={Share2} label="邀请好友" />
-              <MenuItem icon={LogOut} label="切换账号" onClick={() => { window.location.href = '/login'; }} />
-
-              <div className="border-t border-gray-700/50 mt-1 pt-1">
-                <div className="relative">
-                  <button onClick={() => setMoreOpen(!moreOpen)}
-                    className="w-full flex items-center gap-2.5 px-4 py-2 text-xs text-gray-400 hover:text-gray-200 hover:bg-gray-700/50 transition-colors">
-                    <span>更多</span>
-                    <ChevronRight className={`w-3 h-3 ml-auto transition-transform ${moreOpen ? 'rotate-90' : ''}`} />
-                  </button>
-                  {moreOpen && (
-                    <div className="pl-6 pb-1 space-y-0.5">
-                      <button onClick={() => setProfileOpen(false)} className="w-full text-left px-4 py-1.5 text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-700/50 rounded-lg transition-colors">反馈</button>
-                      <button onClick={() => setProfileOpen(false)} className="w-full text-left px-4 py-1.5 text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-700/50 rounded-lg transition-colors">问题与帮助</button>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="border-t border-gray-700/50 mt-1 pt-1">
-                <MenuItem icon={LogOut} label="登出账户" onClick={() => { window.location.href = '/login'; }} />
-              </div>
-            </div>
-          )}
-        </div>
+      {/* Footer */}
+      <div className="px-4 py-3 border-t border-white/5 flex items-center justify-between shrink-0">
+        <button onClick={() => setSettingsOpen(true)} className="flex items-center gap-2 text-xs text-gray-500 hover:text-gray-300 transition-colors"><Settings className="w-4 h-4" /> 设置</button>
+        <button onClick={() => { logoutLearner(); nav('/login'); }} className="flex items-center gap-2 text-xs text-gray-500 hover:text-red-400 transition-colors"><LogOut className="w-4 h-4" /> 退出</button>
       </div>
-    </div>
-
+    </aside>
     <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </>
   );
 }
 
-function IconBtn({ icon: Icon, title }: { icon: any; title: string }) {
+/* ── Sub-components ── */
+
+function SectionLabel({ children }: { children: string }) {
+  return <div className="pt-2 pb-1"><p className="px-3 text-[10px] font-semibold text-gray-500 uppercase tracking-wider">{children}</p></div>;
+}
+
+function NavRow({ path, label, icon: Icon, active, onClick }: { path: string; label: string; icon: any; active: boolean; onClick: () => void }) {
   return (
-    <button className="w-7 h-7 rounded-lg bg-gray-800/50 flex items-center justify-center text-gray-500 hover:text-gray-200 hover:bg-gray-700 transition-all" title={title}>
-      <Icon className="w-3.5 h-3.5" />
+    <button onClick={onClick}
+      className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg transition-colors ${active ? 'bg-indigo-500/15 text-indigo-300 font-semibold' : 'text-gray-400 hover:text-gray-200 hover:bg-white/5'}`}>
+      <Icon className="w-4.5 h-4.5" /> {label}
     </button>
   );
 }
 
-function MenuItem({ icon: Icon, label, onClick }: { icon: any; label: string; onClick?: () => void }) {
+function DotBtn({ icon: Icon, active, onClick }: { icon: any; active: boolean; onClick: () => void }) {
   return (
     <button onClick={onClick}
-      className="w-full flex items-center gap-2.5 px-4 py-2 text-xs text-gray-400 hover:text-gray-200 hover:bg-gray-700/50 transition-colors">
-      <Icon className="w-3.5 h-3.5" />
-      {label}
+      className={`w-9 h-9 rounded-xl flex items-center justify-center transition-colors ${active ? 'bg-indigo-500/20 text-indigo-300' : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'}`}>
+      <Icon className="w-5 h-5" />
     </button>
   );
 }

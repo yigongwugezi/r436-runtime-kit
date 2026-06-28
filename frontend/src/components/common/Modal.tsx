@@ -37,7 +37,7 @@ export default function Modal({ open, onClose, title, children, wide, xwide }: M
       onClick={(e) => { if (e.target === overlayRef.current) onClose(); }}
     >
       <div
-        className={`bg-white rounded-2xl shadow-xl w-full max-h-[90vh] overflow-y-auto animate-fade-in-up ${
+        className={`bg-white rounded-lg shadow-xl w-full max-h-[90vh] overflow-y-auto animate-fade-in-up ${
           xwide ? 'max-w-6xl' : wide ? 'max-w-3xl' : 'max-w-lg'
         }`}
       >
