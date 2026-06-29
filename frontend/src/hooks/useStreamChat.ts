@@ -6,6 +6,7 @@ import { sendMessage } from '../api/chat';
 import type { ChatMessage } from '../types/chat';
 import { uid } from '../utils/format';
 import { createLogger } from '../utils/logger';
+import { runtimeStorageKeys, writeStorageJson, writeStorageItem } from '../utils/storageKeys';
 
 const log = createLogger('StreamChat');
 
@@ -20,6 +21,7 @@ export function useStreamChat() {
     bumpDataVersion,
   } = useChatStore();
   const abortRef = useRef<AbortController | null>(null);
+  const userAbortedRef = useRef(false);  // distinguish user stop-click from page-unload abort
 
   const send = useCallback(
     async (content: string) => {
@@ -44,6 +46,13 @@ export function useStreamChat() {
 
       setStreaming(true);
       setAgentProgress(null);
+
+      // 写入 pending marker，用于跨页面导航恢复
+      writeStorageJson(runtimeStorageKeys.pendingGeneration, {
+        sessionId: useChatStore.getState().currentSessionId,
+        userMessage: content.trim(),
+        startedAt: Date.now(),
+      });
 
       // 创建 AbortController，支持用户点击停止按钮
       const controller = new AbortController();
@@ -94,6 +103,8 @@ export function useStreamChat() {
                   appendToLastAssistant(payload.content);
                 }
                 if (payload.done) {
+                  // Clear pending marker — generation ended
+                  writeStorageItem(runtimeStorageKeys.pendingGeneration, '');
                   if (payload.error) {
                     updateLastAssistant((m) => ({
                       ...m,
@@ -128,7 +139,15 @@ export function useStreamChat() {
       } catch (err) {
         // 用户主动停止 — 不需要回退，直接结束
         if (err instanceof DOMException && err.name === 'AbortError') {
-          log.debug('用户主动停止生成');
+          // userAbortedRef=true → user clicked stop button → clear marker
+          // userAbortedRef=false → page unload/refresh → keep marker for recovery
+          if (userAbortedRef.current) {
+            log.debug('用户主动停止生成');
+            writeStorageItem(runtimeStorageKeys.pendingGeneration, '');
+            userAbortedRef.current = false;
+          } else {
+            log.debug('页面离开导致流中断，保留 pending marker 用于恢复');
+          }
           updateLastAssistant((m) => ({ ...m, streaming: false }));
           setAgentProgress(null);
           return;
@@ -173,12 +192,19 @@ export function useStreamChat() {
         }
       } finally {
         setStreaming(false);
+        // pending marker cleared selectively:
+        // - success path (payload.done) → cleared above
+        // - user abort path (abort function) → cleared before calling abort()
+        // - page-unload path (AbortError, userAbortedRef=false) → NOT cleared (preserved for recovery)
       }
     },
     [addMessage, appendToLastAssistant, updateLastAssistant, setStreaming, setAgentProgress, isStreaming, bumpDataVersion],
   );
 
   const abort = useCallback(() => {
+    // Mark as user-initiated so AbortError handler knows to clear pending marker
+    userAbortedRef.current = true;
+    writeStorageItem(runtimeStorageKeys.pendingGeneration, '');
     abortRef.current?.abort();
     updateLastAssistant((m) => ({ ...m, streaming: false }));
     setAgentProgress(null);

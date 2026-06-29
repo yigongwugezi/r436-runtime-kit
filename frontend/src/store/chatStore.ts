@@ -98,7 +98,13 @@ interface ChatStore {
 export const useChatStore = create<ChatStore>((set, get) => ({
   currentSessionId: loadSessionId(),
   sessions: loadSessions(),
-  messages: [],
+  messages: (() => {
+    // Restore messages from localStorage session cache, so orphaned
+    // streaming messages survive page reload for recovery.
+    const id = loadSessionId();
+    const sessions = loadSessions();
+    return sessions.find(s => s.id === id)?.messages || [];
+  })(),
   quickCommands: [],
   isStreaming: false,
   loading: false,
@@ -274,3 +280,32 @@ useSubjectStore.subscribe((state) => {
     useChatStore.getState().reloadSession();
   }
 });
+
+// ================================================================
+// 中断生成恢复检测
+// ================================================================
+/**
+ * 检测当前会话是否存在孤儿流式消息（页面离开时中断的生成）。
+ * 返回 orphaned sessionId，如果没有则返回 null。
+ */
+export function detectOrphanedStreaming(): string | null {
+  const pending = readStorageJson<{ sessionId: string; userMessage: string; startedAt: number } | null>(
+    runtimeStorageKeys.pendingGeneration,
+    null,
+  );
+  if (!pending) return null;
+
+  const state = useChatStore.getState();
+  // 只在以下条件同时满足时判定为孤儿：
+  // 1. pending 标记指向当前会话
+  // 2. store 当前未在流式传输中（不是本标签页的活跃生成）
+  // 3. 最后一条消息是 assistant 且 streaming 标记仍为 true
+  if (state.currentSessionId !== pending.sessionId) return null;
+  if (state.isStreaming) return null;
+
+  const lastMsg = state.messages[state.messages.length - 1];
+  if (lastMsg?.role === 'assistant' && lastMsg.streaming) {
+    return pending.sessionId;
+  }
+  return null;
+}

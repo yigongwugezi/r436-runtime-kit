@@ -115,6 +115,8 @@ class ConversationState:
     last_conflicts: list[dict[str, str]] = field(default_factory=list)
     last_intent: dict[str, Any] | None = None
     last_result: dict[str, Any] | None = None
+    generating: bool = False
+    current_progress: dict[str, Any] | None = None
     updated_at: float = field(default_factory=time.time)
 
 

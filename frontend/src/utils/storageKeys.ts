@@ -83,6 +83,11 @@ export const runtimeStorageKeys = {
     primary: 'edu_token',
     legacy: [],
   },
+  /** 待处理中生成标记 — 用于跨页面导航恢复中断的生成 */
+  pendingGeneration: {
+    primary: 'r436_pending_generation',
+    legacy: [],
+  },
 } satisfies Record<string, StorageKeyPair | ((suffix: string) => StorageKeyPair)>;
 
 export { readItem as readStorageItem, writeItem as writeStorageItem, readJson as readStorageJson, writeJson as writeStorageJson };

@@ -1,11 +1,12 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useChatStore } from '../../store/chatStore';
+import { useChatStore, detectOrphanedStreaming } from '../../store/chatStore';
 import { useStreamChat } from '../../hooks/useStreamChat';
-import { getSessionMessages, getSessions } from '../../api/chat';
+import { getSessionMessages, getSessions, recoverGeneration } from '../../api/chat';
 import { DEFAULT_QUICK_COMMANDS } from '../../utils/constants';
 import type { ChatMessage, GenerationProgress } from '../../types/chat';
 import { timeAgo } from '../../utils/format';
+import { runtimeStorageKeys, writeStorageItem } from '../../utils/storageKeys';
 import {
   Send, Sparkles, Square, Copy, Check, AlertCircle,
   Bot, User, RefreshCw, ChevronDown, XCircle, PanelRightClose, PanelRightOpen, Plus, MessageCircle, History,
@@ -464,6 +465,7 @@ export default function ChatPanel({ open, onClose, panelWidth = 420, onWidthChan
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<HTMLDivElement>(null);
+  const userScrolledUpRef = useRef(false);
   const [dragging, setDragging] = useState(false);
 
   // 拖拽调整宽度
@@ -494,22 +496,91 @@ export default function ChatPanel({ open, onClose, panelWidth = 420, onWidthChan
     }
   }, [dragging]);
 
-  const scrollToBottom = useCallback(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  const scrollToBottom = useCallback((force = false) => {
+    if (force) userScrolledUpRef.current = false;
+    if (force || !userScrolledUpRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, []);
 
-  useEffect(() => { scrollToBottom(); }, [messages, agentProgress, scrollToBottom]);
+  // Auto-scroll only when user hasn't explicitly scrolled up
+  useEffect(() => {
+    if (!userScrolledUpRef.current) scrollToBottom();
+  }, [messages, agentProgress, scrollToBottom]);
 
+  // Track user scroll intent
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     const handler = () => {
-      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-      setShowScrollBtn(!atBottom && messages.length > 0);
+      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      if (distFromBottom <= 60) {
+        userScrolledUpRef.current = false;
+      } else {
+        userScrolledUpRef.current = true;
+      }
+      setShowScrollBtn(distFromBottom > 80 && messages.length > 0);
     };
-    el.addEventListener('scroll', handler);
+    el.addEventListener('scroll', handler, { passive: true });
     return () => el.removeEventListener('scroll', handler);
   });
+
+  // Recovery: check for orphaned streaming messages on mount (Bug 3 fix)
+  useEffect(() => {
+    const orphanSessionId = detectOrphanedStreaming();
+    if (!orphanSessionId) return;
+
+    // Clear marker immediately to prevent re-recovery from parallel tabs
+    writeStorageItem(runtimeStorageKeys.pendingGeneration, '');
+
+    let cancelled = false;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const applyRecovery = (reply: { content: string } | null | undefined) => {
+      if (cancelled) return;
+      const store = useChatStore.getState();
+      store.setAgentProgress(null);
+      const msgs = [...store.messages];
+      const last = msgs[msgs.length - 1];
+      if (last?.role === 'assistant' && last.streaming) {
+        if (reply?.content) {
+          msgs[msgs.length - 1] = { ...last, content: reply.content, streaming: false, error: undefined };
+        } else {
+          msgs[msgs.length - 1] = { ...last, streaming: false, error: undefined };
+        }
+        useChatStore.setState({ messages: msgs });
+      }
+    };
+
+    const poll = () => {
+      if (cancelled) return;
+      recoverGeneration(orphanSessionId).then(res => {
+        if (cancelled) return;
+        if (res?.reply?.content) {
+          applyRecovery(res.reply);
+        } else if (res?.generating) {
+          // Still generating — restore progress bar and poll faster
+          if (res.currentProgress) {
+            useChatStore.getState().setAgentProgress(res.currentProgress);
+          }
+          pollTimer = setTimeout(poll, 1000);
+        } else {
+          applyRecovery(null);
+        }
+      }).catch(() => {
+        if (cancelled) return;
+        pollTimer = setTimeout(poll, 2000);
+      });
+    };
+
+    poll();
+
+    return () => {
+      cancelled = true;
+      if (pollTimer) clearTimeout(pollTimer);
+      if (cancelled) useChatStore.getState().setAgentProgress(null);
+    };
+  }, []);
 
   const handleSend = () => {
     if (!input.trim() || isStreaming) return;
@@ -635,7 +706,7 @@ export default function ChatPanel({ open, onClose, panelWidth = 420, onWidthChan
         )}
 
         {/* 消息区域 */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-4 space-y-3 scroll-smooth">
+        <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-4 space-y-3 scroll-smooth" style={{ overflowAnchor: 'none' }}>
           {/* 空状态 */}
           {messages.length === 0 && !isStreaming && (
             <div className="flex flex-col items-center justify-center h-full text-center px-2">
@@ -663,7 +734,7 @@ export default function ChatPanel({ open, onClose, panelWidth = 420, onWidthChan
 
         {/* 滚到底部按钮 */}
         {showScrollBtn && (
-          <button onClick={() => scrollToBottom()}
+          <button onClick={() => scrollToBottom(true)}
             className="absolute bottom-20 left-1/2 -translate-x-1/2 w-7 h-7 bg-white border border-gray-200 rounded-full flex items-center justify-center shadow-md hover:shadow-lg transition-all z-10"
             title="滚动到底部">
             <ChevronDown className="w-3.5 h-3.5 text-gray-500" />

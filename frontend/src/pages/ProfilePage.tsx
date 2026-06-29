@@ -8,6 +8,7 @@ import { Brain, BookOpen, Clock, AlertCircle, Heart, Code, Edit3, TrendingUp, Re
 import { PageLoading, PageError } from '../components/common/PageState';
 import { DIMENSION_LABELS } from '../types/profile';
 import type { DimensionKey } from '../types/profile';
+import { getCurrentLearner } from './LoginPage';
 
 const dimIcons: Record<string, React.ComponentType<{ size?: number | string; className?: string }>> = {
   major_background: BookOpen, knowledge_base: Brain, learning_goal: Heart,
@@ -75,8 +76,18 @@ export default function ProfilePage() {
         {/* 基本信息卡片 */}
         <div className="bg-white rounded-2xl p-6 shadow-soft">
           <div className="flex flex-col items-center text-center mb-6">
-            <div className="w-24 h-24 rounded-2xl bg-gradient-to-br from-primary-500 to-accent-500 flex items-center justify-center text-white text-4xl font-bold mb-4 shadow-lg">{(profile.nickname || '学')[0]}</div>
-            <h3 className="text-xl font-bold text-surface-800">{profile.nickname || '学习者'}</h3>
+            {(() => {
+              const displayName = (profile.nickname && profile.nickname !== '学习者')
+                ? profile.nickname
+                : (getCurrentLearner()?.name || '学习者');
+              const initial = displayName[0] || '学';
+              return (
+                <>
+                  <div className="w-24 h-24 rounded-2xl bg-gradient-to-br from-primary-500 to-accent-500 flex items-center justify-center text-white text-4xl font-bold mb-4 shadow-lg">{initial}</div>
+                  <h3 className="text-xl font-bold text-surface-800">{displayName}</h3>
+                </>
+              );
+            })()}
             <p className="text-surface-500">{dims.find(d => d.key === 'major_background')?.value || '未知专业'}</p>
             <div className="flex items-center gap-1 mt-2 text-sm text-surface-400"><span>更新于 {profile.updatedAt ? new Date(profile.updatedAt).toLocaleDateString('zh-CN') : '未知'}</span></div>
           </div>

@@ -1,11 +1,12 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { useChatStore } from '../store/chatStore';
+import { useChatStore, detectOrphanedStreaming } from '../store/chatStore';
 import { useStreamChat } from '../hooks/useStreamChat';
-import { getSessionMessages, getQuickCommands, getAgents } from '../api/chat';
+import { getSessionMessages, getQuickCommands, getAgents, recoverGeneration } from '../api/chat';
 import type { AgentInfo } from '../api/chat';
 import { DEFAULT_QUICK_COMMANDS } from '../utils/constants';
 import { timeAgo } from '../utils/format';
+import { runtimeStorageKeys, writeStorageItem } from '../utils/storageKeys';
 import type { ChatMessage, GenerationProgress, QuickCommand } from '../types/chat';
 import { Send, Sparkles, Square, Copy, Check, AlertCircle, Bot, User, RefreshCw, ChevronDown, XCircle, History, Brain, Loader2, BrainCircuit, FileText, Video, Menu } from 'lucide-react';
 import Markdown from '../utils/markdown';
@@ -116,6 +117,7 @@ export default function ChatPage() {
   const [quickCommands, setQuickCommands] = useState<QuickCommand[]>(DEFAULT_QUICK_COMMANDS);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null); const inputRef = useRef<HTMLTextAreaElement>(null); const bottomRef = useRef<HTMLDivElement>(null);
+  const userScrolledUpRef = useRef(false);
 
   // Fetch dynamic quick commands and agents on mount
   useEffect(() => {
@@ -123,11 +125,96 @@ export default function ChatPage() {
     getAgents().then(res => { if (res.agents?.length) setAgents(res.agents); }).catch(() => {});
   }, []);
 
-  const scrollToBottom = useCallback((smooth = false) => { smooth ? bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) : scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }); }, []);
-  useEffect(() => { scrollToBottom(); }, [messages, agentProgress, scrollToBottom]);
-  useEffect(() => { const el = scrollRef.current; if (!el) return; const h = () => { setShowScrollBtn(el.scrollHeight - el.scrollTop - el.clientHeight > 100 && messages.length > 0); }; el.addEventListener('scroll', h); return () => el.removeEventListener('scroll', h); });
+  const scrollToBottom = useCallback((force = false) => {
+    if (force) userScrolledUpRef.current = false;
+    if (force || !userScrolledUpRef.current) {
+      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
+    }
+  }, []);
+  // Auto-scroll only when user hasn't explicitly scrolled up
+  useEffect(() => {
+    if (!userScrolledUpRef.current) scrollToBottom();
+  }, [messages, agentProgress, scrollToBottom]);
+  // Track user scroll intent
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const h = () => {
+      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      if (distFromBottom <= 80) {
+        userScrolledUpRef.current = false;
+      } else {
+        userScrolledUpRef.current = true;
+      }
+      setShowScrollBtn(distFromBottom > 100 && messages.length > 0);
+    };
+    el.addEventListener('scroll', h, { passive: true });
+    return () => el.removeEventListener('scroll', h);
+  });
   useEffect(() => { if (useChatStore.getState().messages.length > 0) { setMessagesLoaded(true); setLoading(false); return; } setMessagesLoaded(false); let cancelled = false; (async () => { setLoading(true); try { const res = await getSessionMessages(currentSessionId); if (!cancelled && res.messages?.length) useChatStore.setState({ messages: res.messages }); } catch {} finally { if (!cancelled) { setMessagesLoaded(true); setLoading(false); } } })(); return () => { cancelled = true; }; }, [currentSessionId]);
   useEffect(() => { if (initialMessage && messages.length === 0 && messagesLoaded) send(initialMessage); }, [initialMessage, messagesLoaded]);
+
+  // Recovery: check for orphaned streaming messages on mount (Bug 3 fix)
+  useEffect(() => {
+    if (!messagesLoaded) return;
+    const orphanSessionId = detectOrphanedStreaming();
+    if (!orphanSessionId) return;
+
+    // Clear marker immediately to prevent re-recovery from parallel tabs
+    writeStorageItem(runtimeStorageKeys.pendingGeneration, '');
+
+    let cancelled = false;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const applyRecovery = (reply: { content: string } | null | undefined) => {
+      if (cancelled) return;
+      const store = useChatStore.getState();
+      store.setAgentProgress(null);
+      const msgs = [...store.messages];
+      const last = msgs[msgs.length - 1];
+      if (last?.role === 'assistant' && last.streaming) {
+        if (reply?.content) {
+          msgs[msgs.length - 1] = { ...last, content: reply.content, streaming: false, error: undefined };
+        } else {
+          msgs[msgs.length - 1] = { ...last, streaming: false, error: undefined };
+        }
+        useChatStore.setState({ messages: msgs });
+      }
+    };
+
+    const poll = () => {
+      if (cancelled) return;
+      recoverGeneration(orphanSessionId).then(res => {
+        if (cancelled) return;
+        if (res?.reply?.content) {
+          // Got the completed reply
+          applyRecovery(res.reply);
+        } else if (res?.generating) {
+          // Still generating — restore progress bar and poll faster
+          if (res.currentProgress) {
+            useChatStore.getState().setAgentProgress(res.currentProgress);
+          }
+          pollTimer = setTimeout(poll, 1000);
+        } else {
+          // Generation ended with no reply
+          applyRecovery(null);
+        }
+      }).catch(() => {
+        if (cancelled) return;
+        pollTimer = setTimeout(poll, 2000);
+      });
+    };
+
+    // Start recovery polling
+    poll();
+
+    return () => {
+      cancelled = true;
+      if (pollTimer) clearTimeout(pollTimer);
+      // Clean up progress if component unmounts during recovery
+      if (cancelled) useChatStore.getState().setAgentProgress(null);
+    };
+  }, [messagesLoaded]);
 
   const handleSend = () => { if (!input.trim() || isStreaming) return; send(input.trim()); setInput(''); inputRef.current?.focus(); };
   const handleKeyDown = (e: React.KeyboardEvent) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } };
@@ -181,7 +268,7 @@ export default function ChatPage() {
 
       <div className="flex-1 flex overflow-hidden">
         <div className="flex-1 flex flex-col bg-white rounded-2xl shadow-soft overflow-hidden">
-          <div ref={scrollRef} className="flex-1 overflow-y-auto p-6 space-y-4">
+          <div ref={scrollRef} className="flex-1 overflow-y-auto p-6 space-y-4" style={{ overflowAnchor: 'none' }}>
             {messages.length === 0 && !isStreaming ? (
               <div className="flex flex-col items-center justify-center h-full text-center px-4">
                 <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary-100 to-accent-100 flex items-center justify-center mb-4"><Bot className="w-8 h-8 text-primary-600" /></div>

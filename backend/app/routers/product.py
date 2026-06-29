@@ -1255,6 +1255,10 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
             s0_label, s0_key, s0_pct = "正在理解需求", "understanding", 5
             yield _to_event(s0_label, s0_key, s0_pct)
 
+            # Mark generation as in-progress for recovery
+            state = conversation_store.get(session_id)
+            state.generating = True
+
             # ── 在线程中执行智能体，通过队列实时回传进度 ──
             progress_q: Queue = Queue()
             result_box: dict[str, Any] = {}
@@ -1280,15 +1284,36 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
                         progress_q.put(
                             ("progress", mapped_key, mapped_label, pct, detail)
                         )
+                        # Persist live progress so recovery endpoint can replay it
+                        st = conversation_store.get(session_id)
+                        st.current_progress = {
+                            "stage": mapped_label,
+                            "agentName": mapped_key,
+                            "progress": pct,
+                            "detail": detail,
+                        }
                     reply, ran = _reply_for_intent(
                         message, intent, session_id,
                         progress_callback=on_progress,
                     )
                     result_box["reply"] = reply
                     result_box["ran"] = ran
+                    # Persist reply immediately in worker thread so it survives
+                    # client disconnect (main generator may never reach line 1346).
+                    conversation_store.append_message(session_id, "assistant", reply)
+                    # Clear generation state for recovery endpoint
+                    state = conversation_store.get(session_id)
+                    state.generating = False
+                    state.current_progress = None
                     progress_q.put(("done",))
                 except Exception as exc:
                     result_box["error"] = exc
+                    # Persist error so recovery endpoint can surface it
+                    conversation_store.append_message(session_id, "assistant", f"[生成失败] {exc}")
+                    # Clear generation state on error too
+                    state = conversation_store.get(session_id)
+                    state.generating = False
+                    state.current_progress = None
                     progress_q.put(("error",))
 
             t = threading.Thread(target=_agent_worker, daemon=True)
@@ -1327,9 +1352,8 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
             if not ran:
                 run_agents = False
 
-            # ── 推进到「保存结果」并保存 ──
+            # ── 推进到「保存结果」(reply already saved in worker thread) ──
             yield _to_event("正在保存结果", "saving", 95)
-            conversation_store.append_message(session_id, "assistant", reply)
             yield _to_event("正在保存结果", "saving", 100)
 
             # ── 流式输出回复内容 ──
@@ -1463,6 +1487,43 @@ def get_chat_session(session_id: str) -> dict[str, Any]:
         )
     finally:
         db.close()
+
+
+@router.get("/chat/recover")
+def recover_chat(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
+    """Return the latest assistant reply for recovery after interrupted generation.
+
+    Called by the frontend when it detects an orphaned streaming message
+    (user navigated away mid-generation).  Since Step 3.1 of the fix
+    persists the reply inside _agent_worker, the conversation_store
+    already holds the completed text even when the SSE generator was
+    interrupted.
+    """
+    session_id = _resolve_session_id(sessionId, subjectId)
+    state = conversation_store.get(session_id)
+    generating = getattr(state, 'generating', False)
+    current_progress = getattr(state, 'current_progress', None)
+    assistant_msgs = [m for m in state.messages if m["role"] == "assistant"]
+    if assistant_msgs:
+        last = assistant_msgs[-1]
+        return _product_response(
+            {
+                "sessionId": session_id,
+                "reply": {
+                    "id": f"msg_{int(time.time() * 1000)}",
+                    "role": "assistant",
+                    "content": last["content"],
+                    "timestamp": last.get("timestamp", int(time.time() * 1000)),
+                },
+                "generating": generating,
+                "currentProgress": current_progress,
+            },
+            session_id=session_id, source="store",
+        )
+    return _product_response(
+        {"sessionId": session_id, "reply": None, "generating": generating, "currentProgress": current_progress},
+        session_id=session_id, source="store",
+    )
 
 
 @router.post("/chat/sessions/{session_id}/reset")

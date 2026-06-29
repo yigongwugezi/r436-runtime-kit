@@ -66,3 +66,14 @@ export async function getAgents(): Promise<{ agents: AgentInfo[] }> {
   const { data } = await client.get('/chat/agents');
   return data;
 }
+
+/** 恢复中断生成后的助手回复和实时进度 */
+export async function recoverGeneration(sessionId: string): Promise<{
+  sessionId: string;
+  reply: ChatMessage | null;
+  generating: boolean;
+  currentProgress: import('../types/chat').GenerationProgress | null;
+}> {
+  const { data } = await client.get('/chat/recover', { params: { sessionId } });
+  return data;
+}
