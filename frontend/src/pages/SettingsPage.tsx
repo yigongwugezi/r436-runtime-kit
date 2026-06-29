@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React, { useState } from 'react';
 import {
-  User, Bell, Palette, Shield, Database, HelpCircle, ChevronRight, Moon, Sun, Globe, Volume2, Download, Upload, Trash2,
+  User, Bell, Palette, Shield, Database, HelpCircle, ChevronRight, Moon, Sun, Globe, Volume2, Download, Upload, Trash2, GraduationCap,
 } from 'lucide-react';
 import { getCurrentLearner, logoutLearner } from './LoginPage';
 import { useSubjectStore } from '../store/subjectStore';

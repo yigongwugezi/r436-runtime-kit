@@ -31,6 +31,7 @@ export function useLearningPath() {
     if (!sessionId) return;
     setLoading(true);
     setError(null);
+    setPath(null);  // 切换科目时立即清空旧路径
     try {
       const res = await learningPathApi.getLearningPath({ sessionId, subjectId });
       if (res?.path) {

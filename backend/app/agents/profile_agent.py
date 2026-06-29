@@ -18,7 +18,7 @@ class ProfileAgent(BaseAgent):
     agent_name = "Student Profile Agent"
 
     profile_dimensions = PROFILE_DIMENSION_ORDER
-    _MISSING_VALUES = {"", "未知", "未提及", "暂无", "无", "待补充"}
+    _MISSING_VALUES = {"", "未知", "未提及", "暂无", "无", "待补充", "无诊断数据", "暂无诊断数据", "unknown", "none", "待诊断", "未诊断"}
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -77,20 +77,22 @@ class ProfileAgent(BaseAgent):
         facts_lines = []
         if isinstance(facts, dict):
             for key, value in facts.items():
-                text = str(value).strip()
+                text = self._clean_profile_fact(key, value)
                 if text:
                     facts_lines.append(f"- {key}: {text}")
         weak_lines = []
         for item in diagnosis[:6]:
             if isinstance(item, dict) and item.get("name"):
-                weak_lines.append(f"- {item['name']}")
+                name = self._clean_weak_point(item["name"])
+                if name:
+                    weak_lines.append(f"- {name}")
         return (
             f"Student description:\n{context.get('user_message', '')}\n\n"
             f"Course ID: {context.get('course_id', '')}\n\n"
             "Extracted profile facts:\n"
-            f"{chr(10).join(facts_lines) if facts_lines else '- none'}\n\n"
+            f"{chr(10).join(facts_lines) if facts_lines else '- 暂无'}\n\n"
             "Diagnosis weak points:\n"
-            f"{chr(10).join(weak_lines) if weak_lines else '- none'}\n"
+            f"{chr(10).join(weak_lines) if weak_lines else '- 暂无'}\n"
         )
 
     def _ensure_complete_llm_profile(self, profile: dict[str, Any]) -> None:
@@ -138,7 +140,7 @@ class ProfileAgent(BaseAgent):
             "time_budget": "learning_rhythm",
         }
         for fact_key, profile_key in mapping.items():
-            value = str(facts.get(fact_key, "")).strip()
+            value = self._clean_profile_fact(fact_key, facts.get(fact_key, ""))
             if not value:
                 continue
             profile[profile_key] = self._dimension(
@@ -154,16 +156,18 @@ class ProfileAgent(BaseAgent):
 
     def _profile_from_context(self, context: dict[str, Any]) -> dict[str, Any]:
         facts = context.get("profile_facts") or {}
+        if not isinstance(facts, dict):
+            facts = {}
         text = str(context.get("user_message", ""))
         course_text = self._course_name(context, facts, text)
-        time_budget = str(facts.get("time_budget", "")).strip() or self._match_time_budget(text)
-        weak_points = str(facts.get("weak_points", "")).strip() or self._weak_points_from_diagnosis(context)
+        time_budget = self._clean_profile_fact("time_budget", facts.get("time_budget", "")) or self._match_time_budget(text)
+        weak_points = self._clean_profile_fact("weak_points", facts.get("weak_points", "")) or self._weak_points_from_diagnosis(context)
         knowledge_base = str(facts.get("knowledge_base", "")).strip() or self._knowledge_base_from_text(text)
         learning_goal = str(facts.get("learning_goal", "")).strip() or self._learning_goal(text, course_text, time_budget)
         preference = str(facts.get("preference", "")).strip() or self._cognitive_style(text)
         background = str(facts.get("background", "")).strip() or self._background_from_text(text)
         coding_ability = str(facts.get("programming_ability", "")).strip() or self._coding_ability(text, knowledge_base)
-        interest_direction = str(facts.get("target_course", "")).strip() or self._interest_direction(text, course_text, weak_points)
+        interest_direction = self._clean_profile_fact("target_course", facts.get("target_course", "")) or self._interest_direction(text, course_text, weak_points)
 
         profile = {
             "major_background": self._direct_dimension("major_background", background, "学习者专业或身份背景"),
@@ -227,15 +231,15 @@ class ProfileAgent(BaseAgent):
         )
 
     def _error_dimension(self, weak_points: str, course_text: str) -> dict[str, Any]:
-        text = weak_points.strip() or (f"{course_text}中的关键知识点还需要重点排查" if course_text else "当前薄弱点需要进一步诊断")
+        text = weak_points.strip()
         source = "user_input" if weak_points.strip() else "inferred"
         return self._dimension(
             key="error_patterns",
             value=text,
             score=self._score_for_dimension("error_patterns", text),
-            confidence=0.86 if weak_points.strip() else 0.58,
+            confidence=0.86 if weak_points.strip() else 0.35,
             source=source,
-            explanation="由用户明确描述的薄弱点或课程相关风险点推断易错模式。",
+            explanation="由用户明确描述的薄弱点推断易错模式。" if weak_points.strip() else "暂未诊断，待评估。",
             evidence=weak_points.strip(),
         )
 
@@ -331,7 +335,7 @@ class ProfileAgent(BaseAgent):
         course_name = str(course.get("course_name", "")).strip()
         if course_name:
             return course_name
-        fact_course = str(facts.get("target_course", "")).strip()
+        fact_course = self._clean_profile_fact("target_course", facts.get("target_course", ""))
         if fact_course:
             return fact_course
         return self._course_from_text(text)
@@ -402,16 +406,19 @@ class ProfileAgent(BaseAgent):
         return course_text
 
     def _match_time_budget(self, text: str) -> str:
-        match = re.search(r"(\d+\s*(?:小时|天|周|个月))", text)
+        match = re.search(r"(每天\s*(?:\d+|[一二两三四五六七八九十半]+)\s*(?:个)?小时|(?:\d+|[一二两三四五六七八九十半]+)\s*(?:个)?(?:月|个月|天|周|星期|小时))", text)
         return match.group(1).strip() if match else ""
 
     def _weak_points_from_diagnosis(self, context: dict[str, Any]) -> str:
         weak_points = context.get("diagnosis", {}).get("weak_knowledge_points", [])
-        names = [str(item.get("name", "")).strip() for item in weak_points if isinstance(item, dict) and item.get("name")]
+        names = [self._clean_weak_point(item.get("name", "")) for item in weak_points if isinstance(item, dict) and item.get("name")]
         return "、".join(name for name in names if name)
 
     def _course_from_text(self, text: str) -> str:
         for course in [
+            "微积分",
+            "高等数学",
+            "线性代数",
             "数据结构",
             "人工智能导论",
             "人工智能",
@@ -426,6 +433,31 @@ class ProfileAgent(BaseAgent):
                 return course
         return ""
 
+    def _clean_profile_fact(self, key: str, value: Any) -> str:
+        text = str(value or "").strip()
+        if self._is_missing_value(text):
+            return ""
+        if key == "target_course":
+            return self._clean_course_name(text)
+        if key == "weak_points":
+            return self._clean_weak_point(text)
+        if key == "time_budget":
+            return text if self._match_time_budget(text) else ""
+        return text
+
+    def _clean_course_name(self, text: str) -> str:
+        for course in ["微积分", "高等数学", "线性代数", "数据结构", "机器学习", "人工智能导论", "人工智能", "深度学习", "操作系统", "计算机网络"]:
+            if course in text:
+                return course
+        return re.sub(r"^(?:我(?:想|要|准备)?|帮我)?(?:想|要|准备)?(?:学习|学|补一下|补|复习|入门|掌握|了解)+", "", text).strip()
+
+    def _clean_weak_point(self, value: Any) -> str:
+        text = str(value or "").strip()
+        return "" if self._is_missing_value(text) else text
+
+    def _is_missing_value(self, value: str) -> bool:
+        return value.strip().lower() in self._MISSING_VALUES
+
     def _dimension(
         self,
         key: str,
@@ -439,7 +471,7 @@ class ProfileAgent(BaseAgent):
         return {
             "key": key,
             "label": PROFILE_DIMENSION_LABELS[key],
-            "value": value.strip() or "待补充",
+            "value": value.strip() if key == "error_patterns" else value.strip() or "待补充",
             "score": clamp_score(score, 50),
             "confidence": clamp_confidence(confidence, 0.5),
             "explanation": explanation.strip() or value.strip() or "待补充",

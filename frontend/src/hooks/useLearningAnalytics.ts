@@ -31,6 +31,7 @@ export function useLearningAnalytics() {
     if (!subjectId && !sessionId) return;
     setLoading(true);
     setError(null);
+    setAnalytics(null);  // 切换科目时立即清空旧数据
     try {
       const data = await getAnalytics({ sessionId, subjectId });
       setAnalytics(data);

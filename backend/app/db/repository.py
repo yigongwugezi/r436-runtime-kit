@@ -33,21 +33,41 @@ def _utcnow() -> datetime:
 
 # ── Session ──────────────────────────────────────────────────────────────
 
-def get_or_create_session(db: Session, session_id: str) -> SessionModel:
+def get_or_create_session(
+    db: Session,
+    session_id: str,
+    learner_id: str | None = None,
+    subject_id: str | None = None,
+) -> SessionModel:
     sess = db.get(SessionModel, session_id)
     if sess is None:
-        learner = get_or_create_learner(db)
-        sess = SessionModel(id=session_id, learner_id=learner.id)
+        learner = get_or_create_learner(db, learner_id)
+        sess = SessionModel(
+            id=session_id,
+            learner_id=learner.id,
+            subject_id=subject_id or None,
+        )
         db.add(sess)
         db.commit()
         db.refresh(sess)
+    elif subject_id and not sess.subject_id:
+        # Backfill subject_id on existing session
+        sess.subject_id = subject_id
+        db.commit()
     return sess
 
 
-def list_sessions(db: Session, status: str = "active", learner_id: str | None = None) -> list[SessionModel]:
+def list_sessions(
+    db: Session,
+    status: str = "active",
+    learner_id: str | None = None,
+    subject_id: str | None = None,
+) -> list[SessionModel]:
     q = db.query(SessionModel).filter(SessionModel.status == status)
     if learner_id:
         q = q.filter(SessionModel.learner_id == learner_id)
+    if subject_id:
+        q = q.filter(SessionModel.subject_id == subject_id)
     return q.order_by(desc(SessionModel.updated_at)).all()
 
 

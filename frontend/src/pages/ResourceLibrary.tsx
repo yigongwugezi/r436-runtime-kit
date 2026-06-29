@@ -4,7 +4,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Search, BookOpen, Brain, Code, FileText, Lightbulb, Play, Presentation, Clock, Star, ChevronRight, BookmarkPlus, BookmarkCheck, CheckCircle2, X, LayoutGrid, List, ChevronDown, MoreHorizontal, RotateCcw, ListChecks, Download, SlidersHorizontal, MessageSquare, Send, ArrowLeft } from 'lucide-react';
 import { useResources } from '../hooks/useResources';
 import { useChatStore } from '../store/chatStore';
-import { getResourceById, updateStudyStatus, batchUpdateStudyStatus, batchSetBookmark, batchExportResources } from '../api/resources';
+import { getResourceById, updateStudyStatus, autoAdvanceNode, getResourceKnowledgeGraph, batchUpdateStudyStatus, batchSetBookmark, batchExportResources } from '../api/resources';
 import { submitFeedback, logStudyEvent } from '../api/feedback';
 import type { Resource, ResourceType } from '../types/resource';
 import { RESOURCE_TYPE_LABELS } from '../utils/constants';
@@ -96,6 +96,9 @@ function ResourceDetailView({
   const [showExplain, setShowExplain] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
   const [showThanks, setShowThanks] = useState(false);
+  const [showKnowledgeGraph, setShowKnowledgeGraph] = useState(false);
+  const [kgMermaidDef, setKgMermaidDef] = useState('');
+  const [kgLoading, setKgLoading] = useState(false);
   const [feedbackRating, setFeedbackRating] = useState(0);
   const [feedbackCat, setFeedbackCat] = useState('');
   const [feedbackComment, setFeedbackComment] = useState('');
@@ -175,6 +178,16 @@ function ResourceDetailView({
             {resource.bookmarked ? <BookmarkCheck className="w-3.5 h-3.5" /> : <BookmarkPlus className="w-3.5 h-3.5" />}{resource.bookmarked ? '已收藏' : '收藏'}
           </button>
           <button onClick={() => onComplete(resource)} className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${resource.studyStatus === 'completed' ? 'bg-warning-50 text-warning-700 hover:bg-warning-100' : 'bg-success-50 text-success-700 hover:bg-success-100'}`}><CheckCircle2 className="w-3.5 h-3.5" />{resource.studyStatus === 'completed' ? '撤销完成' : '标记完成'}</button>
+          <button onClick={async () => {
+            if (showKnowledgeGraph) { setShowKnowledgeGraph(false); return; }
+            setKgLoading(true);
+            try {
+              const res = await getResourceKnowledgeGraph(resource.id, { sessionId });
+              setKgMermaidDef(res.mermaidDef || '');
+              setShowKnowledgeGraph(true);
+            } catch { setKgMermaidDef(''); setShowKnowledgeGraph(true); }
+            finally { setKgLoading(false); }
+          }} className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${showKnowledgeGraph ? 'bg-accent-50 text-accent-700' : 'bg-surface-50 text-surface-500 hover:bg-surface-100'}`}>🧠 {kgLoading ? '加载中…' : showKnowledgeGraph ? '收起图谱' : '知识图谱'}</button>
           <button onClick={() => nav('/chat')} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-primary-50 text-primary-700 rounded-lg text-xs font-medium hover:bg-primary-100">✏️ 去提问</button>
           <button onClick={() => nav('/analytics')} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-surface-50 text-surface-500 rounded-lg text-xs font-medium hover:bg-surface-100">📊 学习分析</button>
         </div>
@@ -205,6 +218,20 @@ function ResourceDetailView({
           {(resource as any).fallbackReason && <div className="p-3 bg-warning-50 border border-warning-100 rounded-xl"><p className="text-xs font-semibold text-warning-700 mb-1">⚠️ 兜底说明</p><p className="text-[11px] text-warning-600">{(resource as any).fallbackReason}</p></div>}
           {(resource as any).evidence && (resource as any).evidence.length > 0 && <div><p className="text-xs text-surface-400 mb-1">📋 依据来源</p><ul className="space-y-1">{(resource as any).evidence.map((ev: string, i: number) => <li key={i} className="text-[11px] text-surface-600">• {ev}</li>)}</ul></div>}
           {resource.qualityStatus && <div className="text-xs"><span className="text-surface-400">质检状态：</span><span className={`font-medium ${resource.qualityStatus === 'passed' ? 'text-success-600' : resource.qualityStatus === 'fallback_passed' ? 'text-warning-600' : 'text-error-600'}`}>{resource.qualityStatus === 'passed' ? '已通过 ✓' : resource.qualityStatus === 'fallback_passed' ? '兜底通过 🛡' : '需人工复核 ⚠'}</span></div>}
+        </div>
+      )}
+
+      {/* 知识图谱面板 */}
+      {showKnowledgeGraph && (
+        <div className="bg-white rounded-2xl shadow-soft p-5 space-y-3 animate-fade-in">
+          <h3 className="text-sm font-semibold text-surface-700 flex items-center gap-2">🧠 知识图谱</h3>
+          {kgMermaidDef ? (
+            <div className="p-4 bg-white rounded-xl border border-surface-200">
+              <MermaidDiagram definition={kgMermaidDef} />
+            </div>
+          ) : (
+            <p className="text-xs text-surface-500">暂无知识图谱数据</p>
+          )}
         </div>
       )}
 
@@ -403,10 +430,10 @@ function ResourceListView({
         )}
       </div>
 
-      {!sessionId ? <PageEmpty icon={<BookOpen className="w-8 h-8" />} title="请先进入学习会话" description="在对话页开始学习" /> :
+      {!sessionId ? <PageEmpty icon={<BookOpen className="w-8 h-8" />} title="请先进入学习会话" description="在对话页开始学习，智能体将自动从知识库生成资源" /> :
         loading && filtered.length === 0 ? <PageLoading text="加载资源中…" /> :
           error && filtered.length === 0 ? <PageError title="资源加载失败" description={error} onRetry={onRefetch} /> :
-            filtered.length === 0 ? <div className="text-center py-16 bg-white rounded-2xl shadow-soft"><p className="text-surface-600 font-medium">未找到匹配的资源</p><p className="text-sm text-surface-400 mt-1">尝试调整筛选条件</p></div> :
+            filtered.length === 0 ? <div className="text-center py-16 bg-white rounded-2xl shadow-soft"><p className="text-surface-600 font-medium">暂无资源</p><p className="text-sm text-surface-400 mt-1">在对话页发送"帮我生成学习方案"，智能体将自动从课程知识库生成资源</p></div> :
               view === 'grid' ? (
                 <div className="grid grid-cols-3 gap-5">
                   {filtered.map(r => { const c = colorMap[r.type] || { bg: 'bg-surface-100', text: 'text-surface-500' }; return (
@@ -490,8 +517,22 @@ export default function ResourceLibrary() {
 
   const handleComplete = async (r: Resource) => {
     const ns = r.studyStatus === 'completed' ? 'new' : 'completed';
+    const sid = useChatStore.getState().currentSessionId;
     try {
-      await updateStudyStatus(r.id, ns, useChatStore.getState().currentSessionId);
+      await updateStudyStatus(r.id, ns, sid);
+      // Auto-advance the learning path node when a resource is completed
+      if (ns === 'completed' && r.relatedStageId) {
+        try {
+          await autoAdvanceNode({
+            sessionId: sid,
+            relatedStageId: r.relatedStageId,
+            taskId: r.taskId,
+            event: 'resource_complete',
+          });
+        } catch {
+          // Auto-advance is best-effort — don't block the UI
+        }
+      }
       if (detailResource?.id === r.id) {
         setDetailResource(prev => prev ? { ...prev, studyStatus: ns } : null);
       }
