@@ -7,11 +7,7 @@ from __future__ import annotations
 
 import json
 import time
-from concurrent.futures import (
-    ThreadPoolExecutor,
-    TimeoutError as FuturesTimeoutError,
-    as_completed,
-)
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any, Callable
 
 from app.agents import (
@@ -38,14 +34,6 @@ AGENT_OUTPUT_KEYS: dict[str, list[str]] = {
     "planner_agent": ["learning_path", "estimatedDays"],
     "resource_agent": ["resources"],
     "review_agent": ["review"],
-}
-
-# ── Per-agent LLM progress ranges for chunk-level interpolation ──────
-# (pct_start, pct_end, max_tokens_or_None)
-AGENT_LLM_RANGES: dict[str, tuple[int, int, int | None]] = {
-    "profile_agent": (10, 25, None),
-    "planner_agent": (40, 55, 1600),
-    "resource_agent": (55, 75, 2200),
 }
 
 
@@ -148,10 +136,7 @@ class AgentOrchestrator:
                 overall_error_parts.append(f"{agent.agent_id}: {err}")
                 for key in AGENT_OUTPUT_KEYS.get(agent.agent_id, []):
                     if key not in result:
-                        result.setdefault(
-                            key,
-                            [] if key in {"resources", "learning_path"} else {},
-                        )
+                        result.setdefault(key, [] if key in {"resources", "learning_path"} else {})
 
             # ── ConversationAgent 决策：是否需要继续 ──
             if agent.agent_id == "conversation_agent":
@@ -232,7 +217,7 @@ class AgentOrchestrator:
         ]
 
     # ── Single-agent execution ─────────────────────────────────────────
-+
+
     def _run_single_agent(self, agent, context: dict[str, Any]) -> dict[str, Any]:
         """Run a single agent with timeout and error handling."""
         start = time.time()
@@ -246,59 +231,6 @@ class AgentOrchestrator:
             "started_at": start,
             "finished_at": 0.0,
         }
-
-        # ── Wire chunk callback for agents that use LLM ────────────────
-        chunk_registered = False
-        if (
-            hasattr(self.llm_client, "set_chunk_callback")
-            and agent.agent_id in AGENT_LLM_RANGES
-            and progress_callback
-        ):
-            llm_range = AGENT_LLM_RANGES[agent.agent_id]
-            pct_start, pct_end, max_tokens = llm_range
-            token_count = [0]  # mutable counter for closure
-            last_pct = [pct_start]  # mutable: ensure monotonic non-decreasing
-            # Throttle: emit progress every Nth token to avoid flooding the SSE queue
-            THROTTLE_EVERY = 5
-
-            def on_llm_chunk(_token_text: str) -> None:
-                token_count[0] += 1
-                # Only emit progress every Nth token
-                if token_count[0] % THROTTLE_EVERY != 0:
-                    return
-                if max_tokens and max_tokens > 0:
-                    sub_pct = pct_start + (token_count[0] / max_tokens) * (
-                        pct_end - pct_start
-                    )
-                    sub_pct = min(sub_pct, pct_end)
-                else:
-                    # No max_tokens known — creep forward slowly
-                    sub_pct = pct_start + ((token_count[0] % 50) / 50) * (
-                        pct_end - pct_start
-                    ) * 0.1
-                    sub_pct = min(pct_start + 0.5 * (pct_end - pct_start), sub_pct)
-
-                # Round and clamp to be monotonically non-decreasing
-                sub_pct = round(sub_pct, 1)
-                if sub_pct <= last_pct[0]:
-                    return
-                last_pct[0] = sub_pct
-
-                stage_key = self.AGENT_STAGE_MAP.get(agent.agent_id, ("", 0))[0]
-                label_map = {
-                    "profile_agent": "正在生成画像",
-                    "knowledge_agent": "正在检索知识",
-                    "diagnosis_agent": "正在诊断分析",
-                    "planner_agent": "正在规划路径",
-                    "resource_agent": "正在生成资源",
-                    "review_agent": "正在检查质量",
-                }
-                label = label_map.get(agent.agent_id, agent.agent_name)
-                detail = f"已生成 {token_count[0]} 个字符..."
-                progress_callback(stage_key, label, sub_pct, detail=detail)
-
-            self.llm_client.set_chunk_callback(on_llm_chunk)
-            chunk_registered = True
 
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
