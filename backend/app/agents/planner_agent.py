@@ -27,27 +27,21 @@ class PlannerAgent(BaseAgent):
         weak_points = self._extract_weak_points(diagnosis)
         planning_points = self._get_planning_points(context, weak_points)
 
-        # 时间：优先 LLM 理解，规则兜底
         time_text = self._collect_time_text(context)
         total_days = self._infer_days(time_text, profile)
 
-        # 诊断元信息（传给 LLM 参考）
         diag_meta = self._build_diagnosis_meta(diagnosis, weak_points, total_days, profile)
 
-        # 证据不足时，插入诊断探测点
         if diag_meta["needs_more_diagnosis"] and not weak_points:
             planning_points = [self._make_probe_point(diagnosis)]
 
         if not planning_points:
-            # 没有知识点但还是要生成路径 → 传空列表给 LLM，让它根据对话上下文生成
             pass
 
-        # LLM 生成路径
         llm_path = self._try_generate_with_llm(context, profile, planning_points, total_days, diag_meta)
         if llm_path:
             return self._make_result(llm_path, total_days, diag_meta)
 
-        # 规则兜底
         logger.info("LLM unavailable or failed, using rule-based path")
         rule_path = self._build_rule_path(planning_points, profile, total_days, diag_meta)
         return self._make_result(rule_path, total_days, diag_meta)
@@ -84,7 +78,6 @@ class PlannerAgent(BaseAgent):
     # ── 时间推断 ──
 
     def _collect_time_text(self, context: dict) -> str:
-        """收集所有可能包含时间信息的文本"""
         parts = [
             str(context.get("user_message", "")),
             str(context.get("time_budget", "")),
@@ -95,7 +88,6 @@ class PlannerAgent(BaseAgent):
         return " ".join(parts)
 
     def _infer_days(self, time_text: str, profile: dict) -> int:
-        """推断学习天数：LLM 优先，规则兜底"""
         if self.llm_client:
             llm_days = self._llm_infer_days(time_text, profile)
             if llm_days:
@@ -103,7 +95,6 @@ class PlannerAgent(BaseAgent):
         return self._rule_infer_days(time_text, profile)
 
     def _llm_infer_days(self, time_text: str, profile: dict) -> int | None:
-        """用 LLM 理解时间"""
         profile_text = self._compact_profile_text(profile)
         prompt = f"""从以下信息提取学生的学习时间（天数）：
 
@@ -137,7 +128,6 @@ class PlannerAgent(BaseAgent):
             return None
 
     def _rule_infer_days(self, text: str, profile: dict) -> int:
-        """规则推断天数（兜底）"""
         profile_texts = [text]
         for key in ("time_budget", "learning_rhythm", "learning_goal", "learning_progress"):
             item = profile.get(key, {})
@@ -192,7 +182,6 @@ class PlannerAgent(BaseAgent):
         return 14
 
     def _normalize_cn_numbers(self, text: str) -> str:
-        """中文数字转阿拉伯数字（辅助规则兜底）"""
         cn_digits = {"一": "1", "二": "2", "两": "2", "三": "3", "四": "4",
                       "五": "5", "六": "6", "七": "7", "八": "8", "九": "9"}
         cn_all = "一二两三四五六七八九"
@@ -222,7 +211,6 @@ class PlannerAgent(BaseAgent):
     # ── 弱知识点提取 ──
 
     def _extract_weak_points(self, diagnosis: dict) -> list[dict]:
-        """从诊断结果提取弱知识点，过滤占位值"""
         result = []
         raw = diagnosis.get("weak_knowledge_points") or diagnosis.get("weak_topics") or []
         for i, item in enumerate(raw, 1):
@@ -252,7 +240,6 @@ class PlannerAgent(BaseAgent):
     # ── 规划知识点 ──
 
     def _get_planning_points(self, context: dict, weak_points: list[dict]) -> list[dict]:
-        """获取规划用的知识点列表"""
         course_id = str(context.get("course_id") or "")
         course = course_catalog.get_course(course_id) or {}
         chapters = [
@@ -328,11 +315,9 @@ class PlannerAgent(BaseAgent):
         course = course_catalog.get_course(course_id) or {}
         profile_facts = context.get("profile_facts", {}) if isinstance(context.get("profile_facts"), dict) else {}
 
-        # 获取用户原话和对话上下文
         user_message = profile_facts.get("_raw_user_message", str(context.get("user_message", "")))
         conversation_context = profile_facts.get("_conversation_context", "")
 
-        # 如果课程不在目录里，从上下文提取课程名
         course_name = (
             course.get("course_name")
             or context.get("knowledge_context", {}).get("course_name")
@@ -384,12 +369,14 @@ class PlannerAgent(BaseAgent):
                 temperature=0.3,
                 max_tokens=1600,
             )
+            logger.info(f"LLM raw response (first 800 chars): {raw[:800]}")
             parsed = self._parse_json(raw)
             path = parsed.get("learning_path") if isinstance(parsed, dict) else None
             if isinstance(path, list) and len(path) >= 1:
                 return self._normalize_path(path, planning_points, total_days)
         except Exception as e:
             logger.warning(f"LLM path generation failed: {e}")
+            logger.exception("Full traceback:")
 
         return None
 
@@ -407,7 +394,6 @@ class PlannerAgent(BaseAgent):
         return result
 
     def _normalize_path(self, path: list, planning_points: list, total_days: int) -> list[dict]:
-        """标准化LLM生成的路径"""
         allowed = {
             (p.get("name") or p.get("title") or "").strip()
             for p in planning_points
@@ -421,11 +407,12 @@ class PlannerAgent(BaseAgent):
             title = str(item.get("title", f"第{i}阶段")).strip()
             tasks = [str(t).strip() for t in item.get("tasks", []) if str(t).strip()]
 
-            # 只有在 allowed 非空时才检查关联
             if allowed:
-                text_blob = f"{title} {item.get('goal', '')} {' '.join(tasks)}"
-                if not any(term and term in text_blob for term in allowed):
-                    continue
+                skip_check = (len(allowed) == 1 and "基础诊断与薄弱点确认" in allowed)
+                if not skip_check:
+                    text_blob = f"{title} {item.get('goal', '')} {' '.join(tasks)}"
+                    if not any(term and term in text_blob for term in allowed):
+                        continue
 
             result.append({
                 "stage_id": str(item.get("stage_id", f"stage_{i}")),
@@ -438,6 +425,7 @@ class PlannerAgent(BaseAgent):
                 "source": "llm_generated",
             })
 
+        logger.info(f"Normalized path count: {len(result)}")
         return result if len(result) >= 1 else []
 
     def _clean_types(self, types: Any) -> list[str]:
@@ -456,13 +444,11 @@ class PlannerAgent(BaseAgent):
     # ── 规则兜底 ──
 
     def _build_rule_path(self, points, profile, total_days, diag_meta) -> list[dict]:
-        """规则生成路径（LLM不可用时）"""
         n_stages = min(5, max(3, len(points))) if points else 3
         groups = self._group_points(points, n_stages) if points else []
         path = []
 
         if not groups:
-            # 没有知识点时生成默认阶段
             return [
                 {
                     "stage_id": "stage_1",

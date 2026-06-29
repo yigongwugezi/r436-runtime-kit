@@ -730,45 +730,24 @@ def _learning_plan_reply(result: dict[str, Any], intent: dict[str, Any]) -> str:
     weak = "、".join(item["topic"] for item in profile["weaknesses"][:3]) or "暂无明显短板"
     resource_names = "、".join(item["title"] for item in resources[:5])
 
-    # Check if this is a custom (non-catalog) topic — no matching course in knowledge base
-    course_id = result.get("course_id", "")
-    knowledge_source = result.get("knowledge_context", {}).get("source", "")
-    is_custom_course = course_id.startswith("custom_") or knowledge_source == "user_provided_topic"
-
-    # Check if the learning path is empty (no stages) — no real data was generated
+    # 学习路径为空
     if not path.get("stages") or len(path.get("stages", [])) == 0:
         return (
             "## 学习方案生成说明\n\n"
             "当前画像信息尚不足以生成完整的个性化学习路径。\n\n"
-            f"- 意图识别：{intent.get('intent', intent.get('action', ''))}，置信度 {intent.get('confidence', 0):.0%}\n\n"
             "请补充你的专业背景、学习基础、薄弱点和学习目标等信息，"
             "我会重新生成针对性更强的学习路径。\n\n"
             "你可以直接告诉我：年级专业、已学过的课程、想学的方向、薄弱环节等。"
         )
 
-    if is_custom_course:
-        course_name = (result.get("course") or {}).get("course_name", "你的学习主题")
-        return (
-            f"## 学习方案已生成（通用框架）\n\n"
-            f"⚠️ 当前知识库中没有「{course_name}」的课程资料，"
-            "以下为基于你画像信息生成的通用学习路径框架。\n\n"
-            f"- 意图识别：{intent.get('intent', intent.get('action', ''))}，置信度 {intent.get('confidence', 0):.0%}\n"
-            f"- 已构建 {len(profile['dimensions'])} 维学生画像\n"
-            f"- 识别的重点薄弱点：{weak}\n"
-            f"- 学习路径：{path['estimatedDays']} 天，{len(path['stages'])} 个阶段\n\n"
-            "你可以切换到「学习画像」「学习路径」和「资源库」页面查看结果。"
-        )
-
+    # 统一使用正常格式，不再区分 custom_course
     return (
         "## 个性化学习方案已生成\n\n"
-        f"- 意图识别：{intent.get('intent', intent.get('action', ''))}，置信度 {intent.get('confidence', 0):.0%}\n"
         f"- 已构建 {len(profile['dimensions'])} 维学生画像\n"
-        f"- 识别的重点薄弱点：{weak}\n"
         f"- 学习路径：{path['estimatedDays']} 天，{len(path['stages'])} 个阶段\n"
         f"- 已生成资源：{resource_names}\n\n"
         "你可以切换到「学习画像」「学习路径」和「资源库」页面查看完整结果。"
     )
-
 
 def _casual_reply(session_id: str) -> str:
     if not session_id:
@@ -1110,48 +1089,60 @@ def _reply_for_intent(
     progress_callback: Callable | None = None,
 ) -> tuple[str, bool]:
     """根据 ConversationAgent 的结果决定回复和执行哪些 Agent。
-
+    
     优先使用 ConversationAgent 生成的 reply 自然语言回复。
     如果 ConversationAgent 的 action 需要执行后端 Agent，则触发对应流程。
     """
+    # 用 ConversationAgent 返回的 facts 更新 conversation_store
+    llm_facts = intent.get("facts", {})
+    if llm_facts and session_id:
+        state = conversation_store.get(session_id)
+        fact_mapping = {
+            "background": "background",
+            "target_course": "target_course",
+            "knowledge_base": "knowledge_base",
+            "weak_points": "weak_points",
+            "learning_goal": "learning_goal",
+            "time_budget": "time_budget",
+            "preference": "preference",
+        }
+        for llm_key, fact_key in fact_mapping.items():
+            value = str(llm_facts.get(llm_key, "")).strip()
+            if value and len(value) >= 2:
+                invalid = {"的是什么", "的是什么诶", "什么", "啥", "这个", "那个", "它", "他", "她", "未知", "未提及", "无", "none"}
+                if value not in invalid:
+                    state.facts[fact_key] = value
+
     # 优先使用 ConversationAgent 生成的 reply
     llm_reply = intent.get("reply", "")
     action = intent.get("action", "none")
-
+    
     # 兼容旧版 intent 字段（规则兜底时）
     legacy_intent = intent.get("intent", "unknown")
-
+    
     # 如果 ConversationAgent 返回了 reply 且 action 不需要执行 Agent
     if llm_reply and action == "none":
         return llm_reply, False
-
+    
     # 安全检查
     if action == "unsafe" or legacy_intent == "unsafe":
         return llm_reply or "抱歉，我不能协助这类请求。如果你有学习相关的问题，我很乐意帮忙。", False
-
+    
     # 根据 action 决定执行哪些 Agent
     if action == "full_workflow":
-        # 完整流程：生成画像+诊断+规划+资源
-        state = conversation_store.get(session_id)
-        readiness = conversation_store.readiness(state)
-        if readiness["readyToPlan"] or True:  # 当 LLM 判定 full_workflow 时，直接执行
-            return _learning_plan_request_reply(message, intent, session_id, progress_callback=progress_callback)
-        else:
-            questions = "\n".join(f"- {q}" for q in conversation_store.next_questions(state, limit=2))
-            return (
-                f"好的，在生成完整方案之前，我还需要了解：\n{questions}"
-            ), False
-
+    # LLM 已经判断信息足够，直接生成，不再检查画像完整度
+        return _learning_plan_request_reply(message, intent, session_id, progress_callback=progress_callback)
+    
     if action == "diagnose":
         diagnosis_reply = _diagnosis_reply(message, session_id)
         return llm_reply or diagnosis_reply, True
-
+    
     if action == "plan":
         return _learning_plan_request_reply(message, intent, session_id, progress_callback=progress_callback)
-
+    
     if action == "resources":
         return _resource_request_reply(message, session_id, progress_callback=progress_callback), True
-
+    
     if action == "profile":
         ran_agents = False
         state = conversation_store.get(session_id)
@@ -1163,10 +1154,10 @@ def _reply_for_intent(
                 logger.warning("Agent run failed during profile update for session %s", session_id)
         reply = _profile_update_reply(session_id)
         return llm_reply or reply, ran_agents
-
+    
     if action == "knowledge":
         return _learning_plan_request_reply(message, intent, session_id, progress_callback=progress_callback)
-
+    
     # ── 兼容旧版 intent（LLM 失败走规则兜底时） ──
     name = legacy_intent
     if name == "casual_chat":
@@ -1204,14 +1195,9 @@ def _reply_for_intent(
         return _learning_plan_request_reply(message, intent, session_id, progress_callback=progress_callback)
     if name == "progress_feedback":
         return llm_reply or _feedback_reply(message, session_id), False
-
-    # 最终兜底
+    
+    # 最终兜底：如果有 LLM 回复就用它，否则用旧版 unknown 模板
     return llm_reply or _unknown_reply(intent), False
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# Chat endpoints
-# ═══════════════════════════════════════════════════════════════════════
 
 
 def _will_run_agents(intent: dict[str, Any], session_id: str) -> bool:

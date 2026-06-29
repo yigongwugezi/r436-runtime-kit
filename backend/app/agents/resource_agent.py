@@ -152,18 +152,20 @@ class ResourceAgent(BaseAgent):
             {
                 "role": "system",
                 "content": (
-                    "你是 EduAgent 的资源生成智能体。你必须仅根据提供的课程知识库、学习路径阶段、"
-                    "诊断结果和学习者画像来生成个性化学习资源。"
-                    + (rag_context if rag_context else "") +
-                    "只输出 JSON，不要用 Markdown 代码块包裹。JSON 格式为 {\"resources\": [...]}。"
-                    "至少生成五种资源，覆盖讲义(lecture)、思维导图(mindmap)、练习题(quiz)、"
-                    "拓展阅读(reading)、实操案例(practice)，可选视频讲稿(multimodal)或PPT大纲(ppt)。"
+                    "你是 EduAgent 的资源生成智能体。根据学习路径阶段、诊断结果和学习者画像，"
+                    "为每个阶段生成2-4个最合适的学习资源。"
+                    "不要为了凑类型而生成不必要的资源，根据阶段内容自由选择资源类型。"
+                    "概念入门阶段侧重讲义(lecture)和思维导图(mindmap)，"
+                    "计算练习阶段侧重练习题(quiz)和实操案例(practice)，"
+                    "复习阶段侧重拓展阅读(reading)。"
+                    "每份资源要有实质内容：讲义要有具体知识点讲解和例题，"
+                    "练习题要有完整的题目、选项、答案和解析（放在items数组里），"
+                    "思维导图要用 Mermaid mindmap 格式。"
                     "每个资源必须包含 resource_id、type、title、description、content_format、"
-                    "content 或 items、related_stage_id、related_chapter、related_knowledge_points、"
-                    "quality_status、reason、evidence。"
-                    "只使用输入中存在的阶段ID和课程章节，不要编造外部书籍、论文、链接或章节。"
-                    "所有 title、description、content 内容必须使用中文撰写。"
-                    "如使用 RAG evidence，只能基于输入中的片段生成 reason、evidence 和来源说明。"
+                    "content 或 items、related_stage_id、related_knowledge_points、"
+                    "quality_status、reason。"
+                    "所有内容使用中文撰写。"
+                    "只输出 JSON，格式为 {\"resources\": [...]}。"
                 ),
             },
             {
@@ -173,9 +175,12 @@ class ResourceAgent(BaseAgent):
         ]
 
         try:
-            raw = self.llm_client.chat(messages, temperature=0.2, max_tokens=2200)
+            raw = self.llm_client.chat(messages, temperature=0.2, max_tokens=4000)
+            logger.info(f"ResourceAgent LLM raw response (first 500 chars): {raw[:500]}")
             parsed = self._parse_json(raw)
-        except (LLMClientError, json.JSONDecodeError, TypeError, ValueError):
+        except Exception as e:
+            logger.warning(f"ResourceAgent LLM call failed: {e}")
+            logger.exception("Full traceback:")
             return []
 
         resources = parsed.get("resources") if isinstance(parsed, dict) else None
@@ -230,6 +235,9 @@ class ResourceAgent(BaseAgent):
             content_format = str(item.get("content_format") or self._format_for_type(resource_type))
             content = str(item.get("content") or "").strip()
             quiz_items = item.get("items") if isinstance(item.get("items"), list) else None
+            # 如果 items 是字符串，把它当 content 用
+            if not quiz_items and isinstance(item.get("items"), str) and not content:
+                content = str(item.get("items")).strip()
             if not content and not quiz_items:
                 continue
 
@@ -293,7 +301,7 @@ class ResourceAgent(BaseAgent):
             seen_stage_ids.add(stage_id)
 
         has_stage_coverage = stage_ids.issubset(seen_stage_ids)
-        return normalized if len(normalized) >= 5 and len(seen_types) >= 5 and has_stage_coverage else []
+        return normalized if len(normalized) >= 1 else []
 
     # ═══════════════════════════════════════════════════════════════
     # 规则兜底（完整保留原 ResourceAgent 全部逻辑）

@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 import threading
@@ -77,43 +78,14 @@ SUPPLEMENTAL_FIELD_DEFS: dict[str, dict[str, str]] = {
 CORE_FIELDS = {"background", "target_course", "knowledge_base"}
 PLAN_READY_FIELDS = {"background", "target_course"}
 LOW_VALUE_BACKGROUND_WORDS = {
-    "男生",
-    "女生",
-    "男",
-    "女",
-    "男孩子",
-    "女孩子",
-    "普通人",
-    "学生",
-    "大学生",
+    "男生", "女生", "男", "女", "男孩子", "女孩子", "普通人", "学生", "大学生",
 }
 BACKGROUND_VALUE_HINTS = {
-    "专业",
-    "工程",
-    "计算机",
-    "软件",
-    "人工智能",
-    "电子",
-    "信息",
-    "自动化",
-    "数学",
-    "统计",
-    "大一",
-    "大二",
-    "大三",
-    "大四",
-    "研究生",
-    "本科",
-    "高职",
-    "课程",
+    "专业", "工程", "计算机", "软件", "人工智能", "电子", "信息", "自动化",
+    "数学", "统计", "大一", "大二", "大三", "大四", "研究生", "本科", "高职", "课程",
 }
 COURSE_STOPWORDS = {
-    "方案",
-    "学习方案",
-    "路径",
-    "学习路径",
-    "计划",
-    "学习计划",
+    "方案", "学习方案", "路径", "学习路径", "计划", "学习计划",
 }
 
 
@@ -127,12 +99,6 @@ def _estimated_path_days(stages: list[dict[str, Any]]) -> int:
 
 
 def _safe_estimated_days(raw_estimated: Any, stages: list[dict[str, Any]]) -> int:
-    """Return *raw_estimated* if it is a positive integer, otherwise
-    compute from *stages*.
-
-    Guards against non-integer values (empty dicts, None, str, etc.) that
-    can leak into the result when the planner agent fails.
-    """
     if isinstance(raw_estimated, int) and raw_estimated > 0:
         return raw_estimated
     return _estimated_path_days(stages)
@@ -153,40 +119,22 @@ class ConversationState:
 
 
 class ConversationStore:
-    """Session state manager with in-memory cache and DB persistence.
-
-    When ``_db_enabled`` is True, session data is loaded from / saved to
-    the database.  The in-memory cache serves as a fast-access layer;
-    all mutating methods flush to DB immediately.
-    """
+    """Session state manager with in-memory cache and DB persistence."""
 
     def __init__(self) -> None:
         self._sessions: dict[str, ConversationState] = {}
         self._db_enabled: bool = False
         self._lock = threading.Lock()
 
-    # ── DB lifecycle ─────────────────────────────────────────────────
-
     def enable_db(self) -> None:
-        """Enable database persistence.
-
-        Called once at application startup.  After this call every
-        ``get``, ``append_message``, ``set_intent``, ``set_result`` and
-        ``reset`` will read from / write to the database.
-        """
         self._db_enabled = True
 
     def _db_session(self) -> Session:
-        """Create a new short-lived DB session."""
         return SessionLocal()
 
-    # ── Hydration helpers ─────────────────────────────────────────────
-
     def _hydrate_from_db(self, state: ConversationState) -> None:
-        """Load messages, intent and last_result from the database into *state*."""
         try:
             db = self._db_session()
-            # Messages
             db_messages = get_messages(db, state.session_id)
             state.messages = [
                 {
@@ -196,16 +144,13 @@ class ConversationStore:
                 }
                 for m in db_messages
             ]
-            # Last intent
             state.last_intent = get_last_intent(db, state.session_id)
-            # Last result (reconstruct from latest snapshots)
             profile = get_latest_profile(db, state.session_id)
             path = get_latest_learning_path(db, state.session_id)
             db_resources = repo_get_resources(db, state.session_id)
             if profile or path or db_resources:
                 result: dict[str, Any] = {}
                 if profile:
-                    # Normalize dimensions (handles old 8-dim and 9-dim snapshots)
                     normalized_dims = normalize_profile_dimensions(profile.dimensions)
                     result["profile"] = {
                         dim.get("key", f"dim_{idx}"): {
@@ -226,26 +171,20 @@ class ConversationStore:
                     result["learning_path"] = path.stages or []
                     result["course_id"] = path.course_id
                     result["course"] = {"course_id": path.course_id, "course_name": path.course_name}
-                    # Restore recommended_strategy from path description
                     if path.description:
                         result.setdefault("diagnosis", {})
                         result["diagnosis"]["recommended_strategy"] = path.description
                 if db_resources:
                     result["resources"] = [
                         {
-                            "resource_id": r.id,
-                            "type": r.type,
-                            "title": r.title,
-                            "description": r.description or "",
-                            "content": r.content or "",
-                            "content_format": "markdown",
-                            "source": "db",
+                            "resource_id": r.id, "type": r.type, "title": r.title,
+                            "description": r.description or "", "content": r.content or "",
+                            "content_format": "markdown", "source": "db",
                             "related_stage_id": r.related_stage_id or "",
                         }
                         for r in db_resources
                     ]
                 state.last_result = result if result else None
-            # Re-extract facts by replaying user messages through extract_facts
             state.facts.clear()
             state.supplemental_facts.clear()
             for msg in state.messages:
@@ -253,8 +192,6 @@ class ConversationStore:
                     self.extract_facts(state, str(msg.get("content", "")))
         finally:
             db.close()
-
-    # ── Public API ────────────────────────────────────────────────────
 
     @staticmethod
     def _require_session_id(session_id: str | None) -> str:
@@ -264,7 +201,6 @@ class ConversationStore:
         return sid
 
     def get(self, session_id: str | None) -> ConversationState:
-        """Get or create conversation state for an explicit session id."""
         sid = self._require_session_id(session_id)
         with self._lock:
             if sid not in self._sessions:
@@ -275,12 +211,6 @@ class ConversationStore:
             return self._sessions[sid]
 
     def get_state_or_none(self, session_id: str) -> ConversationState | None:
-        """Return the state for *session_id* if it exists, otherwise *None*.
-
-        Unlike ``get()``, this does **not** create a new state on demand.
-        Use this when you want to check whether a session already has data
-        without creating phantom sessions.
-        """
         sid = str(session_id or "").strip()
         if not sid:
             return None
@@ -290,7 +220,6 @@ class ConversationStore:
             state = ConversationState(session_id=sid)
             self._sessions[sid] = state
             self._hydrate_from_db(state)
-            # If hydration produced no data, treat as non-existent
             if not state.messages and not state.last_result:
                 del self._sessions[sid]
                 return None
@@ -298,14 +227,12 @@ class ConversationStore:
         return None
 
     def reset(self, session_id: str | None) -> ConversationState:
-        """Reset all state for a session (in-memory + DB)."""
         sid = self._require_session_id(session_id)
         self._sessions[sid] = ConversationState(session_id=sid)
         if self._db_enabled:
             try:
                 db = self._db_session()
                 delete_session(db, sid)
-                # Re-create empty session row
                 get_or_create_session(db, sid)
             finally:
                 db.close()
@@ -313,18 +240,13 @@ class ConversationStore:
 
     def append_message(self, session_id: str | None, role: str, content: str) -> ConversationState:
         state = self.get(session_id)
-        state.messages.append(
-            {
-                "role": role,
-                "content": content,
-                "timestamp": int(time.time() * 1000),
-            }
-        )
+        state.messages.append({
+            "role": role, "content": content,
+            "timestamp": int(time.time() * 1000),
+        })
         state.updated_at = time.time()
         if role == "user":
-            # 用 LLM 提取事实，替换原来的正则 extract_facts
             self.extract_facts_with_llm(state, content)
-
         if self._db_enabled:
             try:
                 db = self._db_session()
@@ -343,12 +265,10 @@ class ConversationStore:
         state.last_result = result
         self.merge_result_profile(state, result)
         state.updated_at = time.time()
-
         if self._db_enabled:
             db = None
             try:
                 db = self._db_session()
-                # Save profile snapshot
                 profile_data = result.get("profile", {})
                 dimensions_list = [
                     {
@@ -368,23 +288,12 @@ class ConversationStore:
                     for point in result.get("diagnosis", {}).get("weak_knowledge_points", [])
                 ]
                 readiness = self.readiness(state)
-                # Extract preferences from profile data or result
                 prefs = result.get("preferences") or {}
                 if not prefs:
-                    # Build from conversation state facts as fallback
                     pref_fact = state.facts.get("preference", "")
                     if pref_fact:
                         prefs = {"preferredFormats": [pref_fact], "paceMinutes": 45, "difficulty": "beginner", "explainStyle": "diagram"}
-
-                save_profile_snapshot(
-                    db, state.session_id,
-                    dimensions=dimensions_list,
-                    weaknesses=weaknesses_list,
-                    preferences=prefs if prefs else None,
-                    readiness_score=readiness.get("score"),
-                )
-
-                # Save learning path if present
+                save_profile_snapshot(db, state.session_id, dimensions=dimensions_list, weaknesses=weaknesses_list, preferences=prefs if prefs else None, readiness_score=readiness.get("score"))
                 if result.get("learning_path"):
                     stages = result.get("learning_path") or []
                     course_id = result.get("course_id", "") or state.session_id
@@ -395,25 +304,14 @@ class ConversationStore:
                         "description": result.get("diagnosis", {}).get("recommended_strategy", ""),
                         "stages": stages,
                         "overallProgress": result.get("overallProgress", 0),
-                        "estimatedDays": _safe_estimated_days(
-                            result.get("estimatedDays"), stages
-                        ),
+                        "estimatedDays": _safe_estimated_days(result.get("estimatedDays"), stages),
                     }
                     upsert_learning_path(db, state.session_id, path_data)
-
-                # Save resources if present — persist full structured data
                 for item in result.get("resources", []):
                     raw_resource_id = str(item.get("resource_id", f"res_{time.time()}"))
-                    resource_id = (
-                        raw_resource_id
-                        if raw_resource_id.startswith(f"{state.session_id}_")
-                        else f"{state.session_id}_{raw_resource_id}"
-                    )
-                    # Determine format from content_format field
+                    resource_id = raw_resource_id if raw_resource_id.startswith(f"{state.session_id}_") else f"{state.session_id}_{raw_resource_id}"
                     content_fmt = item.get("content_format", "markdown")
-                    # Determine difficulty from item or default
                     difficulty = item.get("difficulty", "easy")
-                    # Estimate minutes from content length
                     content_text = item.get("content", "")
                     estimated = max(10, len(content_text) // 200 * 5) if content_text else 20
                     related_points = list(item.get("related_knowledge_points") or [])
@@ -422,21 +320,16 @@ class ConversationStore:
                         related_points.append(related_chapter)
                     if item.get("related_stage_id"):
                         related_points.append(str(item.get("related_stage_id")))
-
                     upsert_resource(db, state.session_id, {
-                        "id": resource_id,
-                        "type": item.get("type", "lecture"),
-                        "title": item.get("title", "学习资源"),
-                        "description": item.get("description", ""),
+                        "id": resource_id, "type": item.get("type", "lecture"),
+                        "title": item.get("title", "学习资源"), "description": item.get("description", ""),
                         "content": content_text,
                         "knowledge_points": list(dict.fromkeys(point for point in related_points if point)),
                         "tags": [content_fmt, item.get("source", "agent_generated"), item.get("quality_status", "")],
-                        "difficulty": difficulty,
-                        "estimated_minutes": estimated,
+                        "difficulty": difficulty, "estimated_minutes": estimated,
                         "format": "diagram" if content_fmt == "mermaid" else ("code" if item.get("type") == "practice" else "text"),
                         "mermaid_def": content_text if content_fmt == "mermaid" else None,
-                        "code_blocks": item.get("code_blocks"),
-                        "questions": item.get("items"),  # quiz items
+                        "code_blocks": item.get("code_blocks"), "questions": item.get("items"),
                         "ppt_outline": item.get("ppt_outline"),
                         "bookmarked": item.get("bookmarked", False),
                         "study_status": item.get("study_status", "new"),
@@ -445,18 +338,13 @@ class ConversationStore:
                         "task_id": item.get("task_id", ""),
                     })
             except Exception:
-                # Log but don't crash — in-memory state is already updated
-                import logging
-                logging.getLogger(__name__).exception(
-                    "Failed to persist result to DB for session %s. In-memory state is preserved.",
-                    session_id,
-                )
+                import logging as _logging
+                _logging.getLogger(__name__).exception("Failed to persist result to DB for session %s.", session_id)
             finally:
                 if db is not None:
                     db.close()
 
     def set_diagnosis(self, session_id: str, diagnosis: dict[str, Any]) -> None:
-        """Attach a diagnosis to the current session without regenerating other artifacts."""
         state = self.get(session_id)
         result = dict(state.last_result or {})
         result.setdefault("session_id", state.session_id)
@@ -464,20 +352,15 @@ class ConversationStore:
         state.last_result = result
         state.updated_at = time.time()
 
-    # ── Fact extraction ─────────────────────────────────────────────
-
     def extract_facts_with_llm(self, state: ConversationState, message: str) -> None:
-        """用 LLM 从用户消息中提取画像事实，直接更新 state.facts。
-        
-        如果 LLM 不可用，回退到原来的正则 extract_facts。
-        """
+        """用 LLM 从用户消息中提取画像事实。如果 LLM 不可用，回退到正则提取。"""
         state.last_updated_fields = []
         state.last_updated_supplemental_fields = []
         state.last_conflicts = []
-        
+
         if not message.strip():
             return
-        
+
         try:
             from app.services.llm_client import get_llm_client
             from app.config import settings
@@ -485,53 +368,39 @@ class ConversationStore:
         except Exception:
             self.extract_facts(state, message)
             return
-        
-        # 构建已有的 facts 上下文
+
         known_facts = "\n".join(
             f"- {PROFILE_FIELD_DEFS[k]['label']}：{v}"
-            for k, v in state.facts.items()
-            if v
+            for k, v in state.facts.items() if v
         ) or "- 暂无已记录信息"
 
-        # 构建对话历史（最近6条）
         history_text = "\n".join(
             f"- {m['role']}: {m['content'][:200]}"
             for m in state.messages[-6:]
         )
-        
-        prompt = f"""你是一个学习画像提取器。从用户消息中提取以下维度的信息。
 
-## 已有画像
-{known_facts}
+        prompt = (
+            "你是一个学习画像提取器。从用户消息中提取以下维度的信息。\n\n"
+            "## 已有画像\n" + known_facts + "\n\n"
+            "## 对话历史(最近几轮)\n" + history_text + "\n\n"
+            "## 用户最新消息\n" + message + "\n\n"
+            "## 需要提取的维度\n"
+            "- background: 身份/专业背景\n"
+            "- target_course: 目标课程/知识方向\n"
+            "- knowledge_base: 已有基础\n"
+            "- weak_points: 薄弱点\n"
+            "- learning_goal: 学习目标\n"
+            "- time_budget: 时间安排\n"
+            "- preference: 学习偏好\n\n"
+            "## 规则\n"
+            "1. 只提取用户明确提到的信息,不要推测\n"
+            "2. 课程名要完整准确,如微积分、数据结构、Python\n"
+            "3. 零基础是基础水平,完全只是程度副词\n"
+            "4. 疑问句中的'是什么'、'的是什么'、'这个'绝对不要提取为课程名\n"
+            "5. 如果用户只是在提问没说出具体课程,target_course留空\n"
+            "6. 只返回JSON: {\"updates\": {...}, \"conflicts\": []}\n"
+        )
 
-## 对话历史（最近几轮）
-{history_text}
-
-## 用户最新消息
-{message}
-
-## 需要提取的维度
-- background: 身份/专业背景（如"软件工程大一学生"）
-- target_course: 目标课程/知识方向（如"微积分"、"Python"、"数据结构"）
-- knowledge_base: 已有基础（如"学过C语言"、"完全零基础"）
-- weak_points: 薄弱点（如"极限概念不清楚"）
-- learning_goal: 学习目标（如"应付期末考试拿高分"）
-- time_budget: 时间安排（如"每天3小时，持续1个月"）
-- preference: 学习偏好（如"喜欢做题"、"喜欢看视频"）
-
-## 规则
-1. 只提取用户明确提到的信息，不要推测
-2. 如果用户更新了之前的信息，用新的覆盖旧的
-3. 如果用户说的和已有信息不冲突，就合并
-4. 课程名要完整准确，如"微积分"不是"完全"，"数据结构"不是"数据"
-5. "完全零基础"中，"零基础"是基础水平，"完全"只是程度副词，不要提取"完全"作为课程名
-6. "我是软件专业的" → background: "软件专业"，不是"我是"
-7. 只返回 JSON，不要解释，不要用 markdown 包裹
-
-返回格式：
-{{"updates": {{"background": "软件工程大一学生", "target_course": "微积分"}}, "conflicts": []}}
-"""
-        
         try:
             raw = llm.chat(
                 messages=[
@@ -541,7 +410,6 @@ class ConversationStore:
                 temperature=0,
                 max_tokens=500,
             )
-            # 清理可能的 markdown 包裹
             cleaned = raw.strip()
             if cleaned.startswith("```"):
                 cleaned = cleaned.split("\n", 1)[1]
@@ -552,8 +420,7 @@ class ConversationStore:
         except Exception:
             self.extract_facts(state, message)
             return
-        
-        # 应用更新
+
         key_mapping = {
             "background": "background",
             "target_course": "target_course",
@@ -563,17 +430,16 @@ class ConversationStore:
             "time_budget": "time_budget",
             "preference": "preference",
         }
-        
+
+        invalid_values = {
+            "的是什么", "的是什么诶", "什么", "啥", "这个", "那个",
+            "它", "他", "她", "未知", "未提及", "无", "none", "null", "完全", ""
+        }
+
         for llm_key, fact_key in key_mapping.items():
             value = str(updates.get(llm_key, "")).strip()
-            if not value:
+            if not value or value in invalid_values or len(value) <= 1:
                 continue
-            # 过滤无效值
-            if value.lower() in {"完全", "未知", "未提及", "暂无", "无", "none", "null", ""}:
-                continue
-            if len(value) <= 1:
-                continue
-            
             old_value = state.facts.get(fact_key, "")
             if old_value != value:
                 if old_value:
@@ -587,13 +453,11 @@ class ConversationStore:
                 state.facts[fact_key] = value
                 if fact_key not in state.last_updated_fields:
                     state.last_updated_fields.append(fact_key)
-        
-        # 如果没有提取到任何信息，回退正则
+
         if not state.last_updated_fields:
             self.extract_facts(state, message)
 
     def extract_facts(self, state: ConversationState, message: str) -> None:
-        """原来的正则提取（保留作为 LLM 失败时的兜底）"""
         text = message.strip()
         state.last_updated_fields = []
         state.last_updated_supplemental_fields = []
@@ -611,15 +475,12 @@ class ConversationStore:
             if old_value != cleaned:
                 conflict_reason = self._fact_conflict_reason(key, old_value, cleaned)
                 if conflict_reason:
-                    state.last_conflicts.append(
-                        {
-                            "key": key,
-                            "label": PROFILE_FIELD_DEFS.get(key, {}).get("label", key),
-                            "old": old_value,
-                            "new": cleaned,
-                            "reason": conflict_reason,
-                        }
-                    )
+                    state.last_conflicts.append({
+                        "key": key,
+                        "label": PROFILE_FIELD_DEFS.get(key, {}).get("label", key),
+                        "old": old_value, "new": cleaned,
+                        "reason": conflict_reason,
+                    })
                 state.facts[key] = cleaned
                 state.last_updated_fields.append(key)
 
@@ -760,14 +621,11 @@ class ConversationStore:
             value = str(item.get("value", "")).strip() if isinstance(item, dict) else ""
             if value and value not in {"未知", "未提及", "暂无", "无"}:
                 state.facts.setdefault(fact_key, value)
-
         weak_points = result.get("diagnosis", {}).get("weak_knowledge_points", [])
         if weak_points and "weak_points" not in state.facts:
             names = [str(point.get("name", "")) for point in weak_points if point.get("name")]
             if names:
                 state.facts["weak_points"] = "、".join(names)
-
-    # ── Read helpers ──────────────────────────────────────────────────
 
     def missing_fields(self, state: ConversationState, limit: int | None = None) -> list[dict[str, str]]:
         missing = [
@@ -844,8 +702,6 @@ class ConversationStore:
             return f"用户最新输入：{latest_message}\n\n当前已记录学习画像：\n{known}"
         return f"当前已记录学习画像：\n{known}"
 
-    # ── Internal helpers ──────────────────────────────────────────────
-
     def _clean_fact_value(self, value: str) -> str:
         cleaned = value.strip(" ：:，。,.!?！？；;")
         cleaned = re.sub(r"^(一下|一下子|这个|这门|这方面)", "", cleaned).strip()
@@ -855,8 +711,7 @@ class ConversationStore:
         return cleaned
 
     def _clean_time_value(self, value: str) -> str:
-        cleaned = value.strip(" ：:，。,.!?！？；;")
-        return cleaned
+        return value.strip(" ：:，。,.!?！？；;")
 
     def _is_learning_background(self, value: str) -> bool:
         cleaned = self._clean_fact_value(value)
@@ -892,24 +747,20 @@ class ConversationStore:
     def _extract_knowledge_levels(self, text: str) -> tuple[list[str], list[str]]:
         strengths: list[str] = []
         weaknesses: list[str] = []
-
         segments = [segment.strip() for segment in re.split(r"[，。,.!?！？；;、]", text) if segment.strip()]
         for segment in segments:
             weak_match = re.search(r"(?:不会|不懂|没学过|没有学过|不太会|不熟)([A-Za-z+#一-鿿]{2,20})", segment)
             if weak_match:
                 weaknesses.append(f"{weak_match.group(1)}：不会/不熟")
                 continue
-
             front_weak_match = re.search(r"([A-Za-z+#一-鿿]{2,20})(?:比较|很|有点)?(?:薄弱|较弱|弱|差|一般|零基础)", segment)
             if front_weak_match:
                 weaknesses.append(f"{front_weak_match.group(1)}：薄弱")
                 continue
-
             strength_match = re.search(r"([A-Za-z+#一-鿿]{2,20}?)(?:还可以|可以|较好|不错|熟悉|会)", segment)
             if strength_match:
                 topic = strength_match.group(1).rstrip("还也都很较比较")
                 strengths.append(f"{topic}：{self._level_label(segment)}")
-
         return strengths, weaknesses
 
     def _level_label(self, segment: str) -> str:
@@ -920,5 +771,4 @@ class ConversationStore:
         return "会"
 
 
-# Module-level singleton — DB must be enabled via enable_db() at startup.
 conversation_store = ConversationStore()
