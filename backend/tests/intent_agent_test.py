@@ -58,6 +58,24 @@ def assert_intent(result: dict[str, Any], intent: str, primary: str | None = Non
     assert_true(result["primary_intent"] == (primary or intent), f"unexpected primary_intent: {result}")
 
 
+def assert_unknown_no_agent_work(result: dict[str, Any], message: str, *, should_clarify: bool) -> None:
+    forbidden = {"resource_request", "diagnosis", "learning_plan", "profile_update", "full_workflow", "tutoring"}
+    assert_true(result["primary_intent"] == "unknown", f"{message} primary should be unknown, got {result}")
+    assert_true(result["intent"] == "unknown", f"{message} intent should be unknown, got {result}")
+    assert_true(result.get("secondary_intents") == [], f"{message} secondary should be empty, got {result}")
+    assert_true(result.get("tasks") == [], f"{message} tasks should be empty, got {result}")
+    assert_true(result["should_run_agents"] is False, f"{message} should not run agents, got {result}")
+    assert_true(result["needs_clarification"] is should_clarify, f"{message} clarification mismatch, got {result}")
+    assert_true(forbidden.isdisjoint(result.get("secondary_intents", [])), f"{message} leaked secondary, got {result}")
+    assert_true(forbidden.isdisjoint(task.get("type") for task in result.get("tasks", [])), f"{message} leaked task, got {result}")
+
+
+def assert_no_duplicate_task_types(result: dict[str, Any], message: str) -> list[str]:
+    task_types = [task.get("type") for task in result.get("tasks", [])]
+    assert_true(len(task_types) == len(set(task_types)), f"{message} has duplicate task types: {result}")
+    return task_types
+
+
 def test_explicit_diagnosis_is_stable() -> None:
     result = classify("我哪里比较薄弱？")
     assert_intent(result, "diagnosis")
@@ -443,13 +461,13 @@ def test_p4_complex_utterance_decomposer_core_cases() -> None:
         ("你好，顺便给我一些 Python 入门资料。", full_context, "resource_request", ["resource_request"], False),
         ("谢谢，下一步怎么学？", full_context, "learning_plan", ["learning_plan"], False),
         ("我不想要视频，给我文档和练习。", full_context, "resource_request", ["resource_request"], False),
-        ("先诊断一下我哪里不会，再给我资源，最后帮我调整明天计划。", full_context, "diagnosis", ["diagnosis", "resource_request", "learning_plan_revision"], False),
+        ("先诊断一下我哪里不会，再给我资源，最后帮我调整明天计划。", full_context, "full_workflow", ["diagnosis", "resource_request", "learning_plan_revision"], False),
         ("先帮我看看哪里不会，再给两个简单题。", full_context, "diagnosis", ["diagnosis", "resource_request"], False),
         ("我链表不会，资源不要视频，给文档。", full_context, "diagnosis", ["diagnosis", "resource_request"], False),
         ("把后面计划减少一点，同时给我循环练习。", full_context, "learning_plan", ["learning_plan_revision", "resource_request"], False),
-        ("先建画像，再安排路径。", full_context, "profile_update", ["profile_update", "learning_plan"], False),
+        ("先建画像，再安排路径。", full_context, "full_workflow", ["profile_update", "learning_plan"], False),
         ("Python 资料给我文档，不要视频，也不要太多。", full_context, "resource_request", ["resource_request"], False),
-        ("这个资源讲得不好，换一个简单点的练习。", full_context, "resource_request", ["resource_request", "learning_plan_revision", "resource_request"], False),
+        ("这个资源讲得不好，换一个简单点的练习。", full_context, "resource_request", ["resource_request", "learning_plan_revision"], False),
         ("先给资源，再检查一下质量。", full_context, "resource_request", ["resource_request", "review"], False),
         ("我想学数据结构，先建画像，再给学习计划和练习。", full_context, "full_workflow", ["profile_update", "learning_plan", "resource_request"], False),
     ]
@@ -482,6 +500,524 @@ def test_p4_complex_utterance_decomposer_core_cases() -> None:
     assert_true(ordered["tasks"][2]["depends_on"] == ["task_2"], ordered)
 
 
+# ── P5 boundary tests — over-broad rule convergence ──
+
+
+def test_p5_generate_resource_is_not_learning_plan() -> None:
+    """'生成一个小测验' / '帮我生成几道题' must be resource_request, not learning_plan."""
+    cases = [
+        "帮我生成一个小测验",
+        "生成一个小测验",
+        "帮我生成几道递归练习题",
+    ]
+    for message in cases:
+        result = classify(message)
+        assert_true(
+            result["primary_intent"] == "resource_request",
+            f"{message} should be resource_request, got {result['primary_intent']}",
+        )
+        assert_true(result["needs_clarification"] is False, f"{message} should not need clarification")
+
+
+def test_p5_generate_plan_is_learning_plan() -> None:
+    """'帮我生成 Python 学习路径' / '帮我生成一周学习计划' must be learning_plan."""
+    cases = [
+        "帮我生成 Python 学习路径",
+        "帮我生成一周学习计划",
+    ]
+    for message in cases:
+        result = classify(message)
+        assert_true(
+            result["primary_intent"] == "learning_plan",
+            f"{message} should be learning_plan, got {result['primary_intent']}",
+        )
+        assert_true(result["needs_clarification"] is False, f"{message} should not need clarification")
+
+
+def test_p5_disengagement_vs_preference() -> None:
+    """'不想学习了' → unknown; '不想学视频，给我文档和练习' → resource_request."""
+
+    true_disengage = [
+        "我不想学习了",
+        "我不学了",
+        "我不想继续学了",
+        "我放弃学习了",
+    ]
+    for message in true_disengage:
+        result = classify(message)
+        assert_true(
+            result["primary_intent"] == "unknown",
+            f"{message} should be unknown (disengagement), got {result['primary_intent']}",
+        )
+        assert_true(
+            result["needs_clarification"] is False,
+            f"{message} disengagement should not ask for clarification",
+        )
+
+    preference_cases = [
+        ("我不想学视频，给我文档和练习。", "resource_request"),
+        ("我不想学太难的内容，给我简单练习", ["resource_request", "learning_plan_revision"]),
+    ]
+    for message, expected in preference_cases:
+        result = classify(message)
+        if isinstance(expected, list):
+            assert_true(
+                result["primary_intent"] in expected,
+                f"{message} should be one of {expected} (preference, not disengagement), got {result}",
+            )
+        else:
+            assert_true(
+                result["primary_intent"] == expected,
+                f"{message} should be {expected} (preference, not disengagement), got {result}",
+            )
+        assert_true(
+            result["primary_intent"] != "unknown",
+            f"{message} should not be unknown, got {result}",
+        )
+        assert_true(
+            result["primary_intent"] not in {"general_chat", "profile_update"},
+            f"{message} should not be general_chat or profile_update, got {result}",
+        )
+
+
+def test_p5_ti_resource_detection_excludes_question_words() -> None:
+    """'给几个简单题' is resource; '给我讲一下这个问题' is NOT resource."""
+
+    # These should be resource_request
+    resource_cases = [
+        "给我几个简单题",
+        "给我两个递归练习题",
+        "给我几个递归练习",
+        "给我两个链表题目",
+        "出几个递归题目",
+    ]
+    for message in resource_cases:
+        result = classify(message)
+        assert_true(
+            result["primary_intent"] == "resource_request",
+            f"{message} should be resource_request, got {result['primary_intent']}",
+        )
+
+    # These should NOT be resource_request
+    non_resource_cases = {
+        "给我讲一下这个问题": "unknown",
+        "这个题目怎么理解": "unknown",
+        "讲一下这个题目": "unknown",
+    }
+    for message, expected_primary in non_resource_cases.items():
+        result = classify(message)
+        assert_true(
+            result["primary_intent"] != "resource_request",
+            f"{message} should not be resource_request, got {result['primary_intent']}",
+        )
+        assert_true(
+            result["primary_intent"] == expected_primary,
+            f"{message} should be {expected_primary}, got {result['primary_intent']}",
+        )
+        assert_true(
+            result["primary_intent"] not in {"resource_request", "profile_update", "learning_plan"},
+            f"{message} should not be resource_request/profile_update/learning_plan, got {result}",
+        )
+
+    # "这个问题在哪里" can be diagnosis or unknown, not resource_request
+    result = classify("这个问题在哪里")
+    assert_true(
+        result["primary_intent"] != "resource_request",
+        f"'这个问题在哪里' should not be resource_request, got {result}",
+    )
+    assert_true(
+        result["primary_intent"] in {"diagnosis", "unknown"},
+        f"'这个问题在哪里' should be diagnosis or unknown, got {result['primary_intent']}",
+    )
+
+
+def test_p5_give_me_several_resource_noun_required() -> None:
+    """'给我几个' must only trigger resource_request when a resource noun follows."""
+    # "给我几个简单题" / "给我几个递归练习" / "给我两个链表题目" → resource_request
+    resource_cases = [
+        "给我几个简单题",
+        "给我几个递归练习",
+        "给我两个链表题目",
+        "出几个递归题目",
+    ]
+    for message in resource_cases:
+        result = classify(message)
+        assert_true(
+            result["primary_intent"] == "resource_request",
+            f"{message} should be resource_request, got {result['primary_intent']}",
+        )
+
+    # "给我几个建议" / "给我几个学习目标" → NOT resource_request, NOT profile_update
+    non_resource_cases = {
+        "给我几个建议": ["unknown"],
+        "给我几个学习目标": ["learning_plan", "unknown"],
+    }
+    for message, allowed in non_resource_cases.items():
+        result = classify(message)
+        assert_true(
+            result["primary_intent"] not in {"resource_request", "full_workflow", "profile_update"},
+            f"{message} must not be resource_request/full_workflow/profile_update, got {result['primary_intent']}",
+        )
+        assert_true(
+            result["primary_intent"] in allowed,
+            f"{message} should be one of {allowed}, got {result['primary_intent']}",
+        )
+
+
+def test_p5_topic_context_disambiguation() -> None:
+    """'题目' context: tutoring vs resource_request disambiguation."""
+    # 给/出/找/生成 + 题目 → resource_request
+    resource_cases = [
+        "给我两个链表题目",
+        "出几个递归题目",
+    ]
+    for message in resource_cases:
+        result = classify(message)
+        assert_true(
+            result["primary_intent"] == "resource_request",
+            f"{message} should be resource_request, got {result['primary_intent']}",
+        )
+
+    # 题目 + 怎么理解/讲一下/解释/什么意思 → unknown (not tutoring)
+    tutoring_cases = [
+        "这个题目怎么理解",
+        "讲一下这个题目",
+    ]
+    for message in tutoring_cases:
+        result = classify(message)
+        assert_true(
+            result["primary_intent"] == "unknown",
+            f"{message} should be unknown (no tutoring), got {result['primary_intent']}",
+        )
+        assert_true(
+            result["primary_intent"] not in {"resource_request", "full_workflow", "profile_update", "learning_plan"},
+            f"{message} should not be resource_request, got {result}",
+        )
+
+    # "问题" should NOT become resource_request just because it contains 题
+    result = classify("这个问题在哪里")
+    assert_true(
+        result["primary_intent"] != "resource_request",
+        f"'这个问题在哪里' should not be resource_request, got {result}",
+    )
+
+    # "题外话" / "题材" must NOT trigger resource_request
+    for message in ["给我几个题外话", "给我几个题材方向", "给我几个问题看看"]:
+        result = classify(message)
+        assert_true(
+            result["primary_intent"] not in {"resource_request", "full_workflow"},
+            f"'{message}' must not be resource_request, got {result['primary_intent']}",
+        )
+
+
+def test_p5_non_resource_secondary_tasks_clean() -> None:
+    """Non-resource inputs must not have resource_request in secondary_intents or tasks."""
+    non_resource_cases = [
+        "给我几个问题",
+        "给我几个问题看看",
+        "给我一些问题",
+        "给我几个题外话",
+        "给我一些题外话",
+        "给我几个题材方向",
+        "给我一些题材",
+        "这个问题怎么理解",
+        "给我讲一下这个问题",
+        "这个题目怎么理解",
+        "讲一下这个题目",
+        "这个题外话先不说",
+    ]
+    for message in non_resource_cases:
+        result = classify(message)
+        assert_true(
+            result["primary_intent"] not in {"resource_request", "full_workflow", "profile_update"},
+            f"'{message}' primary must not be resource/full_workflow/profile_update, got {result['primary_intent']}",
+        )
+        assert_true(
+            "resource_request" not in result.get("secondary_intents", []),
+            f"'{message}' secondary must not contain resource_request, got {result.get('secondary_intents')}",
+        )
+        assert_true(
+            "full_workflow" not in result.get("secondary_intents", []),
+            f"'{message}' secondary must not contain full_workflow, got {result.get('secondary_intents')}",
+        )
+        task_types = [t.get("type") for t in result.get("tasks", [])]
+        assert_true(
+            "resource_request" not in task_types,
+            f"'{message}' tasks must not contain resource_request, got {task_types}",
+        )
+        assert_true(
+            "full_workflow" not in task_types,
+            f"'{message}' tasks must not contain full_workflow, got {task_types}",
+        )
+
+    # Extra: "给我文档和练习" should be resource_request
+    result = classify("给我文档和练习")
+    assert_true(
+        result["primary_intent"] == "resource_request",
+        f"'给我文档和练习' should be resource_request, got {result['primary_intent']}",
+    )
+
+
+def test_p5_pure_resource_no_secondary_leak() -> None:
+    """Pure resource requests must not leak diagnosis/learning_plan/profile_update in sec/tasks."""
+    pure_cases = [
+        "给我几个资源",
+        "给我一些资料",
+        "给我文档和练习",
+        "给我几个简单题",
+        "给我几个小测验",
+    ]
+    for message in pure_cases:
+        result = classify(message)
+        sec = result.get("secondary_intents", [])
+        tasks = [t.get("type") for t in result.get("tasks", [])]
+        assert_true(
+            result["primary_intent"] == "resource_request",
+            f"'{message}' should be resource_request, got {result['primary_intent']}",
+        )
+        assert_true(
+            "diagnosis" not in sec,
+            f"'{message}' sec must not contain diagnosis, got {sec}",
+        )
+        assert_true(
+            "learning_plan" not in sec,
+            f"'{message}' sec must not contain learning_plan, got {sec}",
+        )
+        assert_true(
+            "profile_update" not in sec,
+            f"'{message}' sec must not contain profile_update, got {sec}",
+        )
+        assert_true(
+            "diagnosis" not in tasks,
+            f"'{message}' tasks must not contain diagnosis, got {tasks}",
+        )
+        assert_true(
+            "learning_plan" not in tasks,
+            f"'{message}' tasks must not contain learning_plan, got {tasks}",
+        )
+        assert_true(
+            "profile_update" not in tasks,
+            f"'{message}' tasks must not contain profile_update, got {tasks}",
+        )
+
+    # Multi-intent cases should still retain diagnosis + resource_request
+    r = classify("先诊断哪里不会，再给我两个简单题")
+    assert_true("diagnosis" in [t.get("type") for t in r.get("tasks", [])],
+                f"multi-intent should have diagnosis in tasks: {r}")
+    assert_true("resource_request" in [t.get("type") for t in r.get("tasks", [])],
+                f"multi-intent should have resource_request in tasks: {r}")
+
+    r = classify("先诊断一下我哪里不会，再给我资源，最后帮我调整明天计划")
+    tasks = [t.get("type") for t in r.get("tasks", [])]
+    assert_true("diagnosis" in tasks, f"full-workflow should have diagnosis: {r}")
+    assert_true("resource_request" in tasks, f"full-workflow should have resource_request: {r}")
+    assert_true("learning_plan_revision" in tasks, f"full-workflow should have learning_plan_revision: {r}")
+
+
+def test_p5_disengagement_strict() -> None:
+    """Full disengagement vs preference constraint strict tests."""
+    # True disengagement — must be unknown
+    disengage_cases = [
+        "我不想学习了",
+        "我不学了",
+        "我不想继续学了",
+        "我放弃学习了",
+        "我不想学了",
+    ]
+    for message in disengage_cases:
+        result = classify(message)
+        assert_true(
+            result["primary_intent"] == "unknown",
+            f"{message} should be unknown (disengagement), got {result['primary_intent']}",
+        )
+        assert_true(
+            result["needs_clarification"] is False,
+            f"{message} disengagement should not clarify, got {result}",
+        )
+
+    # Preference constraint — must NOT be unknown
+    preference_cases = [
+        ("我不想学视频，给我文档和练习。", "resource_request"),
+        ("我不想学太难的内容，给我简单练习", ["resource_request", "learning_plan_revision"]),
+    ]
+    for message, expected in preference_cases:
+        result = classify(message)
+        if isinstance(expected, list):
+            assert_true(
+                result["primary_intent"] in expected,
+                f"{message} should be one of {expected}, got {result['primary_intent']}",
+            )
+        else:
+            assert_true(
+                result["primary_intent"] == expected,
+                f"{message} should be {expected}, got {result['primary_intent']}",
+            )
+        assert_true(
+            result["primary_intent"] not in {"unknown", "general_chat", "profile_update"},
+            f"{message} should be actionable (not unknown/chat/profile), got {result['primary_intent']}",
+        )
+        assert_true(
+            result["needs_clarification"] is False,
+            f"{message} preference constraint should not need clarification, got {result}",
+        )
+
+
+def test_p5_explanation_questions_do_not_route_to_agents() -> None:
+    cases = [
+        "能讲讲这个问题吗",
+        "能讲一讲这个问题吗",
+        "能解释一下这个问题吗",
+        "给我讲一下这个问题",
+        "这个题目怎么理解",
+    ]
+    for message in cases:
+        assert_unknown_no_agent_work(classify(message), message, should_clarify=True)
+
+
+def test_p5_disengagement_does_not_leak_secondary_or_tasks() -> None:
+    cases = [
+        "我不想学习了",
+        "我不想学了",
+        "我不学了",
+        "我不想继续学了",
+        "我放弃学习了",
+    ]
+    for message in cases:
+        assert_unknown_no_agent_work(classify(message), message, should_clarify=False)
+
+
+def test_p5_fix_positive_boundaries_stay_actionable() -> None:
+    resource_cases = [
+        "给我几个资源",
+        "给我文档和练习",
+        "给我几个简单题",
+        "我不想学视频，给我文档",
+    ]
+    for message in resource_cases:
+        result = classify(message)
+        assert_true(result["primary_intent"] == "resource_request", f"{message} should stay resource_request, got {result}")
+        assert_true(result.get("secondary_intents") == [], f"{message} should not leak secondary intents, got {result}")
+
+    plan_result = classify("我不想学链表了，给我换个简单点的计划")
+    assert_true(
+        plan_result["primary_intent"] in {"learning_plan", "resource_request"},
+        f"plan adjustment should stay actionable, got {plan_result}",
+    )
+
+    diagnosis_resource = classify("先诊断哪里不会，再给我两个简单题")
+    assert_true(diagnosis_resource["primary_intent"] == "diagnosis", f"diagnosis combo regressed: {diagnosis_resource}")
+    assert_true("resource_request" in diagnosis_resource["secondary_intents"], f"missing resource secondary: {diagnosis_resource}")
+
+    workflow = classify("先诊断一下我哪里不会，再给我资源，最后帮我调整明天计划")
+    assert_true(workflow["primary_intent"] in {"full_workflow", "diagnosis"}, f"workflow combo regressed: {workflow}")
+    assert_true("resource_request" in [task.get("type") for task in workflow.get("tasks", [])], f"missing resource task: {workflow}")
+
+
+def test_p56_task_types_are_deduped_without_flattening_multi_intent() -> None:
+    for message in [
+        "我不想学视频，给我文档",
+        "不要视频，给我文档",
+        "给我文档和练习",
+        "给我几个资源",
+        "给我几个简单题",
+    ]:
+        result = classify(message)
+        task_types = assert_no_duplicate_task_types(result, message)
+        assert_true(result["primary_intent"] == "resource_request", f"{message} should stay resource_request, got {result}")
+        assert_true(result.get("secondary_intents") == [], f"{message} should not leak secondary intents, got {result}")
+        assert_true(task_types.count("resource_request") <= 1, f"{message} should have at most one resource task, got {result}")
+
+    diagnosis_resource = classify("先诊断哪里不会，再给我两个简单题")
+    task_types = assert_no_duplicate_task_types(diagnosis_resource, "diagnosis + resource")
+    assert_true("diagnosis" in task_types and "resource_request" in task_types, f"multi-intent regressed: {diagnosis_resource}")
+
+    workflow = classify("先诊断一下我哪里不会，再给我资源，最后帮我调整明天计划")
+    task_types = assert_no_duplicate_task_types(workflow, "diagnosis + resource + revision")
+    for task_type in ("diagnosis", "resource_request", "learning_plan_revision"):
+        assert_true(task_type in task_types, f"missing {task_type}: {workflow}")
+
+
+def test_p5_plan_triggers_tightened() -> None:
+    """Broad plan triggers must not fire alone without a planning object."""
+    # Resource objects + plan words → resource_request, not learning_plan
+    resource_first_cases = [
+        "开始生成几个小测验",
+        "帮我制定几个练习题",
+        "帮我安排一些复习资料",
+    ]
+    for message in resource_first_cases:
+        result = classify(message)
+        assert_true(
+            result["primary_intent"] == "resource_request",
+            f"{message} should be resource_request (resource objects present), got {result['primary_intent']}",
+        )
+
+    # Plan objects + plan words → learning_plan
+    plan_cases = [
+        "帮我制定一周学习计划",
+        "帮我安排三天复习计划",
+    ]
+    for message in plan_cases:
+        result = classify(message)
+        assert_true(
+            result["primary_intent"] == "learning_plan",
+            f"{message} should be learning_plan, got {result['primary_intent']}",
+        )
+
+    # Bare plan triggers without plan object or resource noun → unknown + clarify
+    for message in [
+        "帮我安排一下",
+        "开始生成",
+    ]:
+        result = classify(message)
+        assert_true(
+            result["primary_intent"] == "unknown",
+            f"{message} should be unknown (no plan object), got {result['primary_intent']}",
+        )
+        assert_true(
+            result["needs_clarification"] is True,
+            f"{message} should need clarification, got {result}",
+        )
+
+
+def test_p5_key_critical_cases_stable() -> None:
+    """Verify all 5 key cases from Phase 2 still pass."""
+    agent = IntentAgent(llm_client=MockLLMClient())
+    full_context = {
+        "last_intent": "learning_plan",
+        "has_learning_path": True,
+        "has_resources": True,
+        "has_diagnosis": True,
+        "recent_stage_id": "stage_loop",
+        "recent_resource_ids": ["res_loop"],
+        "recent_weak_topics": ["循环"],
+    }
+
+    cases = [
+        ("我不想要视频，给我文档和练习。", "resource_request", ["resource_request"]),
+        ("先帮我看看哪里不会，再给两个简单题。", "diagnosis", ["diagnosis", "resource_request"]),
+        ("我链表不会，资源不要视频，给文档。", "diagnosis", ["diagnosis", "resource_request"]),
+        ("先诊断一下我哪里不会，再给我资源，最后帮我调整明天计划。", "full_workflow", ["diagnosis", "resource_request", "learning_plan_revision"]),
+        ("先建画像，再安排路径。", "full_workflow", ["profile_update", "learning_plan"]),
+    ]
+
+    for message, expected_primary, expected_tasks in cases:
+        result = agent.classify(message, context=full_context)
+        assert_true(
+            result["primary_intent"] == expected_primary,
+            f"[{message}] expected primary={expected_primary}, got {result['primary_intent']}",
+        )
+        actual_tasks = task_types(result)
+        cursor = 0
+        for t in actual_tasks:
+            if cursor < len(expected_tasks) and t == expected_tasks[cursor]:
+                cursor += 1
+        assert_true(
+            cursor == len(expected_tasks),
+            f"[{message}] expected tasks {expected_tasks}, got {actual_tasks}",
+        )
+
+
 if __name__ == "__main__":
     test_explicit_diagnosis_is_stable()
     test_diagnosis_plus_resources_is_multi_intent()
@@ -502,4 +1038,19 @@ if __name__ == "__main__":
     test_p31_simplify_without_context_still_clarifies()
     test_p31_context_secondary_intents_stay_compact()
     test_p4_complex_utterance_decomposer_core_cases()
+    test_p5_generate_resource_is_not_learning_plan()
+    test_p5_generate_plan_is_learning_plan()
+    test_p5_disengagement_vs_preference()
+    test_p5_ti_resource_detection_excludes_question_words()
+    test_p5_give_me_several_resource_noun_required()
+    test_p5_topic_context_disambiguation()
+    test_p5_non_resource_secondary_tasks_clean()
+    test_p5_pure_resource_no_secondary_leak()
+    test_p5_disengagement_strict()
+    test_p5_explanation_questions_do_not_route_to_agents()
+    test_p5_disengagement_does_not_leak_secondary_or_tasks()
+    test_p5_fix_positive_boundaries_stay_actionable()
+    test_p56_task_types_are_deduped_without_flattening_multi_intent()
+    test_p5_plan_triggers_tightened()
+    test_p5_key_critical_cases_stable()
     print("PASS intent_agent_test")

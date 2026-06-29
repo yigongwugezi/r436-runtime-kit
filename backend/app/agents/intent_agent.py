@@ -148,13 +148,12 @@ class IntentAgent(BaseAgent):
                 needs_clarification=True,
             )
 
-        if self._looks_implicit_diagnosis(text):
+        if self._is_pure_disengagement(text):
             return self._result(
-                "diagnosis",
-                0.72,
+                "unknown",
+                0.86,
                 False,
-                "The user implies confusion or a need to identify weak points.",
-                secondary_intents=["learning_plan"],
+                "用户表达了放弃/不想学的意图，不应触发学习流程。",
             )
 
         if all(marker in text for marker in ("画像", "路径", "资源")):
@@ -166,10 +165,57 @@ class IntentAgent(BaseAgent):
                 secondary_intents=["profile_update", "learning_plan", "resource_request"],
             )
 
-        if any(marker in text for marker in ("练习和资料", "练习资料", "学习资料", "学习资源", "推荐资源", "给我一些")):
+        # Tutoring / knowledge QA high-precision patterns
+        # These are detected as tutoring at the rule level but mapped to "unknown"
+        # primary (not tutoring) — we don't have a TutorAgent yet.
+        if self._is_tutoring_or_explanation(text):
+            return self._result(
+                "unknown",
+                0.84,
+                False,
+                "用户请求概念解释或知识问答，暂不支持 tutoring 流程，回退为 unknown。",
+                needs_clarification=True,
+            )
+
+        if self._looks_implicit_diagnosis(text):
+            return self._result(
+                "diagnosis",
+                0.72,
+                False,
+                "The user implies confusion or a need to identify weak points.",
+                secondary_intents=["learning_plan"],
+            )
+
+        # Safe resource noun pattern: excludes "问题"/"题材"/"题外"
+        # "题目" is allowed as a resource noun (e.g. "给我两个链表题目")
+        _resource_noun_pattern = r"(?:题目|练习题|例题|小测验|测验|练习|资料|资源|文档|材料|讲义|视频|(?<!问)(?<!材)题(?!材)(?!外))"
+
+        # "给我一些" + resource_noun → resource_request
+        if re.search(rf'给我一些\s*{_resource_noun_pattern}', text):
             return self._result(
                 "resource_request",
-                0.9,
+                0.90,
+                True,
+                "The user asks for learning resources, practice or materials.",
+            )
+
+        # "给我/出/找" + quantifier + resource_noun → resource_request
+        if re.search(rf'(?:给我|出|找)\s*(?:两个|几[个道]|一些).*?{_resource_noun_pattern}', text):
+            return self._result(
+                "resource_request",
+                0.90,
+                True,
+                "The user asks for learning resources, practice or materials.",
+            )
+
+        # "给我/给/不要视频，给我" + strong_resource_noun → resource_request
+        # Covers patterns like "给我文档和练习" / "不要视频，给我文档"
+        # where there's no quantifier between the action word and the resource noun
+        _strong_resource_pattern = r"(?:文档|资料|资源|练习|练习题|材料|讲义|视频|小测验|测验|例题)"
+        if re.search(rf'(?:给我|给)\s*{_strong_resource_pattern}', text):
+            return self._result(
+                "resource_request",
+                0.88,
                 True,
                 "The user asks for learning resources, practice or materials.",
             )
@@ -183,23 +229,58 @@ class IntentAgent(BaseAgent):
                 needs_subject=True,
             )
 
-        utf8_plan_triggers = [
-            "开始生成学习方案",
-            "生成学习方案",
-            "开始规划",
-            "帮我规划",
-            "制定学习计划",
-            "生成学习路径",
-            "开始生成",
-            "先生成",
-            "直接生成",
-            "生成看看",
-            "生成看一下",
-            "看看效果",
-            "不用在意准不准",
+        # Compound intent detection — must run BEFORE plan_triggers
+        # to catch "帮我规划...并推荐..." as full_workflow.
+        # Only BUILD-intent markers count (生成/构建/创建 + target), not bare
+        # "帮我生成" which is too broad and would false-match resource generation.
+        compound_groups = [
+            {"构建画像", "生成画像", "构建学习画像", "生成学习画像", "建画像", "先给我建画像", "帮我建立学习画像"},  # profile_update
+            {"生成学习路径", "构建学习路径", "制定学习计划", "生成学习方案", "帮我规划", "安排路线", "安排路径", "安排计划"},  # learning_plan
+            {"生成学习资源", "构建学习资源", "生成资源", "创建资源", "推荐资源", "推荐资料", "并推荐", "给资源", "给我推荐", "给我找", "推荐一些"},  # resource_request
         ]
-        if any(trigger in text for trigger in utf8_plan_triggers):
-            return self._result("learning_plan", 0.95, True, "用户明确要求生成学习方案或学习路径。")
+        matched_count = sum(
+            1 for group in compound_groups if any(m in text for m in group)
+        )
+        if matched_count >= 2:
+            return self._result(
+                "full_workflow",
+                0.88,
+                True,
+                "用户同时请求构建画像、路径规划和资源生成中的至少两项。",
+            )
+
+        # Fallback compound check: if the user mentions "画像、学习路径和学习资源"
+        # in a single sentence (common full-workflow pattern), catch it.
+        if "学习画像" in text and "学习路径" in text and "学习资源" in text:
+            return self._result(
+                "full_workflow",
+                0.92,
+                True,
+                "用户同时提到学习画像、学习路径和学习资源，判定为全流程请求。",
+            )
+
+        # Multi-step sequence ("先...再...") with two distinct intent signals
+        has_seq = any(word in text for word in ("先", "再", "然后", "最后", "接着"))
+        if has_seq and self._has_multi_intent_signal(text):
+            # Check for three-way: profile/background + plan + resource
+            has_profile = any(word in text for word in ("画像", "基础", "基础差", "零基础", "新生", "薄弱", "我是"))
+            has_plan = any(word in text for word in ("路径", "计划", "方案", "规划", "路线", "安排"))
+            has_resource = any(word in text for word in ("资源", "资料", "推荐", "练习", "题"))
+            two_way = (has_profile and has_plan) or (has_profile and has_resource) or (has_plan and has_resource)
+            if has_profile and has_plan and has_resource:
+                return self._result(
+                    "full_workflow",
+                    0.90,
+                    True,
+                    "多步骤请求同时涉及画像/基础、路径规划和学习资源。",
+                )
+            if two_way and ("测" in text or "诊断" in text or "薄弱" in text):
+                return self._result(
+                    "full_workflow",
+                    0.86,
+                    True,
+                    "多步骤请求涉及诊断+规划/资源，适合全流程处理。",
+                )
 
         date_patterns = [
             "今天是几号",
@@ -217,13 +298,27 @@ class IntentAgent(BaseAgent):
         if "画像" in text and "路径" in text and "资源" in text:
             return self._result("full_workflow", 0.92, True, "用户要求完整流程：画像构建+学习路径+资源生成。")
 
+        # "建画像再安排路线" or "先建画像再安排路线" (2-element compound for full_workflow)
+        if ("建画像" in text or "构建画像" in text or "生成画像" in text) and (
+            "路线" in text or "安排计划" in text or "安排学习" in text
+        ) and ("再" in text or "然后" in text):
+            return self._result("full_workflow", 0.90, True, "用户要求先建画像再安排路线/计划，判定为全流程。")
+
         # ── Profile-building request → profile_update ──
         if "构建学习画像" in text or "构建画像" in text:
+            # Unless there's a co-occurring plan marker → full workflow
+            if any(word in text for word in ("路径", "计划", "安排", "规划", "资源", "推荐")):
+                return self._result("full_workflow", 0.88, True, "用户要求构建画像并同时提到路径/计划/资源。")
             return self._result("profile_update", 0.90, False, "用户要求构建学习画像，属于画像更新。")
         # "帮我生成学习路径" should be learning_plan (already matched by plan_triggers below)
 
         # ── Resource request patterns ──
-        resource_markers = ["找学习资源", "推荐资源", "生成资源", "找资源", "给我资源", "推荐一些", "推荐阅读", "拓展阅读"]
+        resource_markers = [
+            "找学习资源", "推荐资源", "生成资源", "找资源", "给我资源",
+            "推荐一些", "推荐阅读", "拓展阅读", "推荐我看", "推荐我什么",
+            "出几道题", "生成一个小测验", "小测验",
+            "有没有适合", "有没有什么", "适合新手", "适合入门",
+        ]
         if any(marker in text for marker in resource_markers):
             return self._result("resource_request", 0.92, True, "用户明确请求学习资源。")
 
@@ -247,14 +342,53 @@ class IntentAgent(BaseAgent):
         plan_triggers = [
             "开始生成学习方案",
             "生成学习方案",
+            "生成学习路径",
+            "生成学习计划",
             "开始规划",
             "帮我规划",
             "制定学习计划",
-            "生成学习路径",
-            "开始生成",
+            "制定学习方案",
         ]
-        if any(trigger in text for trigger in plan_triggers):
+        # Bare "开始生成" / "帮我制定" / "帮我安排" only trigger when a plan object is present
+        bare_plan_triggers = ["开始生成", "帮我制定", "帮我安排"]
+        # Guard: resource nouns take priority over bare plan triggers.
+        # "帮我制定几个练习题" / "开始生成几个小测验" / "帮我安排一些复习资料"
+        # must be resource_request, not learning_plan.
+        has_resource_noun = any(
+            word in text for word in (
+                "题", "题目", "练习", "练习题", "例题", "小测验", "测验",
+                "资料", "资源", "文档", "材料", "讲义", "视频",
+            )
+        )
+        has_plan_object = any(
+            word in text for word in (
+                "学习计划", "学习方案", "学习路径", "复习计划",
+                "计划", "方案", "路径", "路线", "规划",
+            )
+        )
+        # Only trigger learning_plan when there's a plan object OR NO resource noun
+        triggered_explicit = any(trigger in text for trigger in plan_triggers)
+        triggered_bare = any(trigger in text for trigger in bare_plan_triggers) and has_plan_object
+        if (triggered_explicit or triggered_bare) and (has_plan_object or not has_resource_noun):
             return self._result("learning_plan", 0.95, True, "用户明确要求生成学习方案或学习路径。")
+
+        # Bare plan triggers without plan object or resource noun → unknown + needs_clarification
+        # "帮我安排一下" / "开始生成" / "帮我制定" alone are too vague
+        if any(trigger in text for trigger in bare_plan_triggers) and not has_plan_object and not has_resource_noun:
+            return self._result(
+                "unknown",
+                0.52,
+                False,
+                "计划类触发词缺少明确的规划对象，需要追问澄清。",
+                source="rule_based_fallback",
+                needs_clarification=True,
+            )
+
+        # "帮我生成 <subject> 学习路径" / "帮我生成一周学习计划" etc.
+        # The plan_triggers check above catches contiguous substrings; this
+        # regex catches the variant with a topic name in between.
+        if re.search(r"帮我生成.{0,20}(?:学习路径|学习计划|学习方案)", text):
+            return self._result("learning_plan", 0.92, True, "用户要求生成学习路径或计划（带主题名）。")
 
         time_only_pattern = (
             r"(?:我有|我想|希望|打算|计划|每天能学|每天学|每天)?"
@@ -289,34 +423,6 @@ class IntentAgent(BaseAgent):
                 "用户明确请求查找或推荐学习资源。",
             )
 
-        # ── Compound intent detection: user wants to BUILD multiple things ──
-        #   Uses strict markers requiring action words (构建/生成/创建) + target.
-        compound_groups = [
-            {"构建画像", "生成画像", "构建学习画像", "生成学习画像"},        # profile_update (explicit build)
-            {"生成学习路径", "构建学习路径", "制定学习计划", "生成学习方案", "帮我规划"},  # learning_plan (explicit build)
-            {"生成学习资源", "构建学习资源", "生成资源", "创建资源"},        # resource_request (explicit build)
-        ]
-        matched_count = sum(
-            1 for group in compound_groups if any(m in text for m in group)
-        )
-        if matched_count >= 2:
-            return self._result(
-                "full_workflow",
-                0.88,
-                True,
-                "用户同时请求构建画像、路径规划和资源生成中的至少两项。",
-            )
-
-        # Fallback compound check: if the user mentions "画像、学习路径和学习资源"
-        # in a single sentence (common full-workflow pattern), catch it.
-        if "学习画像" in text and "学习路径" in text and "学习资源" in text:
-            return self._result(
-                "full_workflow",
-                0.92,
-                True,
-                "用户同时提到学习画像、学习路径和学习资源，判定为全流程请求。",
-            )
-
         # Clean UTF-8 rules for normal Chinese profile sentences. Keep this
         # before example routing so rich profile updates are never mistaken for
         # greetings or generic questions.
@@ -333,7 +439,6 @@ class IntentAgent(BaseAgent):
             "我想学习",
             "想学习",
             "准备学",
-            "复习",
             "为了考试",
             "为了项目",
             "为了竞赛",
@@ -360,9 +465,23 @@ class IntentAgent(BaseAgent):
             "代码",
             "练习",
         ]
+        has_plan_signal = any(
+            phrase in text for phrase in (
+                "计划", "路径", "安排", "规划", "制定", "复习计划",
+                "学习计划", "学习路径", "学习方案",
+            )
+        )
         if any(marker in text for marker in utf8_profile_markers) and any(
             marker in text for marker in utf8_detail_markers
         ):
+            if has_plan_signal:
+                return self._result(
+                    "learning_plan",
+                    0.88,
+                    True,
+                    "用户提供了画像背景并包含规划/路径/安排意图，优先启动学习规划。",
+                    secondary_intents=["profile_update"],
+                )
             return self._result(
                 "profile_update",
                 0.92,
@@ -384,19 +503,20 @@ class IntentAgent(BaseAgent):
             )
 
         # ── Interrogative diagnosis detection ──
-        #   Catch "我哪里比较薄弱" / "我什么薄弱" / "我的薄弱点是什么" as
-        #   profile_query (diagnosis inquiry) BEFORE the broad profile_update
-        #   rule interprets "薄弱" as a detail marker.
-        question_words = ["哪里", "什么", "哪", "吗", "怎么", "如何"]
-        diagnosis_words = ["薄弱", "差", "不会", "不懂", "不好"]
+        #   Catch "我哪里比较薄弱" / "我什么薄弱" / "为什么我总是学不会"
+        #   as diagnosis BEFORE the broad profile_update rule interprets
+        #   "薄弱" / "不会" as a detail marker.
+        question_words = ["哪里", "什么", "哪", "吗", "怎么", "如何", "为什么"]
+        diagnosis_words = ["薄弱", "差", "不会", "不懂", "不好", "困难", "卡住", "问题"]
         if any(q in text for q in question_words) and any(
             d in text for d in diagnosis_words
         ):
             return self._result(
-                "profile_query",
+                "diagnosis",
                 0.82,
-                False,
-                "用户以疑问句询问自身薄弱点或水平状态，判定为画像查询。",
+                True,
+                "用户以疑问句描述学习困难或询问薄弱点，判定为诊断请求。",
+                secondary_intents=["resource_request"],
             )
 
         profile_update_markers = [
@@ -422,7 +542,6 @@ class IntentAgent(BaseAgent):
             "希望学",
             "准备学",
             "考研",
-            "复习",
             "画像",
             "构建画像",
             "构建学习画像",
@@ -438,7 +557,6 @@ class IntentAgent(BaseAgent):
             "更喜欢",
             "不喜欢",
             "不要",
-            "给我",
             "最好给",
             "每天能学",
             "能学",
@@ -446,8 +564,17 @@ class IntentAgent(BaseAgent):
             "小时",
             "分钟",
         ]
-        if any(marker in text for marker in profile_update_markers) or any(
-            marker in text for marker in profile_detail_markers
+        # Guard: resource / plan requests must NOT be swallowed as profile_update
+        has_resource_or_plan_marker = any(
+            phrase in text for phrase in (
+                "出几道题", "出题", "测验", "推荐", "资料", "材料", "讲义",
+                "练习", "练习题", "给我找",
+                "安排", "制定", "规划", "学习路径", "学习计划",
+            )
+        )
+        if not has_resource_or_plan_marker and (
+            any(marker in text for marker in profile_update_markers)
+            or any(marker in text for marker in profile_detail_markers)
         ):
             return self._result(
                 "profile_update",
@@ -801,7 +928,11 @@ class IntentAgent(BaseAgent):
         )
 
     def _is_too_difficult_feedback(self, compact: str) -> bool:
-        return any(phrase in compact for phrase in ("太难", "太复杂", "难懂", "看不懂", "跟不上"))
+        # Only match standalone complaint patterns, NOT preference expressions like
+        # "太难的内容" / "太难的题" / "不想学太难" — those describe desired content type.
+        if any(phrase in compact for phrase in ("太难的内容", "太难的题", "太难的东西", "不想学太难")):
+            return False
+        return any(phrase in compact for phrase in ("太难了", "太难，", "太难。", "太难 ", "太复杂", "难懂", "看不懂", "跟不上"))
 
     def _is_still_confused(self, compact: str) -> bool:
         return any(phrase in compact for phrase in ("我还是不懂", "还是不懂", "不明白", "没懂", "听不懂"))
@@ -863,7 +994,7 @@ class IntentAgent(BaseAgent):
         if needs_clarification:
             clarification_question = "你希望我先帮你做学习画像、规划路径、推荐资源，还是诊断薄弱点？"
 
-        if best_score < 0.22:
+        if best_score < 0.331:
             intent = "unknown"
             confidence = 0.38
             secondary = []
@@ -902,6 +1033,14 @@ class IntentAgent(BaseAgent):
                     best_example = example
 
         confidence = self._score_to_confidence(best_score)
+        if best_score < 0.38:
+            return self._result(
+                "unknown",
+                0.38,
+                False,
+                f"示例路由得分 {best_score:.2f} 过低，回退为 unknown。",
+                source="rule_based",
+            )
         return self._result(
             best_intent,
             confidence,
@@ -986,6 +1125,8 @@ class IntentAgent(BaseAgent):
             and not self._looks_vague(text)
         ):
             return False
+        if rule_result and (self._is_tutoring_or_explanation(text) or self._is_pure_disengagement(text)):
+            return False
         if route_result is None:
             return True
         return (
@@ -1024,6 +1165,9 @@ class IntentAgent(BaseAgent):
             and rule_result.get("intent") in {"unsafe", "date_query", "clarification"}
             and float(rule_result.get("confidence", 0.0)) >= 0.9
         ):
+            return dict(rule_result)
+
+        if rule_result and (self._is_tutoring_or_explanation(message) or self._is_pure_disengagement(message)):
             return dict(rule_result)
 
         if context_result and context_result.get("needs_clarification"):
@@ -1088,6 +1232,9 @@ class IntentAgent(BaseAgent):
         agreements = sum(1 for item in candidates if item is not result and self._candidate_primary(item) == primary)
         score += 0.04 * agreements
 
+        # Rule-based results with high confidence should carry more weight
+        if source == "rule_based" and confidence >= 0.86:
+            score += 0.06
         if source == "semantic_examples":
             score += 0.04
         if source in {"llm_generated", "mock_llm"} and confidence >= 0.68:
@@ -1115,13 +1262,24 @@ class IntentAgent(BaseAgent):
         if result.get("source") == "context_aware":
             secondary = self._clean_secondary(result.get("secondary_intents", []))
         else:
+            # When the chosen primary is a high-confidence rule-based single-intent
+            # classification (resource_request, profile_update, etc.) and the message
+            # has no real multi-intent signals, don't leak other candidates' primaries
+            # as secondary intents.
+            is_rule_high_conf = (
+                result.get("source") == "rule_based"
+                and float(result.get("confidence", 0.0)) >= 0.88
+            )
+            is_single_intent_result = primary in {"resource_request", "profile_update", "tutoring", "unknown", "general_chat"}
+            suppress_candidate_leak = is_rule_high_conf and is_single_intent_result and not self._has_multi_intent_signal(message)
             for candidate in candidates:
                 candidate_primary = self._candidate_primary(candidate)
-                if candidate_primary != primary:
+                if candidate_primary != primary and not suppress_candidate_leak:
                     legacy = self._legacy_intent(candidate_primary)
                     if legacy in self.allowed_intents and legacy not in {"unknown", "casual_chat"}:
                         secondary.append(legacy)
-                secondary.extend(self._clean_secondary(candidate.get("secondary_intents", [])))
+                if not suppress_candidate_leak:
+                    secondary.extend(self._clean_secondary(candidate.get("secondary_intents", [])))
         result["secondary_intents"] = self._clean_secondary([*result.get("secondary_intents", []), *secondary])
         result["confidence"] = self._calibrate_confidence(result, candidates, message)
 
@@ -1191,21 +1349,23 @@ class IntentAgent(BaseAgent):
     def _has_multi_intent_signal(self, message: str) -> bool:
         text = message.lower()
         signals = [
-            ("画像" in text, "profile_update"),
-            (any(word in text for word in ("路径", "计划", "方案", "规划")), "learning_plan"),
-            (any(word in text for word in ("资源", "资料", "练习")), "resource_request"),
-            (any(word in text for word in ("薄弱", "补哪里", "学得很乱", "不会")), "diagnosis"),
+            (any(word in text for word in ("画像", "基础", "基础差", "零基础", "新生", "我是", "背景")), "profile_update"),
+            (any(word in text for word in ("路径", "计划", "方案", "规划", "路线", "安排")), "learning_plan"),
+            (any(word in text for word in ("资源", "资料", "练习", "推荐", "题")), "resource_request"),
+            (any(word in text for word in ("薄弱", "补哪里", "学得很乱", "不会", "诊断", "测一下")), "diagnosis"),
         ]
         return len({intent for matched, intent in signals if matched}) >= 2
 
     def _has_full_workflow_signal(self, message: str) -> bool:
         text = message.lower()
-        has_profile = any(word in text for word in ("画像", "基础", "新生", "我是", "水平"))
-        has_plan = any(word in text for word in ("路径", "计划", "方案", "规划", "路线"))
-        has_resource = any(word in text for word in ("资源", "资料", "练习", "题"))
+        has_profile = any(word in text for word in ("画像", "基础", "基础差", "零基础", "新生", "我是", "水平", "薄弱"))
+        has_plan = any(word in text for word in ("路径", "计划", "方案", "规划", "路线", "安排"))
+        has_resource = any(word in text for word in ("资源", "资料", "练习", "题", "推荐"))
         return has_profile and has_plan and has_resource
 
     def _has_diagnosis_signal(self, message: str) -> bool:
+        if self._is_tutoring_or_explanation(message):
+            return False
         text = message.lower()
         return any(
             phrase in text
@@ -1223,16 +1383,58 @@ class IntentAgent(BaseAgent):
         )
 
     def _has_resource_signal(self, message: str) -> bool:
+        if self._is_tutoring_or_explanation(message):
+            return False
         text = message.lower()
-        return any(word in text for word in ("资源", "资料", "练习", "题", "quiz", "practice", "材料"))
+        # Exclude "问题"/"题材"/"题外" which contain 题 but are NOT resource words
+        if any(word in text for word in ("资源", "资料", "练习", "练习题", "小测验", "测验", "题目", "文档", "quiz", "practice", "材料")):
+            return True
+        # Only count bare "题" when not part of "问题"/"题材"/"题外"
+        if "题" in text and not any(word in text for word in ("问题", "题材", "题外")):
+            return True
+        return False
 
     def _looks_implicit_diagnosis(self, message: str) -> bool:
+        if self._is_tutoring_or_explanation(message) or self._is_pure_disengagement(message):
+            return False
         text = message.lower()
-        return any(phrase in text for phrase in ("学得很乱", "不知道该补哪里", "该怎么补", "哪里没掌握", "跟不上"))
+        return any(phrase in text for phrase in ("学得很乱", "不知道该补哪里", "该怎么补", "哪里没掌握", "跟不上", "掌握没掌握", "检查一下我掌握", "看看我掌握"))
+
+    def _is_tutoring_or_explanation(self, message: str) -> bool:
+        text = message.lower()
+        compact = "".join(text.split())
+        if re.search(r"(?:给我|出|找|做|要|推荐|生成).*?(?:资源|资料|练习|练习题|文档|材料|题目|小测验|测验)", compact):
+            return False
+        markers = (
+            "什么是", "什么叫",
+            "怎么理解", "怎样理解", "如何理解",
+            "有什么区别", "有什么不同", "区别是什么",
+            "解释一下", "讲解一下", "说明一下", "讲一下",
+            "讲讲", "讲一讲", "能讲讲", "能讲一讲",
+            "能不能讲讲", "能不能讲一讲",
+            "考考我", "考我",
+        )
+        return any(marker in text or marker in compact for marker in markers)
+
+    def _is_pure_disengagement(self, message: str) -> bool:
+        compact = "".join(message.lower().split())
+        if not any(
+            phrase in compact
+            for phrase in ("不想学习了", "不想学了", "不学了", "不想继续学了", "放弃学习了")
+        ):
+            return False
+        actionable_markers = (
+            "给我", "推荐", "资料", "文档", "资源", "练习", "题", "视频",
+            "计划", "路径", "安排", "换", "简单", "太难", "太复杂", "内容", "材料",
+        )
+        return not any(marker in compact for marker in actionable_markers)
 
     def _looks_vague(self, message: str) -> bool:
         compact = "".join(message.lower().split())
         vague = {"帮我安排一下", "安排一下", "帮我看看", "怎么办", "给点建议", "帮我弄一下"}
+        # "我不想学习了" is not vague — it's a clear disengagement signal
+        if "不想学" in compact or "不学了" in compact:
+            return False
         return compact in vague or (len(compact) <= 8 and any(item in compact for item in vague))
 
     def _llm_classify(self, message: str, route_result: dict[str, Any] | None = None) -> dict[str, Any] | None:
@@ -1409,6 +1611,8 @@ class IntentAgent(BaseAgent):
         text = message.strip()
         compact = "".join(text.lower().split())
         if not compact or result.get("primary_intent") == "general_chat" and not self._contains_learning_signal(text):
+            return None
+        if self._is_tutoring_or_explanation(text) or self._is_pure_disengagement(text):
             return None
         if result.get("primary_intent") == "profile_update" and self._is_profile_preference_statement(text):
             return None
@@ -1601,6 +1805,9 @@ class IntentAgent(BaseAgent):
         return any(word in text for word in ("画像", "建画像", "学习画像", "评估我的基础", "更新我的水平"))
 
     def _looks_diagnosis_task(self, text: str) -> bool:
+        # Guard: "太难的内容" / "太难的题" / "太难学" are preference constraints, NOT diagnosis
+        if any(phrase in text for phrase in ("太难的内容", "太难的题", "太难的东西", "不想学太难")):
+            return False
         return any(
             word in text
             for word in (
@@ -1620,15 +1827,50 @@ class IntentAgent(BaseAgent):
                 "学得不好",
                 "学不好",
                 "补哪里",
-                "太难",
+                "太难了",
+                "太难，",
+                "太难。",
+                "太复杂",
             )
         )
 
     def _looks_resource_task(self, text: str) -> bool:
-        return any(word in text for word in ("资源", "资料", "练习", "练习题", "题", "文档", "视频", "材料", "例题"))
+        # Strong resource words that are unambiguously resource-related
+        has_strong_resource = any(word in text for word in ("资源", "资料", "练习", "练习题", "文档", "视频", "材料", "例题"))
+        if has_strong_resource:
+            return True
+        # "题" handling — must match asking-for-exercises patterns,
+        # but NOT "问题" / "题目" / "题材" which are explanation-related.
+        if "题" not in text:
+            return False
+        # Exclude "问题" (question), "题材" (subject matter).
+        # "题目" is only excluded in tutoring/explanation context
+        # (e.g. "这个题目怎么理解"), NOT when used as a resource noun
+        # (e.g. "给我两个链表题目" / "出几个递归题目").
+        if any(word in text for word in ("问题", "题材")):
+            return False
+        if "题目" in text and any(word in text for word in ("怎么理解", "讲一下", "什么叫", "什么是", "解释", "区别")):
+            return False
+        # Tutoring / explanation contexts should not count as resource
+        if self._is_tutoring_or_explanation(text):
+            return False
+        # Only "题" combined with action words (给/出/找/做/要/推荐/生成)
+        # or quantifiers (几道/两个/一些/两个简单) signals a resource request
+        if re.search(r'(?:给|出|找|做|要|推荐|生成|几道|两道|三个|几个|一些|简单题|练习题)', text):
+            return True
+        return False
 
     def _looks_plan_task(self, text: str) -> bool:
         if self._looks_resource_task(text) and any(word in text for word in ("路径对应", "根据路径", "根据我的学习路径", "对应的资源")):
+            return False
+        # "下一步" / "接下来" / "后面" followed by resource-oriented words is a resource request, not a plan
+        if self._looks_resource_task(text) and any(word in text for word in ("下一步", "接下来", "后面")):
+            return False
+        # "安排" without explicit plan markers (计划/路径/后面/明天) — when paired with
+        # resource words like "复习资源" — is a resource request, not a plan
+        has_plan_marker = any(word in text for word in ("路径", "路线", "计划", "规划", "学习方案"))
+        has_future = any(word in text for word in ("后面", "明天", "接下来", "下一步"))
+        if "安排" in text and not has_plan_marker and not has_future:
             return False
         return any(word in text for word in ("路径", "路线", "计划", "规划", "安排", "下一步", "怎么学", "后面怎么", "学习方案"))
 
@@ -1711,10 +1953,10 @@ class IntentAgent(BaseAgent):
 
     def _dedupe_p4_tasks(self, tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         deduped: list[dict[str, Any]] = []
-        seen: set[tuple[str, str]] = set()
+        seen: set[str] = set()
         for task in tasks:
-            key = (str(task.get("type")), str(task.get("target", "")))
-            if key in seen and task.get("type") not in {"resource_request"}:
+            key = str(task.get("type"))
+            if key in seen:
                 continue
             seen.add(key)
             task = dict(task)
@@ -1852,10 +2094,30 @@ class IntentAgent(BaseAgent):
             return
 
         task_types = [str(task.get("type")) for task in tasks if task.get("type") in self.valid_task_types]
-        workflow_core = {"profile_update", "learning_plan", "resource_request"}
-        has_full_workflow = workflow_core.issubset(set(task_types)) and not any(
-            task_type in task_types for task_type in ("diagnosis", "learning_plan_revision")
+        workflow_core_original = {"profile_update", "learning_plan", "resource_request"}
+
+        # full_workflow requires at least 2 of the *original* core task types
+        # to be present as tasks (not just derived from revisions).
+        core_in_tasks = set(task_types) & workflow_core_original
+        has_profile_dimension = "profile_update" in core_in_tasks
+        has_resource_dimension = "resource_request" in core_in_tasks
+        # learning_plan_revision only counts toward the plan dimension when
+        # there is also a diagnosis or profile_update present — a standalone
+        # resource_request + plan_revision is NOT a full_workflow.
+        has_plan_dimension = "learning_plan" in core_in_tasks or (
+            "learning_plan_revision" in task_types
+            and (has_profile_dimension or "diagnosis" in task_types)
         )
+
+        # Count how many of the three core dimensions are present
+        dim_count = sum([has_profile_dimension, has_plan_dimension, has_resource_dimension])
+        # diagnosis + new learning_plan (not revision) counts as multi-dimensional full workflow
+        has_diagnosis = "diagnosis" in task_types
+        if has_diagnosis and "learning_plan" in task_types:
+            dim_count = max(dim_count, 2)
+
+        # full_workflow when at least 2 core dimensions are satisfied
+        has_full_workflow = dim_count >= 2
         if has_full_workflow:
             primary = "full_workflow"
             intent = "full_workflow"
@@ -1968,11 +2230,20 @@ class IntentAgent(BaseAgent):
 
         is_general_chat = primary == "general_chat" or intent == "casual_chat"
         is_off_topic = result.get("semantic_label") == "off_topic"
+        is_explanation = self._is_tutoring_or_explanation(message)
+        is_disengagement = self._is_pure_disengagement(message)
+        if is_explanation or is_disengagement:
+            intent = "unknown"
+            primary = "unknown"
+            secondary = []
         needs_clarification = (
             bool(result.get("needs_clarification"))
             or (self._looks_vague(message) and not is_general_chat)
             or (intent == "unknown" and not is_off_topic)
         )
+        # Disengagement signals should not need clarification — just stay unknown
+        if is_disengagement:
+            needs_clarification = False
         clarification_question = result.get("clarification_question")
         if needs_clarification and not clarification_question:
             clarification_question = "你希望我先帮你做学习画像、规划路径、推荐资源，还是诊断薄弱点？"
@@ -1990,7 +2261,9 @@ class IntentAgent(BaseAgent):
                 "primary_intent": primary,
                 "secondary_intents": secondary,
                 "confidence": max(0.0, min(1.0, float(result.get("confidence", 0.0)))),
-                "should_run_agents": bool(result.get("should_run_agents"))
+                "should_run_agents": (
+                    False if (is_explanation or is_disengagement) else bool(result.get("should_run_agents"))
+                )
                 or intent in ROUTE_AGENT_INTENTS
                 or intent == "diagnosis",
                 "should_run_full_workflow": primary == "full_workflow" or intent == "full_workflow",
@@ -2008,6 +2281,10 @@ class IntentAgent(BaseAgent):
             return "casual_chat"
         if primary in {"subject_create", "subject_select"}:
             return "learning_plan"
+        if primary == "profile_query":
+            return "unknown"
+        if primary == "progress_feedback":
+            return "unknown"
         if primary in self.allowed_intents:
             return primary
         return "unknown"
@@ -2044,11 +2321,22 @@ class IntentAgent(BaseAgent):
     def _infer_secondary_intents(self, message: str, primary: str) -> list[str]:
         text = message.lower()
         candidates: list[str] = []
+        if self._is_tutoring_or_explanation(text) or self._is_pure_disengagement(text):
+            return []
         if "画像" in text:
             candidates.append("profile_update")
         if any(word in text for word in ("路径", "计划", "方案", "规划", "接下来")):
             candidates.append("learning_plan")
-        if any(word in text for word in ("资源", "资料", "练习", "题")):
+        # Only infer resource_request when the text contains strong resource words
+        # AND NOT tutoring/explanation patterns like "怎么理解"/"讲一下"/"什么是"
+        # AND NOT "问题"/"题材"/"题外" which share the "题" character but are NOT resources.
+        has_resource_word = any(
+            word in text for word in ("资源", "资料", "练习", "练习题", "小测验", "测验", "题目", "文档", "材料")
+        )
+        has_tutoring_signal = any(
+            word in text for word in ("怎么理解", "讲一下", "讲讲", "讲一讲", "什么是", "解释", "区别", "讲解")
+        )
+        if has_resource_word and not has_tutoring_signal:
             candidates.append("resource_request")
         if any(word in text for word in ("薄弱", "补哪里", "学得很乱", "不会", "诊断")):
             candidates.append("diagnosis")
