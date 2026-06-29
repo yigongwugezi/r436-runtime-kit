@@ -1164,7 +1164,11 @@ GEN_STAGES = [
 def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
     message = str(payload.get("message", "我想学习人工智能导论"))
     session_id = _payload_session_id(payload)
+    subject_id = _payload_subject_id(payload)
     _validate_message(message)
+
+    # Link session to subject/learner for proper data isolation
+    _ensure_session_linked(session_id, subject_id=subject_id)
 
     conversation_store.append_message(session_id, "user", message)
     intent = _classify_intent(message, session_id)
@@ -1278,7 +1282,11 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
 def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
     message = str(payload.get("message", "我想学习人工智能导论"))
     session_id = _payload_session_id(payload)
+    subject_id = _payload_subject_id(payload)
     _validate_message(message)
+
+    # Link session to subject/learner for proper data isolation
+    _ensure_session_linked(session_id, subject_id=subject_id)
 
     conversation_store.append_message(session_id, "user", message)
     intent = _classify_intent(message, session_id)
@@ -1308,16 +1316,35 @@ def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.get("/chat/sessions")
-def list_sessions() -> dict[str, Any]:
+def list_sessions(subjectId: str = "", learnerId: str = "") -> dict[str, Any]:
+    """List sessions, optionally filtered by subject and/or learner.
+
+    Without filters, returns sessions for the default learner to avoid
+    leaking all sessions from all users.
+    """
     try:
         db = SessionLocal()
-        sessions = repo_list_sessions(db)
+        # Resolve learner — default to the most recent learner if none specified
+        resolved_learner_id: str | None = str(learnerId).strip() or None
+        resolved_subject_id: str | None = str(subjectId).strip() or None
+        if not resolved_learner_id and not resolved_subject_id:
+            # No filters at all — scope to the single (most recent) learner
+            from app.db.repository import get_or_create_learner
+            default_learner = get_or_create_learner(db)
+            resolved_learner_id = default_learner.id
+
+        sessions = repo_list_sessions(
+            db,
+            learner_id=resolved_learner_id,
+            subject_id=resolved_subject_id,
+        )
         return _product_response(
             {"sessions": [
                 {
                     "id": sess.id,
                     "title": sess.title,
                     "status": sess.status,
+                    "subjectId": sess.subject_id or "",
                     "createdAt": int(sess.created_at.timestamp() * 1000) if sess.created_at else 0,
                     "updatedAt": int(sess.updated_at.timestamp() * 1000) if sess.updated_at else 0,
                 }
@@ -1379,14 +1406,89 @@ def delete_chat_session(session_id: str) -> dict[str, Any]:
 
 @router.get("/chat/quick-commands")
 def quick_commands() -> dict[str, Any]:
+    """Return quick-command suggestions for the chat input.
+
+    Commands are dynamically enriched with available course names from the
+    catalog so the frontend always shows relevant prompts.
+    """
+    base_commands = [
+        {"id": "ai_intro", "label": "AI 入门", "icon": "Brain", "prompt": "我是大二学生，想两周入门人工智能"},
+        {"id": "nn", "label": "神经网络", "icon": "Brain", "prompt": "我想重点学习神经网络，希望多给图解和代码"},
+        {"id": "data_structures", "label": "数据结构", "icon": "BookOpen", "prompt": "我是软件工程大二学生，想复习数据结构，为了考试通过"},
+    ]
+
+    # Enrich with available courses from the catalog
+    try:
+        for course in course_catalog.list_courses()[:2]:
+            name = course.get("course_name", "")
+            if name and not any(c["label"] == name for c in base_commands):
+                base_commands.append({
+                    "id": f"course_{course.get('course_id', '')}",
+                    "label": name,
+                    "icon": "BookOpen",
+                    "prompt": f"我想学习{name}，请帮我生成个性化学习方案",
+                })
+    except Exception:
+        logger.warning("Failed to enrich quick commands from course catalog")
+
     return _product_response(
-        {"commands": [
-            {"id": "ai_intro", "label": "AI 入门", "icon": "AI", "prompt": "我是大二学生，想两周入门人工智能"},
-            {"id": "nn", "label": "神经网络", "icon": "NN", "prompt": "我想重点学习神经网络，希望多给图解和代码"},
-            {"id": "data_structures", "label": "数据结构", "icon": "DS", "prompt": "我是软件工程大二学生，想复习数据结构，为了考试通过"},
-        ]},
-        source="mock",
+        {"commands": base_commands},
+        source="catalog",
     )
+
+
+@router.get("/chat/agents")
+def list_agents() -> dict[str, Any]:
+    """Return the available agents with their names, icons, and descriptions.
+
+    Used by the frontend chat sidebar to show the agent pipeline status instead
+    of hardcoded agent names.
+    """
+    agents = [
+        {
+            "id": "profile_agent",
+            "name": "画像分析",
+            "icon": "🧠",
+            "description": "分析学习背景、知识基础和偏好，构建多维学习画像",
+            "stage": "profiling",
+        },
+        {
+            "id": "knowledge_agent",
+            "name": "知识检索",
+            "icon": "📚",
+            "description": "从课程知识库中检索相关知识点和前置概念",
+            "stage": "profiling",
+        },
+        {
+            "id": "diagnosis_agent",
+            "name": "诊断分析",
+            "icon": "🎯",
+            "description": "基于画像和能力表现诊断薄弱环节和知识缺口",
+            "stage": "profiling",
+        },
+        {
+            "id": "planner_agent",
+            "name": "路径规划",
+            "icon": "📊",
+            "description": "根据诊断结果和课程结构规划个性化学习阶段",
+            "stage": "planning",
+        },
+        {
+            "id": "resource_agent",
+            "name": "资源生成",
+            "icon": "📝",
+            "description": "按学习路径生成讲义、思维导图、练习题等资源",
+            "stage": "generating",
+        },
+        {
+            "id": "review_agent",
+            "name": "质量审查",
+            "icon": "✅",
+            "description": "审查生成资源的知识准确性、难度匹配度和完整性",
+            "stage": "generating",
+        },
+    ]
+    return _product_response({"agents": agents}, source="system")
 
 
 @router.get("/chat/progress/{task_id}")
@@ -1418,10 +1520,58 @@ def _payload_session_id(payload: dict[str, Any]) -> str:
     return _require_session_id(payload.get("sessionId"))
 
 
+def _payload_subject_id(payload: dict[str, Any]) -> str:
+    """Extract optional subjectId from a JSON payload body."""
+    return str(payload.get("subjectId", "")).strip()
+
+
+def _ensure_session_linked(
+    session_id: str,
+    subject_id: str = "",
+    learner_id: str | None = None,
+) -> None:
+    """Ensure the session row in DB is linked to the given subject and learner.
+
+    Creates or updates the session row as a side effect so that subsequent
+    ``list_sessions`` and analytics queries can filter by subject/learner.
+    """
+    if not subject_id and not learner_id:
+        return
+    try:
+        db = SessionLocal()
+        sess = db.get(SessionModel, session_id)
+        if sess is None:
+            from app.db.repository import get_or_create_learner
+            learner = get_or_create_learner(db, learner_id)
+            sess = SessionModel(
+                id=session_id,
+                learner_id=learner.id,
+                subject_id=subject_id or None,
+            )
+            db.add(sess)
+            db.commit()
+        else:
+            changed = False
+            if learner_id and not sess.learner_id:
+                sess.learner_id = learner_id
+                changed = True
+            if subject_id and not sess.subject_id:
+                sess.subject_id = subject_id
+                changed = True
+            if changed:
+                db.commit()
+    except Exception:
+        logger.warning("Failed to link session %s to subject/learner", session_id)
+    finally:
+        db.close()
+
+
 @router.get("/profile")
 def get_profile(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
     """Read the latest profile from the database. Never triggers agents."""
     session_id = _resolve_session_id(sessionId, subjectId)
+    subject_id = str(subjectId).strip()
+    _ensure_session_linked(session_id, subject_id=subject_id)
 
     # Default preferences (safe for frontend)
     _default_prefs = {"preferredFormats": ["text"], "paceMinutes": 45, "difficulty": "beginner", "explainStyle": "text"}
@@ -1497,6 +1647,8 @@ def get_profile(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
 def build_profile(payload: dict[str, Any]) -> dict[str, Any]:
     """Trigger agent pipeline and build/refresh the student profile."""
     session_id = _payload_session_id(payload)
+    subject_id = _payload_subject_id(payload)
+    _ensure_session_linked(session_id, subject_id=subject_id)
     message = str(payload.get("message", "我想学习人工智能导论"))
 
     conversation_store.append_message(session_id, "user", message)
@@ -1666,6 +1818,8 @@ def get_resources(
 ) -> dict[str, Any]:
     """Read resources from DB. Supports multi-condition combined filtering and sorting."""
     session_id = _resolve_session_id(sessionId, subjectId)
+    subject_id = str(subjectId).strip()
+    _ensure_session_linked(session_id, subject_id=subject_id)
     _resource_id_set: set[str] = set()
     _resource_id_suffixes: set[str] = set()
     _bookmarked_filter: bool | None = None
@@ -2133,10 +2287,39 @@ def batch_export_resources(payload: dict[str, Any]) -> dict[str, Any]:
 
 @router.post("/resources/generate")
 def generate_resource(payload: dict[str, Any]) -> dict[str, Any]:
-    """Trigger agent pipeline to generate resources for a topic."""
+    """Trigger agent pipeline to generate resources for a topic.
+
+    Accepts optional ``type`` (resource type), ``difficulty``, and ``subjectId``
+    from the frontend to tailor the generated resource.
+    """
     session_id = _payload_session_id(payload)
     topic = str(payload.get("topic", "学习主题"))
-    message = f"请为{topic}生成学习资源"
+    resource_type = str(payload.get("type", "")).strip()
+    difficulty = str(payload.get("difficulty", "")).strip()
+    subject_id = str(payload.get("subjectId", "")).strip()
+    _ensure_session_linked(session_id, subject_id=subject_id)
+
+    # Build a richer prompt that includes type, difficulty, and subject context
+    parts = [f"请为「{topic}」"]
+    if resource_type:
+        type_labels = {
+            "lecture": "生成一份课程讲义",
+            "mindmap": "生成一份思维导图（Mermaid mindmap 格式）",
+            "quiz": "生成一套练习题（含答案和解析）",
+            "reading": "生成一份拓展阅读材料",
+            "case_study": "生成一个实操案例（含代码示例）",
+            "video": "生成一份教学视频脚本/动画大纲",
+            "ppt": "生成一份PPT大纲",
+        }
+        parts.append(type_labels.get(resource_type, f"生成{resource_type}类型的资源"))
+    else:
+        parts.append("生成学习资源")
+    if difficulty and difficulty in ("easy", "medium", "hard"):
+        diff_labels = {"easy": "入门难度", "medium": "中等难度", "hard": "进阶难度"}
+        parts.append(f"难度为{diff_labels[difficulty]}")
+    if subject_id:
+        parts.append(f"所属科目ID为{subject_id}")
+    message = "，".join(parts)
 
     result = _run_agents(message, session_id=session_id)
     resources = [
@@ -2145,6 +2328,145 @@ def generate_resource(payload: dict[str, Any]) -> dict[str, Any]:
     ]
     primary = resources[0] if resources else {"id": "res_new", "title": f"{topic} 个性化资源", "source": "none"}
     return _product_response({"resource": primary}, session_id=session_id, source="agent")
+
+
+@router.post("/resources/import-from-kb")
+def import_resources_from_kb(payload: dict[str, Any]) -> dict[str, Any]:
+    """Import knowledge base chapters directly as resources.
+
+    This bypasses the agent pipeline and creates resources from the course
+    chapter content in the knowledge base.  Useful for seeding the resource
+    library when no agent-generated resources exist yet.
+
+    Accepts:
+        sessionId (required): target session
+        courseId (optional): course to import from (default: first available)
+        subjectId (optional): subject context
+    """
+    session_id = _payload_session_id(payload)
+    course_id = str(payload.get("courseId", "")).strip()
+    subject_id = str(payload.get("subjectId", "")).strip()
+    _ensure_session_linked(session_id, subject_id=subject_id)
+
+    # Find the course to import from
+    if course_id:
+        course = course_catalog.get_course(course_id)
+    else:
+        available = course_catalog.list_courses()
+        course = available[0] if available else None
+
+    if not course:
+        return _product_response(
+            {"imported": 0, "resources": []},
+            session_id=session_id,
+            subject_id=subject_id,
+            message="No course found in knowledge base",
+            source="kb_import",
+        )
+
+    course_name = course.get("course_name", course_id or "课程")
+    chapters = course.get("chapters", [])
+    imported: list[dict[str, Any]] = []
+
+    try:
+        db = SessionLocal()
+        from app.db.repository import upsert_resource as repo_upsert
+
+        for idx, chapter in enumerate(chapters, start=1):
+            chapter_id = str(chapter.get("chapter_id", str(idx).zfill(2)))
+            detail = course_catalog.load_chapter(
+                course.get("course_id", course_id), chapter_id
+            )
+            content = str(detail.get("content", "")) if detail else ""
+            title = str(chapter.get("title", f"第{idx}章"))
+            difficulty = str(chapter.get("difficulty", "medium"))
+
+            resource_id = f"{session_id}_kb_{course.get('course_id', 'kb')}_{chapter_id}"
+            resource_data = {
+                "id": resource_id,
+                "type": "lecture",
+                "title": f"{title}（课程讲义）",
+                "description": f"来自课程「{course_name}」第{idx}章：{title}",
+                "content": content if content else f"## {title}\n\n课程章节内容。",
+                "knowledge_points": [title],
+                "tags": ["knowledge_base", course_name, "auto_import"],
+                "difficulty": difficulty,
+                "estimated_minutes": max(15, len(content) // 300 * 5) if content else 20,
+                "format": "markdown",
+                "source": "knowledge_base",
+                "related_chapter": title,
+                "study_status": "new",
+                "quality_status": "passed",
+            }
+            repo_upsert(db, session_id, resource_data)
+            imported.append({
+                "id": resource_id,
+                "type": "lecture",
+                "title": resource_data["title"],
+                "description": resource_data["description"],
+                "difficulty": difficulty,
+            })
+
+        # Also create stage-level mindmap and reading resources
+        all_titles = [str(ch.get("title", "")) for ch in chapters]
+        mindmap_id = f"{session_id}_kb_{course.get('course_id', 'kb')}_mindmap"
+        mindmap_lines = ["mindmap", f"  root(({course_name}))"]
+        for t in all_titles[:8]:
+            mindmap_lines.append(f"    {t}")
+        repo_upsert(db, session_id, {
+            "id": mindmap_id,
+            "type": "mindmap",
+            "title": f"{course_name}知识结构图",
+            "description": f"课程「{course_name}」全部章节知识结构图",
+            "content": "\n".join(mindmap_lines),
+            "knowledge_points": all_titles,
+            "tags": ["knowledge_base", course_name, "auto_import"],
+            "difficulty": "easy",
+            "estimated_minutes": 5,
+            "format": "mermaid",
+            "source": "knowledge_base",
+            "study_status": "new",
+            "quality_status": "passed",
+        })
+        imported.append({
+            "id": mindmap_id, "type": "mindmap",
+            "title": f"{course_name}知识结构图",
+            "description": "全部章节结构图",
+        })
+
+        reading_id = f"{session_id}_kb_{course.get('course_id', 'kb')}_reading"
+        reading_lines = ["## 课程阅读顺序\n"]
+        for i, t in enumerate(all_titles, 1):
+            reading_lines.append(f"{i}. 阅读「{t}」并整理核心概念和常见误区")
+        repo_upsert(db, session_id, {
+            "id": reading_id,
+            "type": "reading",
+            "title": f"{course_name}拓展阅读路径",
+            "description": f"课程「{course_name}」章节阅读顺序",
+            "content": "\n".join(reading_lines),
+            "knowledge_points": all_titles,
+            "tags": ["knowledge_base", course_name, "auto_import"],
+            "difficulty": "easy",
+            "estimated_minutes": 10,
+            "format": "markdown",
+            "source": "knowledge_base",
+            "study_status": "new",
+            "quality_status": "passed",
+        })
+        imported.append({
+            "id": reading_id, "type": "reading",
+            "title": f"{course_name}拓展阅读路径",
+            "description": "章节阅读顺序",
+        })
+
+        return _product_response(
+            {"imported": len(imported), "resources": imported},
+            session_id=session_id,
+            subject_id=subject_id,
+            source="kb_import",
+        )
+    finally:
+        db.close()
 
 
 @router.get("/resources/{resource_id}/knowledge-graph")
@@ -2332,6 +2654,8 @@ def _apply_node_progress(stages: list[dict[str, Any]], session_id: str = "") -> 
 def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
     """Read the latest learning path from DB. Never triggers agents."""
     session_id = _resolve_session_id(sessionId, subjectId)
+    subject_id = str(subjectId).strip()
+    _ensure_session_linked(session_id, subject_id=subject_id)
 
     def _build_path(stages: list[dict[str, Any]], base: dict[str, Any]) -> dict[str, Any]:
         stages = _apply_node_progress(stages, session_id)
@@ -2415,11 +2739,32 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
 
 @router.post("/learning-path/generate")
 def generate_learning_path(payload: dict[str, Any]) -> dict[str, Any]:
-    """Trigger agent pipeline and generate a learning path."""
+    """Trigger agent pipeline and generate a learning path.
+
+    Accepts optional ``userMessage``, ``courseId``, and ``subjectId`` from the
+    frontend to steer path generation toward the user's stated needs.
+    """
     session_id = _payload_session_id(payload)
+    user_message = str(payload.get("userMessage", "")).strip()
+    course_id = str(payload.get("courseId", "")).strip()
+    subject_id = str(payload.get("subjectId", "")).strip()
+    _ensure_session_linked(session_id, subject_id=subject_id)
 
     state = conversation_store.get(session_id)
-    message = conversation_store.profile_prompt(state, latest_message="请生成学习路径")
+
+    # Prefer explicit userMessage from frontend; fall back to profile prompt
+    if user_message:
+        message = user_message
+        # If courseId is provided, prepend it as context
+        if course_id:
+            selected = course_catalog.get_course(course_id)
+            if selected:
+                message = (
+                    f"目标课程：{selected.get('course_name', course_id)}。{message}"
+                )
+    else:
+        message = conversation_store.profile_prompt(state, latest_message="请生成学习路径")
+
     result = _run_agents(message, session_id=session_id)
     path = _to_learning_path(result)
     return _product_response({"path": path}, session_id=session_id, source="agent")
@@ -2624,6 +2969,8 @@ def auto_advance_node(payload: dict[str, Any]) -> dict[str, Any]:
 def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
     """Read learning analytics from DB. Never triggers agents."""
     session_id = _resolve_session_id(sessionId, subjectId)
+    subject_id = str(subjectId).strip()
+    _ensure_session_linked(session_id, subject_id=subject_id)
 
     analytics = ag_get_analytics(session_id)
     return _product_response(
@@ -2658,6 +3005,8 @@ def learning_timeline(
         range: Time range in days. 0 = all. 1 = today, 7 = last 7 days, 30 = last 30 days.
     """
     session_id = _resolve_session_id(sessionId, subjectId)
+    subject_id = str(subjectId).strip()
+    _ensure_session_linked(session_id, subject_id=subject_id)
     if not session_id:
         return _product_response({"events": [], "total": 0}, session_id="", source="none")
 

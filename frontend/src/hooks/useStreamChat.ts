@@ -45,6 +45,10 @@ export function useStreamChat() {
       setStreaming(true);
       setAgentProgress(null);
 
+      // 创建 AbortController，支持用户点击停止按钮
+      const controller = new AbortController();
+      abortRef.current = controller;
+
       let hasRealAgentProgress = false;  // 追踪是否真的有智能体执行了
 
       try {
@@ -52,7 +56,7 @@ export function useStreamChat() {
           message: content.trim(),
           sessionId: useChatStore.getState().currentSessionId,
           subjectId: useSubjectStore.getState().activeSubject?.id,
-        });
+        }, controller.signal);
 
         const decoder = new TextDecoder();
         let buffer = '';
@@ -122,6 +126,13 @@ export function useStreamChat() {
 
         bumpDataVersion();
       } catch (err) {
+        // 用户主动停止 — 不需要回退，直接结束
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          log.debug('用户主动停止生成');
+          updateLastAssistant((m) => ({ ...m, streaming: false }));
+          setAgentProgress(null);
+          return;
+        }
         log.warn('流式请求失败，尝试非流式回退', err instanceof Error ? err.message : err);
         try {
           const fallback = await sendMessage({

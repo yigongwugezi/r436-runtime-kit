@@ -51,6 +51,9 @@ class SessionModel(Base):
     learner_id: Mapped[str | None] = mapped_column(
         String(64), ForeignKey("learners.id"), nullable=True, index=True, default=None
     )
+    subject_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True, default=None
+    )
     title: Mapped[str] = mapped_column(String(256), default="未命名会话")
     status: Mapped[str] = mapped_column(String(16), default="active")  # active | archived
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)

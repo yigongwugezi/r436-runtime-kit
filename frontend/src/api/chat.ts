@@ -22,9 +22,11 @@ export async function sendMessage(params: SendMessageParams): Promise<ChatRespon
   return data;
 }
 
-/** 获取会话列表 */
-export async function getSessions(): Promise<SessionListResponse> {
-  const { data } = await client.get('/chat/sessions');
+/** 获取会话列表，可按科目过滤 */
+export async function getSessions(subjectId?: string): Promise<SessionListResponse> {
+  const params: Record<string, string> = {};
+  if (subjectId) params.subjectId = subjectId;
+  const { data } = await client.get('/chat/sessions', { params });
   return data;
 }
 
@@ -48,5 +50,19 @@ export async function getQuickCommands(): Promise<{ commands: { id: string; labe
 /** 轮询生成进度 */
 export async function getGenerationProgress(taskId: string): Promise<{ progress: GenerationProgress }> {
   const { data } = await client.get(`/chat/progress/${taskId}`);
+  return data;
+}
+
+/** 获取可用智能体列表 */
+export interface AgentInfo {
+  id: string;
+  name: string;
+  icon: string;
+  description: string;
+  stage: string;
+}
+
+export async function getAgents(): Promise<{ agents: AgentInfo[] }> {
+  const { data } = await client.get('/chat/agents');
   return data;
 }

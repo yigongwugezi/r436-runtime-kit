@@ -26,6 +26,8 @@ export function useLearningEvents(limit = 100, type?: string, range?: number) {
     if (!sessionId) return;
     setLoading(true);
     setError(null);
+    setEvents([]);  // 切换科目时立即清空旧数据
+    setTotal(0);
     try {
       const res = await getLearningTimeline(sessionId, subjectId, limit, type, range);
       setEvents(res.events || []);

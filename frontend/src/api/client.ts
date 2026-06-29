@@ -140,10 +140,11 @@ export function getCurrentSessionId(): string {
   return _sessionIdProvider?.() ?? '';
 }
 
-/** 流式请求 — 返回 ReadableStream reader */
+/** 流式请求 — 返回 ReadableStream reader，支持 AbortSignal */
 export async function streamRequest(
   path: string,
   body: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<ReadableStreamDefaultReader<Uint8Array>> {
   log.debug(`STREAM POST ${path}`);
 
@@ -154,10 +155,12 @@ export async function streamRequest(
       Authorization: `Bearer ${getToken()}`,
     },
     body: JSON.stringify(body),
+    signal,
   });
 
   if (!response.ok || !response.body) {
     log.error(`STREAM 失败 ${path} → ${response.status}`);
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     throw new Error(`Stream error: ${response.status}`);
   }
 

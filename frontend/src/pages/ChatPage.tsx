@@ -2,10 +2,11 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useChatStore } from '../store/chatStore';
 import { useStreamChat } from '../hooks/useStreamChat';
-import { getSessionMessages } from '../api/chat';
+import { getSessionMessages, getQuickCommands, getAgents } from '../api/chat';
+import type { AgentInfo } from '../api/chat';
 import { DEFAULT_QUICK_COMMANDS } from '../utils/constants';
 import { timeAgo } from '../utils/format';
-import type { ChatMessage, GenerationProgress } from '../types/chat';
+import type { ChatMessage, GenerationProgress, QuickCommand } from '../types/chat';
 import { Send, Sparkles, Square, Copy, Check, AlertCircle, Bot, User, RefreshCw, ChevronDown, XCircle, History, Brain, Loader2, BrainCircuit, FileText, Video, Menu } from 'lucide-react';
 import Markdown from '../utils/markdown';
 import ChatHistorySidebar from '../components/chat/ChatHistorySidebar';
@@ -112,7 +113,15 @@ export default function ChatPage() {
   const { send, abort } = useStreamChat();
   const [input, setInput] = useState(''); const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [messagesLoaded, setMessagesLoaded] = useState(false); const [menuOpen, setMenuOpen] = useState(false); const [historyOpen, setHistoryOpen] = useState(false);
+  const [quickCommands, setQuickCommands] = useState<QuickCommand[]>(DEFAULT_QUICK_COMMANDS);
+  const [agents, setAgents] = useState<AgentInfo[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null); const inputRef = useRef<HTMLTextAreaElement>(null); const bottomRef = useRef<HTMLDivElement>(null);
+
+  // Fetch dynamic quick commands and agents on mount
+  useEffect(() => {
+    getQuickCommands().then(res => { if (res.commands?.length) setQuickCommands(res.commands); }).catch(() => {});
+    getAgents().then(res => { if (res.agents?.length) setAgents(res.agents); }).catch(() => {});
+  }, []);
 
   const scrollToBottom = useCallback((smooth = false) => { smooth ? bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) : scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }); }, []);
   useEffect(() => { scrollToBottom(); }, [messages, agentProgress, scrollToBottom]);
@@ -178,7 +187,7 @@ export default function ChatPage() {
                 <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary-100 to-accent-100 flex items-center justify-center mb-4"><Bot className="w-8 h-8 text-primary-600" /></div>
                 <h3 className="font-display text-lg font-semibold text-surface-800 mb-2">开始你的学习之旅</h3>
                 <p className="text-surface-500 text-sm max-w-sm mb-6">告诉系统你的专业、基础和目标，多智能体将为你定制学习方案</p>
-                <div className="flex flex-wrap gap-2">{DEFAULT_QUICK_COMMANDS.map(cmd => <button key={cmd.id} onClick={() => { setInput(cmd.prompt); inputRef.current?.focus(); }} className="px-3 py-2 bg-surface-100 border border-surface-200 rounded-xl text-xs text-surface-600 hover:border-primary-300 hover:text-primary-600 transition-all">{cmd.icon} {cmd.label}</button>)}</div>
+                <div className="flex flex-wrap gap-2">{quickCommands.map(cmd => <button key={cmd.id} onClick={() => { setInput(cmd.prompt); inputRef.current?.focus(); }} className="px-3 py-2 bg-surface-100 border border-surface-200 rounded-xl text-xs text-surface-600 hover:border-primary-300 hover:text-primary-600 transition-all">{cmd.icon} {cmd.label}</button>)}</div>
               </div>
             ) : (
               <>
@@ -212,10 +221,17 @@ export default function ChatPage() {
           <div className="bg-white rounded-2xl p-5 shadow-soft">
             <div className="flex items-center gap-2 mb-4"><Bot size={18} className="text-primary-600" /><h3 className="font-semibold text-surface-800">协同智能体</h3></div>
             <div className="space-y-3">
-              {['🧠 知识图谱', '📝 内容生成', '🎯 诊断分析', '📊 进度追踪'].map((name, i) => (
-                <div key={i} className="flex items-center gap-3 p-2 rounded-xl hover:bg-surface-50 transition-colors">
-                  <div className="w-9 h-9 rounded-xl bg-primary-50 flex items-center justify-center text-sm">{['🧠','📝','🎯','📊'][i]}</div>
-                  <div className="flex-1 min-w-0"><p className="text-sm font-medium text-surface-800">{name}</p><p className="text-xs text-surface-400 truncate">智能体在线</p></div>
+              {(agents.length > 0 ? agents : [
+                { id: 'profile_agent', name: '画像分析', icon: '🧠', description: '分析学习背景，构建多维学习画像', stage: 'profiling' },
+                { id: 'knowledge_agent', name: '知识检索', icon: '📚', description: '从课程知识库检索相关知识点', stage: 'profiling' },
+                { id: 'diagnosis_agent', name: '诊断分析', icon: '🎯', description: '诊断薄弱环节和知识缺口', stage: 'profiling' },
+                { id: 'planner_agent', name: '路径规划', icon: '📊', description: '规划个性化学习阶段', stage: 'planning' },
+                { id: 'resource_agent', name: '资源生成', icon: '📝', description: '生成讲义、思维导图等资源', stage: 'generating' },
+                { id: 'review_agent', name: '质量审查', icon: '✅', description: '审查资源准确性和完整性', stage: 'generating' },
+              ]).map((agent) => (
+                <div key={agent.id} className="flex items-center gap-3 p-2 rounded-xl hover:bg-surface-50 transition-colors">
+                  <div className="w-9 h-9 rounded-xl bg-primary-50 flex items-center justify-center text-sm">{agent.icon}</div>
+                  <div className="flex-1 min-w-0"><p className="text-sm font-medium text-surface-800">{agent.name}</p><p className="text-xs text-surface-400 truncate">{agent.description}</p></div>
                   <span className="w-2 h-2 rounded-full bg-success-500" />
                 </div>
               ))}

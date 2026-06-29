@@ -73,6 +73,7 @@ def init_db() -> None:
     migrations = {
         "sessions": {
             "learner_id": "VARCHAR(64)",
+            "subject_id": "VARCHAR(64)",
         },
         "learning_paths": {
             "description": "TEXT",

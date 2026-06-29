@@ -131,3 +131,18 @@ export async function autoAdvanceNode(params: {
   const { data } = await client.patch('/learning-path/auto-advance', params);
   return data;
 }
+
+/** 从知识库直接导入资源 */
+export interface ImportFromKbResult {
+  imported: number;
+  resources: { id: string; type: string; title: string; description: string; difficulty?: string }[];
+}
+
+export async function importResourcesFromKb(params: {
+  sessionId: string;
+  courseId?: string;
+  subjectId?: string;
+}): Promise<ImportFromKbResult> {
+  const { data } = await client.post('/resources/import-from-kb', params);
+  return data;
+}

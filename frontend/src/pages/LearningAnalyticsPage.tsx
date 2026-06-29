@@ -109,6 +109,61 @@ export default function LearningAnalyticsPage() {
         </div>
       )}
 
+      {analytics.recommendations && analytics.recommendations.length > 0 && (
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <h3 className="font-display text-lg font-semibold text-surface-800 mb-4 flex items-center gap-2"><Zap size={18} className="text-warning-500" />学习建议</h3>
+          <div className="space-y-3">
+            {analytics.recommendations.slice(0, 5).map((rec: RecommendationItem, i: number) => (
+              <div key={i} className="flex items-start gap-3 p-3 rounded-xl bg-warning-50/50 border border-warning-100/50">
+                <span className={`mt-0.5 w-2 h-2 rounded-full flex-shrink-0 ${rec.priority === 'high' ? 'bg-error-500' : rec.priority === 'medium' ? 'bg-warning-500' : 'bg-surface-400'}`} />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-surface-700">{rec.title}</p>
+                  <p className="text-xs text-surface-500 mt-0.5">{rec.reason}</p>
+                </div>
+                {rec.target_resource_id && (
+                  <button onClick={() => nav(`/resources/${rec.target_resource_id}`)} className="text-xs text-primary-600 hover:text-primary-700 font-medium flex-shrink-0">查看 →</button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {analytics.topResources && analytics.topResources.length > 0 && (
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <h3 className="font-display text-lg font-semibold text-surface-800 mb-4 flex items-center gap-2"><Star size={18} className="text-accent-500" />常用资源</h3>
+          <div className="space-y-2.5">
+            {analytics.topResources.slice(0, 5).map((r, i) => (
+              <div key={i} className="flex items-center justify-between py-2">
+                <div className="flex items-center gap-3">
+                  <span className="text-xs font-bold text-surface-400 w-5">{i + 1}</span>
+                  <span className="text-sm text-surface-700 truncate max-w-[320px]">{r.title || r.resourceId}</span>
+                </div>
+                <span className="text-xs text-surface-500">访问 {r.count} 次</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {analytics.resourceTypeBreakdown && Object.keys(analytics.resourceTypeBreakdown).length > 0 && (
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <h3 className="font-display text-lg font-semibold text-surface-800 mb-4 flex items-center gap-2"><BarChart3 size={18} className="text-primary-500" />资源类型分布</h3>
+          <div className="space-y-3">
+            {Object.entries(analytics.resourceTypeBreakdown).sort(([, a], [, b]) => (b as number) - (a as number)).slice(0, 6).map(([k, v]) => {
+              const max = Math.max(...Object.values(analytics.resourceTypeBreakdown).map(Number));
+              const typeLabels: Record<string, string> = { lecture: '讲义', mindmap: '思维导图', quiz: '练习', reading: '阅读', case_study: '案例', video: '视频', ppt: 'PPT' };
+              return (
+                <div key={k} className="space-y-1.5">
+                  <div className="flex items-center justify-between text-sm"><span className="text-surface-600">{typeLabels[k] || k}</span><span className="text-surface-500">{v as number}</span></div>
+                  <div className="h-2 bg-surface-100 rounded-full overflow-hidden"><div className="h-full bg-accent-500 rounded-full transition-all duration-700" style={{ width: `${Math.max(((v as number) / max) * 100, 4)}%` }} /></div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {analytics.quizTrend && analytics.quizTrend.length > 0 && (
         <div className="bg-white rounded-2xl p-6 shadow-soft">
           <h3 className="font-display text-lg font-semibold text-surface-800 mb-4">练习正确率趋势</h3>

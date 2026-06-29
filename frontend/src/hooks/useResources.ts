@@ -31,6 +31,9 @@ export function useResources(initialFilter?: ResourceFilter) {
     pendingFilterRef.current = undefined;
     setLoading(true);
     setError(null);
+    // 切换科目/会话时先清空旧数据，防止闪现上个科目的资源
+    setResources([]);
+    setTotal(0);
     try {
       const params: Record<string, any> = { ...f, sessionId };
       if (subjectId) params.subjectId = subjectId;
