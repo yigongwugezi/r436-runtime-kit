@@ -252,7 +252,7 @@ function AgentPipelineProgress({
       <div className="flex items-center gap-2">
         <div className="w-4 h-4 rounded-full border-2 border-brand-500 border-t-transparent animate-spin" />
         <span className="text-xs font-semibold text-gray-800">{progress.stage || '正在处理中…'}</span>
-        <span className="text-[10px] text-brand-500 font-medium ml-auto">{progress.progress}%</span>
+        <span className="text-[10px] text-brand-500 font-medium ml-auto tabular-nums">{Math.round(progress.progress)}%</span>
       </div>
 
       <div className="flex items-center gap-0.5">
@@ -284,7 +284,7 @@ function AgentPipelineProgress({
       </div>
 
       <div className="h-1 bg-gray-100 rounded-full overflow-hidden">
-        <div className="h-full bg-gradient-to-r from-brand-500 to-brand-600 rounded-full transition-all duration-700 ease-out" style={{ width: `${progress.progress}%` }} />
+        <div className="h-full bg-gradient-to-r from-brand-500 to-brand-600 rounded-full transition-all duration-700 ease-out" style={{ width: `${Math.round(progress.progress)}%` }} />
       </div>
 
       {/* ── Token-level detail (e.g. "已生成 200 个字符...") ── */}

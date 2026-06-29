@@ -289,9 +289,15 @@ class AgentOrchestrator:
             llm_range = AGENT_LLM_RANGES[agent.agent_id]
             pct_start, pct_end, max_tokens = llm_range
             token_count = [0]  # mutable counter for closure
+            last_pct = [pct_start]  # mutable: ensure monotonic non-decreasing
+            # Throttle: emit progress every Nth token to avoid flooding the SSE queue
+            THROTTLE_EVERY = 5
 
             def on_llm_chunk(_token_text: str) -> None:
                 token_count[0] += 1
+                # Only emit progress every Nth token
+                if token_count[0] % THROTTLE_EVERY != 0:
+                    return
                 if max_tokens and max_tokens > 0:
                     sub_pct = pct_start + (token_count[0] / max_tokens) * (
                         pct_end - pct_start
@@ -303,6 +309,12 @@ class AgentOrchestrator:
                         pct_end - pct_start
                     ) * 0.1
                     sub_pct = min(pct_start + 0.5 * (pct_end - pct_start), sub_pct)
+
+                # Round and clamp to be monotonically non-decreasing
+                sub_pct = round(sub_pct, 1)
+                if sub_pct <= last_pct[0]:
+                    return
+                last_pct[0] = sub_pct
 
                 stage_key = self.AGENT_STAGE_MAP.get(agent.agent_id, ("", 0))[0]
                 label_map = {
