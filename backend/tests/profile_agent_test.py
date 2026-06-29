@@ -86,7 +86,63 @@ def test_profile_agent_llm_success_is_tagged_as_generated() -> None:
     assert_true(profile["knowledge_base"]["source"] == "llm_generated", "LLM-produced dimensions should be tagged as llm_generated")
 
 
+def _rule_profile(message: str, facts: dict | None = None, diagnosis: dict | None = None) -> dict:
+    agent = ProfileAgent(llm_client=None)
+    return agent.run(
+        {
+            "user_message": message,
+            "profile_facts": facts or {},
+            "diagnosis": diagnosis or {},
+        }
+    )["profile"]
+
+
+def test_profile_agent_learning_target_extraction() -> None:
+    cases = [
+        ("我要学习微积分", {"target_course": "习微积分"}, "微积分", "习微积分"),
+        ("我想学微积分", {}, "微积分", "学微积分"),
+        ("我要学高等数学", {}, "高等数学", "学高等数学"),
+        ("我想学习机器学习", {}, "机器学习", "习机器学习"),
+        ("我准备学习数据结构", {}, "数据结构", ""),
+        ("我想补一下线性代数", {}, "线性代数", "一下线性代数"),
+    ]
+    for message, facts, expected, forbidden in cases:
+        profile = _rule_profile(message, facts)
+        target = profile["interest_direction"]["value"]
+        assert_true(target == expected, f"{message} target should be {expected}, got {target}")
+        if forbidden:
+            assert_true(forbidden not in target, f"{message} target should not contain {forbidden}")
+
+
+def test_profile_agent_does_not_default_time_budget() -> None:
+    profile = _rule_profile("我要学习微积分")
+    rhythm = profile["learning_rhythm"]
+    assert_true(rhythm["value"] != "1个月", f"time_budget should not default to 1个月: {rhythm}")
+    assert_true(rhythm["evidence"] == "", f"missing time_budget should not have evidence: {rhythm}")
+
+
+def test_profile_agent_extracts_explicit_time_budget() -> None:
+    profile = _rule_profile("我想一个月学完微积分")
+    assert_true(profile["interest_direction"]["value"] == "微积分", f"target should be 微积分: {profile['interest_direction']}")
+    assert_true(profile["learning_rhythm"]["value"] in {"一个月", "1个月"}, f"explicit time_budget should be kept: {profile['learning_rhythm']}")
+
+
+def test_profile_agent_filters_weak_point_placeholders() -> None:
+    profile = _rule_profile(
+        "我要学习微积分",
+        {"weak_points": "无诊断数据"},
+        {"weak_knowledge_points": [{"name": "无诊断数据"}]},
+    )
+    weak = profile["error_patterns"]
+    assert_true("无诊断数据" not in weak["value"], f"placeholder should not become weak point: {weak}")
+    assert_true(weak["evidence"] == "", f"placeholder should not leave weak-point evidence: {weak}")
+
+
 if __name__ == "__main__":
     test_profile_agent_rule_fallback_outputs_9_dimensions()
     test_profile_agent_llm_success_is_tagged_as_generated()
+    test_profile_agent_learning_target_extraction()
+    test_profile_agent_does_not_default_time_budget()
+    test_profile_agent_extracts_explicit_time_budget()
+    test_profile_agent_filters_weak_point_placeholders()
     print("PASS profile_agent_test")
