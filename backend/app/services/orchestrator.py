@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import json
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from concurrent.futures import (
+    ThreadPoolExecutor,
+    TimeoutError as FuturesTimeoutError,
+    as_completed,
+)
 from typing import Any, Callable
 
 from app.agents import (
@@ -34,6 +38,14 @@ AGENT_OUTPUT_KEYS: dict[str, list[str]] = {
     "planner_agent": ["learning_path", "estimatedDays"],
     "resource_agent": ["resources"],
     "review_agent": ["review"],
+}
+
+# ── Per-agent LLM progress ranges for chunk-level interpolation ──────
+# (pct_start, pct_end, max_tokens_or_None)
+AGENT_LLM_RANGES: dict[str, tuple[int, int, int | None]] = {
+    "profile_agent": (10, 25, None),
+    "planner_agent": (40, 55, 1600),
+    "resource_agent": (55, 75, 2200),
 }
 
 
@@ -119,32 +131,80 @@ class AgentOrchestrator:
         any_failed = False
         overall_error_parts: list[str] = []
 
-        for agent in self._build_agents():
-            merged_context = {**context, **result}
-            step = self._run_single_agent(agent, merged_context)
+        # ── Wave-based execution ────────────────────────────────────
+        # Wave 1: ProfileAgent (LLM call — must complete first)
+        # Wave 2: KnowledgeAgent + DiagnosisAgent (no LLM, parallel)
+        # Wave 3: PlannerAgent (LLM call)
+        # Wave 4: ResourceAgent (LLM + RAG)
+        # Wave 5: ReviewAgent (no LLM)
+        WAVES: list[list[str]] = [
+            ["profile_agent"],
+            ["knowledge_agent", "diagnosis_agent"],
+            ["planner_agent"],
+            ["resource_agent"],
+            ["review_agent"],
+        ]
+        agent_map = {a.agent_id: a for a in self._build_agents()}
+
+        def _merge_step(agent_id: str, step: dict[str, Any]) -> None:
+            """Merge a completed agent step into the result dict."""
+            nonlocal any_failed
             result["agent_steps"].append(step)
 
             if step["status"] == "completed":
-                # Merge agent outputs (everything except the step metadata)
-                for key in AGENT_OUTPUT_KEYS.get(agent.agent_id, []):
+                for key in AGENT_OUTPUT_KEYS.get(agent_id, []):
                     if key in step:
                         result[key] = step[key]
             elif step["status"] in {"failed", "timeout"}:
                 any_failed = True
                 err = step.get("error", "unknown error")
-                overall_error_parts.append(f"{agent.agent_id}: {err}")
-                # Populate fallback keys so downstream agents have empty structures
-                for key in AGENT_OUTPUT_KEYS.get(agent.agent_id, []):
+                overall_error_parts.append(f"{agent_id}: {err}")
+                for key in AGENT_OUTPUT_KEYS.get(agent_id, []):
                     if key not in result:
-                        result.setdefault(key, [] if key in {"resources", "learning_path"} else {})
+                        result.setdefault(
+                            key,
+                            [] if key in {"resources", "learning_path"} else {},
+                        )
 
-            # ── Report progress after each agent ──
+            # Report progress after each agent completes
             if progress_callback:
-                stage_key = self.AGENT_STAGE_MAP.get(agent.agent_id, ("", 0))[0]
-                pct = self.AGENT_STAGE_MAP.get(agent.agent_id, ("", 0))[1]
-                label = AGENT_LABELS.get(agent.agent_id, agent.agent_name)
+                stage_key = self.AGENT_STAGE_MAP.get(agent_id, ("", 0))[0]
+                pct = self.AGENT_STAGE_MAP.get(agent_id, ("", 0))[1]
+                label = AGENT_LABELS.get(agent_id, "Unknown")
                 if stage_key:
                     progress_callback(stage_key, label, pct)
+
+        for wave in WAVES:
+            agents_in_wave = [
+                agent_map[aid] for aid in wave if aid in agent_map
+            ]
+            if not agents_in_wave:
+                continue
+
+            if len(agents_in_wave) == 1:
+                agent = agents_in_wave[0]
+                merged_context = {**context, **result}
+                step = self._run_single_agent(
+                    agent, merged_context, progress_callback=progress_callback
+                )
+                _merge_step(agent.agent_id, step)
+            else:
+                # Parallel execution for independent agents
+                merged_context = {**context, **result}
+                with ThreadPoolExecutor(max_workers=len(agents_in_wave)) as executor:
+                    futures = {
+                        executor.submit(
+                            self._run_single_agent,
+                            agent,
+                            merged_context,
+                            progress_callback,
+                        ): agent
+                        for agent in agents_in_wave
+                    }
+                    for future in as_completed(futures):
+                        agent = futures[future]
+                        step = future.result()
+                        _merge_step(agent.agent_id, step)
 
         # Determine overall status
         if not result["agent_steps"]:
@@ -197,7 +257,12 @@ class AgentOrchestrator:
 
     # ── Single-agent execution ─────────────────────────────────────────
 
-    def _run_single_agent(self, agent, context: dict[str, Any]) -> dict[str, Any]:
+    def _run_single_agent(
+        self,
+        agent,
+        context: dict[str, Any],
+        progress_callback: Callable | None = None,
+    ) -> dict[str, Any]:
         """Run a single agent with timeout and error handling.
 
         Returns a step dict compatible with ``AgentStepResult``.
@@ -213,6 +278,47 @@ class AgentOrchestrator:
             "started_at": start,
             "finished_at": 0.0,
         }
+
+        # ── Wire chunk callback for agents that use LLM ────────────────
+        chunk_registered = False
+        if (
+            hasattr(self.llm_client, "set_chunk_callback")
+            and agent.agent_id in AGENT_LLM_RANGES
+            and progress_callback
+        ):
+            llm_range = AGENT_LLM_RANGES[agent.agent_id]
+            pct_start, pct_end, max_tokens = llm_range
+            token_count = [0]  # mutable counter for closure
+
+            def on_llm_chunk(_token_text: str) -> None:
+                token_count[0] += 1
+                if max_tokens and max_tokens > 0:
+                    sub_pct = pct_start + (token_count[0] / max_tokens) * (
+                        pct_end - pct_start
+                    )
+                    sub_pct = min(sub_pct, pct_end)
+                else:
+                    # No max_tokens known — creep forward slowly
+                    sub_pct = pct_start + ((token_count[0] % 50) / 50) * (
+                        pct_end - pct_start
+                    ) * 0.1
+                    sub_pct = min(pct_start + 0.5 * (pct_end - pct_start), sub_pct)
+
+                stage_key = self.AGENT_STAGE_MAP.get(agent.agent_id, ("", 0))[0]
+                label_map = {
+                    "profile_agent": "正在生成画像",
+                    "knowledge_agent": "正在检索知识",
+                    "diagnosis_agent": "正在诊断分析",
+                    "planner_agent": "正在规划路径",
+                    "resource_agent": "正在生成资源",
+                    "review_agent": "正在检查质量",
+                }
+                label = label_map.get(agent.agent_id, agent.agent_name)
+                detail = f"已生成 {token_count[0]} 个字符..."
+                progress_callback(stage_key, label, sub_pct, detail=detail)
+
+            self.llm_client.set_chunk_callback(on_llm_chunk)
+            chunk_registered = True
 
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
@@ -235,7 +341,10 @@ class AgentOrchestrator:
                         step.update(fallback)
                     except Exception:
                         import logging
-                        logging.getLogger("app.services.orchestrator").warning("Failed to merge fallback for agent %s", step.get("agent_id", "unknown"))
+                        logging.getLogger("app.services.orchestrator").warning(
+                            "Failed to merge fallback for agent %s",
+                            step.get("agent_id", "unknown"),
+                        )
 
                     return step
 
@@ -270,7 +379,14 @@ class AgentOrchestrator:
                 step.update(fallback)
             except Exception:
                 import logging
-                logging.getLogger("app.services.orchestrator").warning("Failed to merge fallback in outer handler for agent %s", step.get("agent_id", "unknown"))
+                logging.getLogger("app.services.orchestrator").warning(
+                    "Failed to merge fallback in outer handler for agent %s",
+                    step.get("agent_id", "unknown"),
+                )
+
+        finally:
+            if chunk_registered and hasattr(self.llm_client, "set_chunk_callback"):
+                self.llm_client.set_chunk_callback(None)
 
         step["finished_at"] = time.time()
         step["duration_ms"] = (step["finished_at"] - start) * 1000

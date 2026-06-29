@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     agent_run_timeout: int = 300  # seconds for full orchestrator run
     llm_retry_count: int = 2  # number of retries for failed LLM calls
     llm_retry_delay: float = 1.0  # seconds between retries
-    llm_request_timeout: int = 15  # seconds for a single LLM HTTP request
+    llm_request_timeout: int = 120  # seconds for a single LLM HTTP request
     enable_mock_fallback: bool = False  # demo_result fallback is opt-in for local demos only
 
     # Learning event deduplication

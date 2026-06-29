@@ -287,10 +287,15 @@ function AgentPipelineProgress({
         <div className="h-full bg-gradient-to-r from-brand-500 to-brand-600 rounded-full transition-all duration-700 ease-out" style={{ width: `${progress.progress}%` }} />
       </div>
 
+      {/* ── Token-level detail (e.g. "已生成 200 个字符...") ── */}
+      {progress.detail && (
+        <p className="text-[9px] text-gray-400 truncate">{progress.detail}</p>
+      )}
+
       {longWait && (
         <div className="flex items-center gap-1.5 p-1.5 bg-amber-50 border border-amber-100 rounded-lg">
           <span className="text-amber-500 text-[10px]">⏳</span>
-          <p className="text-[9px] text-amber-600">已持续 {elapsed} 秒，多智能体协同请耐心等待…</p>
+          <p className="text-[9px] text-amber-600">{progress.detail || `已持续 ${elapsed} 秒，多智能体协同请耐心等待…`}</p>
         </div>
       )}
     </div>

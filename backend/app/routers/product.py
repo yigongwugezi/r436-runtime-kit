@@ -1197,9 +1197,16 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
                         "generating":  ("generating", "正在生成资源"),
                         "reviewing":   ("generating", "正在生成资源"),
                     }
-                    def on_progress(stage_key: str, stage_label: str, pct: int):
-                        mapped_key, mapped_label = _STAGE_MAP.get(stage_key, (stage_key, stage_label))
-                        progress_q.put(("progress", mapped_key, mapped_label, pct))
+                    def on_progress(
+                        stage_key: str, stage_label: str, pct: int,
+                        detail: str | None = None,
+                    ):
+                        mapped_key, mapped_label = _STAGE_MAP.get(
+                            stage_key, (stage_key, stage_label)
+                        )
+                        progress_q.put(
+                            ("progress", mapped_key, mapped_label, pct, detail)
+                        )
                     reply, ran = _reply_for_intent(
                         message, intent, session_id,
                         progress_callback=on_progress,
@@ -1220,8 +1227,11 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
                     msg = progress_q.get(timeout=0.5)
                     kind = msg[0]
                     if kind == "progress":
-                        _, stage_key, stage_label, pct = msg
-                        yield _to_event(stage_label, stage_key, pct)
+                        _, stage_key, stage_label, pct, detail = msg
+                        extra: dict[str, Any] = {}
+                        if detail:
+                            extra["detail"] = detail
+                        yield _to_event(stage_label, stage_key, pct, **extra)
                     elif kind == "done":
                         break
                     elif kind == "error":
