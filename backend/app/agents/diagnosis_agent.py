@@ -9,6 +9,7 @@ class DiagnosisAgent(BaseAgent):
     agent_name = "学习诊断智能体"
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
+        user_message = str(context.get("user_message") or "").strip()
         profile = self._profile_map(context.get("profile"))
         profile_facts = context.get("profile_facts") if isinstance(context.get("profile_facts"), dict) else {}
         stages = self._stages(context.get("learning_path"))
@@ -19,6 +20,7 @@ class DiagnosisAgent(BaseAgent):
         candidates = self._event_candidates(analytics)
         existing_diagnosis = context.get("diagnosis") if isinstance(context.get("diagnosis"), dict) else {}
         candidates.extend(self._existing_diagnosis_candidates(existing_diagnosis))
+        candidates.extend(self._message_candidates(user_message))
         candidates.extend(self._profile_candidates(profile, profile_facts))
         candidates = self._deduplicate(candidates)
 
@@ -35,6 +37,9 @@ class DiagnosisAgent(BaseAgent):
         next_actions = self._next_actions(weak_topics, analytics)
         confidence = self._overall_confidence(weak_topics, analytics)
         reason = self._overall_reason(weak_topics)
+        evidence_chain = self._evidence_chain(weak_topics, user_message)
+        needs_more_evidence = self._needs_more_evidence(weak_topics, analytics)
+        risk_flags = self._risk_flags(weak_topics, analytics, profile, stages, resources)
 
         weak_knowledge_points = [
             {
@@ -51,15 +56,21 @@ class DiagnosisAgent(BaseAgent):
 
         diagnosis = {
             "summary": self._summary(weak_topics),
+            "diagnosis_summary": self._summary(weak_topics),
             "weak_topics": weak_topics,
             # Keep the existing field for PlannerAgent, ResourceAgent and persisted snapshots.
             "weak_knowledge_points": weak_knowledge_points,
+            "strengths": [],
             "reason": reason,
             "source": "rule_based_diagnosis",
             "confidence": confidence,
             "next_actions": next_actions,
+            "recommended_next_actions": next_actions,
             "limitations": limitations,
             "evidence": self._collect_evidence(weak_topics, analytics),
+            "evidence_chain": evidence_chain,
+            "needs_more_evidence": needs_more_evidence,
+            "risk_flags": risk_flags,
             "recommended_stage_id": weak_topics[0].get("recommended_stage_id") if weak_topics else None,
             "recommended_resource_ids": self._recommended_resource_ids(weak_topics),
             "priority": weak_topics[0].get("priority", "low") if weak_topics else "low",
@@ -233,6 +244,48 @@ class DiagnosisAgent(BaseAgent):
                 }
             )
         return candidates
+
+    def _message_candidates(self, message: str) -> list[dict[str, Any]]:
+        topics = self._message_topics(message)
+        candidates = []
+        for topic in topics:
+            candidates.append(
+                {
+                    "topic": topic,
+                    "reason": "用户消息明确表达该知识点不会、混淆或基础薄弱。",
+                    "source": "user_message",
+                    "confidence": 0.74,
+                    "priority": "high",
+                    "evidence": [f"用户自述：{message}"],
+                }
+            )
+        return candidates
+
+    def _message_topics(self, message: str) -> list[str]:
+        text = message.strip()
+        if not text:
+            return []
+        normalized = re.sub(r"[\s。！？!?]", "", text)
+        if any(phrase in normalized for phrase in ("学得很乱", "不太会", "哪里有问题", "不知道哪里", "问题在哪")):
+            return []
+
+        patterns = (
+            r"我?(.+?)(?:都)?不会",
+            r"我?(.+?)(?:总是)?搞混",
+            r"我?(.+?)基础差",
+            r"我?(.+?)不好",
+            r"我?(.+?)不懂",
+        )
+        topics: list[str] = []
+        for pattern in patterns:
+            for match in re.finditer(pattern, normalized):
+                raw = match.group(1)
+                raw = re.split(r"但|但是|想学|需要|所以|然后|再", raw)[0]
+                for topic in re.split(r"和|与|、|，|,", raw):
+                    topic = topic.strip("我也还的了")
+                    if topic and topic not in {"感觉", "哪里", "什么", "基础"}:
+                        topics.append(topic)
+        return list(dict.fromkeys(topics))[:4]
 
     def _profile_candidates(
         self,
@@ -684,6 +737,81 @@ class DiagnosisAgent(BaseAgent):
         evidence.extend(self._analytics_evidence(analytics))
         evidence.extend(self._event_source_evidence(analytics))
         return list(dict.fromkeys(evidence))
+
+    def _evidence_chain(self, weak_topics: list[dict[str, Any]], user_message: str) -> list[dict[str, Any]]:
+        chain: list[dict[str, Any]] = []
+        for item in weak_topics:
+            source = self._chain_source(str(item.get("source") or "rule_based"))
+            topic = str(item.get("topic") or "")
+            signal = self._chain_signal(item, user_message)
+            chain.append(
+                {
+                    "source": source,
+                    "signal": signal,
+                    "related_knowledge_point": topic,
+                    "weight": self._clamp(item.get("confidence"), default=0.4),
+                    "reason": str(item.get("reason") or "该证据支持当前薄弱点诊断。"),
+                }
+            )
+        if not chain:
+            signal = user_message or "缺少明确薄弱点、学习路径或测验结果。"
+            chain.append(
+                {
+                    "source": "fallback_rule",
+                    "signal": signal,
+                    "related_knowledge_point": None,
+                    "weight": 0.2,
+                    "reason": "当前输入只能说明存在学习困惑，尚不足以定位具体知识点。",
+                }
+            )
+        return chain
+
+    def _chain_source(self, source: str) -> str:
+        mapping = {
+            "user_message": "user_message",
+            "profile": "profile",
+            "learning_path_inference": "learning_path",
+            "course_knowledge_inference": "course_catalog",
+            "quiz_result": "quiz_result",
+            "quiz_submit": "quiz_result",
+            "practice_result": "quiz_result",
+            "analytics": "quiz_result",
+        }
+        return mapping.get(source, "rule_based")
+
+    def _chain_signal(self, item: dict[str, Any], user_message: str) -> str:
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), list) else []
+        if evidence:
+            return str(evidence[0])
+        if item.get("source") == "user_message" and user_message:
+            return user_message
+        return str(item.get("topic") or "weak topic candidate")
+
+    def _needs_more_evidence(self, weak_topics: list[dict[str, Any]], analytics: dict[str, Any]) -> bool:
+        if not weak_topics:
+            return True
+        return not self._has_behavioral_diagnosis_evidence(analytics)
+
+    def _risk_flags(
+        self,
+        weak_topics: list[dict[str, Any]],
+        analytics: dict[str, Any],
+        profile: dict[str, Any],
+        stages: list[dict[str, Any]],
+        resources: list[dict[str, Any]],
+    ) -> list[str]:
+        flags = []
+        if not weak_topics:
+            flags.append("insufficient_evidence")
+        if not self._has_behavioral_diagnosis_evidence(analytics):
+            flags.append("missing_quiz_or_practice_result")
+        if not profile:
+            flags.append("missing_profile")
+        if not stages:
+            flags.append("missing_learning_path")
+        if not resources:
+            flags.append("missing_resources")
+        return flags
 
     def _event_source_evidence(self, analytics: dict[str, Any]) -> list[str]:
         evidence = []
