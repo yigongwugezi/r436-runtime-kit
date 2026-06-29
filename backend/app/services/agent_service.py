@@ -148,7 +148,7 @@ def run_agents(
             state.facts.get("target_course") or user_message,
         )
         resolved_course_id = course_id or str(
-            (selected_course or {}).get("course_id") or "ai_intro"
+            (selected_course or {}).get("course_id") or f"custom_{abs(hash(str(state.facts.get('target_course') or user_message))) % 10000:04d}"
         )
 
     # Run orchestrator

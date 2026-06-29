@@ -325,7 +325,7 @@ def _run_agents(
             "chapter_count": 0,
         }
 
-    course_id = str(selected_course.get("course_id") or "ai_intro")
+    course_id = str(selected_course.get("course_id"))
     result = ag_run_agents(
         session_id=session_id,
         user_message=message,
