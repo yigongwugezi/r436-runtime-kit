@@ -25,6 +25,66 @@ const GEN_PIPELINE: { key: string; label: string }[] = [
   { key: 'saving',        label: '保存结果' },
 ];
 
+function PlusIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+    </svg>
+  );
+}
+
+function SessionTabs({ currentSessionId, onSelect, onDelete, onNew }: {
+  currentSessionId: string;
+  onSelect: (id: string) => void;
+  onDelete: (id: string) => void;
+  onNew: () => void;
+}) {
+  const sessions = useChatStore((s: any) => s.sessions) || [];
+  const sorted = sessions.slice().sort((a: any, b: any) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  const tabsRef = useRef<HTMLDivElement>(null);
+
+  return (
+    <div className="flex items-center gap-0.5 overflow-x-auto border-b border-gray-200 flex-shrink-0 bg-white" ref={tabsRef}>
+      {sorted.map((ses: any) => {
+        const active = ses.id === currentSessionId;
+        return (
+          <div
+            key={ses.id}
+            onClick={() => onSelect(ses.id)}
+            className={`group/tab flex items-center gap-1.5 px-3 py-1.5 text-[10px] cursor-pointer transition-all rounded-t-lg border border-b-0 max-w-[120px] relative flex-shrink-0 ${
+              active
+                ? 'bg-white text-gray-800 border-gray-200 font-medium'
+                : 'bg-gray-50 text-gray-500 border-transparent hover:bg-gray-100 hover:text-gray-700'
+            }`}
+          >
+            <span className="overflow-hidden whitespace-nowrap flex-1 relative">
+              {ses.title || '新对话'}
+              <div className={`absolute right-0 top-0 bottom-0 w-8 bg-gradient-to-l pointer-events-none ${
+                active
+                  ? 'from-white via-white/80 to-transparent'
+                  : 'from-gray-50 via-gray-50/80 to-transparent group-hover/tab:from-gray-100 group-hover/tab:via-gray-100/80'
+              }`} />
+            </span>
+            <button
+              onClick={(e) => { e.stopPropagation(); if (sessions.length <= 1) return; onDelete(ses.id); }}
+              className="flex-shrink-0 w-3.5 h-3.5 rounded-full flex items-center justify-center opacity-0 group-hover/tab:opacity-100 transition-opacity text-gray-400 hover:text-red-500 hover:bg-red-50 z-10"
+            >
+              <XCircle className="w-2.5 h-2.5" />
+            </button>
+          </div>
+        );
+      })}
+      <button
+        onClick={onNew}
+        className="flex-shrink-0 w-6 h-6 rounded-md flex items-center justify-center text-gray-400 hover:text-brand-600 hover:bg-brand-50 transition-colors ml-1"
+        title="新建对话"
+      >
+        <PlusIcon className="w-3 h-3" />
+      </button>
+    </div>
+  );
+}
+
 /* ===================================================================
  * 消息气泡
  * =================================================================== */
@@ -129,7 +189,6 @@ function AgentPipelineProgress({
   const [doneVisible, setDoneVisible] = useState(false);
   const isDone = progress.done && !progress.error;
 
-  // 完成时延迟 1.5 秒再显示跳转按钮，避免闪烁
   useEffect(() => {
     if (isDone) {
       const t = setTimeout(() => setDoneVisible(true), 1500);
@@ -277,7 +336,7 @@ function StreamingWaitIndicator() {
 }
 
 /* ===================================================================
- * 对话记录弹窗 — 浏览器标签页风格
+ * 对话记录弹窗
  * =================================================================== */
 function HistoryPopover({ sessions, currentSessionId, onSelect, onDelete, onRename, onNew, onClose }: {
   sessions: any[];
@@ -546,6 +605,17 @@ export default function ChatPanel({ open, onClose, panelWidth = 420, onWidthChan
             </button>
           </div>
         </div>
+
+        {/* 浏览器标签页 */}
+        <SessionTabs
+          currentSessionId={currentSessionId}
+          onSelect={async (id: string) => {
+            setCurrentSession(id);
+            try { const res = await getSessionMessages(id); if (res?.messages) useChatStore.setState({ messages: res.messages }); } catch {}
+          }}
+          onDelete={(id: string) => useChatStore.getState().removeSession(id)}
+          onNew={() => newSession()}
+        />
 
         {/* 错误横幅 */}
         {hasError && (
