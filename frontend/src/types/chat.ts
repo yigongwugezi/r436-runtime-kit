@@ -53,6 +53,12 @@ export interface GenerationProgress {
   done?: boolean;
 }
 
+/** 进度条中单个步骤的定义 */
+export interface ProgressStep {
+  key: string;
+  label: string;
+}
+
 export interface QuickCommand {
   id: string;
   label: string;

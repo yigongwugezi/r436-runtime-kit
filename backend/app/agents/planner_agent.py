@@ -482,30 +482,18 @@ class PlannerAgent(BaseAgent):
     # _repair_truncated_json 已迁移到 app.utils.llm_json.repair_truncated
 
     def _normalize_path(self, path: list, planning_points: list, total_days: int) -> list[dict]:
-        allowed = {
-            (p.get("name") or p.get("title") or "").strip()
-            for p in planning_points
-        }
-        allowed.discard("")
-
+        """标准化 LLM 生成的学习路径。
+        只做基本清洗：过滤模板化标题、补全缺失字段。不再用不完整课程目录做关键词过滤。
+        """
         result = []
         for i, item in enumerate(path[:5], 1):
             if not isinstance(item, dict):
                 continue
             title = str(item.get("title", f"第{i}阶段")).strip()
+            # 只过滤明显的模板化标题
             if self._is_goal_like_title(title):
                 continue
             tasks = [str(t).strip() for t in item.get("tasks", []) if str(t).strip()]
-
-            if allowed:
-                skip_check = (
-                    (len(allowed) == 1 and "基础诊断与薄弱点确认" in allowed)
-                    or len(allowed) <= 2  # 课程信息不足时不硬过滤
-                )
-                if not skip_check and len(allowed) >= 3:
-                    text_blob = f"{title} {item.get('goal', '')} {' '.join(tasks)}"
-                    if not any(term and term in text_blob for term in allowed):
-                        continue
 
             result.append({
                 "stage_id": str(item.get("stage_id", f"stage_{i}")),

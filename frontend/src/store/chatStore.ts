@@ -76,6 +76,8 @@ interface ChatStore {
   agentProgress: GenerationProgress | null;
   /** SSE done 事件中的 debug 字段，仅开发模式展示 */
   lastDebugInfo: Record<string, unknown> | null;
+  /** 动态进度条步骤（根据实际运行的 Agent 构建，替代硬编码 GEN_PIPELINE） */
+  progressPipelineSteps: import('../types/chat').ProgressStep[];
   dataVersion: number;
 
   setCurrentSession: (id: string) => void;
@@ -85,6 +87,8 @@ interface ChatStore {
   setStreaming: (v: boolean) => void;
   setAgentProgress: (p: GenerationProgress | null) => void;
   setLastDebugInfo: (info: Record<string, unknown> | null) => void;
+  setProgressPipelineSteps: (steps: import('../types/chat').ProgressStep[]) => void;
+  addProgressPipelineStep: (step: import('../types/chat').ProgressStep) => void;
   setSessions: (sessions: ChatSession[]) => void;
   setQuickCommands: (cmds: QuickCommand[]) => void;
   setLoading: (v: boolean) => void;
@@ -113,6 +117,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   loading: false,
   agentProgress: null,
   lastDebugInfo: null,
+  progressPipelineSteps: [],
   dataVersion: 0,
   dataSessionId: loadSessionId(),
 
@@ -137,7 +142,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     const cachedMessages = targetSession?.messages || [];
 
     persistSessionId(id);
-    set({ currentSessionId: id, messages: cachedMessages });
+    set({ currentSessionId: id, messages: cachedMessages, progressPipelineSteps: [], agentProgress: null });
   },
 
   addMessage: (msg) =>
@@ -196,6 +201,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   setStreaming: (v) => set({ isStreaming: v }),
   setAgentProgress: (p) => set({ agentProgress: p }),
   setLastDebugInfo: (info) => set({ lastDebugInfo: info }),
+  setProgressPipelineSteps: (steps) => set({ progressPipelineSteps: steps }),
+  addProgressPipelineStep: (step) =>
+    set((s) => {
+      if (s.progressPipelineSteps.some((x) => x.key === step.key)) return s;
+      return { progressPipelineSteps: [...s.progressPipelineSteps, step] };
+    }),
   setSessions: (sessions) => set({ sessions }),
   setQuickCommands: (cmds) => set({ quickCommands: cmds }),
   setLoading: (v) => set({ loading: v }),
@@ -224,7 +235,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }
     const id = createSessionId();
     persistSessionId(id);
-    set({ currentSessionId: id, messages: [] });
+    set({ currentSessionId: id, messages: [], progressPipelineSteps: [], agentProgress: null });
     // dataSessionId 不变，保持科目级数据查询稳定
   },
   removeLastMessage: () =>

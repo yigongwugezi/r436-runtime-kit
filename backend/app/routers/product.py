@@ -668,8 +668,15 @@ def _estimated_path_days(stages: list[dict[str, Any]]) -> int:
 
 def _to_learning_path(result: dict[str, Any]) -> dict[str, Any]:
     course = result.get("course") or {}
-    course_id = result.get("course_id", "ai_intro")
-    course_name = course.get("course_name") or ("人工智能导论" if course_id == "ai_intro" else str(course_id))
+    course_id = result.get("course_id", "custom")
+    # 优先课程名 → 用户画像中的目标课程 → 不硬编码默认值
+    state = conversation_store.get(result.get("session_id", ""))
+    user_topic = state.facts.get("target_course", "") if state else ""
+    course_name = (
+        course.get("course_name")
+        or user_topic
+        or str(course_id)
+    )
     raw_stages = result.get("learning_path", [])
     stages = _raw_stages_to_nodes(raw_stages)
     # computed fallback from stage durations

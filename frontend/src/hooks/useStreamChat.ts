@@ -86,6 +86,11 @@ export function useStreamChat() {
                   // 标记是否真正进入智能体阶段（非初始"理解需求"和"保存结果"）
                   if (payload.agentName && !['understanding', 'saving'].includes(payload.agentName)) {
                     hasRealAgentProgress = true;
+                    // 动态构建进度条步骤
+                    useChatStore.getState().addProgressPipelineStep({
+                      key: payload.agentName,
+                      label: payload.stage || payload.agentName,
+                    });
                   }
                   setAgentProgress({
                     stage: payload.stage || payload.agentName,
