@@ -117,13 +117,15 @@ class ConversationAgent(BaseAgent):
             raw_response = self._call_llm(messages)
             reply, action, facts = self._parse_response(raw_response)
         except LLMClientError:
-            reply, action = self._rule_fallback(user_message, context)
+            fallback = self._rule_fallback(user_message, context)
+            reply = fallback.pop("reply", "")
+            action = fallback.pop("action", "none")
             facts = {}
             logger.warning("LLM failed, using rule fallback for conversation")
 
         self._save_history(user_message, reply, context)
 
-        return self._make_result(reply=reply, action=action, facts=facts)
+        return self._make_result(reply=reply, action=action, facts=facts, extra=fallback if "fallback" in locals() else None)
 
     def load_history(self, history):
         self._history = history
@@ -245,28 +247,74 @@ class ConversationAgent(BaseAgent):
 
     def _rule_fallback(self, message, context):
         text = message.strip().lower()
-        if text in EXACT_CASUAL or len(text) <= 2:
-            return "你好！有什么学习上的问题需要我帮忙吗？", "none"
+        compact = re.sub(r"\s+", "", text)
+        confirm_words = {"可以", "好的", "行", "嗯", "好", "ok", "yes", "对", "是的", "嗯嗯", "没错", "就这样", "按这个来"}
+        explicit_generation = (
+            any(phrase in compact for phrase in (
+                "开始生成学习方案", "帮我生成学习方案", "帮我制定学习计划",
+                "给我制定学习路径", "按这些信息生成", "就按这个生成",
+                "给我生成学习路径", "生成吧", "开始吧",
+            ))
+            or (
+                any(word in compact for word in ("生成", "制定", "规划", "计划", "路径", "方案"))
+                and not re.search(r"(?:想学|想学习|我要学|要学习|学习)\s*[\u4e00-\u9fffA-Za-z+#]{2,12}$", compact)
+            )
+        )
 
-        confirm_words = {"可以", "好的", "行", "嗯", "好", "ok", "yes", "对", "是的", "嗯嗯", "没错"}
-        if text in confirm_words:
-            return "好的，我现在就帮你生成完整的学习方案。", "full_workflow"
+        if explicit_generation:
+            return self._fallback_result("full_workflow", "explicit_generation_request")
+
+        if compact in confirm_words:
+            if self._has_generation_confirmation_context(context):
+                return self._fallback_result("full_workflow", "contextual_generation_confirmation")
+            return self._fallback_result("none", "confirmation_without_generation_context", needs_clarification=True)
+
+        if text in EXACT_CASUAL or len(compact) <= 2:
+            return self._fallback_result("none", "short_or_casual_message")
 
         learn_match = re.search(r'(?:学|学习|入门|复习|想学|要学)\s*([\u4e00-\u9fffA-Za-z+#]{2,12})', text)
         if learn_match:
-            subject = learn_match.group(1)
-            return f"好的，你想学{subject}。我先了解一下：你之前有基础吗？每天能花多长时间？", "none"
+            return self._fallback_result("none", "learning_intent_collect_profile")
 
         if any(w in text for w in ["规划", "计划", "路径", "安排", "怎么学", "方案"]):
-            return "好的，我帮你生成学习方案。先确认一下：你想学什么课程？大概有多少时间？", "full_workflow"
+            return self._fallback_result("full_workflow", "planning_request")
 
         if any(w in text for w in ["薄弱", "诊断", "不会", "不懂", "哪里差"]):
-            return "好的，我帮你分析一下你的薄弱点。", "diagnose"
+            return self._fallback_result("diagnose", "diagnosis_request")
 
         if any(w in text for w in ["资源", "资料", "练习", "题", "推荐"]):
-            return "好的，我帮你找一些合适的学习资料。", "resources"
+            return self._fallback_result("resources", "resource_request")
 
-        return "我理解你可能有些学习上的困惑。能再具体说说吗？比如想学什么、遇到了什么困难？", "none"
+        return self._fallback_result("none", "unclassified_fallback")
+
+    def _fallback_result(self, action, reason, needs_clarification=False):
+        return {
+            "reply": "",
+            "action": action,
+            "fallback_used": True,
+            "reason": reason,
+            "debug_reason": reason,
+            "needs_clarification": needs_clarification,
+            "needs_final_reply": True,
+            "final_reply_owner": "conversation_agent",
+            "pipeline_required": action not in ("none", "unsafe"),
+            "target_agents": ["full_workflow"] if action == "full_workflow" else [],
+        }
+
+    def _has_generation_confirmation_context(self, context):
+        history = context.get("conversation_history") or self._history
+        if not isinstance(history, list):
+            return False
+        markers = ("生成", "学习方案", "学习计划", "学习路径", "按这些信息", "要开始吗", "开始吗")
+        for item in reversed(history[-6:]):
+            if not isinstance(item, dict):
+                continue
+            if item.get("role") not in {"assistant", "system"}:
+                continue
+            content = str(item.get("content") or "")
+            if any(marker in content for marker in markers):
+                return True
+        return False
 
     def _load_history(self, context):
         loaded = context.get("conversation_history")
@@ -282,8 +330,8 @@ class ConversationAgent(BaseAgent):
             self._history = self._history[-40:]
         context["conversation_history"] = list(self._history)
 
-    def _make_result(self, reply, action, facts=None):
-        return {
+    def _make_result(self, reply, action, facts=None, extra=None):
+        result = {
             "reply": reply,
             "action": action,
             "facts": facts or {},
@@ -303,6 +351,11 @@ class ConversationAgent(BaseAgent):
                 "finished_at": None,
             },
         }
+        if extra:
+            result.update(extra)
+            if "needs_clarification" in extra:
+                result["needs_clarification"] = extra["needs_clarification"]
+        return result
 
     def _action_to_intent(self, action):
         return {
