@@ -26,12 +26,22 @@ from app.services.llm_client import get_llm_client
 
 # ── Per-agent output keys — used for fallback population ──────────────
 
+PLANNER_METADATA_KEYS = [
+    "priority_basis",
+    "risk_flags",
+    "stage_rationales",
+    "diagnosis_used",
+    "needs_more_diagnosis",
+    "recommended_resource_strategy",
+]
+
+
 AGENT_OUTPUT_KEYS: dict[str, list[str]] = {
     "profile_agent": ["profile"],
     "conversation_agent": ["reply", "action", "intent"],
     "knowledge_agent": ["knowledge_context"],
     "diagnosis_agent": ["diagnosis"],
-    "planner_agent": ["learning_path", "estimatedDays"],
+    "planner_agent": ["learning_path", "estimatedDays", *PLANNER_METADATA_KEYS],
     "resource_agent": ["resources"],
     "review_agent": ["review"],
 }
@@ -217,6 +227,30 @@ class AgentOrchestrator:
                 else:
                     result.setdefault(key, [] if key in {"resources", "learning_path", "agent_steps"} else {})
         self._normalize_learning_path_source(result)
+        self._ensure_planner_metadata(result)
+
+    def _ensure_planner_metadata(self, result: dict[str, Any]) -> None:
+        has_planner_output = "learning_path" in result or any(key in result for key in PLANNER_METADATA_KEYS)
+        metadata = result.get("planner_metadata") if isinstance(result.get("planner_metadata"), dict) else {}
+        if not has_planner_output:
+            result["planner_metadata"] = metadata
+            return
+
+        metadata["priority_basis"] = list(result.get("priority_basis") or [])
+        metadata["risk_flags"] = list(result.get("risk_flags") or [])
+        estimated_days = result.get("estimatedDays")
+        if estimated_days is not None:
+            metadata["estimated_days"] = estimated_days
+            metadata["estimatedDays"] = estimated_days
+        for key in (
+            "stage_rationales",
+            "diagnosis_used",
+            "needs_more_diagnosis",
+            "recommended_resource_strategy",
+        ):
+            if key in result:
+                metadata[key] = result[key]
+        result["planner_metadata"] = metadata
 
     def _normalize_learning_path_source(self, result: dict[str, Any]) -> None:
         for stage in result.get("learning_path") or []:
