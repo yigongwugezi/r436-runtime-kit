@@ -727,31 +727,60 @@ def _empty_learning_path(session_id: str) -> dict[str, Any]:
 # ═══════════════════════════════════════════════════════════════════════
 
 def _learning_plan_reply(result: dict[str, Any], intent: dict[str, Any]) -> str:
-    profile = _to_profile(result)
     path = _to_learning_path(result)
-    session_id = result.get("session_id", "")
-    resources = [_to_resource(item, result.get("course_id", "ai_intro"), session_id) for item in result.get("resources", [])]
-    weak = "、".join(item["topic"] for item in profile["weaknesses"][:3]) or "暂无明显短板"
-    resource_names = "、".join(item["title"] for item in resources[:5])
+    stages = path.get("stages", [])
+    metadata = result.get("planner_metadata") if isinstance(result.get("planner_metadata"), dict) else {}
 
-    # 学习路径为空
-    if not path.get("stages") or len(path.get("stages", [])) == 0:
+    if not stages:
+        reason = result.get("skip_reason") or result.get("overall_error") or "学习路径为空"
         return (
-            "## 学习方案生成说明\n\n"
-            "当前画像信息尚不足以生成完整的个性化学习路径。\n\n"
-            "请补充你的专业背景、学习基础、薄弱点和学习目标等信息，"
-            "我会重新生成针对性更强的学习路径。\n\n"
-            "你可以直接告诉我：年级专业、已学过的课程、想学的方向、薄弱环节等。"
+            "这次生成模块没有成功产出学习路径。"
+            f"原因：{reason}。你可以稍后重试，或者先告诉我想学习的课程/方向。"
         )
 
-    # 统一使用正常格式，不再区分 custom_course
+    titles = [str(stage.get("title", "")).strip() for stage in stages if stage.get("title")]
+    title_text = "、".join(titles[:5])
+    days = metadata.get("estimated_days") or metadata.get("estimatedDays") or path.get("estimatedDays")
+    rhythm = str((result.get("profile") or {}).get("learning_rhythm", {}).get("value", "")).strip()
+    risk_flags = set(metadata.get("risk_flags") or [])
+    priority_basis = set(metadata.get("priority_basis") or [])
+    resources_count = len(result.get("resources") or [])
+
+    notes: list[str] = []
+    if "time_budget_tight" in risk_flags:
+        notes.append("时间比较紧，我会优先安排重点突破。")
+    elif "time_budget" in priority_basis:
+        notes.append("我已按你提供的时间安排规划节奏。")
+    if rhythm and rhythm not in {"学习节奏待补充", "暂未确定", "未提及"}:
+        notes.append(f"时间安排参考：{rhythm}。")
+    if resources_count:
+        notes.append(f"已配套生成 {resources_count} 个学习资源。")
+
+    note_text = "\n".join(f"- {note}" for note in notes)
     return (
-        "## 个性化学习方案已生成\n\n"
-        f"- 已构建 {len(profile['dimensions'])} 维学生画像\n"
-        f"- 学习路径：{path['estimatedDays']} 天，{len(path['stages'])} 个阶段\n"
-        f"- 已生成资源：{resource_names}\n\n"
-        "你可以切换到「学习画像」「学习路径」和「资源库」页面查看完整结果。"
-    )
+        f"已按你的信息生成第一版学习方案：周期约 {days} 天，共 {len(stages)} 个阶段。\n\n"
+        f"重点阶段包括：{title_text}。\n\n"
+        f"{note_text}\n\n"
+        "你可以到「学习路径」和「资源库」页面查看完整内容。"
+    ).strip()
+
+
+def _learning_subject(state) -> str:
+    return str(state.facts.get("target_course") or "").strip()
+
+
+def _ask_learning_subject_reply() -> str:
+    return "可以。你想学习哪门课或哪个方向？告诉我学习对象后，我就能生成第一版学习方案。"
+
+
+def _confirmation_clarification_reply() -> str:
+    return "你是想让我开始生成学习方案，还是继续补充信息？"
+
+
+def _is_bare_confirmation(message: str) -> bool:
+    return re.sub(r"\s+", "", message.strip().lower()) in {
+        "可以", "好", "好的", "行", "嗯", "嗯嗯", "ok", "yes", "就这样", "按这个来"
+    }
 
 def _casual_reply(session_id: str) -> str:
     if not session_id:
@@ -946,33 +975,19 @@ def _learning_plan_request_reply(
     progress_callback: Callable | None = None,
 ) -> tuple[str, bool]:
     state = conversation_store.get(session_id)
-    readiness = conversation_store.readiness(state)
-    force_generate_words = [
-        "直接生成",
-        "先生成",
-        "生成看看",
-        "不用在意",
-        "不在意准不准",
-        "先看效果",
-    ]
-    force_generate = any(word in message for word in force_generate_words)
-    if readiness["readyToPlan"] or force_generate:
-        if force_generate and not readiness["readyToPlan"]:
-            result = _run_agents(message, session_id=session_id, progress_callback=progress_callback)
-            content = _learning_plan_reply(result, intent)
-            return f"{content}\n\n低画像完整度生成：当前信息较少，本方案作为第一版草稿，后续可随画像更新继续调整。", True
-        return _learning_plan_reply(_run_agents(message, session_id=session_id, progress_callback=progress_callback), intent), True
+    if not _learning_subject(state):
+        return _ask_learning_subject_reply(), False
 
-    questions = "\n".join(f"- {question}" for question in conversation_store.next_questions(state, limit=3))
-    known = "\n".join(conversation_store.known_lines(state)) or "- 暂时还没有稳定画像信息"
-    return (
-        "我可以生成学习方案，但现在画像信息还不够，直接生成容易不准。\n\n"
-        f"{_readiness_line(session_id)}\n\n"
-        f"当前已记录：\n{known}\n\n"
-        f"请先补充这几项中的至少一两项：\n{questions}\n\n"
-        "补充后你再说「开始生成学习方案」，我会启动多智能体协同生成画像、路径和资源。",
-        False,
-    )
+    try:
+        result = _run_agents(message, session_id=session_id, progress_callback=progress_callback)
+    except Exception as exc:
+        logger.warning("Agent run failed during learning plan request for session %s", session_id)
+        return f"生成模块暂时没有成功：{exc}。我没有假装已生成，你可以稍后重试。", False
+
+    if result.get("pipeline_executed") is False:
+        reason = result.get("skip_reason") or result.get("overall_error") or "pipeline 未执行"
+        return f"生成模块这次没有真正执行成功，原因：{reason}。我没有假装已生成。", False
+    return _learning_plan_reply(result, intent), bool(result.get("learning_path"))
 
 
 def _tutoring_reply(message: str) -> str:
@@ -1123,6 +1138,9 @@ def _reply_for_intent(
     
     # 兼容旧版 intent 字段（规则兜底时）
     legacy_intent = intent.get("intent", "unknown")
+
+    if intent.get("needs_clarification") and action == "none" and _is_bare_confirmation(message):
+        return _confirmation_clarification_reply(), False
     
     # 如果 ConversationAgent 返回了 reply 且 action 不需要执行 Agent
     if llm_reply and action == "none":
