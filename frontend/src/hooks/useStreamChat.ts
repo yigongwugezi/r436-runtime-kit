@@ -131,7 +131,11 @@ export function useStreamChat() {
                     // 失败状态 5 秒后自动收起
                     setTimeout(() => setAgentProgress(null), 5000);
                   } else {
-                    updateLastAssistant((m) => ({ ...m, streaming: false }));
+                    updateLastAssistant((m) => ({
+                      ...m,
+                      streaming: false,
+                      multimodalResult: payload.multimodal_result || m.multimodalResult,
+                    }));
                     // 确保 agentProgress 标记为完成（done 事件可能不带 agentName）
                     const cur = useChatStore.getState().agentProgress;
                     if (cur && !cur.done) {

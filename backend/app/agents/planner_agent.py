@@ -284,8 +284,10 @@ class PlannerAgent(BaseAgent):
                 temperature=0,
                 max_tokens=10,
             )
-            days = int(re.search(r'\d+', raw).group())
-            return max(1, min(365, days))
+            raw = str(raw).strip()
+            if not re.fullmatch(r"\d+", raw):
+                return None
+            return max(1, min(365, int(raw)))
         except Exception:
             return None
 

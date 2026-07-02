@@ -40,6 +40,7 @@ PLANNER_METADATA_KEYS = [
 
 
 AGENT_OUTPUT_KEYS: dict[str, list[str]] = {
+    "conversation_agent": ["action", "intent", "reply"],
     "profile_agent": ["profile"],
     "knowledge_agent": ["knowledge_context"],
     "diagnosis_agent": ["diagnosis"],
@@ -192,13 +193,18 @@ class AgentOrchestrator:
                     progress_callback(stage_key, label, pct)
 
         # ── 如果跳过流水线（目前仅 unsafe 场景），填充默认值 ──
+        if result.get("agents_run") == ["conversation_agent"] and result.get("action") == "none":
+            skip_pipeline = True
+            result["skip_reason"] = "conversation_only"
+
         if skip_pipeline:
             result["skip_pipeline"] = True
             result["pipeline_executed"] = False
-            self._ensure_output_defaults(result, source="pipeline_skipped")
+            skipped_source = "conversation_only" if result.get("skip_reason") == "conversation_only" else "pipeline_skipped"
+            self._ensure_output_defaults(result, source=skipped_source)
             result["overall_status"] = "completed"
             result["overall_error"] = None
-            result["source"] = "pipeline_skipped"
+            result["source"] = skipped_source
             return result
 
         # ── 检测是否使用了 fallback ──
@@ -325,8 +331,6 @@ class AgentOrchestrator:
         return [a for a in all_agents if a.agent_id in filter_set]
 
     def _downstream_llm_client(self):
-        if type(self.llm_client).__name__ == "MockLLMClient":
-            return None
         return self.llm_client
 
     # ── Single-agent execution ─────────────────────────────────────────

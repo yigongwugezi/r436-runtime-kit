@@ -65,17 +65,23 @@ class AgentPatch:
         self.result_factory = result_factory
         self.calls = 0
         self.original = product.ag_run_agents
+        self.original_final_reply = product._generate_final_reply
 
     def __enter__(self):
-        def patched(session_id: str, user_message: str, course_id: str | None = None, progress_callback=None):
+        def patched(session_id: str, user_message: str, course_id: str | None = None, progress_callback=None, **_kwargs):
             self.calls += 1
             return self.result_factory(session_id, user_message, course_id)
 
+        def deterministic_final_reply(_message: str, _session_id: str, result: dict) -> str:
+            return product._learning_plan_reply(result, {})
+
         product.ag_run_agents = patched
+        product._generate_final_reply = deterministic_final_reply
         return self
 
     def __exit__(self, exc_type, exc, tb):
         product.ag_run_agents = self.original
+        product._generate_final_reply = self.original_final_reply
 
 
 class AttrPatch:
@@ -300,6 +306,31 @@ def test_chat_stream_error_still_sends_done() -> None:
     assert_true(events[-1].get("done") is True, "stream should end even when pipeline fails")
 
 
+def test_multimodal_mindmap_chat_response() -> None:
+    sid = "product_multimodal_mindmap"
+    conversation_store.reset(sid)
+    conversation_store.get(sid).facts["target_course"] = zh(r"\u6570\u636e\u7ed3\u6784")
+    conversation_store.get(sid).last_result = fake_result(
+        sid,
+        "data_structures",
+        14,
+        [zh(r"\u590d\u6742\u5ea6"), zh(r"\u94fe\u8868")],
+    )
+
+    with AttrPatch(
+        product,
+        _classify_intent=lambda _message, _session_id=None: {"action": "none", "intent": "multimodal"},
+    ):
+        response = product.send_chat({"sessionId": sid, "message": zh(r"\u751f\u6210\u601d\u7ef4\u5bfc\u56fe")})
+
+    data = response["data"]
+    assert_true("multimodal_result" in data, "chat response should include multimodal_result")
+    assert_true(data["multimodal_result"]["agent"] == "MultimodalAgent", "MultimodalAgent should run")
+    assert_true(data["multimodal_result"]["status"] == "success", "mindmap should be generated from cached path")
+    assert_true(data["workflow_trace"]["steps"][0]["agent"] == "MultimodalAgent", "workflow trace should record multimodal step")
+    assert_true(zh(r"\u601d\u7ef4\u5bfc\u56fe") in data["reply"]["content"], "reply should mention mindmap")
+
+
 if __name__ == "__main__":
     test_target_only_explicit_generation_runs_pipeline()
     test_calculus_reply_uses_real_stages_and_time()
@@ -308,4 +339,5 @@ if __name__ == "__main__":
     test_tight_two_day_reply_mentions_focus()
     test_chat_stream_sends_keepalive_final_and_done_metadata()
     test_chat_stream_error_still_sends_done()
+    test_multimodal_mindmap_chat_response()
     print("PASS product_chat_boundary_test")

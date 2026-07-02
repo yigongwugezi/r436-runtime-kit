@@ -14,6 +14,12 @@ interface MermaidDiagramProps {
   className?: string;
 }
 
+export async function renderMermaid(_container: HTMLElement, definition: string): Promise<string> {
+  const id = `mermaid-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const { svg } = await mermaid.render(id, definition);
+  return svg;
+}
+
 export default function MermaidDiagram({ definition, className }: MermaidDiagramProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [svg, setSvg] = useState<string>('');
@@ -22,9 +28,8 @@ export default function MermaidDiagram({ definition, className }: MermaidDiagram
   useEffect(() => {
     let cancelled = false;
     const id = `mermaid-${Date.now()}`;
-    mermaid
-      .render(id, definition)
-      .then(({ svg: rendered }) => {
+    renderMermaid(ref.current || document.body, definition)
+      .then((rendered) => {
         if (!cancelled) setSvg(rendered);
       })
       .catch(() => {
