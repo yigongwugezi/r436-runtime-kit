@@ -122,6 +122,7 @@ class ConversationState:
     last_conflicts: list[dict[str, str]] = field(default_factory=list)
     last_intent: dict[str, Any] | None = None
     last_result: dict[str, Any] | None = None
+    last_proposal: str | None = None  # 上一轮向用户确认了什么：plan/resources/questions/full/None
     generating: bool = False
     current_progress: dict[str, Any] | None = None
     updated_at: float = field(default_factory=time.time)
@@ -269,6 +270,12 @@ class ConversationStore:
         state.last_intent = intent
         state.updated_at = time.time()
 
+    def set_proposal(self, session_id: str | None, proposal: str | None) -> None:
+        """记录上一轮向用户确认了什么：plan/resources/questions/full/None"""
+        state = self.get(session_id)
+        state.last_proposal = proposal
+        state.updated_at = time.time()
+
     def set_result(self, session_id: str | None, result: dict[str, Any]) -> None:
         state = self.get(session_id)
         state.last_result = result
@@ -353,6 +360,15 @@ class ConversationStore:
                         "related_stage_id": item.get("related_stage_id", ""),
                         "task_id": item.get("task_id", ""),
                     })
+                # 持久化题目到 DB（M3）
+                questions = result.get("questions", [])
+                if questions:
+                    qsid = result.get("question_set_id", f"qs_{state.session_id}")
+                    from app.db.repository import upsert_questions as repo_upsert_questions
+                    for q in questions:
+                        if isinstance(q, dict) and not q.get("question_set_id"):
+                            q["question_set_id"] = qsid
+                    repo_upsert_questions(db, state.session_id, questions)
             except Exception:
                 import logging as _logging
                 _logging.getLogger(__name__).exception("Failed to persist result to DB for session %s.", session_id)

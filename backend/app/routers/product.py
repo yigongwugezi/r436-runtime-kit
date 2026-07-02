@@ -266,7 +266,7 @@ def _classify_intent(message: str, session_id: str | None = None) -> dict[str, A
         context["profile_facts"] = {}
     context["profile_facts"]["_raw_user_message"] = message
 
-    # 加载对话历史
+    # 加载对话历史 + last_proposal
     if session_id:
         state = conversation_store.get(session_id)
         history = [
@@ -274,6 +274,7 @@ def _classify_intent(message: str, session_id: str | None = None) -> dict[str, A
             for m in state.messages[-20:]
         ]
         context["conversation_history"] = history
+        context["last_proposal"] = state.last_proposal
 
     return agent.run(context)
 
@@ -1153,6 +1154,7 @@ def _reply_for_intent(
 
     # ── action=none：纯对话，不执行 Agent ──
     if action == "none":
+        _detect_and_set_proposal(llm_reply, session_id)
         return llm_reply or _casual_reply(session_id), False
 
     # ── 安全检查 ──
@@ -1199,6 +1201,9 @@ def _reply_for_intent(
 
         # 调用 ConversationAgent final_reply 模式生成最终回复
         final_reply = _generate_final_reply(message, session_id, result)
+        # 行动已完成，清除上次提议，检测是否提出了下一步
+        conversation_store.set_proposal(session_id, None)
+        _detect_and_set_proposal(final_reply, session_id)
         return final_reply, bool(result.get("learning_path"))
 
     # 兜底
@@ -1293,6 +1298,26 @@ def _generate_final_reply(message: str, session_id: str, result: dict[str, Any])
     if not parts:
         return "生成流程已完成。你可以到学习路径和资源库页面查看详细内容。"
     return "、".join(parts) + "。你可以到对应页面查看详细内容。"
+
+
+def _detect_and_set_proposal(reply: str, session_id: str) -> None:
+    """从 LLM 回复中检测提议，设置 last_proposal。"""
+    if not reply or not session_id:
+        return
+    reply_lower = reply.lower()
+    # 检测分步引导提议
+    if any(phrase in reply_lower for phrase in ["生成学习路径", "规划路径", "生成路径"]):
+        conversation_store.set_proposal(session_id, "plan")
+    elif any(phrase in reply_lower for phrase in ["配套资源", "生成资源", "配资源", "学习资源"]):
+        conversation_store.set_proposal(session_id, "resources")
+    elif any(phrase in reply_lower for phrase in ["出题", "练习题", "巩固", "做题"]):
+        conversation_store.set_proposal(session_id, "questions")
+    elif any(phrase in reply_lower for phrase in ["完整方案", "全部生成", "完整学习方案"]):
+        conversation_store.set_proposal(session_id, "full")
+    elif any(phrase in reply_lower for phrase in ["诊断", "薄弱", "摸底"]):
+        conversation_store.set_proposal(session_id, "diagnose")
+    else:
+        conversation_store.set_proposal(session_id, None)
 
 
 def _will_run_agents(intent: dict[str, Any], session_id: str) -> bool:

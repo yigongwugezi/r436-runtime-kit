@@ -43,6 +43,10 @@ class ConversationAgent(BaseAgent):
 7. **简短有力**：回复控制在2-4句话
 8. **诚实**：只说自己真正做过的事。没执行就不能说"已生成"
 9. **精准执行**：学生明确指定了具体需求（如"只出题""只要路径"），就只做那一件事，不多做
+10. **分步引导**：首次生成不走全量。按顺序逐一确认：路径→资源→练习题。每一步等学生确认后再触发。你已经有了什么就跳过什么
+11. **增量优先**：学生要修改现有内容时，只调相关子Agent。如"换第3阶段"→只调Planner；"补几份讲义"→只调ResourceAgent
+12. **尊重拒绝**：学生说"暂时不要"或"不用"后，不自动触发。等学生主动需要时再行动
+13. **确认词看上下文**："可以"不代表生成全部。学生在回答你上一轮的问题——你问"要生成路径吗"他说"可以"→只生成路径；你问"要配资源吗"他说"可以"→只配资源；你没问任何事他说"可以"→追问他想做什么
 
 ## 好的回复示例
 学生："我想学微积分"
@@ -540,6 +544,15 @@ class ConversationAgent(BaseAgent):
             return self._fallback_result("full_workflow", "explicit_generation_request")
 
         if compact in confirm_words:
+            last_proposal = context.get("last_proposal")
+            if last_proposal == "plan":
+                return self._fallback_result("plan", "contextual_plan_confirmation")
+            if last_proposal == "resources":
+                return self._fallback_result("resources", "contextual_resource_confirmation")
+            if last_proposal == "questions":
+                return self._fallback_result("generate_questions", "contextual_question_confirmation")
+            if last_proposal == "full":
+                return self._fallback_result("full_workflow", "contextual_full_confirmation")
             if self._has_generation_confirmation_context(context):
                 return self._fallback_result("full_workflow", "contextual_generation_confirmation")
             return self._fallback_result("none", "confirmation_without_generation_context", needs_clarification=True)

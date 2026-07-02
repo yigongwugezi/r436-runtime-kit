@@ -9,7 +9,7 @@ const NAV = [
   { id: 'resources', path: '/resources', label: '资源库', icon: <FolderOpen size={20} /> },
   { id: 'chat', path: '/chat', label: '智能对话', icon: <MessageCircle size={20} /> },
   { id: 'generate', path: '/generate', label: '资源生成', icon: <Sparkles size={20} /> },
-  { id: 'practice', path: '/practice', label: '题目练习', icon: <Edit3 size={20} /> },
+  { id: 'practice', path: '/practice', label: '练习中心', icon: <Edit3 size={20} /> },
   { id: 'settings', path: '/settings', label: '系统设置', icon: <Settings size={20} /> },
 ];
 
