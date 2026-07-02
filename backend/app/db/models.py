@@ -299,6 +299,9 @@ class QuestionModel(Base):
 
     Content is stored as JSON: {stem, options[], answer, explanation, hints[]}.
     Supports choice, fill, truefalse, and shortanswer types.
+
+    Review workflow: draft → (submit) → pending_review → approve → published
+                                                 └→ reject → draft
     """
 
     __tablename__ = "questions"
@@ -313,6 +316,22 @@ class QuestionModel(Base):
     status: Mapped[str] = mapped_column(String(16), default="draft")  # draft|published|archived
     usage_count: Mapped[int] = mapped_column(Integer, default=0)
     avg_score: Mapped[float] = mapped_column(default=0.0)
+
+    # ── Review workflow ─────────────────────────────────────────────────
+    review_status: Mapped[str | None] = mapped_column(
+        String(16), nullable=True, default=None
+    )  # None (not submitted) | pending_review | approved | rejected
+    review_comment: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    reviewed_by: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("learners.id", ondelete="SET NULL"), nullable=True, default=None
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+
+    # ── Difficulty calibration ──────────────────────────────────────────
+    calibrated_difficulty: Mapped[float | None] = mapped_column(
+        nullable=True, default=None
+    )  # 0.0-1.0 computed from actual student performance
+
     created_by: Mapped[str | None] = mapped_column(
         String(64), ForeignKey("learners.id", ondelete="SET NULL"), nullable=True, default=None
     )
@@ -343,6 +362,74 @@ class KnowledgePointModel(Base):
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+
+# ── Student Questions ──────────────────────────────────────────────────────
+
+class StudentQuestionModel(Base):
+    """A question served to students, generated per-session by the LLM or
+    pulled from the admin question bank.
+
+    Follows the Question schema defined in docs/api-questions.md.
+    source_question_id optionally links back to QuestionModel (admin bank).
+    """
+
+    __tablename__ = "student_questions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    question_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    question_set_id: Mapped[str] = mapped_column(String(64), index=True, default="")
+    session_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("sessions.id", ondelete="CASCADE"), index=True
+    )
+    source_question_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None
+    )  # FK to QuestionModel.id (admin bank), optional
+    type: Mapped[str] = mapped_column(String(16), default="choice")  # choice|fill|truefalse|shortanswer
+    stem: Mapped[str] = mapped_column(Text, default="")
+    options: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    correct: Mapped[str | None] = mapped_column(String(512), nullable=True, default=None)
+    explanation: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    difficulty: Mapped[str] = mapped_column(String(8), default="medium")  # easy|medium|hard
+    knowledge_points: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    tags: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    scoring_rubric: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    reference_answer: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    source: Mapped[str] = mapped_column(String(32), default="llm_generated")  # llm_generated|rule_based_fallback
+    quality_status: Mapped[str] = mapped_column(String(16), default="passed")  # passed|warning|fallback
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+# ── Answer Records ─────────────────────────────────────────────────────────
+
+class AnswerRecordModel(Base):
+    """A student's answer attempt and its grading result.
+
+    Follows the AnswerRecord + GradingResult schema defined in docs/api-questions.md.
+    """
+
+    __tablename__ = "answer_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("sessions.id", ondelete="CASCADE"), index=True
+    )
+    question_id: Mapped[str] = mapped_column(String(64), index=True)  # FK to student_questions.question_id
+    student_answer: Mapped[str] = mapped_column(Text, default="")
+    total_score: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)  # 0-100
+    dimension_scores: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    # {reasoning, completeness, calculation, expression}
+    dimension_feedback: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    error_type: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, default=None
+    )  # concept|calculation|misreading|method|forgetting|null
+    error_label: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    error_explanation: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    error_action: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    suggestions: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    strengths: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    source: Mapped[str] = mapped_column(String(32), default="llm_generated")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
 # ── System Config ─────────────────────────────────────────────────────────

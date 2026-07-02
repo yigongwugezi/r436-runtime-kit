@@ -120,6 +120,11 @@ def init_db() -> None:
             "avg_score": "FLOAT DEFAULT 0.0",
             "created_by": "VARCHAR(64)",
             "updated_at": "DATETIME",
+            "review_status": "VARCHAR(16)",
+            "review_comment": "TEXT",
+            "reviewed_by": "VARCHAR(64)",
+            "reviewed_at": "DATETIME",
+            "calibrated_difficulty": "FLOAT",
         },
         "knowledge_points": {
             "subject": "VARCHAR(64)",
