@@ -26,7 +26,7 @@ class ProbeAgent:
 
 def run_with(agents: list[ProbeAgent]) -> dict:
     orchestrator = AgentOrchestrator()
-    orchestrator._build_agents = lambda: agents
+    orchestrator._build_agents = lambda **_kwargs: agents
     return orchestrator.run(
         session_id="orchestrator_boundary",
         course_id="data_structures",

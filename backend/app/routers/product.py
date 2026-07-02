@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
+from app.agents.multimodal_agent import MultimodalAgent
 from app.agents.diagnosis_agent import DiagnosisAgent
 from app.agents.conversation_agent import ConversationAgent
 from app.config import settings
@@ -742,6 +743,122 @@ def _empty_learning_path(session_id: str) -> dict[str, Any]:
 # Reply generators (chat logic)
 # ═══════════════════════════════════════════════════════════════════════
 
+_MULTIMODAL_PATTERNS = (
+    "生成思维导图",
+    "画个思维导图",
+    "思维导图",
+    "生成知识图谱",
+    "画知识图",
+    "知识图谱",
+    "识别这张图片",
+    "看看这张题图",
+    "图片识别",
+    "生成一张知识卡片",
+    "知识卡片",
+    "生成讲解图",
+    "生成图片",
+    "生成一个微课视频",
+    "微课视频",
+    "生成视频",
+    "讲解视频",
+)
+
+
+def _is_multimodal_request(message: str, payload: dict[str, Any] | None = None) -> bool:
+    if any(pattern in str(message or "") for pattern in _MULTIMODAL_PATTERNS):
+        return True
+    return bool((payload or {}).get("attachments") or [])
+
+
+def _multimodal_learning_path(session_id: str) -> Any:
+    state = conversation_store.get(session_id)
+    cached = state.last_result or {}
+    if isinstance(cached, dict) and cached.get("learning_path"):
+        return cached.get("learning_path")
+    try:
+        stored = ag_get_learning_path(session_id)
+    except Exception:
+        stored = None
+    if isinstance(stored, dict):
+        return stored.get("stages") or stored.get("learning_path") or stored
+    return stored
+
+
+def _multimodal_workflow_trace(result: dict[str, Any]) -> dict[str, Any]:
+    status = str(result.get("status") or "failed")
+    workflow_status = "success" if status == "success" else ("partial" if status in {"needs_input", "provider_not_configured", "unsupported"} else "failed")
+    return {
+        "workflow_name": "multimodal_generation",
+        "workflow_status": workflow_status,
+        "pipeline_executed": True,
+        "steps": [
+            {
+                "step": "multimodal",
+                "agent": "MultimodalAgent",
+                "status": status,
+                "fallback_used": False,
+                "summary": f"{result.get('task_type')} -> {status}",
+                "output_keys": ["multimodal_result"] if result.get("result") else [],
+            }
+        ],
+    }
+
+
+def _multimodal_reply(result: dict[str, Any]) -> str:
+    task_type = result.get("task_type")
+    status = result.get("status")
+    if task_type == "mindmap_generation" and status == "success":
+        stage_count = ((result.get("result") or {}).get("stage_count")) or 0
+        return f"已根据当前学习路径生成思维导图，共整理 {stage_count} 个阶段。"
+    if status == "needs_input":
+        return "还缺少可执行这个多模态任务的输入。比如生成思维导图需要先有学习路径或知识内容。"
+    if status == "provider_not_configured":
+        return "这个多模态能力还没有配置对应的模型 Provider，所以我不会假装已经生成或识别成功。"
+    if status == "unsupported":
+        return "这个多模态请求暂时还不支持真实执行，我没有返回伪造结果。"
+    return "多模态任务执行失败。"
+
+
+def _multimodal_chat_payload(
+    message: str,
+    session_id: str,
+    subject_id: str,
+    payload: dict[str, Any],
+    intent: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not _is_multimodal_request(message, payload):
+        return None
+
+    state = conversation_store.get(session_id)
+    context = {
+        "session_id": session_id,
+        "subject_id": subject_id,
+        "user_message": message,
+        "attachments": payload.get("attachments") or [],
+        "learning_path": _multimodal_learning_path(session_id),
+        "knowledge_context": (state.last_result or {}).get("knowledge_context", {}) if isinstance(state.last_result, dict) else {},
+        "topic": state.facts.get("target_course") or subject_id,
+        "subject_name": state.facts.get("target_course") or "",
+    }
+    result = MultimodalAgent().run(context)
+    trace = _multimodal_workflow_trace(result)
+    cached = state.last_result if isinstance(state.last_result, dict) else {}
+    state.last_result = {**cached, "multimodal_result": result, "workflow_trace": trace}
+    reply = _multimodal_reply(result)
+    return {
+        "sessionId": session_id,
+        "reply": {
+            "id": "assistant_msg_001",
+            "role": "assistant",
+            "content": reply,
+            "timestamp": int(time.time() * 1000),
+        },
+        "intent_result": _public_intent_result(intent),
+        "multimodal_result": result,
+        "workflow_trace": trace,
+    }
+
+
 def _learning_plan_reply(result: dict[str, Any], intent: dict[str, Any]) -> str:
     path = _to_learning_path(result)
     stages = path.get("stages", [])
@@ -1323,6 +1440,34 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
     conversation_store.append_message(session_id, "user", message)
     intent = _classify_intent(message, session_id)
     conversation_store.set_intent(session_id, intent)
+    multimodal_payload = _multimodal_chat_payload(message, session_id, subject_id, payload, intent)
+    if multimodal_payload:
+        reply = multimodal_payload["reply"]["content"]
+        conversation_store.append_message(session_id, "assistant", reply)
+
+        def multimodal_stream():
+            yield f"data: {json.dumps({'stage': '正在执行多模态任务', 'agentName': 'multimodal', 'progress': 80, 'done': False}, ensure_ascii=False)}\n\n"
+            for chunk in reply.splitlines(keepends=True):
+                yield f"data: {json.dumps({'content': chunk, 'done': False}, ensure_ascii=False)}\n\n"
+            final_event = {
+                "event": "done",
+                "done": True,
+                "sessionId": session_id,
+                "pipeline_executed": True,
+                "agents_run": ["multimodal_agent"],
+                "learning_path_created": False,
+                "resources_created": False,
+                "planner_metadata": {},
+                "action": "multimodal",
+                "workflow_trace": multimodal_payload["workflow_trace"],
+                "multimodal_result": multimodal_payload["multimodal_result"],
+                "final_reply_owner": "conversation_agent",
+                "reply_source": "multimodal_agent",
+                "fallback_used": False,
+            }
+            yield f"data: {json.dumps(final_event, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(multimodal_stream(), media_type="text/event-stream")
     run_agents = _will_run_agents(intent, session_id)
 
     def _to_event(stage: str, agent: str, pct: int, **kw) -> str:
@@ -1539,6 +1684,13 @@ def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
     conversation_store.append_message(session_id, "user", message)
     intent = _classify_intent(message, session_id)
     conversation_store.set_intent(session_id, intent)
+    multimodal_payload = _multimodal_chat_payload(message, session_id, subject_id, payload, intent)
+    if multimodal_payload:
+        conversation_store.append_message(session_id, "assistant", multimodal_payload["reply"]["content"])
+        return _product_response(
+            multimodal_payload,
+            session_id=session_id, source="agent",
+        )
     reply, _ = _reply_for_intent(message, intent, session_id)
     conversation_store.append_message(session_id, "assistant", reply)
     response = {

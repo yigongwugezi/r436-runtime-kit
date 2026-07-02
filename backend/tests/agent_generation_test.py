@@ -297,7 +297,7 @@ def test_orchestrator_injects_session_analytics_into_diagnosis() -> None:
     orchestrator_module.learning_tracker = TrackerStub()
     try:
         orchestrator = AgentOrchestrator()
-        orchestrator._build_agents = lambda: [DiagnosisProbe()]
+        orchestrator._build_agents = lambda **_kwargs: [DiagnosisProbe()]
         result = orchestrator.run(
             session_id="orchestrator_analytics_session",
             course_id="data_structures",

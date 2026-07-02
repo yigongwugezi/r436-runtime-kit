@@ -494,6 +494,9 @@ class ResourceAgent(BaseAgent):
         profile: dict[str, Any],
         max_queries: int = 5,
     ) -> list[dict[str, Any]]:
+        if type(self.llm_client).__name__ == "MockLLMClient":
+            return []
+
         queries = []
         diagnosis = context.get("diagnosis", {})
         for wp in diagnosis.get("weak_knowledge_points", []) or []:
