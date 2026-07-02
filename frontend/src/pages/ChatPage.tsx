@@ -7,7 +7,7 @@ import type { AgentInfo } from '../api/chat';
 import { DEFAULT_QUICK_COMMANDS } from '../utils/constants';
 import { timeAgo } from '../utils/format';
 import { runtimeStorageKeys, writeStorageItem } from '../utils/storageKeys';
-import type { ChatMessage, GenerationProgress, QuickCommand } from '../types/chat';
+import type { ChatMessage, GenerationProgress, ProgressStep, QuickCommand } from '../types/chat';
 import { Send, Sparkles, Square, Copy, Check, AlertCircle, Bot, User, RefreshCw, ChevronDown, XCircle, History, Brain, Loader2, BrainCircuit, FileText, Video, Menu } from 'lucide-react';
 import Markdown from '../utils/markdown';
 import ChatHistorySidebar from '../components/chat/ChatHistorySidebar';
@@ -23,6 +23,7 @@ const AGENT_LABELS: Record<string, string> = {
   resource_agent: '生成资源',
   review_agent: '检查质量',
 };
+const EMPTY_PIPELINE: ProgressStep[] = [];
 
 function HistoryPopover({ sessions, currentSessionId, onSelect, onDelete, onRename, onNew, onClose }: {
   sessions: any[]; currentSessionId: string;
@@ -109,7 +110,7 @@ function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onCla
 function AgentPipelineProgress({ progress, onRetry, onNavigate }: { progress: GenerationProgress; onRetry?: () => void; onNavigate?: (path: string) => void }) {
   const [elapsed, setElapsed] = useState(0); const isError = !!progress.error; const [doneV, setDoneV] = useState(false); const isDone = progress.done && !progress.error;
   // 使用动态进度条 —— 根据实际运行的 Agent 构建，不再硬编码 5 阶段
-  const pipeline = useChatStore((s) => s.progressPipelineSteps.length > 0 ? s.progressPipelineSteps : []);
+  const pipeline = useChatStore((s) => s.progressPipelineSteps.length > 0 ? s.progressPipelineSteps : EMPTY_PIPELINE);
   const currentIdx = pipeline.findIndex(s => s.key === (progress.agentName || ''));
   useEffect(() => { if (isDone) { const t = setTimeout(() => setDoneV(true), 1500); return () => clearTimeout(t); } setDoneV(false); }, [isDone]);
   useEffect(() => { if (isDone || isError) return; const t = setInterval(() => setElapsed(v => v + 1), 1000); return () => clearInterval(t); }, [isDone, isError]);

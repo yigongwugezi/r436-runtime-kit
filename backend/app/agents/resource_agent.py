@@ -150,20 +150,27 @@ class ResourceAgent(BaseAgent):
             {
                 "role": "system",
                 "content": (
-                    "你是 EduAgent 的资源生成智能体。根据学习路径阶段、诊断结果和学习者画像，"
-                    "为每个阶段生成2-4个最合适的学习资源。"
-                    "不要为了凑类型而生成不必要的资源，根据阶段内容自由选择资源类型。"
-                    "概念入门阶段侧重讲义(lecture)和思维导图(mindmap)，"
-                    "计算练习阶段侧重练习题(quiz)和实操案例(practice)，"
-                    "复习阶段侧重拓展阅读(reading)。"
-                    "每份资源要有实质内容：讲义要有具体知识点讲解和例题，"
-                    "练习题要有完整的题目、选项、答案和解析（放在items数组里），"
-                    "思维导图要用 Mermaid mindmap 格式。"
-                    "每个资源必须包含 resource_id、type、title、description、content_format、"
-                    "content 或 items、related_stage_id、related_knowledge_points、"
-                    "quality_status、reason。"
-                    "所有内容使用中文撰写。"
-                    "只输出 JSON，格式为 {\"resources\": [...]}。"
+                    "你是 EduAgent 的资源生成智能体。根据学习路径阶段、诊断结果和学习者画像生成学习资源。\n\n"
+                    "## 核心规则：任务驱动生成\n"
+                    "学习路径中每个阶段都有 tasks 列表——每一项 task 都需要配套的学习资源。\n"
+                    "逐个检查每个阶段的 tasks 数组，为每一项任务生成对应的资源，不许跳过任何任务。\n"
+                    "阶段有 5 个任务就至少生成 5 份资源，资源绑定到对应阶段的 stage_id。\n\n"
+                    "## 资源与任务匹配\n"
+                    "概念讲解型任务 → 讲义(lecture) + 思维导图(mindmap)\n"
+                    "计算/练习型任务 → 练习题(quiz) + 实操案例(practice)\n"
+                    "复习/总结型任务 → 拓展阅读(reading) + 综合测验(quiz)\n"
+                    "阶段持续时间长(5-6天)的任务 → 额外增加变式练习题\n\n"
+                    "## 内容深度（按任务要求决定）\n"
+                    "简单概念任务 → 精简讲义 + 基础练习题即可\n"
+                    "核心难点任务 → 详细讲义含多道例题 + 分层练习题(基础/进阶/挑战)\n"
+                    "综合复习任务 → 跨知识点综合题 + 错题分析模板\n\n"
+                    "## 字段要求\n"
+                    "每份资源必须包含：resource_id, type, title, description, content_format,\n"
+                    "content(或items), related_stage_id, related_knowledge_points, quality_status, reason\n"
+                    "related_stage_id 必须精确匹配路径中的 stage_id，分散绑定，不要全堆在一个阶段。\n\n"
+                    "讲义：知识点讲解 + 例题 + 解题步骤。练习题：题目 + 选项 + 正确答案 + 解析(items数组)。\n"
+                    "思维导图：Mermaid mindmap 格式。实操案例：场景描述 + 分步任务 + 验收标准。\n\n"
+                    "所有内容使用中文。只输出JSON：{\"resources\": [...]}"
                 ),
             },
             {
@@ -218,7 +225,7 @@ class ResourceAgent(BaseAgent):
         seen_types = set()
         seen_stage_ids = set()
 
-        for index, item in enumerate(resources[:8], start=1):
+        for index, item in enumerate(resources, start=1):
             if not isinstance(item, dict):
                 continue
             resource_type = self._clean_type(item.get("type"))
@@ -679,24 +686,38 @@ class ResourceAgent(BaseAgent):
 
     def _lecture_for_task(self, course, binding, profile, task, task_id):
         base = self._profile_value(profile, ["knowledge_base", "coding_ability", "programming_ability"], "基础未明确")
+        stage_title = binding.get("title", "")
+        knowledge = "、".join(binding.get("knowledge_points", [])[:5]) or task
+        chapter = binding.get("chapter", "")
         content = (
-            f"## {task} 课程讲义\n\n"
-            f"- 课程：{course.get('course_name', '')}\n"
-            f"- 对应阶段：{binding['stage_id']}\n"
-            f"- 学习任务：{task}\n"
-            f"- 学生基础：{base}\n\n"
-            f"### 核心内容\n\n{task}的核心知识点和概念讲解。\n\n"
-            f"### 学习步骤\n\n"
-            f"1. 先理解每个概念解决的问题和适用场景。\n"
-            f"2. 再结合课程章节中的示例或伪代码手推一遍。\n"
-            f"3. 最后用练习题检查边界条件、复杂度和常见误区。"
+            f"## {task}\n\n"
+            f"所属阶段：{stage_title}\n"
+            f"关联知识点：{knowledge}\n"
+            f"参考章节：{chapter}\n\n"
+            f"### 学习目标\n"
+            f"通过本讲义掌握 {task} 涉及的核心概念、原理和方法。\n\n"
+            f"### 概念要点\n"
+            f"以下为 {knowledge} 的关键概念框架，建议结合实际教材深入学习：\n\n"
+            f"1. **定义与背景** —— 理解 {task} 涉及的基础术语和应用场景\n"
+            f"2. **核心原理** —— 掌握主要方法与推导逻辑\n"
+            f"3. **典型应用** —— 通过例题理解如何运用这些知识解决实际问题\n"
+            f"4. **常见误区** —— 注意易错点和边界条件\n\n"
+            f"### 推荐学习路径\n"
+            f"1. 先阅读教材对应章节，建立整体概念框架\n"
+            f"2. 结合讲义中的例题手动推导一遍\n"
+            f"3. 完成配套练习题，对照解析查漏补缺\n"
+            f"4. 对错题进行归类整理，标记薄弱环节\n\n"
+            f"> ⚠ 此为规则兜底生成的讲义框架。启用 LLM 后将自动替换为含详细例题和个性化讲解的完整讲义。"
         )
+        # 标题用阶段标题+任务关键词，而不是直接用 task 原文
+        short_title = task[:25] + ("…" if len(task) > 25 else "")
         return self._resource(
             f"res_lecture_{task_id}", "lecture",
-            f"{task}讲义", f"针对学习任务「{task}」的个性化讲义。",
+            f"{stage_title} — {short_title}讲义",
+            f"{stage_title}阶段学习任务「{task}」的讲义。",
             "markdown", binding,
             content=content,
-            reason=f"针对任务「{task}」的阅读和练习材料",
+            reason=f"为阶段「{stage_title}」的任务「{task}」提供结构化讲义。",
             task_id=task_id,
         )
 

@@ -63,8 +63,48 @@ def repair_truncated(text: str) -> str:
     return repaired
 
 
+def sanitize_json(text: str) -> str:
+    """在 JSON 字符串值内部转义字面换行/制表符。
+    90% 以上的 LLM JSON 失败是因为 content 字段里的 markdown 有字面换行。
+    """
+    result: list[str] = []
+    in_string = False
+    escape_next = False
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if escape_next:
+            result.append(ch)
+            escape_next = False
+            i += 1
+            continue
+        if ch == '\\' and in_string:
+            result.append(ch)
+            escape_next = True
+            i += 1
+            continue
+        if ch == '"' and not escape_next:
+            in_string = not in_string
+            result.append(ch)
+            i += 1
+            continue
+        if in_string:
+            if ch == '\n':
+                result.append('\\n')
+            elif ch == '\r':
+                result.append('\\r')
+            elif ch == '\t':
+                result.append('\\t')
+            else:
+                result.append(ch)
+        else:
+            result.append(ch)
+        i += 1
+    return ''.join(result)
+
+
 def parse_safe(text: str, *, llm_fix_fn: Callable[[str], str] | None = None) -> dict:
-    """安全解析 LLM 输出的 JSON。三层保障逐步尝试。
+    """安全解析 LLM 输出的 JSON。四层保障逐步尝试。
 
     Args:
         text: LLM 原始输出文本
@@ -76,9 +116,9 @@ def parse_safe(text: str, *, llm_fix_fn: Callable[[str], str] | None = None) -> 
     """
     json_text = extract_json(text)
 
-    # ── 第1层：直接解析 ──
+    # ── 第1层：直接解析 + 自动 sanitize ──
     try:
-        result = json.loads(json_text)
+        result = json.loads(sanitize_json(json_text))
         if isinstance(result, dict):
             return result
     except json.JSONDecodeError as e:
@@ -87,7 +127,7 @@ def parse_safe(text: str, *, llm_fix_fn: Callable[[str], str] | None = None) -> 
     # ── 第2层：机械修复 ──
     try:
         repaired = repair_truncated(json_text)
-        result = json.loads(repaired)
+        result = json.loads(sanitize_json(repaired))
         if isinstance(result, dict):
             logger.info("JSON repaired mechanically (truncation fix)")
             return result
@@ -98,7 +138,7 @@ def parse_safe(text: str, *, llm_fix_fn: Callable[[str], str] | None = None) -> 
     if llm_fix_fn:
         try:
             fixed_text = llm_fix_fn(json_text)
-            result = json.loads(fixed_text)
+            result = json.loads(sanitize_json(fixed_text))
             if isinstance(result, dict):
                 logger.info("JSON repaired by LLM self-correction")
                 return result

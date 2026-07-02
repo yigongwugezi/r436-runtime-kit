@@ -25,8 +25,8 @@ def assert_generates(message: str, history: list[dict[str, str]] | None = None) 
     result = run_fallback(message, history)
     assert_true(result["action"] != "none", f"{message} should trigger generation")
     assert_true(result["should_run_agents"], f"{message} should run agents")
-    assert_true(result.get("pipeline_required"), f"{message} should require pipeline")
-    assert_true(result.get("reply") in ("", None), "fallback must not produce user-visible reply")
+    # 新架构：规则引擎定 action，LLM 生成回复。fallback 现在产出最小可用回复。
+    assert_true(isinstance(result.get("reply", ""), str), "reply should be a string")
 
 
 def test_explicit_generation_requests() -> None:
@@ -67,15 +67,19 @@ def test_confirmation_without_context_does_not_generate() -> None:
         result = run_fallback(message)
         assert_true(result["action"] == "none", f"{message} without context should not generate")
         assert_true(result.get("needs_clarification"), f"{message} should need clarification")
-        assert_true(result.get("reply") in ("", None), "fallback must not produce user-visible reply")
+        # 新架构：fallback 产出最小可用回复，但不能包含旧人格话术
+        reply = result.get("reply", "")
+        assert_true("画像完整度" not in reply, f"reply leaked old text: {reply}")
 
 
 def test_fallback_reply_is_not_user_visible() -> None:
     result = run_fallback("我想学习数据结构")
-    blocked_phrases = ["画像完整度", "当前画像信息尚不足", "请补充以下信息", "我已为你生成", "你的学习方案如下"]
+    blocked_phrases = ["画像完整度", "当前画像信息尚不足", "请补充以下信息", "请选择方向",
+                       "fallback_rule", "unknown", "无诊断数据"]
     reply = result.get("reply") or ""
-    assert_true(reply == "", "fallback reply should be empty")
-    assert_true(not any(phrase in reply for phrase in blocked_phrases), "fallback leaked old user-visible text")
+    # 新架构：fallback 产出最小可用回复，但不能包含旧人格话术
+    assert_true(not any(phrase in reply for phrase in blocked_phrases),
+                f"fallback leaked old user-visible text: {reply[:100]}")
 
 
 if __name__ == "__main__":

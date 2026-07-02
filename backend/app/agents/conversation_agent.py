@@ -64,20 +64,29 @@ class ConversationAgent(BaseAgent):
 - 光说不练——只口头描述计划但不触发 action
 - 没有执行子 Agent 却说"已生成"、"已推荐"、"已完成诊断"
 
-## 决策标签
-<action>full_workflow</action> — 触发条件（两个硬条件必须同时满足）：
-  1. 学习对象明确（如数据结构、微积分、Python、链表、考研英语）
-  2. 学生明确要求或确认生成（如"开始生成"、"帮我制定"、"生成方案"；或你刚提示"可以生成"，学生回复"可以/好的/行"）
+## 输出格式
+你的回复就是纯自然语言，不需要附加任何标签。系统会根据规则引擎自动判断需要执行哪些后台操作。
+你只需要做一个自然的、有帮助的学习助手。
 
-<action>diagnose</action> — 学生明确说自己哪里不会、有错题、或上传了答题结果。学生没有任何证据时不要触发
-<action>plan</action> — 学生只要求规划路径
-<action>resources</action> — 学生只要求推荐资源（明确课程或知识点即可触发）
-<action>none</action> — 纯聊天、追问信息、补充画像、表达学习意向
+## 好的回复示例
+学生："我想学微积分"
+回复："好的！微积分是理工科的核心基础课。你之前有接触过吗？比如高中导数？还是完全零基础？每天大概能花多长时间？"
 
-## 什么时候绝对不能触发 <action>full_workflow</action>
-- 学生只是闲聊、补充画像、表达学习意向（"我想学XXX"只是意向，不是生成请求）
-- 连学习对象都不知道
-- 没有学生明确确认——不要自己替学生做决定
+学生："零基础，每天三小时，一个月"
+回复："明白了，零基础每天三小时，一个月很充足。这些信息已经可以生成第一版学习方案了，要我现在开始吗？"
+
+学生："可以的"
+回复："好的，马上帮你生成！"
+
+学生："我是大三的，学过C语言"
+回复："了解了，软件工程大三，有C语言基础。你想重点学习哪个方向？比如数据结构、算法、操作系统？"
+
+## 差的回复示例（绝对禁止）
+- "请选择方向：生成学习画像、规划路径、推荐资源或诊断薄弱点"
+- "我无法识别你的意图，请重新描述"
+- "收到，已更新学习画像。你可以继续补充薄弱点、学习时间或资源偏好"
+- "画像完整度 2/7" 或任何 X/Y 格式的进度数字
+- "已经生成"/"已推荐"/"已完成诊断"——除非你确定系统已经真实执行了
 
 ## 画像信息标签
 每次回复末尾输出 <facts> 标签：
@@ -124,7 +133,10 @@ class ConversationAgent(BaseAgent):
         return self._run_intent(context)
 
     def _run_intent(self, context: dict[str, Any]) -> dict[str, Any]:
-        """意图判断模式：理解用户、决定 action。"""
+        """意图判断模式。
+        规则引擎先定 action（确定性、可靠），LLM 只负责生成自然语言回复。
+        LLM 不需要输出任何 <action> 标签——action 已经由规则引擎决定了。
+        """
         profile_facts = context.get("profile_facts", {})
         if isinstance(profile_facts, dict) and profile_facts.get("_raw_user_message"):
             user_message = str(profile_facts["_raw_user_message"]).strip()
@@ -143,45 +155,47 @@ class ConversationAgent(BaseAgent):
 
         self._load_history(context)
 
-        # ── LLM 调用（最多重试 5 次）──
-        MAX_RETRIES = 5
-        last_error = None
+        # ── 第1步：规则引擎定 action（确定性，不会"忘记"）──
+        rule_result = self._rule_fallback(user_message, context)
+        action = rule_result.get("action", "none")
+        needs_clarification = rule_result.get("needs_clarification", False)
+        rule_reason = rule_result.get("reason", "")
+
+        # ── 第1.5步：规则吃不准时 → LLM 兜底分类 ──
+        if rule_reason == "unclassified_fallback" and self.llm_client:
+            llm_action = self._llm_classify_action(user_message, context)
+            if llm_action and llm_action != "none":
+                action = llm_action
+
+        # ── 第2步：LLM 生成自然语言回复（不管 action 决策）──
+        llm_reply = ""
+        facts = {}
         llm_retry_count = 0
-        fallback = None
+        try:
+            for attempt in range(3):
+                try:
+                    messages = self._build_reply_messages(user_message, context, action)
+                    raw_response = self._call_llm(messages)
+                    llm_reply, facts = self._extract_reply_and_facts(raw_response)
+                    if llm_reply:
+                        break
+                except LLMClientError:
+                    llm_retry_count = attempt + 1
+                    if attempt < 2:
+                        time.sleep(0.3 * (attempt + 1))
+        except Exception:
+            llm_reply = ""
 
-        for attempt in range(MAX_RETRIES):
-            try:
-                messages = self._build_llm_messages(user_message, context)
-                raw_response = self._call_llm(messages)
-                reply, action, facts = self._parse_response(raw_response)
-                if reply or action != "none":
-                    break  # 有效输出
-            except LLMClientError as e:
-                last_error = e
-                llm_retry_count = attempt + 1
-                if attempt < MAX_RETRIES - 1:
-                    time.sleep(0.5 * (attempt + 1))
-                    continue
-            except json.JSONDecodeError:
-                llm_retry_count = attempt + 1
-                if attempt < MAX_RETRIES - 1:
-                    time.sleep(0.3 * (attempt + 1))
-                    continue
-        else:
-            # 全部重试失败 → 走规则 fallback
-            logger.warning("LLM failed after %d retries, using rule fallback", MAX_RETRIES)
-            fallback = self._rule_fallback(user_message, context)
-            reply = fallback.pop("reply", "")
-            action = fallback.pop("action", "none")
-            facts = {}
+        # ── 第3步：LLM 失败时用极简兜底 ──
+        if not llm_reply:
+            llm_reply = self._action_reply_fallback(action, user_message, needs_clarification)
 
-        self._save_history(user_message, reply or "", context)
+        self._save_history(user_message, llm_reply, context)
 
-        result = self._make_result(reply=reply or "", action=action, facts=facts or {},
-                                   extra=fallback)
+        result = self._make_result(reply=llm_reply, action=action, facts=facts)
         result["llm_retry_count"] = llm_retry_count
-        if fallback:
-            result["fallback_used"] = True
+        if needs_clarification:
+            result["needs_clarification"] = True
         return result
 
     def _run_final_reply(self, context: dict[str, Any]) -> dict[str, Any]:
@@ -302,6 +316,104 @@ class ConversationAgent(BaseAgent):
                 action="unsafe", facts={}
             )
         return None
+
+    def _build_reply_messages(self, user_message: str, context: dict, action: str) -> list[dict]:
+        """构建 LLM 回复生成的消息。action 由规则引擎预先决定，LLM 只管说话。"""
+        msgs = [{"role": "system", "content": self.SYSTEM_PROMPT}]
+        for m in self._history[-20:]:
+            msgs.append(m)
+        ctx_text = self._format_context(context)
+        if ctx_text:
+            msgs.append({"role": "system", "content": f"当前学生状态：\n{ctx_text}"})
+
+        # 根据预定的 action 告诉 LLM 接下来会发生什么
+        action_hints = {
+            "full_workflow": "系统将启动完整的学习方案生成流程（画像分析→知识检索→诊断→路径规划→资源生成）。",
+            "plan": "系统将启动学习路径规划。",
+            "resources": "系统将启动资源推荐和生成。",
+            "diagnose": "系统将启动薄弱点诊断分析。",
+            "profile": "系统将更新学习画像。",
+            "knowledge": "系统将检索课程知识。",
+            "none": "",
+            "unsafe": "",
+        }
+        hint = action_hints.get(action, "")
+        user_prompt = user_message
+        if hint:
+            user_prompt = f'{user_message}\n\n[系统提示：已决定执行 action={action}。{hint}你只需简短确认学生的请求，不要说“已生成”——后续 Agent 会真正执行。]'
+
+        msgs.append({"role": "user", "content": user_prompt})
+        return msgs
+
+    @staticmethod
+    def _extract_reply_and_facts(raw: str) -> tuple[str, dict]:
+        """从 LLM 回复中提取文本和画像信息。不再解析 action 标签。"""
+        text = raw.strip()
+        facts = {}
+
+        # 提取 facts
+        facts_match = re.search(r'<facts>(.*?)</facts>', text, re.DOTALL)
+        if facts_match:
+            try:
+                facts = json.loads(facts_match.group(1).strip())
+            except json.JSONDecodeError:
+                pass
+            text = re.sub(r'<facts>.*?</facts>', '', text, flags=re.DOTALL).strip()
+
+        return text, facts
+
+    def _llm_classify_action(self, user_message: str, context: dict) -> str | None:
+        """规则引擎吃不准时，用 LLM 做意图分类。只返回 action 字符串，不生成回复。"""
+        history_text = "\n".join(
+            f"{'学生' if m['role'] == 'user' else '助手'}: {m['content'][:200]}"
+            for m in self._history[-6:]
+        )
+        prompt = f"""判断学生最后一条消息的意图，只返回一个 action 标签。
+
+可选 action：
+- full_workflow：学生明确要求生成完整学习方案
+- diagnose：学生要求诊断薄弱点或有错题
+- plan：学生要求规划学习路径
+- resources：学生要求推荐或生成学习资源
+- none：纯闲聊、补充信息、表达意向
+
+对话历史：
+{history_text}
+
+学生消息：{user_message}
+
+只输出一个词（full_workflow/diagnose/plan/resources/none）："""
+        try:
+            raw = self.llm_client.chat(
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                max_tokens=20,
+            )
+            raw = raw.strip().lower()
+            valid = {"full_workflow", "diagnose", "plan", "resources", "none"}
+            for action in valid:
+                if action in raw:
+                    return action
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _action_reply_fallback(action: str, message: str, needs_clarification: bool) -> str:
+        """LLM 不可用时的极简回复。"""
+        if needs_clarification:
+            return "你是想让我开始生成学习方案，还是继续补充信息？"
+        if action == "full_workflow":
+            return "好的，我现在就帮你生成学习方案。"
+        if action == "resources":
+            return "好的，我来帮你生成学习资源。"
+        if action == "diagnose":
+            return "好的，我来帮你分析薄弱点。"
+        if action == "plan":
+            return "好的，我来帮你规划学习路径。"
+        if action == "profile":
+            return "收到，已记录你的信息。"
+        return "好的，有什么我可以帮你的？"
 
     def _build_llm_messages(self, user_message, context):
         msgs = [{"role": "system", "content": self.SYSTEM_PROMPT}]
@@ -438,14 +550,14 @@ class ConversationAgent(BaseAgent):
         if learn_match:
             return self._fallback_result("none", "learning_intent_collect_profile")
 
-        if any(w in text for w in ["规划", "计划", "路径", "安排", "怎么学", "方案"]):
-            return self._fallback_result("full_workflow", "planning_request")
+        if any(w in text for w in ["资源", "资料", "练习", "题", "推荐"]):
+            return self._fallback_result("resources", "resource_request")
 
         if any(w in text for w in ["薄弱", "诊断", "不会", "不懂", "哪里差"]):
             return self._fallback_result("diagnose", "diagnosis_request")
 
-        if any(w in text for w in ["资源", "资料", "练习", "题", "推荐"]):
-            return self._fallback_result("resources", "resource_request")
+        if any(w in text for w in ["规划", "计划", "路径", "安排", "怎么学", "方案"]):
+            return self._fallback_result("full_workflow", "planning_request")
 
         return self._fallback_result("none", "unclassified_fallback")
 
