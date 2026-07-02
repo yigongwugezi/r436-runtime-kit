@@ -6,9 +6,37 @@ It does not own final user-visible replies.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
+from app.config import settings
+from app.services.llm_client import BaseLLMClient, get_llm_client
 from app.services.multimodal_registry import ToolRegistry, default_registry
+from app.utils.llm_json import parse_safe
+
+
+def _text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _mermaid_label(value: Any) -> str:
+    return _text(value).replace("(", " ").replace(")", " ")[:80] or "未命名"
+
+
+def _json_to_mermaid(mindmap: dict[str, Any]) -> str:
+    lines = ["mindmap", f"  root(({_mermaid_label(mindmap.get('title'))}))"]
+
+    def walk(nodes: Any, depth: int) -> None:
+        if not isinstance(nodes, list):
+            return
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            lines.append(f"{'  ' * depth}{_mermaid_label(node.get('title'))}")
+            walk(node.get("children"), depth + 1)
+
+    walk(mindmap.get("children"), 2)
+    return "\n".join(lines)
 
 
 class MultimodalAgent:
@@ -16,8 +44,19 @@ class MultimodalAgent:
     agent_id = "multimodal_agent"
     agent_name = "MultimodalAgent"
 
-    def __init__(self, registry: ToolRegistry | None = None) -> None:
+    def __init__(self, registry: ToolRegistry | None = None, llm_client: BaseLLMClient | None = None) -> None:
         self.registry = registry or default_registry()
+        self.llm_client = llm_client
+
+    def _get_llm_client(self) -> BaseLLMClient | None:
+        if self.llm_client is not None:
+            return self.llm_client
+        if settings.llm_provider == "mock":
+            return None
+        try:
+            return get_llm_client(settings.llm_provider)
+        except Exception:
+            return None
 
     def classify_task(
         self,
@@ -66,7 +105,47 @@ class MultimodalAgent:
                 "warnings": [f"Tool not registered: {tool_name}"],
                 "trace": {"tool": tool_name},
             }
-        return tool.run(context)
+        executed = tool.run(context)
+        if plan.get("task_type") == "mindmap_generation" and executed.get("status") == "success":
+            return self._enhance_mindmap_with_llm(executed, context)
+        return executed
+
+    def _enhance_mindmap_with_llm(self, executed: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        client = self._get_llm_client()
+        if client is None:
+            executed.setdefault("trace", {})["llm_enhanced"] = False
+            return executed
+
+        result = executed.get("result") if isinstance(executed.get("result"), dict) else {}
+        prompt = (
+            "请把下面的学习路径整理成更清晰的思维导图 JSON。"
+            "只返回 JSON，不要 markdown。格式："
+            '{"title":"课程名","children":[{"title":"阶段","children":[{"title":"知识点"}]}]}。'
+            "内容必须来自输入，不要编造不存在的课程。\n\n"
+            f"用户请求：{_text(context.get('user_message'))}\n"
+            f"上下文：{json.dumps(result, ensure_ascii=False)}"
+        )
+        try:
+            raw = client.chat([
+                {"role": "system", "content": "你是学习路径可视化助手，只输出合法 JSON。"},
+                {"role": "user", "content": prompt},
+            ], temperature=0.2)
+            mindmap = parse_safe(raw)
+            if not isinstance(mindmap.get("children"), list):
+                raise ValueError("mindmap children must be a list")
+            executed["provider"] = f"{executed.get('provider')}_llm"
+            executed["result"] = {
+                **result,
+                "mindmap_json": mindmap,
+                "mermaid": _json_to_mermaid(mindmap),
+                "llm_enhanced": True,
+            }
+            executed.setdefault("trace", {})["llm_enhanced"] = True
+            executed["trace"]["llm_provider"] = settings.llm_provider if self.llm_client is None else "injected"
+        except Exception as exc:
+            executed.setdefault("warnings", []).append(f"LLM mindmap enhancement failed; used local result: {exc}")
+            executed.setdefault("trace", {})["llm_enhanced"] = False
+        return executed
 
     def summarize(self, plan: dict[str, Any], executed: dict[str, Any]) -> dict[str, Any]:
         status = str(executed.get("status") or "failed")

@@ -19,6 +19,22 @@ def sample_path() -> list[dict]:
     ]
 
 
+class FakeMindmapLLM:
+    def chat(self, messages: list[dict[str, str]], **kwargs) -> str:
+        return '{"title":"Data Structures","children":[{"title":"Linear Lists","children":[{"title":"Linked List"}]}]}'
+
+    def is_available(self) -> bool:
+        return True
+
+
+class FailingMindmapLLM:
+    def chat(self, messages: list[dict[str, str]], **kwargs) -> str:
+        raise RuntimeError("boom")
+
+    def is_available(self) -> bool:
+        return False
+
+
 def test_mindmap_from_learning_path() -> None:
     result = MultimodalAgent().run({
         "user_message": "生成这个学习路径的思维导图",
@@ -35,6 +51,29 @@ def test_mindmap_without_context_does_not_invent_points() -> None:
     result = MultimodalAgent().run({"user_message": "生成思维导图"})
     assert_true(result["status"] == "needs_input", "missing inputs should be explicit")
     assert_true(result["result"] is None, "missing input should not return fake content")
+
+
+def test_mindmap_can_use_injected_llm() -> None:
+    result = MultimodalAgent(llm_client=FakeMindmapLLM()).run({
+        "user_message": "\u751f\u6210\u601d\u7ef4\u5bfc\u56fe",
+        "topic": "Data Structures",
+        "learning_path": sample_path(),
+    })
+    assert_true(result["status"] == "success", "LLM enhanced mindmap should still succeed")
+    assert_true(result["result"]["llm_enhanced"] is True, "mindmap should mark LLM enhancement")
+    assert_true(result["result"]["mindmap_json"]["children"][0]["title"] == "Linear Lists", "LLM JSON should be used")
+    assert_true(result["trace"]["tool_trace"]["llm_enhanced"] is True, "trace should expose LLM enhancement")
+
+
+def test_mindmap_llm_failure_falls_back_to_local_result() -> None:
+    result = MultimodalAgent(llm_client=FailingMindmapLLM()).run({
+        "user_message": "\u751f\u6210\u601d\u7ef4\u5bfc\u56fe",
+        "topic": "Data Structures",
+        "learning_path": sample_path(),
+    })
+    assert_true(result["status"] == "success", "LLM failure should not break local mindmap")
+    assert_true(result["trace"]["tool_trace"]["llm_enhanced"] is False, "trace should record fallback")
+    assert_true("mermaid" in result["result"], "local mermaid should remain available")
 
 
 def test_unconfigured_vision_provider() -> None:
@@ -76,6 +115,8 @@ def test_task_classifier() -> None:
 
 if __name__ == "__main__":
     test_mindmap_from_learning_path()
+    test_mindmap_can_use_injected_llm()
+    test_mindmap_llm_failure_falls_back_to_local_result()
     test_mindmap_without_context_does_not_invent_points()
     test_unconfigured_vision_provider()
     test_unconfigured_image_provider_no_fake_url()
