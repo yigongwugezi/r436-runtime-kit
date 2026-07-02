@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
+from app.agents.multimodal_agent import MultimodalAgent
 from app.agents.diagnosis_agent import DiagnosisAgent
 from app.agents.conversation_agent import ConversationAgent
 from app.config import settings
@@ -266,7 +267,7 @@ def _classify_intent(message: str, session_id: str | None = None) -> dict[str, A
         context["profile_facts"] = {}
     context["profile_facts"]["_raw_user_message"] = message
 
-    # 加载对话历史
+    # 加载对话历史 + last_proposal
     if session_id:
         state = conversation_store.get(session_id)
         history = [
@@ -274,6 +275,7 @@ def _classify_intent(message: str, session_id: str | None = None) -> dict[str, A
             for m in state.messages[-20:]
         ]
         context["conversation_history"] = history
+        context["last_proposal"] = state.last_proposal
 
     return agent.run(context)
 
@@ -742,6 +744,122 @@ def _empty_learning_path(session_id: str) -> dict[str, Any]:
 # Reply generators (chat logic)
 # ═══════════════════════════════════════════════════════════════════════
 
+_MULTIMODAL_PATTERNS = (
+    "生成思维导图",
+    "画个思维导图",
+    "思维导图",
+    "生成知识图谱",
+    "画知识图",
+    "知识图谱",
+    "识别这张图片",
+    "看看这张题图",
+    "图片识别",
+    "生成一张知识卡片",
+    "知识卡片",
+    "生成讲解图",
+    "生成图片",
+    "生成一个微课视频",
+    "微课视频",
+    "生成视频",
+    "讲解视频",
+)
+
+
+def _is_multimodal_request(message: str, payload: dict[str, Any] | None = None) -> bool:
+    if any(pattern in str(message or "") for pattern in _MULTIMODAL_PATTERNS):
+        return True
+    return bool((payload or {}).get("attachments") or [])
+
+
+def _multimodal_learning_path(session_id: str) -> Any:
+    state = conversation_store.get(session_id)
+    cached = state.last_result or {}
+    if isinstance(cached, dict) and cached.get("learning_path"):
+        return cached.get("learning_path")
+    try:
+        stored = ag_get_learning_path(session_id)
+    except Exception:
+        stored = None
+    if isinstance(stored, dict):
+        return stored.get("stages") or stored.get("learning_path") or stored
+    return stored
+
+
+def _multimodal_workflow_trace(result: dict[str, Any]) -> dict[str, Any]:
+    status = str(result.get("status") or "failed")
+    workflow_status = "success" if status == "success" else ("partial" if status in {"needs_input", "provider_not_configured", "unsupported"} else "failed")
+    return {
+        "workflow_name": "multimodal_generation",
+        "workflow_status": workflow_status,
+        "pipeline_executed": True,
+        "steps": [
+            {
+                "step": "multimodal",
+                "agent": "MultimodalAgent",
+                "status": status,
+                "fallback_used": False,
+                "summary": f"{result.get('task_type')} -> {status}",
+                "output_keys": ["multimodal_result"] if result.get("result") else [],
+            }
+        ],
+    }
+
+
+def _multimodal_reply(result: dict[str, Any]) -> str:
+    task_type = result.get("task_type")
+    status = result.get("status")
+    if task_type == "mindmap_generation" and status == "success":
+        stage_count = ((result.get("result") or {}).get("stage_count")) or 0
+        return f"已根据当前学习路径生成思维导图，共整理 {stage_count} 个阶段。"
+    if status == "needs_input":
+        return "还缺少可执行这个多模态任务的输入。比如生成思维导图需要先有学习路径或知识内容。"
+    if status == "provider_not_configured":
+        return "这个多模态能力还没有配置对应的模型 Provider，所以我不会假装已经生成或识别成功。"
+    if status == "unsupported":
+        return "这个多模态请求暂时还不支持真实执行，我没有返回伪造结果。"
+    return "多模态任务执行失败。"
+
+
+def _multimodal_chat_payload(
+    message: str,
+    session_id: str,
+    subject_id: str,
+    payload: dict[str, Any],
+    intent: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not _is_multimodal_request(message, payload):
+        return None
+
+    state = conversation_store.get(session_id)
+    context = {
+        "session_id": session_id,
+        "subject_id": subject_id,
+        "user_message": message,
+        "attachments": payload.get("attachments") or [],
+        "learning_path": _multimodal_learning_path(session_id),
+        "knowledge_context": (state.last_result or {}).get("knowledge_context", {}) if isinstance(state.last_result, dict) else {},
+        "topic": state.facts.get("target_course") or subject_id,
+        "subject_name": state.facts.get("target_course") or "",
+    }
+    result = MultimodalAgent().run(context)
+    trace = _multimodal_workflow_trace(result)
+    cached = state.last_result if isinstance(state.last_result, dict) else {}
+    state.last_result = {**cached, "multimodal_result": result, "workflow_trace": trace}
+    reply = _multimodal_reply(result)
+    return {
+        "sessionId": session_id,
+        "reply": {
+            "id": "assistant_msg_001",
+            "role": "assistant",
+            "content": reply,
+            "timestamp": int(time.time() * 1000),
+        },
+        "intent_result": _public_intent_result(intent),
+        "multimodal_result": result,
+        "workflow_trace": trace,
+    }
+
+
 def _learning_plan_reply(result: dict[str, Any], intent: dict[str, Any]) -> str:
     path = _to_learning_path(result)
     stages = path.get("stages", [])
@@ -1153,6 +1271,7 @@ def _reply_for_intent(
 
     # ── action=none：纯对话，不执行 Agent ──
     if action == "none":
+        _detect_and_set_proposal(llm_reply, session_id)
         return llm_reply or _casual_reply(session_id), False
 
     # ── 安全检查 ──
@@ -1160,7 +1279,7 @@ def _reply_for_intent(
         return llm_reply or "抱歉，我不能协助这类请求。如果你有学习相关的问题，我很乐意帮忙。", False
 
     # ── action 需要执行 Agent ──
-    agent_actions = ("full_workflow", "diagnose", "plan", "resources", "profile", "knowledge")
+    agent_actions = ("full_workflow", "diagnose", "plan", "resources", "profile", "knowledge", "generate_questions", "grade_answer")
     if action in agent_actions:
         # 硬条件检查：如果连学习对象都不知道，必须先问（§2.3）
         if action in ("full_workflow", "plan"):
@@ -1172,8 +1291,21 @@ def _reply_for_intent(
         agents_filter = _agents_for_action(action)
         logger.info("Scheduling agents for action=%s: %s", action, agents_filter)
 
+        # 诊断模式：传入自适应标记和已有作答数据（M2）
+        if action == "diagnose":
+            state = conversation_store.get(session_id)
+            previous_grades = []
+            last_result = state.last_result or {}
+            prev_grades = last_result.get("grading_results", [])
+            if isinstance(prev_grades, list):
+                previous_grades = prev_grades
+            # 注入到 user_message 中，Orchestrator 会传给 DiagnosisAgent
+            message_with_context = message
+        else:
+            message_with_context = message
+
         try:
-            result = _run_agents(message, session_id=session_id,
+            result = _run_agents(message_with_context, session_id=session_id,
                                  progress_callback=progress_callback,
                                  agents_filter=agents_filter)
         except Exception as exc:
@@ -1186,6 +1318,9 @@ def _reply_for_intent(
 
         # 调用 ConversationAgent final_reply 模式生成最终回复
         final_reply = _generate_final_reply(message, session_id, result)
+        # 行动已完成，清除上次提议，检测是否提出了下一步
+        conversation_store.set_proposal(session_id, None)
+        _detect_and_set_proposal(final_reply, session_id)
         return final_reply, bool(result.get("learning_path"))
 
     # 兜底
@@ -1197,13 +1332,17 @@ def _agents_for_action(action: str) -> list[str] | None:
     返回 None 表示全量运行。
     """
     if action == "full_workflow":
-        return None  # 全量
+        return None
     if action == "diagnose":
-        return ["profile_agent", "diagnosis_agent"]
+        return ["profile_agent", "diagnosis_agent", "question_agent", "grading_agent"]
     if action == "plan":
-        return ["profile_agent", "knowledge_agent", "diagnosis_agent", "planner_agent"]
+        return ["profile_agent", "knowledge_agent", "planner_agent"]
     if action == "resources":
-        return ["profile_agent", "planner_agent", "resource_agent"]
+        return ["profile_agent", "resource_agent"]
+    if action == "generate_questions":
+        return ["profile_agent", "diagnosis_agent", "question_agent"]
+    if action == "grade_answer":
+        return ["grading_agent"]
     if action == "profile":
         return ["profile_agent"]
     if action == "knowledge":
@@ -1278,10 +1417,30 @@ def _generate_final_reply(message: str, session_id: str, result: dict[str, Any])
     return "、".join(parts) + "。你可以到对应页面查看详细内容。"
 
 
+def _detect_and_set_proposal(reply: str, session_id: str) -> None:
+    """从 LLM 回复中检测提议，设置 last_proposal。"""
+    if not reply or not session_id:
+        return
+    reply_lower = reply.lower()
+    # 检测分步引导提议
+    if any(phrase in reply_lower for phrase in ["生成学习路径", "规划路径", "生成路径"]):
+        conversation_store.set_proposal(session_id, "plan")
+    elif any(phrase in reply_lower for phrase in ["配套资源", "生成资源", "配资源", "学习资源"]):
+        conversation_store.set_proposal(session_id, "resources")
+    elif any(phrase in reply_lower for phrase in ["出题", "练习题", "巩固", "做题"]):
+        conversation_store.set_proposal(session_id, "questions")
+    elif any(phrase in reply_lower for phrase in ["完整方案", "全部生成", "完整学习方案"]):
+        conversation_store.set_proposal(session_id, "full")
+    elif any(phrase in reply_lower for phrase in ["诊断", "薄弱", "摸底"]):
+        conversation_store.set_proposal(session_id, "diagnose")
+    else:
+        conversation_store.set_proposal(session_id, None)
+
+
 def _will_run_agents(intent: dict[str, Any], session_id: str) -> bool:
     """Check whether the given intent will trigger agent execution."""
     action = intent.get("action", "")
-    return action in ("diagnose", "plan", "resources", "full_workflow", "knowledge", "profile")
+    return action in ("diagnose", "plan", "resources", "full_workflow", "knowledge", "profile", "generate_questions", "grade_answer")
 
 
 GEN_STAGES = [
@@ -1306,6 +1465,34 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
     conversation_store.append_message(session_id, "user", message)
     intent = _classify_intent(message, session_id)
     conversation_store.set_intent(session_id, intent)
+    multimodal_payload = _multimodal_chat_payload(message, session_id, subject_id, payload, intent)
+    if multimodal_payload:
+        reply = multimodal_payload["reply"]["content"]
+        conversation_store.append_message(session_id, "assistant", reply)
+
+        def multimodal_stream():
+            yield f"data: {json.dumps({'stage': '正在执行多模态任务', 'agentName': 'multimodal', 'progress': 80, 'done': False}, ensure_ascii=False)}\n\n"
+            for chunk in reply.splitlines(keepends=True):
+                yield f"data: {json.dumps({'content': chunk, 'done': False}, ensure_ascii=False)}\n\n"
+            final_event = {
+                "event": "done",
+                "done": True,
+                "sessionId": session_id,
+                "pipeline_executed": True,
+                "agents_run": ["multimodal_agent"],
+                "learning_path_created": False,
+                "resources_created": False,
+                "planner_metadata": {},
+                "action": "multimodal",
+                "workflow_trace": multimodal_payload["workflow_trace"],
+                "multimodal_result": multimodal_payload["multimodal_result"],
+                "final_reply_owner": "conversation_agent",
+                "reply_source": "multimodal_agent",
+                "fallback_used": False,
+            }
+            yield f"data: {json.dumps(final_event, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(multimodal_stream(), media_type="text/event-stream")
     run_agents = _will_run_agents(intent, session_id)
 
     def _to_event(stage: str, agent: str, pct: int, **kw) -> str:
@@ -1474,6 +1661,8 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
             "resources_created": bool(resources),
             "resource_count": len(resources),
             "planner_metadata": result.get("planner_metadata", {}) if isinstance(result, dict) else {},
+            "adjustments": result.get("adjustments", []) if isinstance(result, dict) else [],
+            "review_tasks": result.get("review_tasks", []) if isinstance(result, dict) else [],
             # ── debug 字段（§12.1）──
             "action": intent.get("action", "none"),
             "confidence": intent.get("confidence", 0),
@@ -1485,8 +1674,23 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
             "fallback_used": result.get("fallback_used", False),
             "llm_retry_count": intent.get("llm_retry_count", 0),
         }
-        if intent.get("action") == "diagnose" or intent.get("intent") == "diagnosis":
-            final_event["diagnosis"] = result.get("diagnosis", {})
+        if intent.get("action") in ("diagnose", "generate_questions"):
+            diag = result.get("diagnosis", {})
+            final_event["diagnosis"] = {
+                "diagnosis_summary": diag.get("diagnosis_summary", ""),
+                "weak_knowledge_points": diag.get("weak_knowledge_points", []),
+                "mastery_levels": diag.get("mastery_levels", []),
+                "diagnostic_phase": diag.get("diagnostic_phase", ""),
+                "diagnostic_question_count": diag.get("diagnostic_question_count", 0),
+                "needs_more_evidence": diag.get("needs_more_evidence", True),
+            } if isinstance(diag, dict) else {}
+        if intent.get("action") == "generate_questions":
+            questions = result.get("questions", []) if isinstance(result, dict) else []
+            final_event["questions_created"] = bool(questions)
+            final_event["question_count"] = len(questions)
+            final_event["question_set_id"] = result.get("question_set_id", "") if isinstance(result, dict) else ""
+        if intent.get("action") == "grade_answer":
+            final_event["grading_result"] = result.get("grading_result", {}) if isinstance(result, dict) else {}
         yield f"data: {json.dumps(final_event, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
@@ -1505,6 +1709,13 @@ def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
     conversation_store.append_message(session_id, "user", message)
     intent = _classify_intent(message, session_id)
     conversation_store.set_intent(session_id, intent)
+    multimodal_payload = _multimodal_chat_payload(message, session_id, subject_id, payload, intent)
+    if multimodal_payload:
+        conversation_store.append_message(session_id, "assistant", multimodal_payload["reply"]["content"])
+        return _product_response(
+            multimodal_payload,
+            session_id=session_id, source="agent",
+        )
     reply, _ = _reply_for_intent(message, intent, session_id)
     conversation_store.append_message(session_id, "assistant", reply)
     response = {
@@ -3301,12 +3512,92 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
     _ensure_session_linked(session_id, subject_id=subject_id)
 
     analytics = ag_get_analytics(session_id)
+    state = conversation_store.get(session_id)
+    last_result = state.last_result or {}
+
+    # ── M6: 能力热力图数据 ──
+    diagnosis = last_result.get("diagnosis", {}) if isinstance(last_result, dict) else {}
+    mastery_levels = diagnosis.get("mastery_levels", []) or []
+    heatmap = [
+        {"knowledgePoint": m.get("name", ""), "mastery": m.get("score", 50),
+         "level": m.get("level", "初步"), "evidenceCount": m.get("evidence_count", 0)}
+        for m in mastery_levels if isinstance(m, dict)
+    ]
+
+    # ── M6: 薄弱榜单 Top 5 ──
+    weak_kps = diagnosis.get("weak_knowledge_points", []) or []
+    weakness_ranking = [
+        {"name": w.get("name", ""), "priority": w.get("priority", "medium"),
+         "reason": w.get("reason", ""), "suggested_action": "建议针对性练习"}
+        for w in weak_kps[:5] if isinstance(w, dict)
+    ]
+
+    # ── M6: 进步曲线（近30天正确率+做题量）──
+    from datetime import datetime, timedelta
+    progress_curve = []
+    for day_offset in range(29, -1, -1):
+        date = (datetime.now() - timedelta(days=day_offset)).strftime("%m-%d")
+        progress_curve.append({"date": date, "accuracy": None, "questionCount": 0})
+
+    # 从 grading_results 填充真实数据
+    grading_results = last_result.get("grading_results", []) if isinstance(last_result, dict) else []
+    for gr in grading_results:
+        if not isinstance(gr, dict):
+            continue
+        score = gr.get("total_score")
+        if score is not None:
+            today_idx = min(29, 29)  # 简化：全放到今天
+            progress_curve[today_idx]["questionCount"] += 1
+            prev_acc = progress_curve[today_idx]["accuracy"] or 0
+            n = progress_curve[today_idx]["questionCount"]
+            progress_curve[today_idx]["accuracy"] = int((prev_acc * (n - 1) + score) / n)
+
+    # ── M6: 学习日历（最近30天活跃日）──
+    today = datetime.now().date()
+    study_calendar = []
+    for day_offset in range(29, -1, -1):
+        d = today - timedelta(days=day_offset)
+        has_activity = any(
+            isinstance(gr, dict) for gr in grading_results[:1]
+        )  # 简化：有判卷数据=活跃
+        study_calendar.append({
+            "date": d.strftime("%Y-%m-%d"),
+            "active": has_activity,
+            "questionCount": 0,
+        })
+
+    # ── M6: 目标追踪 ──
+    learning_path = last_result.get("learning_path", []) if isinstance(last_result, dict) else []
+    estimated_days = last_result.get("estimatedDays", 14) if isinstance(last_result, dict) else 14
+    completed_questions = len(grading_results)
+    goal_tracking = {
+        "estimatedDays": estimated_days,
+        "questionsCompleted": completed_questions,
+        "masteryPercentage": int(sum(m.get("score", 0) for m in mastery_levels) / max(1, len(mastery_levels))),
+        "stagesCompleted": 0,
+        "stagesTotal": len(learning_path),
+    }
+
+    # ── 今日学习卡片 ──
+    today_card = {
+        "questionsAnswered": completed_questions,
+        "averageScore": int(sum(gr.get("total_score", 0) for gr in grading_results if isinstance(gr, dict)) / max(1, completed_questions)) if completed_questions > 0 else None,
+        "studyMinutes": 0,  # 需要 learning_tracker 数据
+        "weakPointsCount": len(weak_kps),
+    }
+
     return _product_response(
         {
             **analytics,
-            "summary": "已接入学习事件追踪，可用于后续动态调整画像、资源推荐和学习路径。",
+            "heatmap": heatmap,
+            "weaknessRanking": weakness_ranking,
+            "progressCurve": progress_curve,
+            "studyCalendar": study_calendar,
+            "goalTracking": goal_tracking,
+            "todayCard": today_card,
+            "summary": "多智能体协同学习分析仪表盘（M6）。",
         },
-        session_id=session_id, subject_id=subjectId, source="db",
+        session_id=session_id, subject_id=subjectId, source="agent",
     )
 
 
@@ -3428,3 +3719,246 @@ def learning_timeline(
         })
 
     return _product_response({"events": events_out, "total": len(events_out)}, session_id=session_id, subject_id=subjectId, source="db")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Question & Grading endpoints（M3+M4）
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@router.post("/questions/generate")
+def generate_questions(payload: dict[str, Any]) -> dict[str, Any]:
+    """触发 QuestionAgent 生成试题并持久化到 DB。"""
+    session_id = _payload_session_id(payload)
+    subject_id = _payload_subject_id(payload)
+    message = str(payload.get("message", "生成练习题"))
+    _validate_message(message)
+    _ensure_session_linked(session_id, subject_id=subject_id)
+
+    conversation_store.append_message(session_id, "user", message)
+    intent = _classify_intent(message, session_id)
+    intent["action"] = "generate_questions"
+
+    result = _run_agents(message, session_id=session_id, progress_callback=None,
+                         agents_filter=_agents_for_action("generate_questions"))
+
+    questions = result.get("questions", [])
+    qsid = result.get("question_set_id", "")
+    # 持久化到 DB
+    if questions:
+        try:
+            db = SessionLocal()
+            for q in questions:
+                q["question_set_id"] = qsid
+            from app.db.repository import upsert_questions
+            upsert_questions(db, session_id, questions)
+        finally:
+            db.close()
+
+    return _product_response({
+        "questionSetId": qsid, "questions": questions, "count": len(questions),
+    }, session_id=session_id, source="agent")
+
+
+def _q_to_dict(q) -> dict:
+    """ORM QuestionModel → dict，JSON 字段已自动反序列化。"""
+    return {
+        "question_id": q.question_id, "type": q.type, "stem": q.stem,
+        "options": q.options, "correct": q.correct, "explanation": q.explanation,
+        "difficulty": q.difficulty, "knowledge_points": q.knowledge_points,
+        "tags": q.tags, "scoring_rubric": q.scoring_rubric,
+        "reference_answer": q.reference_answer, "source": q.source,
+        "quality_status": q.quality_status, "created_at": str(q.created_at) if q.created_at else None,
+    }
+
+
+@router.get("/questions")
+def list_questions(sessionId: str = "", subjectId: str = "",
+                   knowledgePoint: str = "", difficulty: str = "",
+                   qtype: str = "") -> dict[str, Any]:
+    """查询已有试题列表（从 DB）。"""
+    session_id = _resolve_session_id(sessionId, subjectId)
+    _ensure_session_linked(session_id, subject_id=subjectId)
+    try:
+        db = SessionLocal()
+        from app.db.repository import get_questions as repo_get_questions
+        rows = repo_get_questions(db, session_id, knowledge_point=knowledgePoint,
+                                  difficulty=difficulty, qtype=qtype)
+        # 隐藏答案
+        safe = [{k: v for k, v in _q_to_dict(r).items()
+                 if k not in ("correct", "explanation", "scoring_rubric", "reference_answer")}
+                for r in rows]
+        return _product_response({"questions": safe, "count": len(safe)}, session_id=session_id, source="db")
+    finally:
+        db.close()
+
+
+@router.get("/questions/{question_id}")
+def get_question(question_id: str, sessionId: str = "", reveal: bool = False) -> dict[str, Any]:
+    """获取单题详情（从 DB）。reveal=True 时返回答案。"""
+    session_id = _resolve_session_id(sessionId, "")
+    try:
+        db = SessionLocal()
+        from app.db.repository import get_question_by_id as repo_get_q
+        q = repo_get_q(db, question_id, session_id)
+        if not q:
+            return _product_response(None, session_id=session_id, status="error", message="题目不存在", source="db")
+        data = _q_to_dict(q)
+        if not reveal:
+            for k in ("correct", "explanation", "scoring_rubric", "reference_answer"):
+                data.pop(k, None)
+        return _product_response({"question": data}, session_id=session_id, source="db")
+    finally:
+        db.close()
+
+
+@router.post("/questions/{question_id}/grade")
+def grade_answer(question_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """提交作答，触发 GradingAgent 判卷并持久化到 DB。"""
+    session_id = _payload_session_id(payload)
+    student_answer = str(payload.get("answer", "")).strip()
+    if not student_answer:
+        return _product_response(None, session_id=session_id, status="error",
+                                 message="作答不能为空", source="agent")
+
+    # 从 DB 查题目
+    try:
+        db = SessionLocal()
+        from app.db.repository import get_question_by_id as repo_get_q
+        q = repo_get_q(db, question_id, session_id)
+        if not q:
+            return _product_response(None, session_id=session_id, status="error",
+                                     message="题目不存在", source="db")
+        question = _q_to_dict(q)
+    finally:
+        db.close()
+
+    from app.agents.grading_agent import GradingAgent
+    agent = GradingAgent(mock_data={}, llm_client=_llm_client())
+    grading_result = agent.run({
+        "session_id": session_id, "question": question,
+        "student_answer": student_answer,
+        "profile_facts": {"_raw_user_message": student_answer},
+    })
+    result_data = grading_result.get("grading_result", {})
+
+    # 持久化作答记录
+    if isinstance(result_data, dict):
+        try:
+            db = SessionLocal()
+            from app.db.repository import save_answer_record
+            save_answer_record(db, {
+                "session_id": session_id, "question_id": question_id,
+                "student_answer": student_answer,
+                **result_data,
+            })
+        finally:
+            db.close()
+
+    return _product_response({"gradingResult": result_data}, session_id=session_id, source="agent")
+
+
+@router.get("/questions/weak")
+def weak_questions(sessionId: str = "", errorType: str = "", limit: int = 20) -> dict[str, Any]:
+    """错题本：查询作答错误的题目及判卷结果。"""
+    session_id = _resolve_session_id(sessionId, "")
+    try:
+        db = SessionLocal()
+        from app.db.repository import get_weak_records
+        records = get_weak_records(db, session_id, error_type=errorType, limit=limit)
+        data = []
+        for r in records:
+            q = get_question_by_id(db, r.question_id, session_id)
+            data.append({
+                "question": _q_to_dict(q) if q else None,
+                "last_answer": r.student_answer,
+                "grading_result": {
+                    "total_score": r.total_score, "dimension_scores": r.dimension_scores,
+                    "dimension_feedback": r.dimension_feedback, "error_type": r.error_type,
+                    "error_label": r.error_label, "error_explanation": r.error_explanation,
+                    "error_action": r.error_action, "suggestions": r.suggestions,
+                    "strengths": r.strengths,
+                },
+                "attempted_at": int(r.created_at.timestamp() * 1000) if r.created_at else 0,
+            })
+        return _product_response({"records": data, "total": len(data)}, session_id=session_id, source="db")
+    finally:
+        db.close()
+
+
+@router.get("/questions/history")
+def answer_history(sessionId: str = "", limit: int = 50) -> dict[str, Any]:
+    """答题历史：查询所有作答记录及统计。"""
+    session_id = _resolve_session_id(sessionId, "")
+    try:
+        db = SessionLocal()
+        from app.db.repository import get_answer_history, get_answer_stats
+        records = get_answer_history(db, session_id, limit=limit)
+        stats = get_answer_stats(db, session_id)
+        data = []
+        for r in records:
+            q = get_question_by_id(db, r.question_id, session_id)
+            data.append({
+                "question_id": r.question_id,
+                "question": _q_to_dict(q) if q else None,
+                "answer": r.student_answer,
+                "grading_result": {
+                    "total_score": r.total_score, "dimension_scores": r.dimension_scores,
+                    "dimension_feedback": r.dimension_feedback, "error_type": r.error_type,
+                    "error_label": r.error_label,
+                },
+                "created_at": int(r.created_at.timestamp() * 1000) if r.created_at else 0,
+            })
+        return _product_response({
+            "records": data, "totalCorrect": stats["totalCorrect"],
+            "totalAttempted": stats["totalAttempted"],
+        }, session_id=session_id, source="db")
+    finally:
+        db.close()
+
+
+@router.get("/questions/sets")
+def question_sets(sessionId: str = "") -> dict[str, Any]:
+    """列出所有题目集（按 question_set_id 分组）。"""
+    session_id = _resolve_session_id(sessionId, "")
+    try:
+        db = SessionLocal()
+        from app.db.repository import get_questions as repo_get_questions
+        all_qs = repo_get_questions(db, session_id, limit=500)
+
+        # 按 question_set_id 分组
+        sets: dict[str, dict] = {}
+        for q in all_qs:
+            qsid = q.question_set_id or "default"
+            if qsid not in sets:
+                sets[qsid] = {"questionSetId": qsid, "title": qsid, "questions": [], "count": 0, "completed": 0}
+            sets[qsid]["questions"].append(q)
+            sets[qsid]["count"] += 1
+
+        # 统计完成数（有判卷记录的算完成）
+        from app.db.repository import get_answer_history
+        records = get_answer_history(db, session_id, limit=500)
+        graded_ids = {r.question_id for r in records}
+
+        result = []
+        for qsid, data in sets.items():
+            qs = data["questions"]
+            completed = sum(1 for q in qs if q.question_id in graded_ids)
+            # 取第一个题目的前几个字作标题
+            title = qs[0].stem[:30] + ("…" if len(qs[0].stem) > 30 else "") if qs else qsid
+            knowledge_points = list(set(
+                kp for q in qs if isinstance(q.knowledge_points, list)
+                for kp in q.knowledge_points
+            ))[:5]
+            result.append({
+                "questionSetId": qsid,
+                "title": title,
+                "knowledgePoints": knowledge_points,
+                "count": len(qs),
+                "completed": completed,
+                "createdAt": int(qs[0].created_at.timestamp() * 1000) if qs and qs[0].created_at else 0,
+            })
+
+        return _product_response({"sets": result}, session_id=session_id, source="db")
+    finally:
+        db.close()

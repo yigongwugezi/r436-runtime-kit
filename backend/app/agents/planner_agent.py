@@ -24,6 +24,13 @@ class PlannerAgent(BaseAgent):
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         diagnosis = context.get("diagnosis") if isinstance(context.get("diagnosis"), dict) else {}
         profile = context.get("profile", {})
+        mode = str(context.get("mode", "plan"))
+
+        # ── 动态调整模式：基于诊断结果调整已有路径 ──
+        if mode == "adjust" and context.get("existing_path"):
+            return self._run_adjustment(context, diagnosis, profile)
+
+        # ── 全新规划模式 ──
         weak_points = self._extract_weak_points(diagnosis)
         planning_points = self._get_planning_points(context, weak_points)
 
@@ -35,16 +42,168 @@ class PlannerAgent(BaseAgent):
         if diag_meta["needs_more_diagnosis"] and not weak_points and not planning_points:
             planning_points = [self._make_probe_point(diagnosis)]
 
-        if not planning_points:
-            pass
-
         llm_path = self._try_generate_with_llm(context, profile, planning_points, total_days, diag_meta)
         if llm_path:
-            return self._make_result(llm_path, total_days, diag_meta)
+            result = self._make_result(llm_path, total_days, diag_meta)
+            result["review_tasks"] = self._generate_review_tasks(llm_path)
+            return result
 
         logger.info("LLM unavailable or failed, using rule-based path")
         rule_path = self._build_rule_path(planning_points, profile, total_days, diag_meta)
-        return self._make_result(rule_path, total_days, diag_meta)
+        result = self._make_result(rule_path, total_days, diag_meta)
+        result["review_tasks"] = self._generate_review_tasks(rule_path)
+        return result
+
+    # ── 动态调整（M5）──
+
+    def _run_adjustment(self, context: dict, diagnosis: dict, profile: dict) -> dict:
+        """基于诊断结果动态调整已有学习路径。"""
+        existing_path = list(context.get("existing_path", []) or [])
+        mastery_levels = diagnosis.get("mastery_levels", []) or []
+        grading_results = context.get("grading_results", []) or []
+
+        if not existing_path:
+            return self._make_result([], 14, {"diagnosis_used": False, "needs_more_diagnosis": True,
+                                              "weak_topic_names": [], "evidence_sources": [], "risk_flags": ["no_existing_path"],
+                                              "total_days": 14, "time_basis": {"has_time_budget": False}})
+
+        # 统计连续作答表现
+        consecutive_correct = 0
+        consecutive_wrong = 0
+        for g in reversed(grading_results[-10:]):
+            if not isinstance(g, dict):
+                continue
+            score = g.get("total_score", 50)
+            if score is not None and score >= 80:
+                consecutive_correct += 1
+                consecutive_wrong = 0
+            elif score is not None and score < 40:
+                consecutive_wrong += 1
+                consecutive_correct = 0
+
+        adjustments = []
+        adjusted_path = []
+
+        for stage in existing_path:
+            if not isinstance(stage, dict):
+                adjusted_path.append(stage)
+                continue
+
+            stage_title = str(stage.get("title", ""))
+            stage_tasks = list(stage.get("tasks", []))
+            duration_str = str(stage.get("duration", ""))
+            days = self._parse_duration_days(duration_str)
+
+            # 匹配掌握度
+            mastery = next((m for m in mastery_levels if isinstance(m, dict) and
+                           m.get("name", "") in stage_title), None)
+
+            adj = dict(stage)
+            if mastery:
+                level = mastery.get("level", "初步")
+                score = mastery.get("score", 50)
+
+                if level == "精通" and score >= 90:
+                    # 加速：缩短天数或跳过
+                    new_days = max(1, days // 2)
+                    adj["duration"] = f"第{days}-{new_days}天（加速）"
+                    adj["reason"] = f"诊断显示{stage_title}已精通（{score}分），缩短学习时间。"
+                    adjustments.append(f"加速 {stage_title}：{days}天→{new_days}天")
+                elif level == "未学" and score < 40:
+                    # 强化：增加天数，插入前置知识
+                    new_days = min(days + 3, 14)
+                    adj["duration"] = f"第{days}-{new_days}天（强化）"
+                    adj["tasks"] = stage_tasks + [f"回顾 {stage_title} 的前置基础知识"]
+                    adj["reason"] = f"诊断显示{stage_title}未掌握（{score}分），增加学习时间和前置知识回顾。"
+                    adjustments.append(f"强化 {stage_title}：{days}天→{new_days}天")
+            else:
+                adj["reason"] = stage.get("reason", "") + "（无诊断数据，保持原计划）"
+
+            adjusted_path.append(adj)
+
+        # 连续错题 → 在前端插入前置知识阶段
+        if consecutive_wrong >= 2 and mastery_levels:
+            weak_names = [m.get("name", "") for m in mastery_levels[:2] if isinstance(m, dict) and m.get("level") in ("未学", "初步")]
+            if weak_names:
+                adjusted_path.insert(0, {
+                    "stage_id": "stage_remedial",
+                    "title": f"前置知识补救：{'、'.join(weak_names)}",
+                    "duration": "第1-2天（补救）",
+                    "goal": f"连续{consecutive_wrong}题错误，先回顾前置基础。",
+                    "tasks": [f"复习 {name} 的核心概念和基础题" for name in weak_names],
+                    "daily_tasks": [{"day": 1, "tasks": [f"重新学习 {name} 的基础定义" for name in weak_names]}],
+                    "resource_types": ["lecture", "quiz"],
+                    "reason": f"连续{consecutive_wrong}题错误触发动态调整——回溯前置知识。",
+                    "source": "dynamic_adjustment",
+                })
+                adjustments.append(f"连续{consecutive_wrong}题错误，插入前置知识补救阶段")
+
+        time_text = self._collect_time_text(context)
+        total_days = self._infer_days(time_text, profile)
+
+        # 目标临近 → 考前冲刺模式
+        exam_keywords = ["考试", "期末", "考研", "高分"]
+        if any(w in str(context.get("user_message", "")) for w in exam_keywords):
+            for adj in adjusted_path:
+                adj["resource_types"] = list(set(adj.get("resource_types", []) + ["quiz", "practice"]))
+                adj["reason"] = str(adj.get("reason", "")) + "（考前冲刺模式——增加练习密度）"
+            adjustments.append("检测到考试目标，切换到考前冲刺模式")
+
+        diag_meta = {
+            "diagnosis_used": True, "weak_topic_names": [m.get("name", "") for m in mastery_levels[:5] if isinstance(m, dict)],
+            "needs_more_diagnosis": len(mastery_levels) < 3,
+            "evidence_sources": ["diagnosis_mastery", "grading_results"],
+            "risk_flags": ["dynamic_adjustment"] + (["time_budget_tight"] if consecutive_correct >= 3 else []),
+            "total_days": total_days,
+        }
+
+        result = self._make_result(adjusted_path, total_days, diag_meta)
+        result["adjustments"] = adjustments
+        result["review_tasks"] = self._generate_review_tasks(adjusted_path)
+        result["consecutive_correct"] = consecutive_correct
+        result["consecutive_wrong"] = consecutive_wrong
+        return result
+
+    def _parse_duration_days(self, duration: str) -> int:
+        """解析 duration 字符串中的天数。"""
+        nums = re.findall(r"\d+", duration)
+        if len(nums) >= 2:
+            return max(1, int(nums[1]) - int(nums[0]) + 1)
+        if len(nums) == 1:
+            return int(nums[0])
+        return 3
+
+    # ── 艾宾浩斯复习调度（M5）──
+
+    def _generate_review_tasks(self, path: list[dict]) -> list[dict]:
+        """基于艾宾浩斯遗忘曲线生成复习任务。
+        新学知识点 → 第1天 → 第2天 → 第4天 → 第7天 → 第15天 → 第30天
+        """
+        intervals = [1, 2, 4, 7, 15, 30]
+        review_tasks = []
+
+        for stage in path:
+            if not isinstance(stage, dict):
+                continue
+            title = str(stage.get("title", ""))
+            stage_id = str(stage.get("stage_id", ""))
+            tasks = stage.get("tasks", []) or [title]
+
+            for interval in intervals:
+                review_tasks.append({
+                    "stage_id": stage_id,
+                    "knowledge_point": title,
+                    "interval_days": interval,
+                    "review_content": f"快速回顾 {title} 的核心要点和错题",
+                    "estimated_minutes": max(10, 5 * interval),  # 间隔越久复习越久
+                })
+
+        return review_tasks
+
+    @staticmethod
+    def get_review_for_today(review_tasks: list[dict], day_index: int) -> list[dict]:
+        """获取当天应完成的复习任务。"""
+        return [t for t in review_tasks if isinstance(t, dict) and t.get("interval_days") == day_index]
 
     def get_fallback(self, context: dict[str, Any] | None = None) -> dict[str, Any]:
         ctx = context or {}
@@ -125,8 +284,10 @@ class PlannerAgent(BaseAgent):
                 temperature=0,
                 max_tokens=10,
             )
-            days = int(re.search(r'\d+', raw).group())
-            return max(1, min(365, days))
+            raw = str(raw).strip()
+            if not re.fullmatch(r"\d+", raw):
+                return None
+            return max(1, min(365, int(raw)))
         except Exception:
             return None
 

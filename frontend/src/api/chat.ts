@@ -77,3 +77,35 @@ export async function recoverGeneration(sessionId: string): Promise<{
   const { data } = await client.get('/api/chat/recover', { params: { sessionId } });
   return data;
 }
+
+/** 查询试题列表 */
+export async function listQuestions(sessionId: string): Promise<any> {
+  const { data } = await client.get('/api/questions', { params: { sessionId } });
+  return data.data || data;
+}
+
+/** 提交作答并获取判卷结果 */
+export async function gradeAnswer(questionId: string, answer: string, sessionId: string): Promise<any> {
+  const { data } = await client.post(`/api/questions/${questionId}/grade`, { answer, sessionId });
+  return data.data || data;
+}
+
+/** 错题本 */
+export async function getWeakQuestions(sessionId: string, errorType?: string): Promise<any> {
+  const params: any = { sessionId };
+  if (errorType) params.errorType = errorType;
+  const { data } = await client.get('/api/questions/weak', { params });
+  return data.data || data;
+}
+
+/** 答题历史 */
+export async function getAnswerHistory(sessionId: string): Promise<any> {
+  const { data } = await client.get('/api/questions/history', { params: { sessionId } });
+  return data.data || data;
+}
+
+/** 题目集列表 */
+export async function getQuestionSets(sessionId: string): Promise<any> {
+  const { data } = await client.get('/api/questions/sets', { params: { sessionId } });
+  return data.data || data;
+}

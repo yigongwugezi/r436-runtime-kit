@@ -13,13 +13,16 @@ from typing import Any, Callable
 
 from app.agents import (
     DiagnosisAgent,
+    GradingAgent,
     KnowledgeAgent,
     PlannerAgent,
     ProfileAgent,
+    QuestionAgent,
     ResourceAgent,
     ReviewAgent,
 )
 from app.config import settings
+from app.services.conversation_state import conversation_store
 from app.services.learning_tracker import learning_tracker
 from app.services.llm_client import get_llm_client
 
@@ -37,12 +40,15 @@ PLANNER_METADATA_KEYS = [
 
 
 AGENT_OUTPUT_KEYS: dict[str, list[str]] = {
+    "conversation_agent": ["action", "intent", "reply"],
     "profile_agent": ["profile"],
     "knowledge_agent": ["knowledge_context"],
     "diagnosis_agent": ["diagnosis"],
     "planner_agent": ["learning_path", "estimatedDays", *PLANNER_METADATA_KEYS],
+    "question_agent": ["questions", "question_set_id"],
     "resource_agent": ["resources"],
     "review_agent": ["review"],
+    "grading_agent": ["grading_result"],
 }
 
 
@@ -72,9 +78,11 @@ class AgentOrchestrator:
         "profile_agent":      ("profiling", 15),
         "knowledge_agent":    ("knowledge", 30),
         "diagnosis_agent":    ("diagnosis", 45),
-        "planner_agent":      ("planning", 60),
+        "question_agent":     ("generating", 60),
+        "planner_agent":      ("planning", 65),
         "resource_agent":     ("generating", 80),
         "review_agent":       ("reviewing", 90),
+        "grading_agent":      ("reviewing", 95),
     }
 
     def run(
@@ -106,9 +114,11 @@ class AgentOrchestrator:
             "profile_agent":      "正在生成画像",
             "knowledge_agent":    "正在检索知识",
             "diagnosis_agent":    "正在诊断分析",
+            "question_agent":     "正在生成试题",
             "planner_agent":      "正在规划路径",
             "resource_agent":     "正在生成资源",
             "review_agent":       "正在检查质量",
+            "grading_agent":      "正在批改作答",
         }
 
         context: dict[str, Any] = {
@@ -134,6 +144,23 @@ class AgentOrchestrator:
 
         # ── 构建 Agent 列表，按 agents_filter 过滤 ──
         agents = self._build_agents(agents_filter=agents_filter)
+
+        # ── 自适应诊断检测 ──
+        if agents_filter and "diagnosis_agent" in agents_filter and "question_agent" in agents_filter:
+            context["mode"] = "adaptive"
+            state = conversation_store.get(session_id)
+            last_result = state.last_result or {}
+            context["previous_grades"] = last_result.get("grading_results", [])
+
+        # ── 路径动态调整检测（M5）──
+        if agents_filter and "planner_agent" in agents_filter and "diagnosis_agent" in agents_filter:
+            context["mode"] = "adjust"
+            state = conversation_store.get(session_id)
+            last_result = state.last_result or {}
+            existing_path = last_result.get("learning_path", []) or []
+            if existing_path:
+                context["existing_path"] = existing_path
+                context["grading_results"] = last_result.get("grading_results", [])
 
         # ── 判断是否跳过后续 Agent ──
         skip_pipeline = False
@@ -166,13 +193,18 @@ class AgentOrchestrator:
                     progress_callback(stage_key, label, pct)
 
         # ── 如果跳过流水线（目前仅 unsafe 场景），填充默认值 ──
+        if result.get("agents_run") == ["conversation_agent"] and result.get("action") == "none":
+            skip_pipeline = True
+            result["skip_reason"] = "conversation_only"
+
         if skip_pipeline:
             result["skip_pipeline"] = True
             result["pipeline_executed"] = False
-            self._ensure_output_defaults(result, source="pipeline_skipped")
+            skipped_source = "conversation_only" if result.get("skip_reason") == "conversation_only" else "pipeline_skipped"
+            self._ensure_output_defaults(result, source=skipped_source)
             result["overall_status"] = "completed"
             result["overall_error"] = None
-            result["source"] = "pipeline_skipped"
+            result["source"] = skipped_source
             return result
 
         # ── 检测是否使用了 fallback ──
@@ -281,9 +313,11 @@ class AgentOrchestrator:
             ProfileAgent(mock_data=mock_data, llm_client=self.llm_client),
             KnowledgeAgent(mock_data=mock_data),
             DiagnosisAgent(mock_data=mock_data, llm_client=downstream_llm),
+            QuestionAgent(mock_data=mock_data, llm_client=downstream_llm),
             PlannerAgent(mock_data=mock_data, llm_client=downstream_llm),
             ResourceAgent(mock_data=mock_data, llm_client=downstream_llm),
             ReviewAgent(mock_data=mock_data),
+            GradingAgent(mock_data=mock_data, llm_client=downstream_llm),
         ]
 
         if agents_filter is None:
@@ -297,8 +331,6 @@ class AgentOrchestrator:
         return [a for a in all_agents if a.agent_id in filter_set]
 
     def _downstream_llm_client(self):
-        if type(self.llm_client).__name__ == "MockLLMClient":
-            return None
         return self.llm_client
 
     # ── Single-agent execution ─────────────────────────────────────────

@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.db import init_db
-from app.routers import admin, agents, auth, courses, health, history, learner, product, questions
+from app.routers import admin, agents, auth, courses, health, history, learner, multimodal, product, questions
 from app.services.conversation_state import conversation_store
 from app.services.learning_tracker import learning_tracker
 from app.utils.errors import AppError
@@ -160,6 +160,7 @@ app.include_router(history.router, prefix="/api")
 app.include_router(health.router, prefix="/api")
 app.include_router(courses.router, prefix="/api")
 app.include_router(agents.router, prefix="/api")
+app.include_router(multimodal.router, prefix="/api")
 app.include_router(product.router)
 app.include_router(product.router, prefix="/api")
 app.include_router(questions.router, prefix="/api")

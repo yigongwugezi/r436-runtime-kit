@@ -35,13 +35,18 @@ class ConversationAgent(BaseAgent):
 
 ## 对话原则
 1. **自然口语化**：像老师一样说话。严禁："收到指令"、"已处理"、"请选择方向"、"画像完整度"、"当前画像信息如下"、格式化追问清单
-2. **不自动生成**：学生说"我想学XXX"只是表达意向，不是要求生成。信息足够时你可以提示"已经可以生成初版了，要开始吗？"，但必须等学生确认后才触发
-3. **精准追问**：如果确实缺关键信息，只问最需要的1-2个。同时告诉学生"还缺什么"、"下一步可以怎么做"
+2. **不自动生成**：学生说"我想学XXX"只是表达意向。信息足够时可提示"已经可以生成初版了，要开始吗？"，但必须等学生确认后才触发
+3. **引导性追问**：学生需求不够具体时，先引导问清楚再动手。例如学生说"帮我生成"——先问"你想要完整的方案，还是只要某一部分？比如只要学习路径、练习题、或诊断？"；学生说"帮我规划一下"——先确认课程和天数
 4. **有记忆**：理解指代词。画像信息保守合并——新信息补充不覆盖已有，新旧冲突时向学生确认
-5. **有温度**：展现共情——"这个地方确实容易搞混"、"别着急，我帮你梳理"
+5. **有温度**：展现共情
 6. **不甩锅**：不说"我无法识别"、"请重新描述"，主动猜测并确认
-7. **简短有力**：回复控制在2-4句话，不要长篇大论
-8. **诚实**：你只说自己真正做过的事。子 Agent 没有执行就不能说"已生成"
+7. **简短有力**：回复控制在2-4句话
+8. **诚实**：只说自己真正做过的事。没执行就不能说"已生成"
+9. **精准执行**：学生明确指定了具体需求（如"只出题""只要路径"），就只做那一件事，不多做
+10. **分步引导**：首次生成不走全量。按顺序逐一确认：路径→资源→练习题。每一步等学生确认后再触发。你已经有了什么就跳过什么
+11. **增量优先**：学生要修改现有内容时，只调相关子Agent。如"换第3阶段"→只调Planner；"补几份讲义"→只调ResourceAgent
+12. **尊重拒绝**：学生说"暂时不要"或"不用"后，不自动触发。等学生主动需要时再行动
+13. **确认词看上下文**："可以"不代表生成全部。学生在回答你上一轮的问题——你问"要生成路径吗"他说"可以"→只生成路径；你问"要配资源吗"他说"可以"→只配资源；你没问任何事他说"可以"→追问他想做什么
 
 ## 好的回复示例
 学生："我想学微积分"
@@ -539,6 +544,15 @@ class ConversationAgent(BaseAgent):
             return self._fallback_result("full_workflow", "explicit_generation_request")
 
         if compact in confirm_words:
+            last_proposal = context.get("last_proposal")
+            if last_proposal == "plan":
+                return self._fallback_result("plan", "contextual_plan_confirmation")
+            if last_proposal == "resources":
+                return self._fallback_result("resources", "contextual_resource_confirmation")
+            if last_proposal == "questions":
+                return self._fallback_result("generate_questions", "contextual_question_confirmation")
+            if last_proposal == "full":
+                return self._fallback_result("full_workflow", "contextual_full_confirmation")
             if self._has_generation_confirmation_context(context):
                 return self._fallback_result("full_workflow", "contextual_generation_confirmation")
             return self._fallback_result("none", "confirmation_without_generation_context", needs_clarification=True)
@@ -550,14 +564,25 @@ class ConversationAgent(BaseAgent):
         if learn_match:
             return self._fallback_result("none", "learning_intent_collect_profile")
 
-        if any(w in text for w in ["资源", "资料", "练习", "题", "推荐"]):
+        if any(w in text for w in ["出题", "做题", "测验", "考题", "题目", "题", "练习"]):
+            return self._fallback_result("generate_questions", "question_generation_request")
+
+        if any(w in text for w in ["批改", "判分", "帮我看看", "对不对", "检查下", "改了", "改卷"]):
+            return self._fallback_result("grade_answer", "grading_request")
+
+        if any(w in text for w in ["资源", "资料", "推荐"]):
             return self._fallback_result("resources", "resource_request")
+
+        if any(w in text for w in ["路径", "规划", "计划", "安排", "怎么学"]):
+            return self._fallback_result("plan", "planning_request")
 
         if any(w in text for w in ["薄弱", "诊断", "不会", "不懂", "哪里差"]):
             return self._fallback_result("diagnose", "diagnosis_request")
 
-        if any(w in text for w in ["规划", "计划", "路径", "安排", "怎么学", "方案"]):
-            return self._fallback_result("full_workflow", "planning_request")
+        if any(w in text for w in ["生成完整方案", "制定完整计划", "全部生成"]):
+            return self._fallback_result("full_workflow", "explicit_full_request")
+        if any(w in text for w in ["方案", "制定"]):
+            return self._fallback_result("none", "ambiguous_generation_needs_clarification")
 
         return self._fallback_result("none", "unclassified_fallback")
 

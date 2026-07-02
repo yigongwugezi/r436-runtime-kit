@@ -153,24 +153,40 @@ class ResourceAgent(BaseAgent):
                     "你是 EduAgent 的资源生成智能体。根据学习路径阶段、诊断结果和学习者画像生成学习资源。\n\n"
                     "## 核心规则：任务驱动生成\n"
                     "学习路径中每个阶段都有 tasks 列表——每一项 task 都需要配套的学习资源。\n"
-                    "逐个检查每个阶段的 tasks 数组，为每一项任务生成对应的资源，不许跳过任何任务。\n"
-                    "阶段有 5 个任务就至少生成 5 份资源，资源绑定到对应阶段的 stage_id。\n\n"
+                    "逐个检查每个阶段的 tasks 数组，为每一项任务生成对应的资源，不许跳过任何任务。\n\n"
                     "## 资源与任务匹配\n"
                     "概念讲解型任务 → 讲义(lecture) + 思维导图(mindmap)\n"
                     "计算/练习型任务 → 练习题(quiz) + 实操案例(practice)\n"
-                    "复习/总结型任务 → 拓展阅读(reading) + 综合测验(quiz)\n"
-                    "阶段持续时间长(5-6天)的任务 → 额外增加变式练习题\n\n"
-                    "## 内容深度（按任务要求决定）\n"
-                    "简单概念任务 → 精简讲义 + 基础练习题即可\n"
-                    "核心难点任务 → 详细讲义含多道例题 + 分层练习题(基础/进阶/挑战)\n"
-                    "综合复习任务 → 跨知识点综合题 + 错题分析模板\n\n"
-                    "## 字段要求\n"
-                    "每份资源必须包含：resource_id, type, title, description, content_format,\n"
-                    "content(或items), related_stage_id, related_knowledge_points, quality_status, reason\n"
-                    "related_stage_id 必须精确匹配路径中的 stage_id，分散绑定，不要全堆在一个阶段。\n\n"
-                    "讲义：知识点讲解 + 例题 + 解题步骤。练习题：题目 + 选项 + 正确答案 + 解析(items数组)。\n"
-                    "思维导图：Mermaid mindmap 格式。实操案例：场景描述 + 分步任务 + 验收标准。\n\n"
-                    "所有内容使用中文。只输出JSON：{\"resources\": [...]}"
+                    "复习/总结型任务 → 拓展阅读(reading) + 综合测验(quiz)\n\n"
+                    "## 内容深度\n"
+                    "简单概念 → 精简讲义 + 基础练习题\n"
+                    "核心难点 → 详细讲义含多道例题 + 分层练习题(基础/进阶/挑战)\n"
+                    "综合复习 → 跨知识点综合题 + 错题分析\n\n"
+                    "## 输出格式（极其重要！严格按此格式）\n"
+                    "每个资源用 ---RESOURCE_META--- 和 ---RESOURCE_CONTENT--- 分隔：\n\n"
+                    "---RESOURCE_META---\n"
+                    '{{"resource_id":"res_01","type":"lecture","title":"极限定义精讲","description":"短描述","content_format":"markdown","related_stage_id":"stage_1","related_knowledge_points":["极限","连续"],"reason":"说明为什么生成此资源"}}\n'
+                    "---RESOURCE_CONTENT---\n"
+                    "## 讲义正文（markdown格式，自由书写，无需转义）\n"
+                    "知识点讲解、例题、解题步骤……\n\n"
+                    "---RESOURCE_META---\n"
+                    '{{"resource_id":"res_02","type":"quiz",...}}\n'
+                    "---RESOURCE_CONTENT---\n"
+                    "题目内容（如果是quiz，把题目+选项+答案+解析写在这里）\n\n"
+                    "规则：\n"
+                    "- META行必须是单行JSON，包含除正文外的所有元数据\n"
+                    "- CONTENT行之后到下一个---分隔符之前的所有内容都是正文，自由书写markdown，无需任何JSON转义\n"
+                    "- 分隔符必须独占一行\n"
+                    "- 每个资源的META JSON中不包含content字段——正文在CONTENT块里\n\n"
+                    "## 正文排版要求（极其重要！决定学生是否愿意读下去）\n"
+                    "- 必须用 ## 标题分段，每段内容不超过4行，宁可多分段也不要一大坨文字\n"
+                    "- 每个小节下至少有一个三级标题 ### 展开细节\n"
+                    "- 关键概念/定义/公式必须用 **加粗** 突出\n"
+                    "- 对比性内容（优缺点、类型对比）必须用markdown表格\n"
+                    "- 步骤性内容必须用有序列表\n"
+                    "- 重点提醒/易错点/考点必须用 > **重点：** 引用块高亮\n"
+                    "- 例题必须有题目、解答、总结三步，用 ### 分隔\n"
+                    "- 不要连续超过3段纯文字，穿插列表/表格/代码块打破视觉单调\n"
                 ),
             },
             {
@@ -182,33 +198,117 @@ class ResourceAgent(BaseAgent):
         try:
             raw = self.llm_client.chat(messages, temperature=0.2, max_tokens=8000)
             logger.info(f"ResourceAgent LLM raw response (first 500 chars): {raw[:500]}")
-            parsed = self._parse_json(raw)
+            resources = self._parse_delimited(raw)
+            # 分隔符解析失败时回退到旧 JSON 格式
+            if not resources:
+                logger.info("Delimited format returned 0 resources, trying legacy JSON format")
+                old_parsed = self._parse_json(raw)
+                legacy = old_parsed.get("resources") if isinstance(old_parsed, dict) else None
+                if isinstance(legacy, list):
+                    resources = legacy
         except Exception as e:
             logger.warning(f"ResourceAgent LLM call failed: {e}")
             logger.exception("Full traceback:")
             return []
 
-        resources = parsed.get("resources") if isinstance(parsed, dict) else None
-        if not isinstance(resources, list):
+        if not resources:
             return []
         return self._normalize_llm_resources(resources, stages, knowledge_points, course, rag_evidence)
 
-    def _parse_json(self, text: str) -> dict[str, Any]:
+    @staticmethod
+    def _parse_json(text: str) -> dict:
         from app.utils.llm_json import parse_safe
+        return parse_safe(text)
 
-        def llm_fix(broken: str) -> str:
-            return self.llm_client.chat(
-                messages=[
-                    {"role": "system", "content": "你是 JSON 修复器。修复以下损坏的 JSON，只输出修复后的 JSON，不要解释。"},
-                    {"role": "user", "content": broken},
-                ],
-                temperature=0,
-                max_tokens=2000,
-            )
+    # _parse_json 已替换为 _parse_delimited —— 分隔符格式从根本上避免了 JSON 中的内容转义问题
 
-        return parse_safe(text, llm_fix_fn=llm_fix if self.llm_client else None)
+    @staticmethod
+    def _parse_delimited(text: str) -> list[dict]:
+        """解析分隔符格式的输出。元数据和内容分离，不再依赖 JSON 容纳长文本。
 
-    # _repair_truncated_json 已迁移到 app.utils.llm_json.repair_truncated
+        格式：
+        ---RESOURCE_META---
+        {json}
+        ---RESOURCE_CONTENT---
+        正文内容（自由文本，无需转义）
+        ---RESOURCE_META---
+        ...
+        """
+        resources = []
+        # 按 META 分隔符切分
+        meta_blocks = re.split(r'\n?---RESOURCE_META---\n?', text)
+        for block in meta_blocks:
+            block = block.strip()
+            if not block:
+                continue
+            # 分离 META JSON 和 CONTENT
+            parts = re.split(r'\n?---RESOURCE_CONTENT---\n?', block, maxsplit=1)
+            if len(parts) < 2:
+                continue
+
+            meta_text = parts[0].strip()
+            content_text = parts[1].strip()
+
+            # 提取 JSON（取第一行或第一个 { ... }）
+            if meta_text.startswith('{'):
+                json_str = meta_text
+            else:
+                # 可能是代码块包裹
+                json_str = re.sub(r'^```(?:json)?\s*', '', meta_text)
+                json_str = re.sub(r'\s*```$', '', json_str)
+
+            # 尝试解析 JSON
+            try:
+                meta = json.loads(json_str)
+            except json.JSONDecodeError:
+                # 尝试用 sanitize 修复
+                from app.utils.llm_json import sanitize_json
+                try:
+                    meta = json.loads(sanitize_json(json_str))
+                except json.JSONDecodeError:
+                    logger.warning("Failed to parse resource meta: %s...", json_str[:100])
+                    continue
+
+            if not isinstance(meta, dict) or not meta.get("title"):
+                continue
+
+            # 根据类型设置内容
+            if meta.get("type") == "quiz":
+                # Quiz: 尝试解析 content 中的 items（题目数组）
+                quiz_items = None
+                try:
+                    stripped = content_text.strip()
+                    if stripped.startswith('{') or stripped.startswith('['):
+                        from app.utils.llm_json import sanitize_json
+                        parsed = json.loads(sanitize_json(stripped))
+                        if isinstance(parsed, list):
+                            quiz_items = parsed
+                        elif isinstance(parsed, dict) and "items" in parsed:
+                            quiz_items = parsed["items"]
+                except Exception:
+                    pass
+                if quiz_items:
+                    meta["items"] = quiz_items
+                    meta["content"] = ""
+                    meta["content_format"] = "json"
+                else:
+                    meta["content"] = content_text
+                    meta["content_format"] = meta.get("content_format", "markdown")
+            elif meta.get("type") == "mindmap":
+                meta["content"] = content_text
+                meta["content_format"] = "mermaid"
+            else:
+                meta["content"] = content_text
+                meta["content_format"] = meta.get("content_format", "markdown")
+
+            # 补全默认字段
+            meta.setdefault("description", meta.get("title", ""))
+            meta.setdefault("quality_status", "passed")
+            meta.setdefault("source", "llm_generated")
+            resources.append(meta)
+
+        logger.info(f"Parsed {len(resources)} resources from delimited format")
+        return resources
 
     def _normalize_llm_resources(
         self,
@@ -394,6 +494,9 @@ class ResourceAgent(BaseAgent):
         profile: dict[str, Any],
         max_queries: int = 5,
     ) -> list[dict[str, Any]]:
+        if type(self.llm_client).__name__ == "MockLLMClient":
+            return []
+
         queries = []
         diagnosis = context.get("diagnosis", {})
         for wp in diagnosis.get("weak_knowledge_points", []) or []:
