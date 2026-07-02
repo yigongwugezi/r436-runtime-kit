@@ -400,38 +400,6 @@ class StudentQuestionModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
-# ── Answer Records ─────────────────────────────────────────────────────────
-
-class AnswerRecordModel(Base):
-    """A student's answer attempt and its grading result.
-
-    Follows the AnswerRecord + GradingResult schema defined in docs/api-questions.md.
-    """
-
-    __tablename__ = "answer_records"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    session_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("sessions.id", ondelete="CASCADE"), index=True
-    )
-    question_id: Mapped[str] = mapped_column(String(64), index=True)  # FK to student_questions.question_id
-    student_answer: Mapped[str] = mapped_column(Text, default="")
-    total_score: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)  # 0-100
-    dimension_scores: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
-    # {reasoning, completeness, calculation, expression}
-    dimension_feedback: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
-    error_type: Mapped[str | None] = mapped_column(
-        String(32), nullable=True, default=None
-    )  # concept|calculation|misreading|method|forgetting|null
-    error_label: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
-    error_explanation: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
-    error_action: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
-    suggestions: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
-    strengths: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
-    source: Mapped[str] = mapped_column(String(32), default="llm_generated")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-
-
 # ── System Config ─────────────────────────────────────────────────────────
 
 class SystemConfigModel(Base):
