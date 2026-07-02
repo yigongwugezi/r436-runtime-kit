@@ -31,10 +31,12 @@ class RegisterRequest(BaseModel):
     role: str = Field(default="student", pattern=r"^(student|parent|teacher)$")
     grade: str | None = None
     target_exam: str | None = None
+    student_no: str | None = Field(default=None, min_length=1, max_length=32)
 
 
 class LoginRequest(BaseModel):
-    phone: str = Field(..., min_length=11, max_length=20, pattern=r"^\d+$")
+    phone: str | None = Field(default=None, min_length=11, max_length=20, pattern=r"^\d+$")
+    student_no: str | None = Field(default=None, min_length=1, max_length=32)
     password: str = Field(..., min_length=1, max_length=128)
 
 
@@ -63,6 +65,7 @@ def _learner_dict(learner: LearnerModel) -> dict[str, Any]:
         "grade": learner.grade,
         "target_exam": learner.target_exam,
         "school": learner.school,
+        "student_no": learner.student_no,
         "avatar_url": learner.avatar_url,
         "created_at": learner.created_at.isoformat() if learner.created_at else None,
         "updated_at": updated.isoformat() if updated else None,
@@ -100,6 +103,7 @@ def register(body: RegisterRequest) -> dict[str, Any]:
             role=body.role,
             grade=body.grade,
             target_exam=body.target_exam,
+            student_no=body.student_no,
         )
         db.add(learner)
         db.commit()
@@ -119,16 +123,24 @@ def register(body: RegisterRequest) -> dict[str, Any]:
 
 @router.post("/auth/login", response_model=TokenResponse)
 def login(body: LoginRequest) -> dict[str, Any]:
-    """Login with phone + password."""
+    """Login with phone + password or student_no + password."""
+    if not body.phone and not body.student_no:
+        raise HTTPException(status_code=422, detail="请提供手机号或学号")
+
     db = SessionLocal()
     try:
-        learner = db.query(LearnerModel).filter(LearnerModel.phone == body.phone).first()
+        learner = None
+        if body.phone:
+            learner = db.query(LearnerModel).filter(LearnerModel.phone == body.phone).first()
+        if not learner and body.student_no:
+            learner = db.query(LearnerModel).filter(LearnerModel.student_no == body.student_no).first()
+
         if not learner:
-            raise HTTPException(status_code=401, detail="手机号或密码错误")
+            raise HTTPException(status_code=401, detail="手机号/学号或密码错误")
         if not learner.password_hash:
             raise HTTPException(status_code=401, detail="该账号未设置密码，请使用其他方式登录")
         if not verify_password(body.password, learner.password_hash):
-            raise HTTPException(status_code=401, detail="手机号或密码错误")
+            raise HTTPException(status_code=401, detail="手机号/学号或密码错误")
 
         # Touch login timestamp
         from datetime import datetime, timezone

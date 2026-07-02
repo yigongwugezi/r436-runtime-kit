@@ -60,6 +60,7 @@ def _learner_full(learner: LearnerModel) -> dict[str, Any]:
         "grade": learner.grade,
         "target_exam": learner.target_exam,
         "school": learner.school,
+        "student_no": learner.student_no,
         "avatar_url": learner.avatar_url,
         "created_at": learner.created_at.isoformat() if learner.created_at else None,
         "updated_at": updated.isoformat() if updated else None,

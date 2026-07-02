@@ -4,6 +4,13 @@ import {
   Check, X, Edit3, Trash2, Download, Upload,
   Brain, ChevronDown, Moon, Sun, GraduationCap,
 } from 'lucide-react';
+
+const ROLE_LABEL: Record<string, string> = {
+  student: '🎓 学生',
+  parent: '👨‍👩‍👧 家长',
+  teacher: '📚 教师',
+  admin: '⚙️ 管理员',
+};
 import { getCurrentLearner, useAuthStore } from '../store/authStore';
 import { useSubjectStore } from '../store/subjectStore';
 import { readStorageJson, writeStorageJson, runtimeStorageKeys } from '../utils/storageKeys';
@@ -209,17 +216,15 @@ export default function SettingsPage() {
     savePrefs(next);
   }, [prefs]);
 
-  const handleSaveName = () => {
+  const handleSaveName = async () => {
     const name = nameInput.trim();
     if (!name || !learner) return;
-    const learners = readStorageJson(runtimeStorageKeys.learners, [] as any[]);
-    const updated = learners.map((l: any) =>
-      l.id === learner.id ? { ...l, name } : l
-    );
-    writeStorageJson(runtimeStorageKeys.learners, updated);
-    writeStorageJson(runtimeStorageKeys.activeLearner, { ...learner, name });
-    setEditingName(false);
-    window.location.reload();
+    try {
+      await useAuthStore.getState().updateProfile({ nickname: name });
+      setEditingName(false);
+    } catch {
+      // Keep editing mode so user can retry
+    }
   };
 
   const handleClearData = () => {
@@ -337,8 +342,35 @@ export default function SettingsPage() {
                 <p className="text-sm text-gray-500 dark:text-gray-400">
                   {subjects.length} 个科目 · 上次登录 {learner?.lastLoginAt ? new Date(learner.lastLoginAt).toLocaleDateString('zh-CN') : '—'}
                 </p>
+                <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                  {ROLE_LABEL[learner?.role || 'student']} · {learner?.grade || '未设置年级'} · {learner?.target_exam || '无目标考试'}
+                </p>
               </div>
             </div>
+
+            <SettingRow label="当前角色" description="你的账户角色">
+              <span className="text-sm font-semibold text-gray-700 dark:text-gray-200">
+                {ROLE_LABEL[learner?.role || 'student']}
+              </span>
+            </SettingRow>
+
+            <SettingRow label="年级" description={learner?.grade || '未设置'}>
+              <span className="text-sm text-gray-600 dark:text-gray-400">
+                {learner?.grade || '—'}
+              </span>
+            </SettingRow>
+
+            <SettingRow label="目标考试" description={learner?.target_exam || '未设置'}>
+              <span className="text-sm text-gray-600 dark:text-gray-400">
+                {learner?.target_exam || '—'}
+              </span>
+            </SettingRow>
+
+            {learner?.student_no && (
+              <SettingRow label="学号" description="学生账号">
+                <span className="text-sm font-mono text-gray-600 dark:text-gray-400">{learner.student_no}</span>
+              </SettingRow>
+            )}
 
             <SettingRow label="当前科目" description="已创建的科目数量">
               <span className="text-sm font-semibold text-gray-700 dark:text-gray-200">{subjects.length} 个</span>

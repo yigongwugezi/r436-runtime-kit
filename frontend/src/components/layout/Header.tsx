@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Bell, Search, Calendar, TrendingUp, User, Settings, LogOut, RefreshCw } from 'lucide-react';
 import { getCurrentLearner, useAuthStore } from '../../store/authStore';
 import { useLearningAnalytics } from '../../hooks/useLearningAnalytics';
+import RoleSwitcher from '../common/RoleSwitcher';
 
 interface HeaderProps {
   title: string;
@@ -69,6 +70,8 @@ export default function Header({ title, subtitle }: HeaderProps) {
               3
             </span>
           </button>
+
+          <RoleSwitcher />
 
           <div ref={menuRef} className="relative">
             <button onClick={() => setMenuOpen(v => !v)} className="w-10 h-10 rounded-full bg-gradient-to-br from-primary-400 to-accent-400 flex items-center justify-center text-white font-semibold hover:shadow-lg transition-shadow">

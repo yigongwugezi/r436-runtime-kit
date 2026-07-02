@@ -8,6 +8,7 @@ export interface Learner {
   grade: string | null;
   target_exam: string | null;
   school: string | null;
+  student_no: string | null;
   avatar_url: string | null;
   created_at: string | null;
   updated_at: string | null;
@@ -16,7 +17,8 @@ export interface Learner {
 }
 
 export interface LoginRequest {
-  phone: string;
+  phone?: string;
+  student_no?: string;
   password: string;
 }
 
@@ -27,6 +29,7 @@ export interface RegisterRequest {
   role?: string;
   grade?: string | null;
   target_exam?: string | null;
+  student_no?: string | null;
 }
 
 export interface TokenResponse {

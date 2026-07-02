@@ -167,6 +167,63 @@ def get_learning_heatmap(
         db.close()
 
 
+@router.get("/learner/me/history/sessions")
+def get_session_history(
+    auth: AuthContext = Depends(require_auth),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+) -> dict[str, Any]:
+    """List the current learner's session history with per-session summary stats."""
+    db = SessionLocal()
+    try:
+        learner_id = auth.learner_id
+
+        base = db.query(SessionModel).filter(
+            SessionModel.learner_id == learner_id
+        )
+
+        total = base.count()
+        sessions = (
+            base.order_by(desc(SessionModel.updated_at))
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
+
+        result_sessions = []
+        for s in sessions:
+            msg_count = db.query(func.count(MessageModel.id)).filter(
+                MessageModel.session_id == s.id
+            ).scalar() or 0
+
+            event_count = db.query(func.count(LearningEventModel.id)).filter(
+                LearningEventModel.session_id == s.id
+            ).scalar() or 0
+
+            result_sessions.append({
+                "id": s.id,
+                "title": s.title,
+                "subject_id": s.subject_id,
+                "status": s.status,
+                "message_count": msg_count,
+                "event_count": event_count,
+                "created_at": s.created_at.isoformat() if s.created_at else None,
+                "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+            })
+
+        return {
+            "sessions": result_sessions,
+            "pagination": {
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+                "total_pages": max(1, (total + page_size - 1) // page_size),
+            },
+        }
+    finally:
+        db.close()
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════

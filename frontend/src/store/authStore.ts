@@ -21,7 +21,7 @@ interface AuthStore {
   isAuthenticated: boolean;
   loading: boolean;
 
-  login: (phone: string, password: string) => Promise<Learner>;
+  login: (identifier: string, password: string) => Promise<Learner>;
   register: (data: RegisterRequest) => Promise<Learner>;
   logout: () => void;
   fetchMe: () => Promise<Learner | null>;
@@ -50,8 +50,11 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   isAuthenticated: false,
   loading: false,
 
-  login: async (phone, password) => {
-    const res = await authApi.login({ phone, password });
+  login: async (identifier, password) => {
+    // Auto-detect: digits-only -> phone, otherwise student_no
+    const isPhone = /^\d+$/.test(identifier) && identifier.length >= 11;
+    const body = isPhone ? { phone: identifier, password } : { student_no: identifier, password };
+    const res = await authApi.login(body);
     persist(res.access_token, res.refresh_token);
     set({
       learner: res.learner,
