@@ -19,9 +19,11 @@ const AGENT_LABELS: Record<string, string> = {
   profile_agent: '生成画像',
   knowledge_agent: '检索知识',
   diagnosis_agent: '诊断分析',
+  question_agent: '生成试题',
   planner_agent: '规划路径',
   resource_agent: '生成资源',
   review_agent: '检查质量',
+  grading_agent: '批改作答',
 };
 const EMPTY_PIPELINE: ProgressStep[] = [];
 

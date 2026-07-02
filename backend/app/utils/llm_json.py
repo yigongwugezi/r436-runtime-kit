@@ -63,6 +63,30 @@ def repair_truncated(text: str) -> str:
     return repaired
 
 
+def _extract_individual_resources(text: str) -> list[dict] | None:
+    """最后手段：从损坏的 JSON 中逐个提取 resource 对象。"""
+    resources = []
+    # 查找所有 { ... } 对象，尝试独立解析
+    depth = 0
+    start = -1
+    for i, ch in enumerate(text):
+        if ch == '{':
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0 and start >= 0:
+                try:
+                    obj = json.loads(sanitize_json(text[start:i + 1]))
+                    if isinstance(obj, dict) and obj.get("title"):
+                        resources.append(obj)
+                except Exception:
+                    pass
+                start = -1
+    return resources if len(resources) >= 1 else None
+
+
 def sanitize_json(text: str) -> str:
     """在 JSON 字符串值内部转义字面换行/制表符。
     90% 以上的 LLM JSON 失败是因为 content 字段里的 markdown 有字面换行。
@@ -117,32 +141,43 @@ def parse_safe(text: str, *, llm_fix_fn: Callable[[str], str] | None = None) -> 
     json_text = extract_json(text)
 
     # ── 第1层：直接解析 + 自动 sanitize ──
+    sanitized = sanitize_json(json_text)
     try:
-        result = json.loads(sanitize_json(json_text))
+        result = json.loads(sanitized)
         if isinstance(result, dict):
             return result
     except json.JSONDecodeError as e:
-        logger.debug("JSON direct parse failed: %s", e)
+        pos = e.pos if hasattr(e, 'pos') else 0
+        snippet = sanitized[max(0, pos - 60):pos + 60] if pos else ''
+        logger.warning("JSON direct parse failed at pos %s: %s | snippet: ...%s...", pos, e, snippet)
 
     # ── 第2层：机械修复 ──
     try:
         repaired = repair_truncated(json_text)
-        result = json.loads(sanitize_json(repaired))
+        repaired_san = sanitize_json(repaired)
+        result = json.loads(repaired_san)
         if isinstance(result, dict):
             logger.info("JSON repaired mechanically (truncation fix)")
             return result
     except json.JSONDecodeError as e:
-        logger.debug("JSON mechanical repair failed: %s", e)
+        pos = e.pos if hasattr(e, 'pos') else 0
+        logger.warning("JSON mechanical repair failed at pos %s: %s", pos, e)
 
     # ── 第3层：LLM 自修复 ──
     if llm_fix_fn:
         try:
-            fixed_text = llm_fix_fn(json_text)
+            fixed_text = llm_fix_fn(json_text[:4000])
             result = json.loads(sanitize_json(fixed_text))
             if isinstance(result, dict):
                 logger.info("JSON repaired by LLM self-correction")
                 return result
         except Exception as e:
-            logger.debug("JSON LLM repair failed: %s", e)
+            logger.warning("JSON LLM repair failed: %s", e)
+
+    # 最后手段：尝试逐资源提取
+    resources = _extract_individual_resources(json_text)
+    if resources:
+        logger.info("JSON partially recovered: extracted %d individual resources", len(resources))
+        return {"resources": resources}
 
     raise ValueError("All JSON parsing strategies failed")

@@ -363,3 +363,48 @@ class SystemConfigModel(Base):
         String(64), ForeignKey("learners.id", ondelete="SET NULL"), nullable=True, default=None
     )
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+
+# ── Question & Grading (M3 + M4) ────────────────────────────────────────────
+
+
+class PracticeQuestionModel(Base):
+    __tablename__ = "practice_questions"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    question_id: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    question_set_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    type: Mapped[str] = mapped_column(String(16), default="choice")
+    stem: Mapped[str] = mapped_column(Text)
+    options: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    correct: Mapped[str | None] = mapped_column(String(256), nullable=True, default=None)
+    explanation: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    difficulty: Mapped[str] = mapped_column(String(8), default="medium")
+    knowledge_points: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    tags: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    scoring_rubric: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    reference_answer: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    source: Mapped[str] = mapped_column(String(32), default="llm_generated")
+    quality_status: Mapped[str] = mapped_column(String(16), default="passed")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+class AnswerRecordModel(Base):
+    __tablename__ = "answer_records"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    question_id: Mapped[str] = mapped_column(String(32), index=True)
+    student_answer: Mapped[str] = mapped_column(Text)
+    total_score: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    dimension_scores: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    dimension_feedback: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    error_type: Mapped[str | None] = mapped_column(String(16), nullable=True, default=None)
+    error_label: Mapped[str | None] = mapped_column(String(16), nullable=True, default=None)
+    error_explanation: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    error_action: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    suggestions: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    strengths: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    source: Mapped[str] = mapped_column(String(32), default="llm_generated")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)

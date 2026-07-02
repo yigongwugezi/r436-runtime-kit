@@ -15,12 +15,14 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db.models import (
+    AnswerRecordModel,
     DailyTaskModel,
     LearnerModel,
     LearningEventModel,
     LearningPathModel,
     MessageModel,
     ProfileSnapshotModel,
+    PracticeQuestionModel,
     ResourceModel,
     SessionModel,
 )
@@ -1047,3 +1049,132 @@ def update_task_completion(
     db.commit()
     db.refresh(task)
     return task
+
+
+# ── Questions（M3）────────────────────────────────────────────────────────
+
+
+def upsert_questions(db: Session, session_id: str, questions: list[dict]) -> int:
+    """批量 upsert 题目。返回写入数量。"""
+    count = 0
+    for q in questions:
+        if not isinstance(q, dict):
+            continue
+        qid = str(q.get("question_id", ""))
+        if not qid:
+            continue
+        existing = db.query(PracticeQuestionModel).filter(
+            PracticeQuestionModel.question_id == qid,
+            PracticeQuestionModel.session_id == session_id,
+        ).first()
+        if existing:
+            existing.type = str(q.get("type", existing.type))
+            existing.stem = str(q.get("stem", existing.stem))
+            existing.options = q.get("options") if q.get("options") is not None else existing.options
+            existing.correct = str(q.get("correct", "")) if q.get("correct") else existing.correct
+            existing.explanation = str(q.get("explanation", "")) if q.get("explanation") else existing.explanation
+            existing.difficulty = str(q.get("difficulty", "medium"))
+            existing.knowledge_points = q.get("knowledge_points") if q.get("knowledge_points") is not None else existing.knowledge_points
+            existing.tags = q.get("tags") if q.get("tags") is not None else existing.tags
+            existing.scoring_rubric = q.get("scoring_rubric") if q.get("scoring_rubric") is not None else existing.scoring_rubric
+            existing.reference_answer = str(q.get("reference_answer", "")) if q.get("reference_answer") else existing.reference_answer
+            existing.source = str(q.get("source", "llm_generated"))
+            existing.quality_status = str(q.get("quality_status", "passed"))
+        else:
+            existing = PracticeQuestionModel(
+                question_id=qid,
+                question_set_id=str(q.get("question_set_id", "")),
+                session_id=session_id,
+                type=str(q.get("type", "choice")),
+                stem=str(q.get("stem", "")),
+                options=q.get("options"),
+                correct=str(q.get("correct", "")),
+                explanation=str(q.get("explanation", "")),
+                difficulty=str(q.get("difficulty", "medium")),
+                knowledge_points=q.get("knowledge_points"),
+                tags=q.get("tags"),
+                scoring_rubric=q.get("scoring_rubric"),
+                reference_answer=str(q.get("reference_answer", "")) if q.get("reference_answer") else None,
+                source=str(q.get("source", "llm_generated")),
+                quality_status=str(q.get("quality_status", "passed")),
+            )
+            db.add(existing)
+        count += 1
+    db.commit()
+    return count
+
+
+def get_questions(db: Session, session_id: str,
+                  knowledge_point: str = "", difficulty: str = "", qtype: str = "",
+                  limit: int = 50) -> list[PracticeQuestionModel]:
+    """查询题目列表，支持过滤。"""
+    q = db.query(PracticeQuestionModel).filter(PracticeQuestionModel.session_id == session_id)
+    if qtype:
+        q = q.filter(PracticeQuestionModel.type == qtype)
+    if difficulty:
+        q = q.filter(PracticeQuestionModel.difficulty == difficulty)
+    rows = q.order_by(PracticeQuestionModel.created_at.desc()).limit(limit).all()
+    if knowledge_point:
+        rows = [r for r in rows if isinstance(r.knowledge_points, (list, dict))
+                and knowledge_point in str(r.knowledge_points)]
+    return rows
+
+
+def get_question_by_id(db: Session, question_id: str, session_id: str = "") -> PracticeQuestionModel | None:
+    q = db.query(PracticeQuestionModel).filter(PracticeQuestionModel.question_id == question_id)
+    if session_id:
+        q = q.filter(PracticeQuestionModel.session_id == session_id)
+    return q.first()
+
+
+# ── Answer Records（M4）─────────────────────────────────────────────────────
+
+
+def save_answer_record(db: Session, record: dict) -> AnswerRecordModel:
+    r = AnswerRecordModel(
+        session_id=str(record.get("session_id", "")),
+        question_id=str(record.get("question_id", "")),
+        student_answer=str(record.get("student_answer", "")),
+        total_score=record.get("total_score"),
+        dimension_scores=record.get("dimension_scores"),
+        dimension_feedback=record.get("dimension_feedback"),
+        error_type=str(record.get("error_type", "")) if record.get("error_type") else None,
+        error_label=str(record.get("error_label", "")) if record.get("error_label") else None,
+        error_explanation=str(record.get("error_explanation", "")) if record.get("error_explanation") else None,
+        error_action=str(record.get("error_action", "")) if record.get("error_action") else None,
+        suggestions=record.get("suggestions"),
+        strengths=record.get("strengths"),
+        source=str(record.get("source", "llm_generated")),
+    )
+    db.add(r)
+    db.commit()
+    db.refresh(r)
+    return r
+
+
+def get_answer_history(db: Session, session_id: str, limit: int = 50) -> list[AnswerRecordModel]:
+    return db.query(AnswerRecordModel).filter(
+        AnswerRecordModel.session_id == session_id
+    ).order_by(AnswerRecordModel.created_at.desc()).limit(limit).all()
+
+
+def get_weak_records(db: Session, session_id: str, error_type: str = "",
+                     limit: int = 20) -> list[AnswerRecordModel]:
+    q = db.query(AnswerRecordModel).filter(
+        AnswerRecordModel.session_id == session_id,
+        AnswerRecordModel.error_type.isnot(None),
+        AnswerRecordModel.error_type != "null",
+        AnswerRecordModel.error_type != "",
+    )
+    if error_type:
+        q = q.filter(AnswerRecordModel.error_type == error_type)
+    return q.order_by(AnswerRecordModel.created_at.desc()).limit(limit).all()
+
+
+def get_answer_stats(db: Session, session_id: str) -> dict:
+    records = db.query(AnswerRecordModel).filter(
+        AnswerRecordModel.session_id == session_id
+    ).all()
+    total = len(records)
+    correct = sum(1 for r in records if r.total_score is not None and r.total_score >= 60)
+    return {"totalAttempted": total, "totalCorrect": correct}

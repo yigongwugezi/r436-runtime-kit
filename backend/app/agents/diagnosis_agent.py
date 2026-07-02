@@ -20,7 +20,16 @@ class DiagnosisAgent(BaseAgent):
     agent_name = "学习诊断智能体"
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
-        """主入口"""
+        """主入口。支持 mode="adaptive" 进行三步自适应诊断。"""
+        mode = str(context.get("mode", "standard"))
+
+        if mode == "adaptive":
+            return self._run_adaptive_diagnosis(context)
+
+        return self._run_standard_diagnosis(context)
+
+    def _run_standard_diagnosis(self, context: dict[str, Any]) -> dict[str, Any]:
+        """标准诊断模式（原有逻辑）。"""
         user_message = str(context.get("user_message") or "").strip()
         profile = self._profile_map(context.get("profile"))
         profile_facts = context.get("profile_facts") if isinstance(context.get("profile_facts"), dict) else {}
@@ -30,32 +39,220 @@ class DiagnosisAgent(BaseAgent):
         analytics = context.get("analytics") if isinstance(context.get("analytics"), dict) else {}
         existing_diagnosis = context.get("diagnosis") if isinstance(context.get("diagnosis"), dict) else {}
 
-        # ── LLM 优先路径 ──
         if self.llm_client:
-            llm_result = self._try_llm_diagnosis(
-                user_message=user_message,
-                profile=profile,
-                profile_facts=profile_facts,
-                analytics=analytics,
-                existing_diagnosis=existing_diagnosis,
-                stages=stages,
-                resources=resources,
-                points=points,
-            )
-            if llm_result:
-                return llm_result
+            try:
+                llm_result = self._try_llm_diagnosis(
+                    user_message=user_message, profile=profile, profile_facts=profile_facts,
+                    analytics=analytics, existing_diagnosis=existing_diagnosis,
+                    stages=stages, resources=resources, points=points,
+                )
+                if llm_result:
+                    return llm_result
+                logger.warning("DiagnosisAgent LLM returned None (parsing or validation failed)")
+            except Exception as e:
+                logger.error("DiagnosisAgent LLM call crashed: %s", e, exc_info=True)
 
-        # ── 规则兜底（完整保留原有逻辑） ──
         logger.info("LLM unavailable or failed, using rule-based diagnosis")
         return self._rule_based_diagnosis(
-            user_message=user_message,
-            profile=profile,
-            profile_facts=profile_facts,
-            stages=stages,
-            resources=resources,
-            points=points,
-            analytics=analytics,
-            existing_diagnosis=existing_diagnosis,
+            user_message=user_message, profile=profile, profile_facts=profile_facts,
+            stages=stages, resources=resources, points=points,
+            analytics=analytics, existing_diagnosis=existing_diagnosis,
+        )
+
+    # ── 自适应诊断（三步流程）──
+
+    def _run_adaptive_diagnosis(self, context: dict[str, Any]) -> dict[str, Any]:
+        """三步自适应诊断。
+
+        Step 1: 生成覆盖性诊断题（10-15道）
+        Step 2: 基于作答结果，针对薄弱区追加变式题（20-30道）
+        Step 3: 综合分析 → 掌握度分级 → 输出知识状态矩阵
+        """
+        user_message = str(context.get("user_message", "")).strip()
+        profile_facts = context.get("profile_facts", {}) if isinstance(context.get("profile_facts"), dict) else {}
+        knowledge_points = self._collect_knowledge_points(context)
+
+        # ── Step 1: 快速定位测试 ──
+        step1_questions = []
+        if self.llm_client and knowledge_points:
+            step1_questions = self._generate_diagnostic_questions(
+                knowledge_points, count=min(15, len(knowledge_points) * 2),
+                difficulty="easy", step_label="快速定位"
+            )
+
+        # ── Step 2: 如果有作答数据，追加精细诊断题 ──
+        step2_questions = []
+        previous_grades = context.get("previous_grades", []) or []
+        if previous_grades and self.llm_client:
+            weak_points = self._analyze_weak_areas(previous_grades, knowledge_points)
+            if weak_points:
+                step2_questions = self._generate_diagnostic_questions(
+                    weak_points, count=min(30, len(weak_points) * 4),
+                    difficulty="medium", step_label="精细诊断"
+                )
+
+        # ── Step 3: 掌握度分析 ──
+        all_grades = (context.get("previous_grades", []) or []) + previous_grades
+        mastery = self._estimate_mastery(all_grades, knowledge_points)
+        weak_kps = self._rank_weak_points(mastery)
+
+        diagnosis = {
+            "diagnosis_summary": self._adaptive_summary(mastery, weak_kps, len(step1_questions), len(step2_questions)),
+            "summary": self._adaptive_summary(mastery, weak_kps, len(step1_questions), len(step2_questions)),
+            "weak_topics": weak_kps[:5],
+            "weak_knowledge_points": weak_kps[:8],
+            "strengths": [kp["name"] for kp in sorted(mastery, key=lambda x: -(x.get("score", 0)))[:3]],
+            "confidence": 0.85 if previous_grades else 0.45,
+            "source": "adaptive_diagnosis",
+            "diagnosis_used": True,
+            "needs_more_evidence": len(previous_grades) < 5,
+            "evidence_chain": [{"source": "adaptive_diagnosis", "signal": f"自适应诊断{len(step1_questions)+len(step2_questions)}题",
+                                "weight": 0.7, "reason": "基于学生作答数据的自适应诊断"}],
+            "next_actions": ["继续回答追加的诊断题以提升掌握度估计精度"] if len(step2_questions) > 0 else ["完成全部诊断题后自动输出掌握度报告"],
+            "recommended_next_actions": [],
+            "limitations": [] if previous_grades else ["当前为初步诊断，置信度较低。完成全部题目后精度提升。"],
+            "risk_flags": ["initial_diagnosis"] if not previous_grades else [],
+            "mastery_levels": mastery,  # 掌握度向量
+            "diagnostic_questions": step1_questions + step2_questions,
+            "diagnostic_question_count": len(step1_questions) + len(step2_questions),
+            "diagnostic_phase": "step1" if not previous_grades else "step2",
+        }
+
+        return {"diagnosis": diagnosis, "agent_step": self.agent_step()}
+
+    def _collect_knowledge_points(self, context: dict) -> list[dict]:
+        """收集课程知识点作为诊断范围。"""
+        points = []
+        course = context.get("course", {}) if isinstance(context.get("course"), dict) else {}
+        for ch in course.get("chapters", []):
+            if isinstance(ch, dict) and ch.get("title"):
+                points.append({"name": str(ch["title"]), "difficulty": ch.get("difficulty", "medium")})
+        if not points:
+            # 从学习路径
+            stages = context.get("learning_path", []) or []
+            for s in stages[:8]:
+                if isinstance(s, dict) and s.get("title"):
+                    points.append({"name": str(s["title"]), "difficulty": "medium"})
+        if not points:
+            # 从画像
+            profile_facts = context.get("profile_facts", {})
+            course_name = str(profile_facts.get("target_course", ""))
+            if course_name:
+                points.append({"name": course_name, "difficulty": "medium"})
+        return points
+
+    def _generate_diagnostic_questions(self, knowledge_points: list[dict], count: int,
+                                        difficulty: str, step_label: str) -> list[dict]:
+        """内部调用 QuestionAgent 生成诊断题。"""
+        try:
+            from app.agents.question_agent import QuestionAgent
+            qa = QuestionAgent(mock_data={}, llm_client=self.llm_client)
+            q_context = {
+                "user_message": f"为{step_label}生成{count}道诊断题",
+                "profile_facts": {"_raw_user_message": f"生成{count}道诊断题，难度{difficulty}"},
+                "diagnosis": {"weak_knowledge_points": knowledge_points},
+                "course": {"chapters": knowledge_points},
+            }
+            result = qa.run(q_context)
+            questions = result.get("questions", [])
+            for q in questions:
+                q["diagnostic_step"] = step_label
+                q["diagnostic"] = True
+            return questions
+        except Exception as e:
+            logger.warning(f"Failed to generate diagnostic questions: {e}")
+            return []
+
+    def _analyze_weak_areas(self, grades: list[dict], knowledge_points: list[dict]) -> list[dict]:
+        """分析作答结果，识别薄弱知识点。"""
+        weak = {}
+        for g in grades:
+            if not isinstance(g, dict):
+                continue
+            score = g.get("total_score", 100)
+            kps = g.get("knowledge_points", [])
+            error_type = g.get("error_type", "null")
+            if score is not None and score < 60:
+                for kp in kps:
+                    name = str(kp) if isinstance(kp, str) else kp.get("name", str(kp))
+                    if name not in weak:
+                        weak[name] = {"errors": 0, "total": 0, "error_types": []}
+                    weak[name]["errors"] += 1
+                    if error_type != "null":
+                        weak[name]["error_types"].append(error_type)
+                    weak[name]["total"] += 1
+
+        result = []
+        for name, stats in weak.items():
+            error_rate = stats["errors"] / max(1, stats["total"])
+            if error_rate >= 0.5:
+                result.append({
+                    "name": name, "priority": "high" if error_rate >= 0.75 else "medium",
+                    "reason": f"诊断测试中该知识点错误率 {error_rate:.0%}",
+                    "evidence": [f"错误率: {error_rate:.0%}, 错误类型: {', '.join(set(stats['error_types']))}"],
+                })
+        return result
+
+    def _estimate_mastery(self, grades: list[dict], knowledge_points: list[dict]) -> list[dict]:
+        """基于作答结果估计每个知识点的掌握度。"""
+        mastery = {}
+        for kp in knowledge_points:
+            name = str(kp.get("name", ""))
+            if name:
+                mastery[name] = {"name": name, "score": 50, "level": "初步",
+                                 "evidence_count": 0, "difficulty": kp.get("difficulty", "medium")}
+
+        for g in grades:
+            if not isinstance(g, dict):
+                continue
+            score = g.get("total_score", 50)
+            kps = g.get("knowledge_points", [])
+            for kp in kps:
+                name = str(kp) if isinstance(kp, str) else kp.get("name", str(kp))
+                if name in mastery:
+                    m = mastery[name]
+                    m["evidence_count"] += 1
+                    n = m["evidence_count"]
+                    m["score"] = int((m["score"] * (n - 1) + score) / n)
+
+        # 分级
+        for m in mastery.values():
+            s = m["score"]
+            if m["evidence_count"] == 0:
+                m["level"] = "未学"
+            elif s >= 90:
+                m["level"] = "精通"
+            elif s >= 70:
+                m["level"] = "熟练"
+            elif s >= 40:
+                m["level"] = "初步"
+            else:
+                m["level"] = "未学"
+
+        return sorted(mastery.values(), key=lambda x: x["score"])
+
+    def _rank_weak_points(self, mastery: list[dict]) -> list[dict]:
+        """按掌握度排序薄弱点。"""
+        weak = [m for m in mastery if m.get("level") in ("未学", "初步")]
+        weak.sort(key=lambda x: x.get("score", 50))
+        return [
+            {"name": m["name"], "priority": "high" if m["level"] == "未学" else "medium",
+             "reason": f"掌握度 {m['score']} 分（{m['level']}）",
+             "confidence": 0.6 + 0.2 * min(1, m.get("evidence_count", 0) / 5),
+             "difficulty": m.get("difficulty", "medium")}
+            for m in weak
+        ]
+
+    def _adaptive_summary(self, mastery: list[dict], weak_kps: list[dict],
+                           step1_count: int, step2_count: int) -> str:
+        levels = {"未学": 0, "初步": 0, "熟练": 0, "精通": 0}
+        for m in mastery:
+            levels[m.get("level", "未学")] = levels.get(m.get("level", "未学"), 0) + 1
+        total = sum(levels.values()) or 1
+        return (
+            f"自适应诊断完成（共{step1_count+step2_count}题）。"
+            f"掌握度分布：精通 {levels['精通']}、熟练 {levels['熟练']}、初步 {levels['初步']}、未学 {levels['未学']}。"
+            f"最需加强：{'、'.join(kp['name'] for kp in weak_kps[:3]) or '暂无明确薄弱点'}。"
         )
 
     def get_fallback(self, context: dict[str, Any] | None = None) -> dict[str, Any]:
