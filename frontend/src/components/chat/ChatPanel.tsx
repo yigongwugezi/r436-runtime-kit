@@ -12,7 +12,7 @@ import {
   Bot, User, RefreshCw, ChevronDown, XCircle, PanelRightClose, PanelRightOpen, Plus, MessageCircle, History,
 } from 'lucide-react';
 import Markdown from '../../utils/markdown';
-import MermaidDiagram from '../../utils/mermaid';
+import MarkmapDiagram from '../../utils/markmap';
 import ChatClarification from './ChatClarification';
 import PromptTemplates from './PromptTemplates';
 
@@ -128,7 +128,7 @@ function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onCla
               ) : null}
               {msg.multimodalResult?.result?.mermaid && (
                 <div className="mt-2 rounded-lg border border-gray-100 bg-white p-2 overflow-x-auto">
-                  <MermaidDiagram definition={msg.multimodalResult.result.mermaid} />
+                  <MarkmapDiagram definition={msg.multimodalResult.result.mermaid} />
                 </div>
               )}
               {msg.streaming && msg.content && (

@@ -10,7 +10,7 @@ import { runtimeStorageKeys, writeStorageItem } from '../utils/storageKeys';
 import type { ChatMessage, GenerationProgress, ProgressStep, QuickCommand } from '../types/chat';
 import { Send, Sparkles, Square, Copy, Check, AlertCircle, Bot, User, RefreshCw, ChevronDown, XCircle, History, Brain, Loader2, BrainCircuit, FileText, Video, Menu } from 'lucide-react';
 import Markdown from '../utils/markdown';
-import MermaidDiagram from '../utils/mermaid';
+import MarkmapDiagram from '../utils/markmap';
 import ChatHistorySidebar from '../components/chat/ChatHistorySidebar';
 import ChatClarification from '../components/chat/ChatClarification';
 import PromptTemplates from '../components/chat/PromptTemplates';
@@ -95,7 +95,7 @@ function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onCla
               {msg.content ? <Markdown content={msg.content} /> : msg.streaming ? <span className="text-surface-400">思考中…</span> : null}
               {msg.multimodalResult?.result?.mermaid && (
                 <div className="mt-3 rounded-xl border border-surface-200 bg-white p-3 overflow-x-auto">
-                  <MermaidDiagram definition={msg.multimodalResult.result.mermaid} />
+                  <MarkmapDiagram definition={msg.multimodalResult.result.mermaid} />
                 </div>
               )}
               {msg.streaming && msg.content && <span className="inline-block w-1.5 h-4 bg-primary-400 animate-pulse rounded ml-0.5 align-text-bottom" />}
