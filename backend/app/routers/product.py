@@ -3915,3 +3915,50 @@ def answer_history(sessionId: str = "", limit: int = 50) -> dict[str, Any]:
         }, session_id=session_id, source="db")
     finally:
         db.close()
+
+
+@router.get("/questions/sets")
+def question_sets(sessionId: str = "") -> dict[str, Any]:
+    """列出所有题目集（按 question_set_id 分组）。"""
+    session_id = _resolve_session_id(sessionId, "")
+    try:
+        db = SessionLocal()
+        from app.db.repository import get_questions as repo_get_questions
+        all_qs = repo_get_questions(db, session_id, limit=500)
+
+        # 按 question_set_id 分组
+        sets: dict[str, dict] = {}
+        for q in all_qs:
+            qsid = q.question_set_id or "default"
+            if qsid not in sets:
+                sets[qsid] = {"questionSetId": qsid, "title": qsid, "questions": [], "count": 0, "completed": 0}
+            sets[qsid]["questions"].append(q)
+            sets[qsid]["count"] += 1
+
+        # 统计完成数（有判卷记录的算完成）
+        from app.db.repository import get_answer_history
+        records = get_answer_history(db, session_id, limit=500)
+        graded_ids = {r.question_id for r in records}
+
+        result = []
+        for qsid, data in sets.items():
+            qs = data["questions"]
+            completed = sum(1 for q in qs if q.question_id in graded_ids)
+            # 取第一个题目的前几个字作标题
+            title = qs[0].stem[:30] + ("…" if len(qs[0].stem) > 30 else "") if qs else qsid
+            knowledge_points = list(set(
+                kp for q in qs if isinstance(q.knowledge_points, list)
+                for kp in q.knowledge_points
+            ))[:5]
+            result.append({
+                "questionSetId": qsid,
+                "title": title,
+                "knowledgePoints": knowledge_points,
+                "count": len(qs),
+                "completed": completed,
+                "createdAt": int(qs[0].created_at.timestamp() * 1000) if qs and qs[0].created_at else 0,
+            })
+
+        return _product_response({"sets": result}, session_id=session_id, source="db")
+    finally:
+        db.close()

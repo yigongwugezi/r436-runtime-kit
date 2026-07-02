@@ -103,3 +103,9 @@ export async function getAnswerHistory(sessionId: string): Promise<any> {
   const { data } = await client.get('/api/questions/history', { params: { sessionId } });
   return data.data || data;
 }
+
+/** 题目集列表 */
+export async function getQuestionSets(sessionId: string): Promise<any> {
+  const { data } = await client.get('/api/questions/sets', { params: { sessionId } });
+  return data.data || data;
+}
