@@ -122,6 +122,11 @@ class ConversationState:
     last_conflicts: list[dict[str, str]] = field(default_factory=list)
     last_intent: dict[str, Any] | None = None
     last_result: dict[str, Any] | None = None
+    last_image_input: dict[str, Any] | None = None
+    last_uploaded_file: dict[str, Any] | None = None
+    last_vision_result: dict[str, Any] | None = None
+    last_extracted_questions: list[dict[str, Any]] = field(default_factory=list)
+    last_multimodal_task_context: dict[str, Any] = field(default_factory=dict)
     last_proposal: str | None = None  # 上一轮向用户确认了什么：plan/resources/questions/full/None
     generating: bool = False
     current_progress: dict[str, Any] | None = None
@@ -385,6 +390,32 @@ class ConversationStore:
             finally:
                 if db is not None:
                     db.close()
+
+    def get_multimodal_context(self, session_id: str | None) -> dict[str, Any]:
+        state = self.get(session_id)
+        return {
+            "last_image_input": state.last_image_input,
+            "last_uploaded_file": state.last_uploaded_file,
+            "last_vision_result": state.last_vision_result,
+            "last_extracted_questions": list(state.last_extracted_questions or []),
+            "last_multimodal_task_context": dict(state.last_multimodal_task_context or {}),
+        }
+
+    def set_multimodal_context(self, session_id: str | None, context: dict[str, Any]) -> None:
+        state = self.get(session_id)
+        if isinstance(context.get("last_image_input"), dict):
+            state.last_image_input = context["last_image_input"]
+        if isinstance(context.get("last_uploaded_file"), dict):
+            state.last_uploaded_file = context["last_uploaded_file"]
+        if isinstance(context.get("last_vision_result"), dict):
+            state.last_vision_result = context["last_vision_result"]
+        if isinstance(context.get("last_extracted_questions"), list):
+            state.last_extracted_questions = [
+                item for item in context["last_extracted_questions"] if isinstance(item, dict)
+            ]
+        if isinstance(context.get("last_multimodal_task_context"), dict):
+            state.last_multimodal_task_context = context["last_multimodal_task_context"]
+        state.updated_at = time.time()
 
     def _derive_daily_tasks_from_stages(
         self,

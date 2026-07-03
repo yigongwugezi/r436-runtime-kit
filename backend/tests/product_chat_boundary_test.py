@@ -386,6 +386,103 @@ def test_chat_image_url_routes_to_multimodal_agent_with_trace() -> None:
     assert_true(data["workflow_trace"]["pipeline_executed"] is True, "multimodal workflow should be marked executed")
 
 
+def test_multimodal_chat_reuses_last_image_context_for_followups() -> None:
+    sid = "product_multimodal_reuse_last_image"
+    conversation_store.reset(sid)
+    contexts: list[dict] = []
+
+    vision = {
+        "image_type": "question_image",
+        "subject": "math",
+        "detected_text": zh(r"\u7b2c1\u9898\uff1a1+1=?\n\u7b2c2\u9898\uff1a2+3=?"),
+        "summary": zh(r"\u4e24\u9053\u52a0\u6cd5\u9898"),
+        "possible_knowledge_points": [zh(r"\u52a0\u6cd5")],
+        "extracted_questions": [
+            {"index": 1, "question_text": zh(r"\u7b2c1\u9898\uff1a1+1=?"), "knowledge_points": [zh(r"\u52a0\u6cd5")], "answer": "2"},
+            {"index": 2, "question_text": zh(r"\u7b2c2\u9898\uff1a2+3=?"), "knowledge_points": [zh(r"\u52a0\u6cd5")], "answer": "5"},
+        ],
+        "confidence": 0.9,
+        "needs_manual_review": False,
+    }
+
+    class FakeMultimodalAgent:
+        def run(self, context: dict) -> dict:
+            contexts.append(context)
+            message = context.get("user_message", "")
+            if zh(r"\u601d\u7ef4\u5bfc\u56fe") in message:
+                return {
+                    "agent": "MultimodalAgent",
+                    "status": "success",
+                    "task_type": "image_to_mindmap",
+                    "tool": "QwenVisionProvider",
+                    "provider": "session_cache",
+                    "result": {
+                        "vision_result": context["last_vision_result"],
+                        "markdown": zh(r"# \u4e24\u9053\u52a0\u6cd5\u9898\n- \u52a0\u6cd5"),
+                        "mindmap_json": {"title": zh(r"\u4e24\u9053\u52a0\u6cd5\u9898"), "children": []},
+                        "needs_manual_review": False,
+                    },
+                    "warnings": [],
+                    "trace": {"cache_hit": True},
+                    "workflow_trace": {"workflow_name": "multimodal_generation", "workflow_status": "success", "pipeline_executed": True, "steps": []},
+                }
+            if zh(r"\u7ee7\u7eed\u8bb2") in message:
+                return {
+                    "agent": "MultimodalAgent",
+                    "status": "success",
+                    "task_type": "explain_image_question",
+                    "tool": "QwenVisionProvider",
+                    "provider": "session_cache",
+                    "result": {
+                        "vision_result": context["last_vision_result"],
+                        "extracted_questions": context["last_extracted_questions"],
+                        "selected_question_indices": [2],
+                        "chat_text": zh(r"\u7b2c2\u9898\u8bb2\u89e3\uff1a2+3=5\u3002"),
+                        "needs_manual_review": False,
+                    },
+                    "warnings": [],
+                    "trace": {"cache_hit": True},
+                    "workflow_trace": {"workflow_name": "multimodal_generation", "workflow_status": "success", "pipeline_executed": True, "steps": []},
+                }
+            return {
+                "agent": "MultimodalAgent",
+                "status": "success",
+                "task_type": "explain_image_question",
+                "tool": "QwenVisionProvider",
+                "provider": "qwen_vl",
+                "result": {
+                    "vision_result": vision,
+                    "extracted_questions": vision["extracted_questions"],
+                    "chat_text": zh(r"\u5df2\u8bc6\u522b\u4e24\u9053\u9898\u5e76\u5b8c\u6210\u8bb2\u89e3\u3002"),
+                    "needs_manual_review": False,
+                },
+                "warnings": [],
+                "trace": {"model": "fake-vl"},
+                "workflow_trace": {"workflow_name": "multimodal_generation", "workflow_status": "success", "pipeline_executed": True, "steps": []},
+            }
+
+    with AttrPatch(
+        product,
+        MultimodalAgent=FakeMultimodalAgent,
+        _classify_intent=lambda _message, _session_id=None: {"action": "none", "intent": "multimodal"},
+    ):
+        first = product.send_chat({
+            "sessionId": sid,
+            "message": zh(r"\u8bf7\u8be6\u7ec6\u8bb2\u89e3\u8fd9\u5f20\u56fe\u7247\u91cc\u7684\u9898\u76ee"),
+            "image_url": "https://example.com/question.png",
+        })
+        second = product.send_chat({"sessionId": sid, "message": zh(r"\u7ee7\u7eed\u8bb2\u7b2c2\u9898")})
+        third = product.send_chat({"sessionId": sid, "message": zh(r"\u6839\u636e\u8fd9\u5f20\u56fe\u751f\u6210\u601d\u7ef4\u5bfc\u56fe")})
+
+    assert_true(first["data"]["multimodal_result"]["status"] == "success", "first image explanation should succeed")
+    assert_true(contexts[1].get("last_vision_result") == vision, "follow-up should receive cached vision result")
+    assert_true(contexts[1].get("last_extracted_questions") == vision["extracted_questions"], "follow-up should receive cached questions")
+    assert_true(not contexts[1].get("image_url"), "follow-up should not require a re-uploaded image URL")
+    assert_true(zh(r"\u7b2c2\u9898\u8bb2\u89e3") in second["data"]["reply"]["content"], "second reply should explain requested question")
+    assert_true(third["data"]["multimodal_result"]["task_type"] == "image_to_mindmap", "third request should generate image mindmap")
+    assert_true(third["data"]["multimodal_result"]["status"] == "success", "cached image mindmap should succeed")
+
+
 if __name__ == "__main__":
     test_target_only_explicit_generation_runs_pipeline()
     test_calculus_reply_uses_real_stages_and_time()
@@ -396,4 +493,5 @@ if __name__ == "__main__":
     test_chat_stream_error_still_sends_done()
     test_multimodal_mindmap_chat_response()
     test_chat_image_url_routes_to_multimodal_agent_with_trace()
+    test_multimodal_chat_reuses_last_image_context_for_followups()
     print("PASS product_chat_boundary_test")

@@ -101,6 +101,29 @@ def vision_result(*, question: str = "") -> dict:
     }
 
 
+def extracted_question_vision() -> dict:
+    result = vision_result(question=zh(r"\u7b2c1\u9898\uff1a1+1=?\n\u7b2c2\u9898\uff1a2+3=?"))
+    result["extracted_questions"] = [
+        {
+            "index": 1,
+            "question_text": zh(r"\u7b2c1\u9898\uff1a1+1=?"),
+            "knowledge_points": [zh(r"\u52a0\u6cd5")],
+            "answer": "2",
+            "explanation_steps": [zh(r"\u628a 1 \u548c 1 \u76f8\u52a0")],
+            "common_mistakes": [],
+        },
+        {
+            "index": 2,
+            "question_text": zh(r"\u7b2c2\u9898\uff1a2+3=?"),
+            "knowledge_points": [zh(r"\u52a0\u6cd5")],
+            "answer": "5",
+            "explanation_steps": [zh(r"\u628a 2 \u548c 3 \u76f8\u52a0")],
+            "common_mistakes": [zh(r"\u628a 2+3 \u7b97\u6210 4")],
+        },
+    ]
+    return result
+
+
 def test_mindmap_from_learning_path() -> None:
     result = MultimodalAgent().run({
         "user_message": zh(r"\u751f\u6210\u8fd9\u4e2a\u5b66\u4e60\u8def\u5f84\u7684\u601d\u7ef4\u5bfc\u56fe"),
@@ -338,7 +361,7 @@ def test_qwen_vision_provider_non_json_is_partial_success() -> None:
 
 
 def test_image_to_mindmap_from_vision_result() -> None:
-    agent = MultimodalAgent()
+    agent = MultimodalAgent(llm_client=FailingMindmapLLM())
     agent.registry.register_tool("QwenVisionProvider", FakeVisionTool(vision_result()))
     result = agent.run({
         "user_message": zh(r"\u6839\u636e\u8fd9\u5f20\u56fe\u751f\u6210\u601d\u7ef4\u5bfc\u56fe"),
@@ -349,6 +372,34 @@ def test_image_to_mindmap_from_vision_result() -> None:
     assert_true("markdown" in result["result"], "image mindmap should return markdown")
     assert_true(zh(r"\u6781\u9650") in result["result"]["markdown"], "knowledge points should enter markdown")
     assert_true(result["workflow_trace"]["steps"][1]["step"] == "vision_understanding", "trace should include vision step")
+
+
+def test_cached_image_context_can_continue_specific_question() -> None:
+    result = MultimodalAgent(llm_client=FailingMindmapLLM()).run({
+        "user_message": zh(r"\u7ee7\u7eed\u8bb2\u7b2c2\u9898"),
+        "last_vision_result": extracted_question_vision(),
+        "last_extracted_questions": extracted_question_vision()["extracted_questions"],
+    })
+
+    assert_true(result["task_type"] == "explain_image_question", "follow-up question should route to explanation")
+    assert_true(result["provider"] == "session_cache", "follow-up should reuse cached vision result")
+    assert_true(result["status"] == "success", "cached question explanation should succeed")
+    assert_true(result["result"]["selected_question_indices"] == [2], "requested question index should be selected")
+    assert_true(zh(r"\u7b2c2\u9898") in result["result"]["chat_text"], "chat text should explain the requested question")
+
+
+def test_cached_image_context_can_generate_mindmap_without_new_upload() -> None:
+    result = MultimodalAgent(llm_client=FailingMindmapLLM()).run({
+        "user_message": zh(r"\u6839\u636e\u8fd9\u5f20\u56fe\u751f\u6210\u601d\u7ef4\u5bfc\u56fe"),
+        "last_vision_result": extracted_question_vision(),
+        "last_extracted_questions": extracted_question_vision()["extracted_questions"],
+    })
+
+    assert_true(result["task_type"] == "image_to_mindmap", "cached image mindmap task should be selected")
+    assert_true(result["provider"] == "session_cache", "mindmap should reuse cached vision result")
+    assert_true(result["status"] == "success", "cached image mindmap should succeed")
+    assert_true("markdown" in result["result"], "mindmap markdown should be available")
+    assert_true(zh(r"\u52a0\u6cd5") in result["result"]["markdown"], "cached knowledge point should enter mindmap")
 
 
 def test_image_to_flashcards_from_vision_result() -> None:
@@ -444,6 +495,8 @@ if __name__ == "__main__":
     test_qwen_vision_provider_uploaded_local_path_becomes_data_url()
     test_qwen_vision_provider_non_json_is_partial_success()
     test_image_to_mindmap_from_vision_result()
+    test_cached_image_context_can_continue_specific_question()
+    test_cached_image_context_can_generate_mindmap_without_new_upload()
     test_image_to_flashcards_from_vision_result()
     test_explain_image_question_needs_manual_review_when_question_missing()
     test_unconfigured_image_provider_no_fake_url()

@@ -767,11 +767,92 @@ _MULTIMODAL_PATTERNS = (
 )
 
 
+_MULTIMODAL_PATTERNS = _MULTIMODAL_PATTERNS + (
+    "\u8fd9\u5f20\u56fe",
+    "\u4e0a\u9762\u8fd9\u5f20\u56fe",
+    "\u8fd9\u5f20\u56fe\u7247",
+    "\u9519\u9898\u56fe",
+    "\u9898\u56fe",
+    "\u7ee7\u7eed\u8bb2\u7b2c",
+    "\u6839\u636e\u8fd9\u5f20\u56fe",
+    "\u590d\u4e60\u5361\u7247",
+)
+
+
 def _is_multimodal_request(message: str, payload: dict[str, Any] | None = None) -> bool:
     if any(pattern in str(message or "") for pattern in _MULTIMODAL_PATTERNS):
         return True
     payload = payload or {}
     return bool(payload.get("attachments") or payload.get("image_url") or payload.get("image_base64"))
+
+
+def _multimodal_image_input(payload: dict[str, Any]) -> dict[str, Any]:
+    attachments = payload.get("attachments") if isinstance(payload.get("attachments"), list) else []
+    return {
+        "attachments": attachments,
+        "image_url": str(payload.get("image_url") or ""),
+        "image_base64": str(payload.get("image_base64") or ""),
+    }
+
+
+def _has_image_input(image_input: dict[str, Any]) -> bool:
+    return bool(image_input.get("attachments") or image_input.get("image_url") or image_input.get("image_base64"))
+
+
+def _vision_from_multimodal_result(result: dict[str, Any]) -> dict[str, Any]:
+    data = result.get("result") if isinstance(result.get("result"), dict) else {}
+    vision = data.get("vision_result") if isinstance(data.get("vision_result"), dict) else {}
+    if vision:
+        return vision
+    if any(data.get(key) for key in ("detected_text", "question_text", "summary", "possible_knowledge_points")):
+        return data
+    return {}
+
+
+def _questions_from_vision(vision: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = vision.get("extracted_questions") or vision.get("questions") or []
+    if isinstance(raw, dict):
+        raw = [raw]
+    questions: list[dict[str, Any]] = []
+    if isinstance(raw, list):
+        for idx, item in enumerate(raw, start=1):
+            item = item if isinstance(item, dict) else {"question_text": str(item)}
+            text = str(item.get("question_text") or item.get("stem") or item.get("question") or item.get("text") or "").strip()
+            if text:
+                try:
+                    question_index = int(item.get("index") or item.get("question_index") or idx)
+                except (TypeError, ValueError):
+                    question_index = idx
+                questions.append({**item, "index": question_index, "question_text": text})
+    if not questions and str(vision.get("question_text") or "").strip():
+        questions.append({"index": 1, "question_text": str(vision.get("question_text")).strip()})
+    return questions
+
+
+def _cache_multimodal_context(session_id: str, image_input: dict[str, Any], result: dict[str, Any]) -> None:
+    if result.get("status") not in {"success", "partial_success", "needs_manual_review"}:
+        return
+    data = result.get("result") if isinstance(result.get("result"), dict) else {}
+    vision = _vision_from_multimodal_result(result)
+    if not vision:
+        return
+    questions = data.get("extracted_questions") if isinstance(data.get("extracted_questions"), list) else _questions_from_vision(vision)
+    attachments = image_input.get("attachments") if isinstance(image_input.get("attachments"), list) else []
+    context: dict[str, Any] = {
+        "last_vision_result": vision,
+        "last_extracted_questions": questions,
+        "last_multimodal_task_context": {
+            "task_type": result.get("task_type"),
+            "status": result.get("status"),
+            "provider": result.get("provider"),
+            "updated_at": int(time.time() * 1000),
+        },
+    }
+    if _has_image_input(image_input):
+        context["last_image_input"] = image_input
+    if attachments and isinstance(attachments[0], dict):
+        context["last_uploaded_file"] = attachments[0]
+    conversation_store.set_multimodal_context(session_id, context)
 
 
 def _multimodal_learning_path(session_id: str) -> Any:
@@ -813,6 +894,9 @@ def _multimodal_workflow_trace(result: dict[str, Any]) -> dict[str, Any]:
 def _multimodal_reply(result: dict[str, Any]) -> str:
     task_type = result.get("task_type")
     status = result.get("status")
+    data = result.get("result") if isinstance(result.get("result"), dict) else {}
+    if str(data.get("chat_text") or "").strip():
+        return str(data["chat_text"]).strip()
     if task_type == "image_understanding" and status in {"success", "partial_success", "needs_manual_review"}:
         return "已完成图片理解，识别结果已整理成结构化信息。"
     if task_type == "image_to_mindmap" and status in {"success", "needs_manual_review"}:
@@ -840,6 +924,8 @@ def _multimodal_reply(result: dict[str, Any]) -> str:
     if task_type == "mindmap_generation" and status == "success":
         stage_count = ((result.get("result") or {}).get("stage_count")) or 0
         return f"已根据当前学习路径生成思维导图，共整理 {stage_count} 个阶段。"
+    if status == "needs_input" and (str(task_type or "").startswith("image_") or task_type in {"explain_image_question", "solve_image_question"}):
+        return "我还没有拿到可复用的图片。请先上传题图，或者在同一会话里接着上一张图继续提问。"
     if status == "needs_input":
         return "还缺少可执行这个多模态任务的输入。比如生成思维导图需要先有学习路径或知识内容。"
     if status == "provider_not_configured":
@@ -860,20 +946,32 @@ def _multimodal_chat_payload(
         return None
 
     state = conversation_store.get(session_id)
+    image_input = _multimodal_image_input(payload)
+    cached_context = conversation_store.get_multimodal_context(session_id)
+    if not _has_image_input(image_input):
+        cached_input = cached_context.get("last_image_input") if isinstance(cached_context.get("last_image_input"), dict) else {}
+        if cached_input and not cached_context.get("last_vision_result"):
+            image_input = {
+                "attachments": cached_input.get("attachments") or [],
+                "image_url": cached_input.get("image_url") or "",
+                "image_base64": cached_input.get("image_base64") or "",
+            }
     context = {
         "session_id": session_id,
         "subject_id": subject_id,
         "user_message": message,
-        "attachments": payload.get("attachments") or [],
-        "image_url": payload.get("image_url") or "",
-        "image_base64": payload.get("image_base64") or "",
+        "attachments": image_input.get("attachments") or [],
+        "image_url": image_input.get("image_url") or "",
+        "image_base64": image_input.get("image_base64") or "",
         "learning_path": _multimodal_learning_path(session_id),
         "knowledge_context": (state.last_result or {}).get("knowledge_context", {}) if isinstance(state.last_result, dict) else {},
         "topic": state.facts.get("target_course") or subject_id,
         "subject_name": state.facts.get("target_course") or "",
+        **cached_context,
     }
     result = MultimodalAgent().run(context)
     trace = _multimodal_workflow_trace(result)
+    _cache_multimodal_context(session_id, image_input, result)
     cached = state.last_result if isinstance(state.last_result, dict) else {}
     state.last_result = {**cached, "multimodal_result": result, "workflow_trace": trace}
     reply = _multimodal_reply(result)

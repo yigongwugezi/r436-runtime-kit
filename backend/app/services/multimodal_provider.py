@@ -396,18 +396,20 @@ def save_multimodal_upload(
 def _normalize_vision_result(parsed: dict[str, Any], raw_text: str) -> dict[str, Any]:
     confidence = _confidence(parsed.get("confidence"), 0.5)
     detected = _text(parsed.get("detected_text"))
+    review = _review_metadata(parsed, confidence, detected, parsed.get("summary"), parsed.get("question_text"))
     return {
-        "image_type": _text(parsed.get("image_type")) or "unknown",
-        "subject": _text(parsed.get("subject")) or "unknown",
+        "image_type": _friendly_value(parsed.get("image_type")),
+        "subject": _friendly_value(parsed.get("subject")),
         "detected_text": detected,
         "question_text": _text(parsed.get("question_text")),
         "student_answer": _text(parsed.get("student_answer")),
         "formula_text": _text(parsed.get("formula_text")),
         "diagram_description": _text(parsed.get("diagram_description")),
         "possible_knowledge_points": _as_list(parsed.get("possible_knowledge_points")),
-        "summary": _text(parsed.get("summary")) or raw_text[:500],
+        "extracted_questions": _as_list(parsed.get("extracted_questions") or parsed.get("questions")),
+        "summary": _safe_summary(parsed, raw_text),
         "confidence": confidence,
-        "needs_manual_review": _needs_review(parsed, confidence, detected),
+        **review,
     }
 
 
@@ -434,17 +436,82 @@ def _confidence(value: Any, default: float = 0.5) -> float:
     return max(0.0, min(1.0, score))
 
 
+def _friendly_value(value: Any) -> str:
+    text = _text(value)
+    if text.lower() in {"unknown", "none", "null", "n/a", "na"}:
+        return ""
+    if text in {"未知", "无", "暂无", "未识别"}:
+        return ""
+    return text
+
+
+def _safe_summary(parsed: dict[str, Any], raw_text: str) -> str:
+    summary = _text(parsed.get("summary"))
+    if summary:
+        return summary
+    for key in ("detected_text", "question_text", "diagram_description"):
+        value = _text(parsed.get(key))
+        if value:
+            return value[:500]
+    raw = _text(raw_text)
+    if raw.startswith("{") or raw.startswith("["):
+        return ""
+    return raw[:500]
+
+
+def _review_metadata(parsed: dict[str, Any], confidence: float, *evidence: Any) -> dict[str, Any]:
+    reasons = [_text(item) for item in _as_list(parsed.get("review_reasons")) if _text(item)]
+    fields = [_text(item) for item in _as_list(parsed.get("uncertain_fields")) if _text(item)]
+    indices: list[int] = []
+    for item in _as_list(parsed.get("uncertain_question_indices")):
+        try:
+            indices.append(int(item))
+        except (TypeError, ValueError):
+            continue
+
+    blob = " ".join([_text(value) for value in evidence] + [_text(parsed.get("uncertainty")), _text(parsed.get("notes"))])
+    uncertainty_words = (
+        "uncertain", "not clear", "unclear", "truncated", "incomplete", "low confidence",
+        "不确定", "不清晰", "看不清", "截断", "不完整", "置信度不足", "无法确认",
+    )
+    if parsed.get("needs_manual_review") is True and not reasons:
+        reasons.append("模型标记识别结果不确定")
+    if parsed.get("confidence") not in (None, "") and confidence < 0.55:
+        reasons.append("识别置信度偏低")
+    if not any(len(_text(item)) >= 8 for item in evidence):
+        reasons.append("OCR 关键信息缺失")
+        if "detected_text" not in fields:
+            fields.append("detected_text")
+    if any(word in blob for word in uncertainty_words):
+        reasons.append("图片内容存在不清晰或不完整信息")
+
+    return {
+        "needs_manual_review": bool(reasons or fields or indices),
+        "review_reasons": list(dict.fromkeys(reasons)),
+        "uncertain_question_indices": list(dict.fromkeys(indices)),
+        "uncertain_fields": list(dict.fromkeys(fields)),
+    }
+
+
+def _ensure_review_fields(result: dict[str, Any], parsed: dict[str, Any], *evidence: Any) -> dict[str, Any]:
+    confidence = _confidence(result.get("confidence") or parsed.get("confidence"), 0.5)
+    review = _review_metadata(parsed, confidence, *evidence)
+    if result.get("needs_manual_review") is True and not review["review_reasons"]:
+        review["review_reasons"] = ["模型标记识别结果不确定"]
+    result["needs_manual_review"] = bool(result.get("needs_manual_review") or review["needs_manual_review"])
+    result["review_reasons"] = list(dict.fromkeys(_as_list(result.get("review_reasons")) + review["review_reasons"]))
+    result["uncertain_question_indices"] = list(dict.fromkeys(_as_list(result.get("uncertain_question_indices")) + review["uncertain_question_indices"]))
+    result["uncertain_fields"] = list(dict.fromkeys(_as_list(result.get("uncertain_fields")) + review["uncertain_fields"]))
+    return result
+
+
 def _int(value: Any, default: int = 30) -> int:
     match = re.search(r"\d+", str(value or ""))
     return int(match.group(0)) if match else default
 
 
 def _needs_review(parsed: dict[str, Any], confidence: float, *evidence: Any) -> bool:
-    if parsed.get("needs_manual_review") is True:
-        return True
-    if confidence < 0.45:
-        return True
-    return not any(len(_text(item)) >= 8 for item in evidence)
+    return _review_metadata(parsed, confidence, *evidence)["needs_manual_review"]
 
 
 def _cards(value: Any, vision: dict[str, Any]) -> list[dict[str, Any]]:
@@ -538,13 +605,14 @@ def _normalize_task_result(task_type: str, parsed: dict[str, Any], raw_text: str
     if task_type in {"explain_image_question", "solve_image_question"}:
         return {
             "question_text": question,
-            "question_type": _text(parsed.get("question_type")) or "unknown",
+            "question_type": _friendly_value(parsed.get("question_type")),
             "subject": _text(parsed.get("subject") or vision.get("subject")),
             "knowledge_points": points,
             "answer": _text(parsed.get("answer")),
             "explanation_steps": _as_list(parsed.get("explanation_steps") or parsed.get("solution_steps")),
             "key_method": _text(parsed.get("key_method")),
             "common_mistakes": _as_list(parsed.get("common_mistakes")),
+            "extracted_questions": vision.get("extracted_questions", []),
             "confidence": confidence,
             "needs_manual_review": _needs_review(parsed, confidence, question, parsed.get("answer")),
             "evidence_from_image": _text(parsed.get("evidence_from_image") or vision.get("detected_text")),
@@ -664,15 +732,15 @@ def _vision_prompt(task_type: str) -> str:
     common = (
         "你是图片学习助手。只根据图片中可见内容回答，不要编造。"
         "必须只返回 JSON，不要 markdown。confidence 是 0 到 1。"
-        "看不清、证据不足或题干不完整时 needs_manual_review=true。"
+        "看不清、证据不足或题干不完整时 needs_manual_review=true，并给出 review_reasons、uncertain_question_indices、uncertain_fields。"
     )
     fields = {
-        "image_understanding": "image_type, subject, detected_text, summary, possible_knowledge_points, confidence, needs_manual_review",
-        "explain_image_question": "question_text, question_type, subject, knowledge_points, answer, explanation_steps, key_method, common_mistakes, confidence, needs_manual_review, evidence_from_image",
-        "solve_image_question": "question_text, question_type, subject, knowledge_points, answer, explanation_steps, key_method, common_mistakes, confidence, needs_manual_review, evidence_from_image",
-        "image_wrong_question_analysis": "question_text, correct_answer, student_answer, mistake_type, mistake_reason, weak_knowledge_points, remediation_plan, similar_practice_suggestions, confidence, needs_manual_review",
-        "image_note_summary": "title, summary, key_points, structure, formulas, definitions, pitfalls, next_actions, confidence, needs_manual_review",
-        "image_to_mindmap": "title, root_topic, markdown, mindmap_json, mermaid, nodes_count, confidence, needs_manual_review",
+        "image_understanding": "image_type, subject, detected_text, summary, possible_knowledge_points, extracted_questions, confidence, needs_manual_review, review_reasons, uncertain_question_indices, uncertain_fields",
+        "explain_image_question": "extracted_questions, question_text, question_type, subject, knowledge_points, answer, explanation_steps, key_method, common_mistakes, confidence, needs_manual_review, review_reasons, uncertain_question_indices, uncertain_fields, evidence_from_image",
+        "solve_image_question": "extracted_questions, question_text, question_type, subject, knowledge_points, answer, explanation_steps, key_method, common_mistakes, confidence, needs_manual_review, review_reasons, uncertain_question_indices, uncertain_fields, evidence_from_image",
+        "image_wrong_question_analysis": "question_text, correct_answer, student_answer, mistake_type, mistake_reason, weak_knowledge_points, remediation_plan, similar_practice_suggestions, confidence, needs_manual_review, review_reasons, uncertain_question_indices, uncertain_fields",
+        "image_note_summary": "title, summary, key_points, structure, formulas, definitions, pitfalls, next_actions, extracted_questions, confidence, needs_manual_review, review_reasons, uncertain_question_indices, uncertain_fields",
+        "image_to_mindmap": "image_type, subject, detected_text, summary, possible_knowledge_points, extracted_questions, confidence, needs_manual_review, review_reasons, uncertain_question_indices, uncertain_fields",
         "image_to_flashcards": "title, cards, confidence, needs_manual_review; each card: front, back, knowledge_point, difficulty, card_type, source_evidence",
         "image_to_learning_plan": "diagnosed_level, weak_points, recommended_path, confidence, needs_manual_review; each recommended_path item: stage_title, objective, knowledge_points, estimated_minutes, practice_suggestions",
         "image_to_variant_questions": "source_question_summary, target_knowledge_points, variants, confidence, needs_manual_review; at least 3 variants if the source question is clear",
@@ -776,7 +844,14 @@ class QwenVisionProvider:
             except Exception:
                 parsed = {}
                 status = "partial_success"
-            result = _normalize_task_result(task_type, parsed, raw_text)
+            result = _ensure_review_fields(
+                _normalize_task_result(task_type, parsed, raw_text),
+                parsed,
+                raw_text,
+                parsed.get("detected_text"),
+                parsed.get("question_text"),
+                parsed.get("answer"),
+            )
             if result.get("needs_manual_review") and status == "success":
                 status = "needs_manual_review"
             return _response(

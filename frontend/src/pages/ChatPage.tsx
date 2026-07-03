@@ -101,6 +101,10 @@ function MultimodalResultView({ result }: { result: ChatMessage['multimodalResul
   const candidates = data.knowledge_candidates || [];
   const warnings = result?.warnings || [];
   const needsReview = data.needs_manual_review || result?.status === 'needs_manual_review';
+  const isExplanationTask = result?.task_type === 'explain_image_question' || result?.task_type === 'solve_image_question';
+  const reviewReasons = Array.isArray(data.review_reasons) ? data.review_reasons.filter(Boolean) : [];
+  const uncertainQuestionIndices = Array.isArray(data.uncertain_question_indices) ? data.uncertain_question_indices.filter(Boolean) : [];
+  const uncertainFields = Array.isArray(data.uncertain_fields) ? data.uncertain_fields.filter(Boolean) : [];
 
   const saveResource = async () => {
     setSaveState('保存中...');
@@ -123,15 +127,42 @@ function MultimodalResultView({ result }: { result: ChatMessage['multimodalResul
   };
 
   const list = (items: any[]) => items.filter(Boolean).map((item, idx) => <li key={idx}>{String(item)}</li>);
+  const ReviewNotice = () => (needsReview || warnings.length > 0 ? (
+    <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">
+      {needsReview && <div className="font-semibold">有些识别结果需要确认</div>}
+      {reviewReasons.map((item: string, idx: number) => <div key={`reason-${idx}`}>{item}</div>)}
+      {uncertainQuestionIndices.length > 0 && <div>涉及题号：{uncertainQuestionIndices.join('、')}</div>}
+      {uncertainFields.length > 0 && <div>涉及字段：{uncertainFields.join('、')}</div>}
+      {warnings.map((item, idx) => <div key={`warning-${idx}`}>{item}</div>)}
+    </div>
+  ) : null);
+
+  if (isExplanationTask) {
+    return (
+      <div className="mt-3 space-y-2">
+        <ReviewNotice />
+        <details className="rounded-xl border border-surface-200 bg-white/70 p-3 text-xs text-surface-600">
+          <summary className="cursor-pointer font-medium text-surface-700">查看识别详情</summary>
+          <div className="mt-2 space-y-1">
+            {vision?.summary && <div>摘要：{vision.summary}</div>}
+            {vision?.question_text && <div className="whitespace-pre-wrap">题目：{vision.question_text}</div>}
+            {vision?.detected_text && <div className="whitespace-pre-wrap">识别文本：{vision.detected_text}</div>}
+            {Array.isArray(data.extracted_questions) && data.extracted_questions.length > 0 && (
+              <ol className="list-decimal pl-4 space-y-1">
+                {data.extracted_questions.map((item: any, idx: number) => (
+                  <li key={idx}>{item.question_text || item.text || item.stem}</li>
+                ))}
+              </ol>
+            )}
+          </div>
+        </details>
+      </div>
+    );
+  }
 
   return (
     <div className="mt-3 space-y-3">
-      {(needsReview || warnings.length > 0) && (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">
-          {needsReview && <div className="font-semibold">识别结果需要人工确认</div>}
-          {warnings.map((item, idx) => <div key={idx}>{item}</div>)}
-        </div>
-      )}
+      {(needsReview || warnings.length > 0) && <ReviewNotice />}
       {vision && (
         <div className="rounded-xl border border-surface-200 bg-white p-3 text-xs text-surface-600 space-y-1">
           <div className="font-semibold text-surface-700">图片理解</div>
