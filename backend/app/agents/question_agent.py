@@ -6,6 +6,8 @@
 import json
 import logging
 import re
+import time
+import uuid
 from typing import Any
 
 from app.agents.base import BaseAgent
@@ -38,21 +40,34 @@ class QuestionAgent(BaseAgent):
         params = self._parse_question_params(user_message)
         params["knowledge_points"] = knowledge_points[:10]
 
-        # ── LLM 优先 ──
-        if self.llm_client:
-            try:
-                questions = self._generate_with_llm(params, profile, context)
-                if questions:
-                    return {"questions": questions, "question_set_id": self._make_set_id(context),
-                            "agent_step": self.agent_step()}
-                logger.warning("QuestionAgent LLM returned no questions (parsing or validation failed)")
-            except Exception as e:
-                logger.error("QuestionAgent LLM call crashed: %s", e, exc_info=True)
+        # ── 按阶段分批出题，每个阶段独立题目集 ──
+        all_questions = []
+        stages = context.get("learning_path", []) or []
+        batch_size = max(1, len(stages))
+        stage_batches = [stages[i:i+1] for i in range(0, len(stages), 1)] if stages else [[]]
 
-        # ── 规则兜底 ──
-        logger.info("LLM unavailable, using rule-based questions")
-        questions = self._build_rule_questions(params, profile)
-        return {"questions": questions, "question_set_id": self._make_set_id(context),
+        for batch_stages in stage_batches:
+            batch_kps = knowledge_points[:10]
+            params["knowledge_points"] = batch_kps
+            params["stage_title"] = batch_stages[0].get("title", "") if batch_stages else ""
+
+            if self.llm_client:
+                try:
+                    questions = self._generate_with_llm(params, profile, context)
+                    if questions:
+                        # 每个批次独立 set_id
+                        for q in questions:
+                            q["question_set_id"] = self._make_set_id(context) + f"_{batch_kps[0].get('stage_id','s') if batch_kps else 'g'}"
+                        all_questions.extend(questions)
+                        continue
+                except Exception as e:
+                    logger.error("QuestionAgent batch failed: %s", e)
+
+            # 规则兜底
+            questions = self._build_rule_questions(params, profile)
+            all_questions.extend(questions)
+
+        return {"questions": all_questions, "question_set_id": self._make_set_id(context),
                 "agent_step": self.agent_step()}
 
     def get_fallback(self, context: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -66,26 +81,34 @@ class QuestionAgent(BaseAgent):
 
     def _extract_knowledge_points(self, context: dict, diagnosis: dict) -> list[dict]:
         points = []
-        # 1. 从诊断结果
+        # 1. 优先从学习路径阶段获取
+        stages = context.get("learning_path", []) or []
+        if not stages:
+            # 从 profile_facts 推断
+            facts = context.get("profile_facts", {})
+            course = str(facts.get("target_course", ""))
+            if course:
+                points.append({"name": course, "reason": "学习目标"})
+        for s in stages:
+            if isinstance(s, dict) and s.get("title"):
+                points.append({"name": str(s["title"]), "reason": "学习路径阶段", "priority": "medium",
+                               "stage_id": s.get("stage_id", ""),
+                               "tasks": s.get("tasks", [])})
+        # 2. 从诊断结果补充
         for item in diagnosis.get("weak_knowledge_points", []) or []:
             if isinstance(item, dict) and item.get("name"):
                 points.append({"name": str(item["name"]), "reason": str(item.get("reason", "")),
                                "priority": str(item.get("priority", "medium"))})
-        # 2. 从课程章节
+        # 3. 从课程章节补充
         course = context.get("course", {}) if isinstance(context.get("course"), dict) else {}
         for ch in course.get("chapters", [])[:5]:
             if isinstance(ch, dict) and ch.get("title"):
                 points.append({"name": str(ch["title"]), "reason": "课程章节", "priority": "medium"})
-        # 3. 从学习路径
-        stages = context.get("learning_path", []) or []
-        for s in stages[:5]:
-            if isinstance(s, dict) and s.get("title"):
-                points.append({"name": str(s["title"]), "reason": "学习路径阶段", "priority": "medium"})
-        return points[:10]
+        return points[:15]
 
     def _parse_question_params(self, message: str) -> dict:
         """从用户消息中解析出题参数。"""
-        params = {"count": 5, "types": ["choice"], "difficulty": "medium"}
+        params = {"count": 10, "types": ["choice", "fill", "truefalse"], "difficulty": "medium"}
         # 数量
         num_match = re.search(r"(\d+)\s*(?:道|题|个)", message)
         if num_match:
@@ -134,7 +157,7 @@ class QuestionAgent(BaseAgent):
 ## 规则
 1. 题目必须紧扣给定知识点，不要编造不存在的概念
 2. 选择题的干扰项要有迷惑性但明确错误
-3. 每道题都要有完整的解析（为什么对、为什么错）
+3. 每题必有解析：讲清楚为什么对、为什么错。简单题简洁说，复杂题详细拆解。关键：解题步骤、知识点、易错点
 4. 难度必须与 {DIFFICULTY_LEVELS.get(params['difficulty'], '中等')} 匹配
 5. 题目之间不要重复，覆盖不同子知识点
 
@@ -165,6 +188,7 @@ class QuestionAgent(BaseAgent):
                     continue
                 nq = self._normalize_question(q, idx, params)
                 if nq:
+                    nq["question_id"] = uuid.uuid4().hex[:12]
                     normalized.append(nq)
                 else:
                     logger.warning("Question %d dropped by normalization", idx)
@@ -275,7 +299,7 @@ class QuestionAgent(BaseAgent):
 
             if q_type == "choice":
                 questions.append({
-                    "question_id": f"q_rule_{i:03d}", "type": "choice",
+                    "question_id": f"q_{uuid.uuid4().hex[:12]}", "type": "choice",
                     "stem": f"以下关于{name}的描述，正确的是？",
                     "options": [
                         f"A. {name}的核心定义是正确的使用方法",
@@ -294,7 +318,7 @@ class QuestionAgent(BaseAgent):
 
             elif q_type == "truefalse":
                 questions.append({
-                    "question_id": f"q_rule_{i:03d}", "type": "truefalse",
+                    "question_id": f"q_{uuid.uuid4().hex[:12]}", "type": "truefalse",
                     "statement": f"在{name}中，可以忽略前置知识的依赖关系。",
                     "correct": False,
                     "explanation": f"规则兜底生成。{name}通常依赖于前置知识的掌握。",
@@ -308,7 +332,7 @@ class QuestionAgent(BaseAgent):
 
             elif q_type == "fill":
                 questions.append({
-                    "question_id": f"q_rule_{i:03d}", "type": "fill",
+                    "question_id": f"q_{uuid.uuid4().hex[:12]}", "type": "fill",
                     "stem": f"{name}的核心概念中，___是最基础的前提假设。",
                     "blanks": 1,
                     "answers": ["基础知识"],
@@ -322,7 +346,7 @@ class QuestionAgent(BaseAgent):
 
             else:  # shortanswer
                 questions.append({
-                    "question_id": f"q_rule_{i:03d}", "type": "shortanswer",
+                    "question_id": f"q_{uuid.uuid4().hex[:12]}", "type": "shortanswer",
                     "stem": f"请阐述{name}的核心原理，并给出一个应用实例。",
                     "reference_answer": f"{name}的原理可从定义、推导和应用三方面展开。",
                     "scoring_rubric": [

@@ -46,6 +46,7 @@ export function useStreamChat() {
 
       setStreaming(true);
       setAgentProgress(null);
+      useChatStore.getState().setProgressPipelineSteps([]);
 
       // 写入 pending marker，用于跨页面导航恢复
       writeStorageJson(runtimeStorageKeys.pendingGeneration, {

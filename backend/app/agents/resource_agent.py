@@ -25,6 +25,9 @@ class ResourceAgent(BaseAgent):
     agent_id = "resource_agent"
     agent_name = "学习资源生成智能体"
 
+    # 保存分批生成的中间结果，超时时 get_fallback 可返回
+    _partial_resources: list[dict] = []
+
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         """主入口"""
         stages = self._stages(context)
@@ -45,40 +48,69 @@ class ResourceAgent(BaseAgent):
         # RAG 检索
         rag_evidence = self._rag_retrieve(context, stages, knowledge_points, profile)
 
-        # ── LLM 优先 ──
-        resources = self._generate_with_llm(context, course, stages, knowledge_points, profile, rag_evidence)
-        if resources:
-            resources = self._scope_resource_ids(resources, str(context.get("session_id") or ""))
-            return {"resources": resources, "agent_step": self.agent_step()}
+        # ── 分批生成：每个阶段独立调用，不受 token 限制 ──
+        self._partial_resources = []
+        all_resources = []
+        batch_size = 2  # 每批 1-2 个阶段
+        llm_available = bool(self.llm_client)
 
-        # ── 规则兜底（完整保留） ──
-        logger.info("LLM unavailable or failed, using rule-based resources")
-        fallback_reason = (
-            "LLM client is not configured; deterministic rule resources were generated."
-            if not self.llm_client
-            else "LLM output was unavailable or invalid; deterministic rule resources were generated."
-        )
-        if course.get("_source_type") != SOURCE_TYPE_COURSE_KB:
-            fallback_reason += " No verified course knowledge-base match was available."
-        if any(stage.get("_inferred") for stage in stages):
-            fallback_reason += " Learning stages were inferred from diagnosis because no explicit learning path was available."
-        resources = self._build_rule_fallback(course, stages, knowledge_points, profile, fallback_reason, rag_evidence)
-        resources = self._scope_resource_ids(resources, str(context.get("session_id") or ""))
-        return {"resources": resources, "agent_step": self.agent_step()}
+        for batch_start in range(0, len(stages), batch_size):
+            batch_stages = stages[batch_start:batch_start + batch_size]
+            batch_kps = [kp for kp in knowledge_points
+                         if any(kp.get("chapter_id") == s.get("stage_id") or
+                                str(kp.get("name", "")) in str(s.get("title", ""))
+                                for s in batch_stages)] or knowledge_points[
+                                    batch_start:batch_start + batch_size * 2]
+
+            if llm_available:
+                try:
+                    batch_resources = self._generate_with_llm(
+                        context, course, batch_stages, batch_kps, profile, rag_evidence,
+                        batch_label=f"{batch_start // batch_size + 1}/{(len(stages) + batch_size - 1) // batch_size}"
+                    )
+                    if batch_resources:
+                        all_resources.extend(batch_resources)
+                        self._partial_resources = list(all_resources)
+                        continue
+                except Exception as e:
+                    logger.warning("Batch %d failed: %s", batch_start, e)
+
+            # 规则兜底（按 task 数量生成，不固定每阶段 2 个）
+            for stage in batch_stages:
+                try:
+                    resources = self._build_rule_fallback_for_stage(course, stage, batch_kps, profile)
+                    all_resources.extend(resources)
+                except Exception:
+                    pass
+
+        # 确保所有资源 ID 全局唯一（UUID 根除冲突）
+        import uuid as _uuid
+        for _i, _r in enumerate(all_resources):
+            if isinstance(_r, dict):
+                _r["resource_id"] = _uuid.uuid4().hex[:12]
+        all_resources = self._scope_resource_ids(all_resources, str(context.get("session_id") or ""))
+        logger.info("ResourceAgent returning %d resources", len(all_resources))
+        return {"resources": all_resources, "agent_step": self.agent_step()}
 
     def get_fallback(self, context: dict[str, Any] | None = None) -> dict[str, Any]:
         ctx = context or {}
+        # 返回超时前已完成批次的资源，不全丢
+        partial = self._partial_resources
+        self._partial_resources = []
+        if partial:
+            logger.info("get_fallback: returning %d partial resources from timed-out batches", len(partial))
         return {
-            "resources": [],
-            "limitations": ["资源生成智能体暂时不可用，请稍后重试。"],
+            "resources": partial,
+            "limitations": (["资源生成超时，返回已完成的批次。"] if not partial
+                           else [f"资源生成超时，已返回 {len(partial)} 份已完成资源。"]),
             "agent_step": {
                 "agent_id": self.agent_id,
                 "agent_name": self.agent_name,
-                "status": "failed",
-                "summary": "ResourceAgent fell back to defaults.",
-                "error_reason": "Resource agent failed",
-                "source": "rule_based_fallback",
-                "quality_status": "fallback",
+                "status": "timeout" if partial else "failed",
+                "summary": f"ResourceAgent timed out, returning {len(partial)} partial resources.",
+                "error_reason": "Resource agent timed out",
+                "source": "partial_timeout" if partial else "rule_based_fallback",
+                "quality_status": "warning" if partial else "fallback",
                 "started_at": None,
                 "finished_at": None,
             },
@@ -96,6 +128,7 @@ class ResourceAgent(BaseAgent):
         knowledge_points: list[dict[str, Any]],
         profile: dict[str, Any],
         rag_evidence: list[dict[str, Any]] | None = None,
+        batch_label: str = "",
     ) -> list[dict[str, Any]]:
         """LLM 生成资源"""
         if not self.llm_client:
@@ -151,17 +184,23 @@ class ResourceAgent(BaseAgent):
                 "role": "system",
                 "content": (
                     "你是 EduAgent 的资源生成智能体。根据学习路径阶段、诊断结果和学习者画像生成学习资源。\n\n"
-                    "## 核心规则：任务驱动生成\n"
+                    "## 核心规则：任务驱动，深度讲解，多多益善\n"
                     "学习路径中每个阶段都有 tasks 列表——每一项 task 都需要配套的学习资源。\n"
-                    "逐个检查每个阶段的 tasks 数组，为每一项任务生成对应的资源，不许跳过任何任务。\n\n"
-                    "## 资源与任务匹配\n"
-                    "概念讲解型任务 → 讲义(lecture) + 思维导图(mindmap)\n"
-                    "计算/练习型任务 → 练习题(quiz) + 实操案例(practice)\n"
-                    "复习/总结型任务 → 拓展阅读(reading) + 综合测验(quiz)\n\n"
+                    "逐个检查每个阶段的 tasks 数组，为每一项任务生成至少 2 份讲义/阅读材料。\n"
+                    "大型知识点自动拆分为上下篇或多篇，不要怕内容多。\n"
+                    "每份讲义必须包含例题——概念讲解后紧跟例题演示，解析步骤要详细。\n"
+                    "练习题由练习中心处理，你专注做学习材料（讲义、导图、阅读、代码案例等）。\n"
+                    "不要偷工减料，不要跳过任何任务。宁多勿少，宁深勿浅。\n\n"
+                    "## 资源类型（提示）\n"
+                    "练习题和测验题由练习中心单独生成，你专注学习材料即可。\n"
+                    "根据课程特点自由决定类型：lecture(讲义), mindmap(思维导图), reading(阅读材料), practice(实操案例)等。\n"
+                    "不同学科用不同组合，不套固定模板。\n\n"
                     "## 内容深度\n"
-                    "简单概念 → 精简讲义 + 基础练习题\n"
-                    "核心难点 → 详细讲义含多道例题 + 分层练习题(基础/进阶/挑战)\n"
-                    "综合复习 → 跨知识点综合题 + 错题分析\n\n"
+                    "简单概念 → 精炼讲义附1-2道基础例题\n"
+                    "核心难点 → 拆分为上下篇 + 每篇3-5道例题 + 阶梯难度\n"
+                    "大知识点 → 自动拆分多个资源（上/中/下或更多），每篇聚焦一个子主题\n"
+                    "综合复习 → 跨知识点综合讲义 + 易错点总结\n"
+                    "每份讲义结构：概念讲解→公式推导→例题→解题技巧→易错提示\n\n"
                     "## 输出格式（极其重要！严格按此格式）\n"
                     "每个资源用 ---RESOURCE_META--- 和 ---RESOURCE_CONTENT--- 分隔：\n\n"
                     "---RESOURCE_META---\n"
@@ -178,6 +217,7 @@ class ResourceAgent(BaseAgent):
                     "- CONTENT行之后到下一个---分隔符之前的所有内容都是正文，自由书写markdown，无需任何JSON转义\n"
                     "- 分隔符必须独占一行\n"
                     "- 每个资源的META JSON中不包含content字段——正文在CONTENT块里\n\n"
+                    "## 公式格式（极其重要！不遵守则公式无法显示）\n所有数学表达式必须用 `$` 包裹。短公式行内：`$f(x)=x^2$`，大公式独立行：`$$\\int_a^b f(x)dx$$`。不包 `$` 的公式会变成乱码纯文本。涉及数学内容必须严格包裹。\n\n"
                     "## 正文排版要求（极其重要！决定学生是否愿意读下去）\n"
                     "- 必须用 ## 标题分段，每段内容不超过4行，宁可多分段也不要一大坨文字\n"
                     "- 每个小节下至少有一个三级标题 ### 展开细节\n"
@@ -329,8 +369,8 @@ class ResourceAgent(BaseAgent):
             if not isinstance(item, dict):
                 continue
             resource_type = self._clean_type(item.get("type"))
-            if resource_type not in RESOURCE_TYPES:
-                continue
+            if not resource_type:
+                resource_type = "lecture"
             default_binding = fallback_bindings[min(index - 1, len(fallback_bindings) - 1)]
             stage_id = str(item.get("related_stage_id") or default_binding["stage_id"])
             if stage_id not in stage_ids:
@@ -347,7 +387,7 @@ class ResourceAgent(BaseAgent):
             if not quiz_items and isinstance(item.get("items"), str) and not content:
                 content = str(item.get("items")).strip()
             if not content and not quiz_items:
-                continue
+                content = item.get("title", "学习资源")
 
             task_id = str(item.get("task_id") or "")
             if not task_id:
@@ -414,6 +454,26 @@ class ResourceAgent(BaseAgent):
     # ═══════════════════════════════════════════════════════════════
     # 规则兜底（完整保留原 ResourceAgent 全部逻辑）
     # ═══════════════════════════════════════════════════════════════
+
+    def _build_rule_fallback_for_stage(
+        self, course: dict, stage: dict, knowledge_points: list, profile: dict
+    ) -> list[dict]:
+        """为单个阶段生成规则兜底资源。按阶段 tasks 数量生成，不固定 2 个。"""
+        resources = []
+        stage_id = str(stage.get("stage_id", ""))
+        stage_title = str(stage.get("title", ""))
+        tasks = stage.get("tasks", []) or [stage_title]
+        binding = {
+            "stage_id": stage_id, "title": stage_title,
+            "knowledge_points": [kp.get("name", "") for kp in knowledge_points[:5]],
+            "chapter": stage_title,
+            "difficulty": stage.get("difficulty", "medium"),
+        }
+
+        for i, task in enumerate(tasks, 1):
+            resources.append(self._lecture_for_task(course, binding, profile, task, f"{stage_id}_node_{i}"))
+            resources.append(self._reading_for_task(course, binding, task, stage_id, f"{stage_id}_node_{i}"))
+        return resources
 
     def _build_rule_fallback(
         self,
@@ -634,9 +694,12 @@ class ResourceAgent(BaseAgent):
                 group = matched
                 binding_mode = "context_match"
             else:
-                start = round((index - 1) * len(knowledge_points) / stage_count)
-                end = round(index * len(knowledge_points) / stage_count)
-                group = knowledge_points[start:end] or [knowledge_points[min(index - 1, len(knowledge_points) - 1)]]
+                if not knowledge_points:
+                    group = []
+                else:
+                    start = round((index - 1) * len(knowledge_points) / stage_count)
+                    end = round(index * len(knowledge_points) / stage_count)
+                    group = knowledge_points[start:end] or [knowledge_points[min(index - 1, len(knowledge_points) - 1)]]
                 binding_mode = "path_order_inference"
             names = [str(item.get("name") or item.get("title")) for item in group if item.get("name") or item.get("title")]
             chapter = "、".join(
@@ -646,7 +709,7 @@ class ResourceAgent(BaseAgent):
             result.append({
                 "stage_id": str(stage.get("stage_id") or f"stage_{index}"),
                 "title": str(stage.get("title") or f"阶段 {index}"),
-                "chapter": chapter or names[0],
+                "chapter": chapter or (names[0] if names else str(stage.get("title") or f"阶段 {index}")),
                 "knowledge_points": names[:5] or [str(stage.get("title") or f"阶段 {index}")],
                 "difficulty": self._difficulty(group),
                 "reason": str(stage.get("reason") or stage.get("goal") or "根据学习路径阶段和课程章节生成。"),

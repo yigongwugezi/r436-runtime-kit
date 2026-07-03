@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useChatStore } from '../store/chatStore';
 import { Target, BookOpen, AlertCircle, BarChart3, Play, Loader2, ChevronLeft, ChevronRight, Check, X, RefreshCw } from 'lucide-react';
+import Markdown from '../utils/markdown';
 import { listQuestions, gradeAnswer, getWeakQuestions, getAnswerHistory, getQuestionSets } from '../api/chat';
 
 interface Question {
@@ -47,8 +48,20 @@ export default function PracticePage() {
     setAllQuestions(qs);
     setQuestions(qs);
     setCurrentIdx(0);
-    setAnswers({});
-    setGrades({});
+    // 从 localStorage 恢复答题状态
+    const saved = localStorage.getItem(`practice_answers_${sessionId}`);
+    const savedAnswers = saved ? JSON.parse(saved) : {};
+    setAnswers(savedAnswers);
+    // 从历史记录恢复已判卷结果
+    getAnswerHistory(sessionId).then((d: any) => {
+      if (d?.records) {
+        const prevGrades: Record<string, GradingResult> = {};
+        d.records.forEach((r: any) => {
+          if (r.question_id && r.grading_result) prevGrades[r.question_id] = r.grading_result;
+        });
+        setGrades(prevGrades);
+      }
+    }).catch(() => {});
     setView('quiz');
   };
 
@@ -132,7 +145,14 @@ export default function PracticePage() {
   const currentQ = questions[currentIdx];
   const answer = answers[currentQ?.question_id || ''] || '';
   const grade = grades[currentQ?.question_id || ''];
-  const handleAnswer = (val: string) => currentQ && setAnswers(a => ({ ...a, [currentQ.question_id]: val }));
+  const handleAnswer = (val: string) => {
+    if (!currentQ) return;
+    setAnswers(a => {
+      const updated = { ...a, [currentQ.question_id]: val };
+      localStorage.setItem(`practice_answers_${sessionId}`, JSON.stringify(updated));
+      return updated;
+    });
+  };
   const handleSubmit = async () => {
     if (!currentQ || !answer || grading) return;
     setGrading(true);
@@ -149,7 +169,7 @@ export default function PracticePage() {
         <button onClick={() => setView('home')} className="text-sm text-surface-500 hover:text-surface-700 mb-4 flex-shrink-0"><ChevronLeft className="w-4 h-4 inline" /> 返回</button>
         <div className="flex gap-4 flex-1 min-h-0">
           {/* 左侧题号列表 */}
-          <div className="w-44 flex-shrink-0 bg-white rounded-2xl shadow-soft p-3 overflow-y-auto">
+          <div className="w-52 flex-shrink-0 bg-white rounded-2xl shadow-soft p-3 overflow-y-auto">
             <p className="text-[10px] text-surface-400 uppercase tracking-wider mb-2 font-semibold">题目列表</p>
             {questions.map((q, i) => {
               const g = grades[q.question_id];
@@ -160,7 +180,7 @@ export default function PracticePage() {
               if (isCurrent) cls = 'text-primary-600 font-bold';
               return (
                 <button key={q.question_id} onClick={() => setCurrentIdx(i)}
-                  className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs hover:bg-surface-50 transition-colors ${isCurrent ? 'bg-primary-50' : ''}`}>
+                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm hover:bg-surface-50 transition-colors ${isCurrent ? 'bg-primary-50 font-medium' : ''}`}>
                   <span className={cls}>{dot}</span>
                   <span className="truncate text-surface-500">第{i + 1}题</span>
                 </button>
@@ -170,38 +190,65 @@ export default function PracticePage() {
 
           {/* 右侧题目区 */}
           <div className="flex-1 flex flex-col min-w-0">
-            <div className="flex items-center justify-between mb-4">
-              <span className="text-sm text-surface-500">第 {currentIdx + 1} / {questions.length} 题</span>
-              <span className="text-xs px-2 py-0.5 rounded-full bg-surface-100 text-surface-500">
-                {currentQ?.type === 'choice' ? '选择题' : currentQ?.type === 'truefalse' ? '判断题' : currentQ?.type === 'fill' ? '填空题' : '解答题'}
-              </span>
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-3">
+                <span className="text-lg font-bold text-primary-600">#{currentIdx + 1}</span>
+                <span className="text-sm text-surface-400">/ {questions.length} 题</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary-50 text-primary-600 font-medium">
+                  {currentQ?.type === 'choice' ? '选择题' : currentQ?.type === 'truefalse' ? '判断题' : currentQ?.type === 'fill' ? '填空题' : '解答题'}
+                </span>
+                {currentQ?.difficulty && (
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${currentQ?.difficulty === 'easy' ? 'bg-success-50 text-success-600' : currentQ?.difficulty === 'hard' ? 'bg-error-50 text-error-600' : 'bg-warning-50 text-warning-600'}`}>
+                    {currentQ?.difficulty === 'easy' ? '简单' : currentQ?.difficulty === 'hard' ? '困难' : '中等'}
+                  </span>
+                )}
+              </div>
             </div>
-            <div className="h-1 bg-surface-100 rounded-full mb-6 overflow-hidden"><div className="h-full bg-primary-500 rounded-full transition-all" style={{ width: `${((currentIdx + 1) / questions.length) * 100}%` }} /></div>
+            <div className="flex items-center gap-2 mb-6">
+              <div className="flex-1 h-2 bg-surface-100 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-primary-500 to-accent-500 rounded-full transition-all duration-500" style={{ width: `${questions.length>0?((currentIdx+1)/questions.length)*100:0}%` }} /></div>
+              <span className="text-xs text-surface-400 tabular-nums w-10 text-right">{questions.length>0?Math.round(((currentIdx+1)/questions.length)*100):0}%</span>
+            </div>
 
             <div className="flex-1 overflow-y-auto">
-              <div className="bg-white rounded-2xl shadow-soft p-6 mb-6">
-                <h3 className="text-lg font-medium text-surface-800 mb-6">{currentQ?.stem}</h3>
+              <div className="bg-white rounded-2xl shadow-soft p-8 mb-6">
+                <div className="text-xl font-semibold text-surface-800 mb-2 leading-relaxed"><Markdown content={currentQ?.stem || ''} /></div>
+                {currentQ?.knowledge_points && currentQ.knowledge_points.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mb-6">
+                    {currentQ.knowledge_points.slice(0,4).map((kp: string, i: number) => (
+                      <span key={i} className="text-[10px] px-2 py-0.5 rounded-full bg-surface-100 text-surface-500">{kp}</span>
+                    ))}
+                  </div>
+                )}
+                <div className="space-y-3">
                 {currentQ?.type === 'choice' && currentQ.options?.map((opt: string, i: number) => {
                   const letter = String.fromCharCode(65 + i); const sel = answer === letter; const done = !!grade;
-                  let cls = 'border-surface-200 hover:border-primary-300';
-                  if (done && grade?.total_score === 100 && sel) cls = 'border-success-400 bg-success-50';
-                  else if (done && sel && grade?.total_score !== 100) cls = 'border-error-400 bg-error-50';
-                  else if (sel) cls = 'border-primary-400 bg-primary-50';
-                  return <button key={letter} disabled={done} onClick={() => handleAnswer(letter)} className={`w-full text-left px-4 py-3 rounded-xl border-2 mb-2 transition-all ${cls}`}><span className="font-semibold mr-2">{letter}.</span>{opt}</button>;
+                  let cls = 'border-2 hover:shadow-sm';
+                  if (done && grade?.total_score === 100 && sel) cls += ' border-success-400 bg-success-50/70';
+                  else if (done && sel && grade?.total_score !== 100) cls += ' border-error-400 bg-error-50/70';
+                  else if (sel) cls += ' border-primary-400 bg-primary-50/70';
+                  else cls += ' border-surface-200 hover:border-primary-300 bg-white';
+                  return <button key={letter} disabled={done} onClick={() => handleAnswer(letter)} className={`w-full text-left px-5 py-4 rounded-xl transition-all flex items-center gap-3 group ${cls}`}><span className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0 transition-colors ${sel && !done ? 'bg-primary-500 text-white' : done && grade?.total_score === 100 && sel ? 'bg-success-500 text-white' : done && sel ? 'bg-error-500 text-white' : 'bg-surface-100 text-surface-500 group-hover:bg-primary-100 group-hover:text-primary-600'}`}>{letter}</span><span className="text-sm"><Markdown content={opt} /></span>{done && letter === (currentQ?.correct || '') && <Check className="w-4 h-4 text-success-500 ml-auto" />}{done && sel && letter !== (currentQ?.correct || '') && <X className="w-4 h-4 text-error-500 ml-auto" />}</button>;
                 })}
-                {currentQ?.type === 'truefalse' && <div className="flex gap-4">{['true','false'].map(v => { const sel = answer === v; const done = !!grade; let cls = done ? (grade?.total_score === 100 && sel ? 'border-success-400 bg-success-50' : (sel ? 'border-error-400 bg-error-50' : 'border-surface-200')) : (sel ? 'border-primary-400 bg-primary-50' : 'border-surface-200 hover:border-primary-300'); const label = v === 'true' ? '✓ 正确' : '✗ 错误'; return <button key={v} disabled={done} onClick={() => handleAnswer(v)} className={`flex-1 px-6 py-4 rounded-xl border-2 text-lg font-medium transition-all ${cls}`}>{label}</button>; })}</div>}
-                {(currentQ?.type === 'fill' || currentQ?.type === 'shortanswer') && <textarea value={answer} onChange={e => handleAnswer(e.target.value)} disabled={!!grade} rows={currentQ?.type === 'shortanswer' ? 8 : 2} placeholder="输入你的答案…" className="w-full px-4 py-3 bg-surface-50 border border-surface-200 rounded-xl resize-none disabled:opacity-60" />}
+                {currentQ?.type === 'truefalse' && <div className="flex gap-4">{['true','false'].map(v => { const sel = answer === v; const done = !!grade; let cls = 'border-2'; if (done && grade?.total_score === 100 && sel) cls += ' border-success-400 bg-success-50/70'; else if (done && sel) cls += ' border-error-400 bg-error-50/70'; else if (sel) cls += ' border-primary-400 bg-primary-50/70'; else cls += ' border-surface-200 hover:border-primary-300'; const label = v === 'true' ? '✓ 正确' : '✗ 错误'; return <button key={v} disabled={done} onClick={() => handleAnswer(v)} className={`flex-1 px-6 py-5 rounded-xl text-lg font-medium transition-all ${cls}`}>{label}</button>; })}</div>}
+                {(currentQ?.type === 'fill' || currentQ?.type === 'shortanswer') && <textarea value={answer} onChange={e => handleAnswer(e.target.value)} disabled={!!grade} rows={currentQ?.type === 'shortanswer' ? 8 : 2} placeholder="输入你的答案…" className="w-full px-5 py-4 bg-surface-50 border-2 border-surface-200 rounded-xl resize-none focus:border-primary-400 focus:outline-none disabled:opacity-60 text-sm" />}
+                </div>
               </div>
 
               {grade && (
-                <div className={`p-4 rounded-xl mb-6 border-2 ${grade.total_score !== null && grade.total_score >= 60 ? 'bg-success-50/50 border-success-200' : 'bg-error-50/50 border-error-200'}`}>
-                  <div className="flex items-center gap-2 mb-2">
-                    {grade.total_score !== null && grade.total_score >= 60 ? <Check className="w-5 h-5 text-success-600" /> : <X className="w-5 h-5 text-error-500" />}
-                    <span className="font-semibold">{grade.total_score !== null ? `${grade.total_score} 分` : '已批改'}</span>
-                    {grade.error_type !== 'null' && <span className="text-xs px-1.5 py-0.5 rounded-full bg-error-100 text-error-600">{grade.error_label}</span>}
+                <div className={`p-5 rounded-2xl mb-6 border-2 animate-fade-in-up ${grade.total_score !== null && grade.total_score >= 60 ? 'bg-success-50/50 border-success-200' : 'bg-error-50/50 border-error-200'}`}>
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className={`w-10 h-10 rounded-full flex items-center justify-center ${grade.total_score !== null && grade.total_score >= 60 ? 'bg-success-100' : 'bg-error-100'}`}>
+                      {grade.total_score !== null && grade.total_score >= 60 ? <Check className="w-5 h-5 text-success-600" /> : <X className="w-5 h-5 text-error-500" />}
+                    </div>
+                    <div>
+                      <span className="text-lg font-bold">{grade.total_score !== null ? `${grade.total_score} 分` : '已批改'}</span>
+                      {grade.error_type !== 'null' && <span className="ml-2 text-xs px-1.5 py-0.5 rounded-full bg-error-100 text-error-600">{grade.error_label}</span>}
+                    </div>
                   </div>
-                  {grade.error_explanation && <p className="text-sm text-surface-600">{grade.error_explanation}</p>}
-                  {grade.suggestions?.[0] && <p className="text-xs text-primary-600 mt-1">💡 {grade.suggestions[0]}</p>}
+                  {grade.error_explanation && <p className="text-sm text-surface-600 leading-relaxed">{grade.error_explanation}</p>}
+                  {grade.suggestions?.[0] && <p className="text-xs text-primary-600 mt-2">💡 {grade.suggestions[0]}</p>}
                 </div>
               )}
             </div>
@@ -273,11 +320,13 @@ export default function PracticePage() {
 
 function QuickCard({ icon: Icon, title, desc, color, onClick, badge }: { icon: any; title: string; desc: string; color: string; onClick: () => void; badge?: number; }) {
   return (
-    <button onClick={onClick} className={`p-4 rounded-2xl ${color} bg-opacity-10 hover:bg-opacity-20 transition-all text-left relative`}>
-      <Icon className="w-5 h-5 mb-2" />
+    <button onClick={onClick} className="p-5 bg-white rounded-2xl shadow-soft hover:shadow-elevated transition-all text-left relative">
+      <div className={`w-10 h-10 rounded-xl ${color} bg-opacity-15 flex items-center justify-center mb-3`}>
+        <Icon className="w-5 h-5" />
+      </div>
       <p className="font-semibold text-surface-800 text-sm">{title}</p>
       <p className="text-xs text-surface-500 mt-1">{desc}</p>
-      {badge != null && badge > 0 && <span className="absolute top-2 right-2 w-5 h-5 rounded-full bg-error-500 text-white text-[10px] flex items-center justify-center font-bold">{badge}</span>}
+      {badge != null && badge > 0 && <span className="absolute top-3 right-3 w-5 h-5 rounded-full bg-error-500 text-white text-[10px] flex items-center justify-center font-bold">{badge}</span>}
     </button>
   );
 }

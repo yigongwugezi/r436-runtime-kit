@@ -22,6 +22,8 @@ from app.agents import (
     ReviewAgent,
 )
 from app.config import settings
+import logging
+
 from app.services.conversation_state import conversation_store
 from app.services.learning_tracker import learning_tracker
 from app.services.llm_client import get_llm_client
@@ -128,6 +130,16 @@ class AgentOrchestrator:
             "profile_facts": profile_facts or {},
             "analytics": self._session_analytics(session_id),
         }
+
+        # 注入已有数据：当某些 Agent 不在 filter 中时，用上次结果
+        state = conversation_store.get(session_id)
+        last = state.last_result or {}
+        if last.get("profile"):
+            context.setdefault("profile", last["profile"])
+        if last.get("learning_path"):
+            context.setdefault("learning_path", last["learning_path"])
+        if last.get("diagnosis"):
+            context.setdefault("diagnosis", last["diagnosis"])
 
         result: dict[str, Any] = {
             "session_id": session_id,

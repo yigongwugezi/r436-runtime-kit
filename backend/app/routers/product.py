@@ -1271,7 +1271,7 @@ def _reply_for_intent(
 
     # ── action=none：纯对话，不执行 Agent ──
     if action == "none":
-        _detect_and_set_proposal(llm_reply, session_id)
+        _detect_and_set_proposal(intent, session_id)
         return llm_reply or _casual_reply(session_id), False
 
     # ── 安全检查 ──
@@ -1287,8 +1287,17 @@ def _reply_for_intent(
             if not _learning_subject(state):
                 return _ask_learning_subject_reply(), False
 
-        # §4.1 + §11.1：根据 action 只调需要的子 Agent，不全量跑
-        agents_filter = _agents_for_action(action)
+        # §4.1 + §11.1：支持逗号分隔的多 action
+        actions = [a.strip() for a in action.split(",")]
+        agents_filter = []
+        for a in actions:
+            af = _agents_for_action(a, session_id)
+            if af is None:
+                agents_filter = None
+                break
+            agents_filter.extend(af)
+        if agents_filter is not None:
+            agents_filter = list(dict.fromkeys(agents_filter))  # 去重
         logger.info("Scheduling agents for action=%s: %s", action, agents_filter)
 
         # 诊断模式：传入自适应标记和已有作答数据（M2）
@@ -1320,33 +1329,29 @@ def _reply_for_intent(
         final_reply = _generate_final_reply(message, session_id, result)
         # 行动已完成，清除上次提议，检测是否提出了下一步
         conversation_store.set_proposal(session_id, None)
-        _detect_and_set_proposal(final_reply, session_id)
+        _detect_and_set_proposal({"reply": final_reply}, session_id)
         return final_reply, bool(result.get("learning_path"))
 
     # 兜底
     return llm_reply or _casual_reply(session_id), False
 
 
-def _agents_for_action(action: str) -> list[str] | None:
-    """根据 ConversationAgent 的 action 返回需要运行的 Agent 列表（§4.1, §11.1）。
-    返回 None 表示全量运行。
-    """
+def _agents_for_action(action: str, session_id: str = "") -> list[str] | None:
+    """每个 action 只跑最少必需的 Agent。"""
     if action == "full_workflow":
-        return None
-    if action == "diagnose":
-        return ["profile_agent", "diagnosis_agent", "question_agent", "grading_agent"]
+        return None  # 全部，但已有数据跳过
     if action == "plan":
-        return ["profile_agent", "knowledge_agent", "planner_agent"]
+        return ["planner_agent"]
     if action == "resources":
-        return ["profile_agent", "resource_agent"]
+        return ["resource_agent"]
     if action == "generate_questions":
-        return ["profile_agent", "diagnosis_agent", "question_agent"]
+        return ["question_agent"]
+    if action == "diagnose":
+        return ["diagnosis_agent"]
     if action == "grade_answer":
         return ["grading_agent"]
     if action == "profile":
         return ["profile_agent"]
-    if action == "knowledge":
-        return ["profile_agent", "knowledge_agent"]
     return None
 
 
@@ -1413,29 +1418,30 @@ def _generate_final_reply(message: str, session_id: str, result: dict[str, Any])
     if diagnosis and diagnosis.get("weak_knowledge_points"):
         parts.append("已完成诊断分析")
     if not parts:
-        return "生成流程已完成。你可以到学习路径和资源库页面查看详细内容。"
-    return "、".join(parts) + "。你可以到对应页面查看详细内容。"
+        reply = "生成流程已完成。你可以到学习路径和资源库页面查看详细内容。"
+    else:
+        reply = "、".join(parts) + "。你可以到对应页面查看详细内容。"
+    return reply
 
 
-def _detect_and_set_proposal(reply: str, session_id: str) -> None:
-    """从 LLM 回复中检测提议，设置 last_proposal。"""
-    if not reply or not session_id:
+def _detect_and_set_proposal(intent: dict, session_id: str) -> None:
+    if not session_id:
         return
-    reply_lower = reply.lower()
-    # 检测分步引导提议
-    if any(phrase in reply_lower for phrase in ["生成学习路径", "规划路径", "生成路径"]):
+    # 1. 标签优先
+    llm_proposal = intent.get("_llm_proposal", "")
+    if llm_proposal in {"plan","resources","questions","diagnose"}:
+        conversation_store.set_proposal(session_id, llm_proposal)
+        return
+    # 2. 关键词检测 LLM 是否在提问（代码兜底，不依赖 LLM 标签）
+    reply_lower = (intent.get("reply","") or "").lower()
+    if any(w in reply_lower for w in ["生成路径","规划路径","开始规划","生成学习路径","要开始","要生成","要规划"]):
         conversation_store.set_proposal(session_id, "plan")
-    elif any(phrase in reply_lower for phrase in ["配套资源", "生成资源", "配资源", "学习资源"]):
+    elif any(w in reply_lower for w in ["配套资源","生成资源","配资源","学习资源","要配资源","整理资源"]):
         conversation_store.set_proposal(session_id, "resources")
-    elif any(phrase in reply_lower for phrase in ["出题", "练习题", "巩固", "做题"]):
+    elif any(w in reply_lower for w in ["出题","练习题","巩固","要练习","做题"]):
         conversation_store.set_proposal(session_id, "questions")
-    elif any(phrase in reply_lower for phrase in ["完整方案", "全部生成", "完整学习方案"]):
-        conversation_store.set_proposal(session_id, "full")
-    elif any(phrase in reply_lower for phrase in ["诊断", "薄弱", "摸底"]):
-        conversation_store.set_proposal(session_id, "diagnose")
     else:
         conversation_store.set_proposal(session_id, None)
-
 
 def _will_run_agents(intent: dict[str, Any], session_id: str) -> bool:
     """Check whether the given intent will trigger agent execution."""
@@ -3793,6 +3799,110 @@ def list_questions(sessionId: str = "", subjectId: str = "",
         db.close()
 
 
+@router.get("/questions/sets")
+def question_sets(sessionId: str = "") -> dict[str, Any]:
+    """列出所有题目集（按 question_set_id 分组）。"""
+    session_id = _resolve_session_id(sessionId, "")
+    try:
+        db = SessionLocal()
+        from app.db.repository import get_questions as repo_get_questions
+        all_qs = repo_get_questions(db, session_id, limit=500)
+
+        # 按 question_set_id 分组
+        sets: dict[str, dict] = {}
+        for q in all_qs:
+            qsid = q.question_set_id or "default"
+            if qsid not in sets:
+                sets[qsid] = {"questionSetId": qsid, "title": qsid, "questions": [], "count": 0, "completed": 0}
+            sets[qsid]["questions"].append(q)
+            sets[qsid]["count"] += 1
+
+        # 统计完成数（有判卷记录的算完成）
+        from app.db.repository import get_answer_history
+        records = get_answer_history(db, session_id, limit=500)
+        graded_ids = {r.question_id for r in records}
+
+        result = []
+        for qsid, data in sets.items():
+            qs = data["questions"]
+            completed = sum(1 for q in qs if q.question_id in graded_ids)
+            # 取第一个题目的前几个字作标题
+            title = qs[0].stem[:30] + ("…" if len(qs[0].stem) > 30 else "") if qs else qsid
+            knowledge_points = list(set(
+                kp for q in qs if isinstance(q.knowledge_points, list)
+                for kp in q.knowledge_points
+            ))[:5]
+            result.append({
+                "questionSetId": qsid,
+                "title": title,
+                "knowledgePoints": knowledge_points,
+                "count": len(qs),
+                "completed": completed,
+                "createdAt": int(qs[0].created_at.timestamp() * 1000) if qs and qs[0].created_at else 0,
+            })
+
+        return _product_response({"sets": result}, session_id=session_id, source="db")
+    finally:
+        db.close()
+@router.get("/questions/weak")
+def weak_questions(sessionId: str = "", errorType: str = "", limit: int = 20) -> dict[str, Any]:
+    """错题本：查询作答错误的题目及判卷结果。"""
+    session_id = _resolve_session_id(sessionId, "")
+    try:
+        db = SessionLocal()
+        from app.db.repository import get_weak_records, get_question_by_id
+        records = get_weak_records(db, session_id, error_type=errorType, limit=limit)
+        data = []
+        for r in records:
+            q = get_question_by_id(db, r.question_id, session_id)
+            data.append({
+                "question": _q_to_dict(q) if q else None,
+                "last_answer": r.student_answer,
+                "grading_result": {
+                    "total_score": r.total_score, "dimension_scores": r.dimension_scores,
+                    "dimension_feedback": r.dimension_feedback, "error_type": r.error_type,
+                    "error_label": r.error_label, "error_explanation": r.error_explanation,
+                    "error_action": r.error_action, "suggestions": r.suggestions,
+                    "strengths": r.strengths,
+                },
+                "attempted_at": int(r.created_at.timestamp() * 1000) if r.created_at else 0,
+            })
+        return _product_response({"records": data, "total": len(data)}, session_id=session_id, source="db")
+    finally:
+        db.close()
+
+
+@router.get("/questions/history")
+def answer_history(sessionId: str = "", limit: int = 50) -> dict[str, Any]:
+    """答题历史：查询所有作答记录及统计。"""
+    session_id = _resolve_session_id(sessionId, "")
+    try:
+        db = SessionLocal()
+        from app.db.repository import get_answer_history, get_answer_stats, get_question_by_id
+        records = get_answer_history(db, session_id, limit=limit)
+        stats = get_answer_stats(db, session_id)
+        data = []
+        for r in records:
+            q = get_question_by_id(db, r.question_id, session_id)
+            data.append({
+                "question_id": r.question_id,
+                "question": _q_to_dict(q) if q else None,
+                "answer": r.student_answer,
+                "grading_result": {
+                    "total_score": r.total_score, "dimension_scores": r.dimension_scores,
+                    "dimension_feedback": r.dimension_feedback, "error_type": r.error_type,
+                    "error_label": r.error_label,
+                },
+                "created_at": int(r.created_at.timestamp() * 1000) if r.created_at else 0,
+            })
+        return _product_response({
+            "records": data, "totalCorrect": stats["totalCorrect"],
+            "totalAttempted": stats["totalAttempted"],
+        }, session_id=session_id, source="db")
+    finally:
+        db.close()
+
+
 @router.get("/questions/{question_id}")
 def get_question(question_id: str, sessionId: str = "", reveal: bool = False) -> dict[str, Any]:
     """获取单题详情（从 DB）。reveal=True 时返回答案。"""
@@ -3858,107 +3968,3 @@ def grade_answer(question_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     return _product_response({"gradingResult": result_data}, session_id=session_id, source="agent")
 
 
-@router.get("/questions/weak")
-def weak_questions(sessionId: str = "", errorType: str = "", limit: int = 20) -> dict[str, Any]:
-    """错题本：查询作答错误的题目及判卷结果。"""
-    session_id = _resolve_session_id(sessionId, "")
-    try:
-        db = SessionLocal()
-        from app.db.repository import get_weak_records
-        records = get_weak_records(db, session_id, error_type=errorType, limit=limit)
-        data = []
-        for r in records:
-            q = get_question_by_id(db, r.question_id, session_id)
-            data.append({
-                "question": _q_to_dict(q) if q else None,
-                "last_answer": r.student_answer,
-                "grading_result": {
-                    "total_score": r.total_score, "dimension_scores": r.dimension_scores,
-                    "dimension_feedback": r.dimension_feedback, "error_type": r.error_type,
-                    "error_label": r.error_label, "error_explanation": r.error_explanation,
-                    "error_action": r.error_action, "suggestions": r.suggestions,
-                    "strengths": r.strengths,
-                },
-                "attempted_at": int(r.created_at.timestamp() * 1000) if r.created_at else 0,
-            })
-        return _product_response({"records": data, "total": len(data)}, session_id=session_id, source="db")
-    finally:
-        db.close()
-
-
-@router.get("/questions/history")
-def answer_history(sessionId: str = "", limit: int = 50) -> dict[str, Any]:
-    """答题历史：查询所有作答记录及统计。"""
-    session_id = _resolve_session_id(sessionId, "")
-    try:
-        db = SessionLocal()
-        from app.db.repository import get_answer_history, get_answer_stats
-        records = get_answer_history(db, session_id, limit=limit)
-        stats = get_answer_stats(db, session_id)
-        data = []
-        for r in records:
-            q = get_question_by_id(db, r.question_id, session_id)
-            data.append({
-                "question_id": r.question_id,
-                "question": _q_to_dict(q) if q else None,
-                "answer": r.student_answer,
-                "grading_result": {
-                    "total_score": r.total_score, "dimension_scores": r.dimension_scores,
-                    "dimension_feedback": r.dimension_feedback, "error_type": r.error_type,
-                    "error_label": r.error_label,
-                },
-                "created_at": int(r.created_at.timestamp() * 1000) if r.created_at else 0,
-            })
-        return _product_response({
-            "records": data, "totalCorrect": stats["totalCorrect"],
-            "totalAttempted": stats["totalAttempted"],
-        }, session_id=session_id, source="db")
-    finally:
-        db.close()
-
-
-@router.get("/questions/sets")
-def question_sets(sessionId: str = "") -> dict[str, Any]:
-    """列出所有题目集（按 question_set_id 分组）。"""
-    session_id = _resolve_session_id(sessionId, "")
-    try:
-        db = SessionLocal()
-        from app.db.repository import get_questions as repo_get_questions
-        all_qs = repo_get_questions(db, session_id, limit=500)
-
-        # 按 question_set_id 分组
-        sets: dict[str, dict] = {}
-        for q in all_qs:
-            qsid = q.question_set_id or "default"
-            if qsid not in sets:
-                sets[qsid] = {"questionSetId": qsid, "title": qsid, "questions": [], "count": 0, "completed": 0}
-            sets[qsid]["questions"].append(q)
-            sets[qsid]["count"] += 1
-
-        # 统计完成数（有判卷记录的算完成）
-        from app.db.repository import get_answer_history
-        records = get_answer_history(db, session_id, limit=500)
-        graded_ids = {r.question_id for r in records}
-
-        result = []
-        for qsid, data in sets.items():
-            qs = data["questions"]
-            completed = sum(1 for q in qs if q.question_id in graded_ids)
-            # 取第一个题目的前几个字作标题
-            title = qs[0].stem[:30] + ("…" if len(qs[0].stem) > 30 else "") if qs else qsid
-            knowledge_points = list(set(
-                kp for q in qs if isinstance(q.knowledge_points, list)
-                for kp in q.knowledge_points
-            ))[:5]
-            result.append({
-                "questionSetId": qsid,
-                "title": title,
-                "knowledgePoints": knowledge_points,
-                "count": len(qs),
-                "completed": completed,
-                "createdAt": int(qs[0].created_at.timestamp() * 1000) if qs and qs[0].created_at else 0,
-            })
-
-        return _product_response({"sets": result}, session_id=session_id, source="db")
-    finally:
-        db.close()

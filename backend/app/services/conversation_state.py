@@ -330,45 +330,55 @@ class ConversationStore:
                         )
                         if daily_tasks_list:
                             upsert_daily_tasks(db, state.session_id, daily_tasks_list)
-                for item in result.get("resources", []):
-                    raw_resource_id = str(item.get("resource_id", f"res_{time.time()}"))
-                    resource_id = raw_resource_id if raw_resource_id.startswith(f"{state.session_id}_") else f"{state.session_id}_{raw_resource_id}"
-                    content_fmt = item.get("content_format", "markdown")
-                    difficulty = item.get("difficulty", "easy")
-                    content_text = item.get("content", "")
-                    estimated = max(10, len(content_text) // 200 * 5) if content_text else 20
-                    related_points = list(item.get("related_knowledge_points") or [])
-                    related_chapter = str(item.get("related_chapter") or "").strip()
-                    if related_chapter:
-                        related_points.append(related_chapter)
-                    if item.get("related_stage_id"):
-                        related_points.append(str(item.get("related_stage_id")))
-                    upsert_resource(db, state.session_id, {
-                        "id": resource_id, "type": item.get("type", "lecture"),
-                        "title": item.get("title", "学习资源"), "description": item.get("description", ""),
-                        "content": content_text,
-                        "knowledge_points": list(dict.fromkeys(point for point in related_points if point)),
-                        "tags": [content_fmt, item.get("source", "agent_generated"), item.get("quality_status", "")],
-                        "difficulty": difficulty, "estimated_minutes": estimated,
-                        "format": "diagram" if content_fmt == "mermaid" else ("code" if item.get("type") == "practice" else "text"),
-                        "mermaid_def": content_text if content_fmt == "mermaid" else None,
-                        "code_blocks": item.get("code_blocks"), "questions": item.get("items"),
-                        "ppt_outline": item.get("ppt_outline"),
-                        "bookmarked": item.get("bookmarked", False),
-                        "study_status": item.get("study_status", "new"),
-                        "source": item.get("source", "agent_generated"),
-                        "related_stage_id": item.get("related_stage_id", ""),
-                        "task_id": item.get("task_id", ""),
-                    })
-                # 持久化题目到 DB（M3）
-                questions = result.get("questions", [])
-                if questions:
-                    qsid = result.get("question_set_id", f"qs_{state.session_id}")
-                    from app.db.repository import upsert_questions as repo_upsert_questions
-                    for q in questions:
-                        if isinstance(q, dict) and not q.get("question_set_id"):
-                            q["question_set_id"] = qsid
-                    repo_upsert_questions(db, state.session_id, questions)
+                # ── 资源持久化 ──
+                try:
+                    for item in result.get("resources", []):
+                        raw_resource_id = str(item.get("resource_id", f"res_{time.time()}"))
+                        resource_id = raw_resource_id if raw_resource_id.startswith(f"{state.session_id}_") else f"{state.session_id}_{raw_resource_id}"
+                        content_fmt = item.get("content_format", "markdown")
+                        difficulty = item.get("difficulty", "easy")
+                        content_text = item.get("content", "")
+                        estimated = max(10, len(content_text) // 200 * 5) if content_text else 20
+                        related_points = list(item.get("related_knowledge_points") or [])
+                        related_chapter = str(item.get("related_chapter") or "").strip()
+                        if related_chapter:
+                            related_points.append(related_chapter)
+                        if item.get("related_stage_id"):
+                            related_points.append(str(item.get("related_stage_id")))
+                        upsert_resource(db, state.session_id, {
+                            "id": resource_id, "type": item.get("type", "lecture"),
+                            "title": item.get("title", "学习资源"), "description": item.get("description", ""),
+                            "content": content_text,
+                            "knowledge_points": list(dict.fromkeys(point for point in related_points if point)),
+                            "tags": [content_fmt, item.get("source", "agent_generated"), item.get("quality_status", "")],
+                            "difficulty": difficulty, "estimated_minutes": estimated,
+                            "format": "diagram" if content_fmt == "mermaid" else ("code" if item.get("type") == "practice" else "text"),
+                            "mermaid_def": content_text if content_fmt == "mermaid" else None,
+                            "code_blocks": item.get("code_blocks"), "questions": item.get("items"),
+                            "ppt_outline": item.get("ppt_outline"),
+                            "bookmarked": item.get("bookmarked", False),
+                            "study_status": item.get("study_status", "new"),
+                            "source": item.get("source", "agent_generated"),
+                            "related_stage_id": item.get("related_stage_id", ""),
+                            "task_id": item.get("task_id", ""),
+                        })
+                except Exception:
+                    import logging as _logging
+                    _logging.getLogger(__name__).exception("Failed to persist resources to DB for session %s.", session_id)
+
+                # ── 题目持久化 ──
+                try:
+                    questions = result.get("questions", [])
+                    if questions:
+                        qsid = result.get("question_set_id", f"qs_{state.session_id}")
+                        from app.db.repository import upsert_questions as repo_upsert_questions
+                        for q in questions:
+                            if isinstance(q, dict) and not q.get("question_set_id"):
+                                q["question_set_id"] = qsid
+                        repo_upsert_questions(db, state.session_id, questions)
+                except Exception:
+                    import logging as _logging
+                    _logging.getLogger(__name__).exception("Failed to persist questions to DB for session %s.", session_id)
             except Exception:
                 import logging as _logging
                 _logging.getLogger(__name__).exception("Failed to persist result to DB for session %s.", session_id)

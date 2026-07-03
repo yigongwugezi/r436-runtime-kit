@@ -31,75 +31,46 @@ class ConversationAgent(BaseAgent):
     SYSTEM_PROMPT = """你是 EduAgent，一个专业又温暖的学习助手。你是系统的最高优先级调度中心——你负责理解学生、判断时机、调度子 Agent、并统一生成最终回复。
 
 ## 你的定位
-你是学生唯一看到和对话的对象。你背后有多个子 Agent（画像分析、诊断、路径规划、资源生成），但它们不直接对学生说话——所有回复由你统一出口。
+你是学生唯一看到和对话的对象。你背后有多个子 Agent（画像分析、诊断、路径规划、资源生成、试题生成），但它们不直接对学生说话——所有回复由你统一出口。
 
 ## 对话原则
-1. **自然口语化**：像老师一样说话。严禁："收到指令"、"已处理"、"请选择方向"、"画像完整度"、"当前画像信息如下"、格式化追问清单
-2. **不自动生成**：学生说"我想学XXX"只是表达意向。信息足够时可提示"已经可以生成初版了，要开始吗？"，但必须等学生确认后才触发
-3. **引导性追问**：学生需求不够具体时，先引导问清楚再动手。例如学生说"帮我生成"——先问"你想要完整的方案，还是只要某一部分？比如只要学习路径、练习题、或诊断？"；学生说"帮我规划一下"——先确认课程和天数
-4. **有记忆**：理解指代词。画像信息保守合并——新信息补充不覆盖已有，新旧冲突时向学生确认
-5. **有温度**：展现共情
-6. **不甩锅**：不说"我无法识别"、"请重新描述"，主动猜测并确认
-7. **简短有力**：回复控制在2-4句话
-8. **诚实**：只说自己真正做过的事。没执行就不能说"已生成"
-9. **精准执行**：学生明确指定了具体需求（如"只出题""只要路径"），就只做那一件事，不多做
-10. **分步引导**：首次生成不走全量。按顺序逐一确认：路径→资源→练习题。每一步等学生确认后再触发。你已经有了什么就跳过什么
-11. **增量优先**：学生要修改现有内容时，只调相关子Agent。如"换第3阶段"→只调Planner；"补几份讲义"→只调ResourceAgent
-12. **尊重拒绝**：学生说"暂时不要"或"不用"后，不自动触发。等学生主动需要时再行动
-13. **确认词看上下文**："可以"不代表生成全部。学生在回答你上一轮的问题——你问"要生成路径吗"他说"可以"→只生成路径；你问"要配资源吗"他说"可以"→只配资源；你没问任何事他说"可以"→追问他想做什么
+1. **自然口语化**：严禁"收到指令""已处理""请选择方向""画像完整度""当前画像信息如下"等机器话术
+2. **不自动生成**：学生说"我想学XXX"只是表达意向。信息够了可以说"可以生成学习路径了，要开始吗？"，必须等学生确认
+3. **引导性追问**：学生说模糊词时（"生成""方案""路径"），追问具体要什么
+4. **精准执行**：学生明确指定了就只做那一件事，不多做。"出题"只出题、"资源"只资源
+5. **分步引导**：首次按顺序逐一确认：路径(<proposal>plan</proposal>)→资源(<proposal>resources</proposal>)→练习题(<proposal>questions</proposal>)。已有就跳过
+6. **增量优先**：修改现有内容时只调相关Agent，不重跑全量
+7. **尊重拒绝**：学生说"不要"后不自动触发
+8. **诚实**：没执行就不能说"已生成"
 
-## 好的回复示例
+## 标签格式
+- 确定学生要什么 → "好的，我来生成<execute>resources</execute>"
+- 问学生要不要做什么 → "要生成路径吗？<proposal>plan</proposal>"
+- 纯闲聊 → 不加标签
+
+## 示例
 学生："我想学微积分"
-回复："好的！微积分是理工科的核心基础课。你之前有接触过吗？比如高中导数？还是完全零基础？每天大概能花多长时间？"
+回复："好的！微积分是理工科核心课。你之前有接触过吗？每天大概能花多长时间？"
 
 学生："零基础，每天三小时，一个月"
-回复："明白了，零基础每天三小时，一个月很充足。这些信息已经可以生成第一版学习方案了，要我现在开始吗？"
+回复："明白了。已经可以生成学习路径了，要现在开始吗？<proposal>plan</proposal>"
 
 学生："可以的"
-回复："好的，我现在就帮你生成。<action>full_workflow</action>"
+回复："好的，马上帮你规划！"
 
-学生："我是大三的，学过C语言"
-回复："了解了，软件工程大三，有C语言基础。你想重点学习哪个方向？比如数据结构、算法、操作系统？"
+路径生成后：
+回复："路径已生成（5个阶段，30天）。要配套学习资源吗？<proposal>resources</proposal>"
 
-## 差的回复示例（绝对禁止）
-- "请选择方向：生成学习画像、规划路径、推荐资源或诊断薄弱点"
-- "我无法识别你的意图，请重新描述"
-- "收到，已更新学习画像。你可以继续补充薄弱点、学习时间或资源偏好"
-- "画像完整度 2/7" 或任何 X/Y 格式的进度数字
-- 光说不练——只口头描述计划但不触发 action
-- 没有执行子 Agent 却说"已生成"、"已推荐"、"已完成诊断"
+## 禁止
+- "请选择方向"
+- "画像完整度 2/7"  
+- "已生成"（除非真实执行了）
+- 光说不练
+- 说"帮你生成"但不加标签
 
-## 输出格式
-你的回复就是纯自然语言，不需要附加任何标签。系统会根据规则引擎自动判断需要执行哪些后台操作。
-你只需要做一个自然的、有帮助的学习助手。
-
-## 好的回复示例
-学生："我想学微积分"
-回复："好的！微积分是理工科的核心基础课。你之前有接触过吗？比如高中导数？还是完全零基础？每天大概能花多长时间？"
-
-学生："零基础，每天三小时，一个月"
-回复："明白了，零基础每天三小时，一个月很充足。这些信息已经可以生成第一版学习方案了，要我现在开始吗？"
-
-学生："可以的"
-回复："好的，马上帮你生成！"
-
-学生："我是大三的，学过C语言"
-回复："了解了，软件工程大三，有C语言基础。你想重点学习哪个方向？比如数据结构、算法、操作系统？"
-
-## 差的回复示例（绝对禁止）
-- "请选择方向：生成学习画像、规划路径、推荐资源或诊断薄弱点"
-- "我无法识别你的意图，请重新描述"
-- "收到，已更新学习画像。你可以继续补充薄弱点、学习时间或资源偏好"
-- "画像完整度 2/7" 或任何 X/Y 格式的进度数字
-- "已经生成"/"已推荐"/"已完成诊断"——除非你确定系统已经真实执行了
-
-## 画像信息标签
-每次回复末尾输出 <facts> 标签：
-<facts>
-{"target_course": "微积分", "knowledge_base": "零基础", "time_budget": "1个月，每天3小时", "learning_goal": "期末考试拿高分", "background": "软件工程大一学生", "preference": "喜欢做题"}
-</facts>
-
-规则：只包含学生明确说过的信息；课程名必须完整准确；没信息的维度不要包含；每次输出完整画像；用 JSON 格式"""
+## 画像标签
+<facts>{...}</facts>
+只包含学生明确说过的信息；课程名必须完整准确。"""
 
     FINAL_REPLY_PROMPT = """
 ## final_reply 模式
@@ -160,19 +131,23 @@ class ConversationAgent(BaseAgent):
 
         self._load_history(context)
 
-        # ── 第1步：规则引擎定 action（确定性，不会"忘记"）──
-        rule_result = self._rule_fallback(user_message, context)
-        action = rule_result.get("action", "none")
-        needs_clarification = rule_result.get("needs_clarification", False)
-        rule_reason = rule_result.get("reason", "")
+        needs_clarification = False
 
-        # ── 第1.5步：规则吃不准时 → LLM 兜底分类 ──
-        if rule_reason == "unclassified_fallback" and self.llm_client:
-            llm_action = self._llm_classify_action(user_message, context)
-            if llm_action and llm_action != "none":
-                action = llm_action
+        # ── LLM 优先分类（智能理解），规则引擎兜底 ──
+        action = "none"
+        if self.llm_client:
+            for attempt in range(2):
+                llm_action = self._llm_classify_action(user_message, context)
+                if llm_action and llm_action != "full_workflow":
+                    action = llm_action
+                    break
+                time.sleep(0.3)
 
-        # ── 第2步：LLM 生成自然语言回复（不管 action 决策）──
+        # LLM 没判出来 → 规则引擎兜底
+        if action == "none":
+            rule_result = self._rule_fallback(user_message, context)
+            action = rule_result.get("action", "none")
+            needs_clarification = rule_result.get("needs_clarification", False)
         llm_reply = ""
         facts = {}
         llm_retry_count = 0
@@ -181,7 +156,9 @@ class ConversationAgent(BaseAgent):
                 try:
                     messages = self._build_reply_messages(user_message, context, action)
                     raw_response = self._call_llm(messages)
-                    llm_reply, facts = self._extract_reply_and_facts(raw_response)
+                    llm_reply, facts, exec_action, proposal = self._extract_reply_and_facts(raw_response)
+                    if proposal:
+                        context["_llm_proposal"] = proposal
                     if llm_reply:
                         break
                 except LLMClientError:
@@ -199,6 +176,8 @@ class ConversationAgent(BaseAgent):
 
         result = self._make_result(reply=llm_reply, action=action, facts=facts)
         result["llm_retry_count"] = llm_retry_count
+        if context.get("_llm_proposal"):
+            result["_llm_proposal"] = context["_llm_proposal"]
         if needs_clarification:
             result["needs_clarification"] = True
         return result
@@ -246,6 +225,9 @@ class ConversationAgent(BaseAgent):
                 })
                 raw_response = self._call_llm(messages)
                 reply, _, facts = self._parse_response(raw_response)
+                # 剥掉 final_reply 里残留的标签
+                reply = re.sub(r'<proposal>.*?</proposal>', '', reply, flags=re.DOTALL)
+                reply = re.sub(r'<execute>.*?</execute>', '', reply, flags=re.DOTALL)
                 if reply:
                     break
             except (LLMClientError, json.JSONDecodeError):
@@ -323,38 +305,35 @@ class ConversationAgent(BaseAgent):
         return None
 
     def _build_reply_messages(self, user_message: str, context: dict, action: str) -> list[dict]:
-        """构建 LLM 回复生成的消息。action 由规则引擎预先决定，LLM 只管说话。"""
+        """构建 LLM 回复消息。LLM 自己决定用 <execute> 或 <proposal>。"""
         msgs = [{"role": "system", "content": self.SYSTEM_PROMPT}]
         for m in self._history[-20:]:
             msgs.append(m)
         ctx_text = self._format_context(context)
         if ctx_text:
             msgs.append({"role": "system", "content": f"当前学生状态：\n{ctx_text}"})
-
-        # 根据预定的 action 告诉 LLM 接下来会发生什么
-        action_hints = {
-            "full_workflow": "系统将启动完整的学习方案生成流程（画像分析→知识检索→诊断→路径规划→资源生成）。",
-            "plan": "系统将启动学习路径规划。",
-            "resources": "系统将启动资源推荐和生成。",
-            "diagnose": "系统将启动薄弱点诊断分析。",
-            "profile": "系统将更新学习画像。",
-            "knowledge": "系统将检索课程知识。",
-            "none": "",
-            "unsafe": "",
-        }
-        hint = action_hints.get(action, "")
-        user_prompt = user_message
-        if hint:
-            user_prompt = f'{user_message}\n\n[系统提示：已决定执行 action={action}。{hint}你只需简短确认学生的请求，不要说“已生成”——后续 Agent 会真正执行。]'
-
-        msgs.append({"role": "user", "content": user_prompt})
+        msgs.append({"role": "user", "content": user_message})
         return msgs
 
     @staticmethod
-    def _extract_reply_and_facts(raw: str) -> tuple[str, dict]:
-        """从 LLM 回复中提取文本和画像信息。不再解析 action 标签。"""
+    def _extract_reply_and_facts(raw: str) -> tuple[str, dict, str, str]:
+        """从 LLM 回复中提取文本、画像、execute action、proposal。"""
         text = raw.strip()
         facts = {}
+        execute_action = ""
+        proposal = ""
+
+        # 提取 proposal（在剥离之前，比 execute 先提取避免混淆）
+        prop_match = re.search(r'<proposal>(.*?)</proposal>', text, re.DOTALL)
+        if prop_match:
+            proposal = prop_match.group(1).strip()
+            text = re.sub(r'<proposal>.*?</proposal>', '', text, flags=re.DOTALL)
+
+        # 提取 execute 标签
+        exec_match = re.search(r'<execute>(.*?)</execute>', text, re.DOTALL)
+        if exec_match:
+            execute_action = exec_match.group(1).strip()
+            text = re.sub(r'<execute>.*?</execute>', '', text, flags=re.DOTALL)
 
         # 提取 facts
         facts_match = re.search(r'<facts>(.*?)</facts>', text, re.DOTALL)
@@ -363,31 +342,40 @@ class ConversationAgent(BaseAgent):
                 facts = json.loads(facts_match.group(1).strip())
             except json.JSONDecodeError:
                 pass
-            text = re.sub(r'<facts>.*?</facts>', '', text, flags=re.DOTALL).strip()
+            text = re.sub(r'<facts>.*?</facts>', '', text, flags=re.DOTALL)
 
-        return text, facts
+        return text.strip(), facts, execute_action, proposal
 
     def _llm_classify_action(self, user_message: str, context: dict) -> str | None:
-        """规则引擎吃不准时，用 LLM 做意图分类。只返回 action 字符串，不生成回复。"""
+        """LLM 优先判 action。理解用户的各种口语表达，返回标准 action 名。"""
         history_text = "\n".join(
             f"{'学生' if m['role'] == 'user' else '助手'}: {m['content'][:200]}"
             for m in self._history[-6:]
         )
-        prompt = f"""判断学生最后一条消息的意图，只返回一个 action 标签。
+        # 检查 last_proposal 给 LLM 上下文
+        last_proposal = context.get("last_proposal", "")
+        proposal_hint = f"\n上一轮系统问了'要{last_proposal}吗'，学生可能是回答这个问题。" if last_proposal else ""
 
-可选 action：
-- full_workflow：学生明确要求生成完整学习方案
-- diagnose：学生要求诊断薄弱点或有错题
-- plan：学生要求规划学习路径
-- resources：学生要求推荐或生成学习资源
-- none：纯闲聊、补充信息、表达意向
+        prompt = f"""判断学生意图，只输出一个词。
 
-对话历史：
+可选：full_workflow（要完整方案含路径+资源+题）、plan（要学习路径）、resources（要资源）、generate_questions（要题）、diagnose（要诊断）、grade_answer（要批改）、none（闲聊/提供信息/追问）
+
+规则：
+- 消息里没有"生成/帮我/给我/开始/来一套/出/做"等请求动词 → 一律 none
+- "来一套""全套""都要""整一个"= full_workflow
+- "路径""规划""怎么学""路线"= plan
+- "资源""资料""讲义"= resources
+- "出题""做题""练习""题目""题"= generate_questions
+- "诊断""薄弱""不会""摸底"= diagnose
+- "批改""判卷""对不对"= grade_answer
+- "可以""好的""行""生成吧"= 看上下文{proposal_hint}
+
+对话：
 {history_text}
 
-学生消息：{user_message}
+学生：「{user_message}」
 
-只输出一个词（full_workflow/diagnose/plan/resources/none）："""
+action："""
         try:
             raw = self.llm_client.chat(
                 messages=[{"role": "user", "content": prompt}],
@@ -395,7 +383,7 @@ class ConversationAgent(BaseAgent):
                 max_tokens=20,
             )
             raw = raw.strip().lower()
-            valid = {"full_workflow", "diagnose", "plan", "resources", "none"}
+            valid = {"diagnose", "plan", "resources", "generate_questions", "grade_answer", "none"}
             for action in valid:
                 if action in raw:
                     return action
@@ -509,7 +497,7 @@ class ConversationAgent(BaseAgent):
             action = action_match.group(1).strip()
             text = re.sub(r'<action>.*?</action>', '', text, flags=re.DOTALL).strip()
 
-        valid_actions = {"diagnose", "plan", "resources", "profile", "knowledge", "full_workflow", "none", "unsafe"}
+        valid_actions = {"diagnose", "plan", "resources", "profile", "knowledge", "none", "unsafe"}
         if action not in valid_actions:
             action = "none"
 
@@ -520,7 +508,12 @@ class ConversationAgent(BaseAgent):
                 facts = json.loads(facts_match.group(1).strip())
             except json.JSONDecodeError:
                 pass
-            text = re.sub(r'<facts>.*?</facts>', '', text, flags=re.DOTALL).strip()
+            text = re.sub(r'<facts>.*?</facts>', '', text, flags=re.DOTALL)
+
+        # 剥掉 proposal 和 execute 标签（内部标签，用户不可见）
+        text = re.sub(r'<proposal>.*?</proposal>', '', text, flags=re.DOTALL)
+        text = re.sub(r'<execute>.*?</execute>', '', text, flags=re.DOTALL)
+        text = text.strip()
 
         return text, action, facts
 
@@ -541,9 +534,9 @@ class ConversationAgent(BaseAgent):
         )
 
         if explicit_generation:
-            return self._fallback_result("full_workflow", "explicit_generation_request")
+            return self._fallback_result("plan,resources,generate_questions", "explicit_generation_request")
 
-        if compact in confirm_words:
+        if any(cw in compact for cw in confirm_words):
             last_proposal = context.get("last_proposal")
             if last_proposal == "plan":
                 return self._fallback_result("plan", "contextual_plan_confirmation")
@@ -552,9 +545,9 @@ class ConversationAgent(BaseAgent):
             if last_proposal == "questions":
                 return self._fallback_result("generate_questions", "contextual_question_confirmation")
             if last_proposal == "full":
-                return self._fallback_result("full_workflow", "contextual_full_confirmation")
+                return self._fallback_result("plan,resources,generate_questions", "contextual_full_confirmation")
             if self._has_generation_confirmation_context(context):
-                return self._fallback_result("full_workflow", "contextual_generation_confirmation")
+                return self._fallback_result("plan,resources,generate_questions", "contextual_generation_confirmation")
             return self._fallback_result("none", "confirmation_without_generation_context", needs_clarification=True)
 
         if text in EXACT_CASUAL or len(compact) <= 2:
@@ -580,7 +573,7 @@ class ConversationAgent(BaseAgent):
             return self._fallback_result("diagnose", "diagnosis_request")
 
         if any(w in text for w in ["生成完整方案", "制定完整计划", "全部生成"]):
-            return self._fallback_result("full_workflow", "explicit_full_request")
+            return self._fallback_result("plan,resources,generate_questions", "explicit_full_request")
         if any(w in text for w in ["方案", "制定"]):
             return self._fallback_result("none", "ambiguous_generation_needs_clarification")
 
@@ -663,13 +656,13 @@ class ConversationAgent(BaseAgent):
     def _action_to_intent(self, action):
         return {
             "diagnose": "diagnosis", "plan": "learning_plan", "resources": "resource_request",
-            "profile": "profile_update", "knowledge": "learning_plan", "full_workflow": "full_workflow",
+            "profile": "profile_update", "knowledge": "learning_plan", 
             "unsafe": "unsafe", "none": "casual_chat",
         }.get(action, "unknown")
 
     def _action_to_primary_intent(self, action):
         return {
             "diagnose": "diagnosis", "plan": "learning_plan", "resources": "resource_request",
-            "profile": "profile_update", "knowledge": "learning_plan", "full_workflow": "full_workflow",
+            "profile": "profile_update", "knowledge": "learning_plan", 
             "unsafe": "unsafe", "none": "general_chat",
         }.get(action, "unknown")

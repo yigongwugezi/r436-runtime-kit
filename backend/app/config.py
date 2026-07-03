@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./data/r436_runtime.db"
 
     # Agent orchestration settings
-    agent_timeout: int = 120  # seconds per individual agent
+    agent_timeout: int = 3600  # 1 hour, effectively no timeout for batch generation
     agent_run_timeout: int = 300  # seconds for full orchestrator run
     llm_retry_count: int = 2  # number of retries for failed LLM calls
     llm_retry_delay: float = 1.0  # seconds between retries
