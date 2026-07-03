@@ -24,6 +24,7 @@ from app.db.models import (
     ClassSubjectModel,
     LearnerModel,
     QuestionModel,
+    SessionModel,
     StudentQuestionModel,
 )
 from app.middleware.auth import AuthContext, require_auth
@@ -132,6 +133,9 @@ def create_class_subject(
     if not body.name.strip():
         raise HTTPException(status_code=400, detail="班级名称不能为空")
 
+    # Auto-set subject from name if not provided (班级名称 = 科目)
+    subject = body.subject.strip() if body.subject else body.name.strip()
+
     db = SessionLocal()
     try:
         # Generate unique invite code
@@ -152,7 +156,7 @@ def create_class_subject(
             id=f"cs_{uuid.uuid4().hex[:12]}",
             name=body.name.strip(),
             description=body.description,
-            subject=body.subject.strip(),
+            subject=subject,
             teacher_id=auth.learner_id,
             invite_code=invite_code,
         )
@@ -475,6 +479,18 @@ def push_exercises(
                 status_code=400,
                 detail=f"以下题目不存在: {', '.join(missing[:5])}",
             )
+
+        # Validate subject match: pushed questions must match class subject
+        if cs.subject:
+            mismatched = [
+                q.id for q in admin_questions
+                if q.subject and q.subject != cs.subject
+            ]
+            if mismatched:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"以下题目学科({[q.subject for q in admin_questions if q.id in mismatched][:3]})与班级学科({cs.subject})不匹配",
+                )
 
         # Create ClassPushModel
         push_id = f"cp_{uuid.uuid4().hex[:12]}"
@@ -807,13 +823,20 @@ def get_pushed_questions(
             .all()
         )
 
+        # Get all session IDs belonging to this learner for per-student answer lookup
+        learner_sessions = (
+            db.query(SessionModel)
+            .filter(SessionModel.learner_id == auth.learner_id)
+            .all()
+        )
+        learner_session_ids = [s.id for s in learner_sessions]
+
         # Group by question_set_id (push)
         pushes_map: dict[str, dict] = {}
         for q in questions:
             push_id = q.question_set_id or "unknown"
             if push_id not in pushes_map:
                 # Try to get push title
-                push = db.get(ClassPushModel, push_id.replace("push_", "cp_"))
                 actual_push_id = push_id.replace("push_", "cp_")
                 push2 = db.get(ClassPushModel, actual_push_id)
                 pushes_map[push_id] = {
@@ -822,14 +845,17 @@ def get_pushed_questions(
                     "description": push2.description if push2 else None,
                     "questions": [],
                 }
-            # Check if student has answered
-            answered = (
-                db.query(AnswerRecordModel)
-                .filter(
-                    AnswerRecordModel.question_id == q.question_id,
+            # Check if THIS student has answered (scoped to their sessions)
+            answered = None
+            if learner_session_ids:
+                answered = (
+                    db.query(AnswerRecordModel)
+                    .filter(
+                        AnswerRecordModel.question_id == q.question_id,
+                        AnswerRecordModel.session_id.in_(learner_session_ids),
+                    )
+                    .first()
                 )
-                .first()
-            )
             q_dict = {
                 "question_id": q.question_id,
                 "type": q.type,

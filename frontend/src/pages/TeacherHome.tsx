@@ -20,7 +20,6 @@ export default function TeacherHome() {
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState('');
   const [newDesc, setNewDesc] = useState('');
-  const [newSubject, setNewSubject] = useState('');
   const [creating, setCreating] = useState(false);
   const [createdClass, setCreatedClass] = useState<ClassSubject | null>(null);
 
@@ -41,12 +40,11 @@ export default function TeacherHome() {
       const cs = await createClassSubject({
         name: newName.trim(),
         description: newDesc.trim() || undefined,
-        subject: newSubject.trim(),
+        subject: '',  // Backend auto-sets subject = name
       });
       setCreatedClass(cs);
       setNewName('');
       setNewDesc('');
-      setNewSubject('');
       await loadClasses();
     } catch {}
     setCreating(false);
@@ -104,16 +102,6 @@ export default function TeacherHome() {
                     onChange={e => setNewName(e.target.value)}
                     placeholder="例如：高一数学春季班"
                     maxLength={30}
-                    className="w-full px-4 py-2.5 bg-surface-50 border border-surface-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 transition-all"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-surface-700 mb-1.5">科目</label>
-                  <input
-                    value={newSubject}
-                    onChange={e => setNewSubject(e.target.value)}
-                    placeholder="例如：数学"
-                    maxLength={20}
                     className="w-full px-4 py-2.5 bg-surface-50 border border-surface-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 transition-all"
                   />
                 </div>

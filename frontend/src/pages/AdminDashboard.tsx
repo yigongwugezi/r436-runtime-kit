@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Database, GitGraph, BarChart3, Settings, Activity,
   Plus, Edit3, Trash2, Upload, Download, CheckCircle, XCircle, Search, ChevronDown, Filter,
@@ -9,6 +9,8 @@ import {
 import ReactEChartsCore from 'echarts-for-react';
 import { useAuthStore } from '../store/authStore';
 import * as adminApi from '../api/admin';
+import { getMyClassSubjects } from '../api/classSubjects';
+import { readStorageItem, writeStorageItem, runtimeStorageKeys } from '../utils/storageKeys';
 import type { AdminQuestion, AdminKP, ConfigItem, GraphData, TagInfo } from '../api/admin';
 
 const TABS = [
@@ -34,6 +36,19 @@ function AdminGuard({ children }: { children: React.ReactNode }) {
 
 export default function AdminDashboard() {
   const [tab, setTab] = useState('questions');
+  const [searchParams] = useSearchParams();
+  const [mySubjects, setMySubjects] = useState<string[]>([]);
+
+  // Load teacher's class subjects for dynamic dropdowns
+  useEffect(() => {
+    getMyClassSubjects().then(classes => {
+      const subjects = [...new Set(classes.map(c => c.subject).filter(Boolean))];
+      setMySubjects(subjects);
+    }).catch(() => {});
+  }, []);
+
+  // Read ?subject= from URL (from class detail page)
+  const urlSubject = searchParams.get('subject') || '';
 
   return (
     <AdminGuard>
@@ -60,8 +75,8 @@ export default function AdminDashboard() {
 
           {/* Right content */}
           <div className="flex-1 min-w-0 bg-white dark:bg-surface-700 rounded-2xl p-6 shadow-soft">
-            {tab === 'questions' && <QuestionsTab />}
-            {tab === 'knowledge' && <KnowledgeTab />}
+            {tab === 'questions' && <QuestionsTab mySubjects={mySubjects} urlSubject={urlSubject} />}
+            {tab === 'knowledge' && <KnowledgeTab mySubjects={mySubjects} />}
             {tab === 'stats' && <StatsTab />}
             {tab === 'config' && <ConfigTab />}
             {tab === 'monitor' && <MonitorTab />}
@@ -75,12 +90,14 @@ export default function AdminDashboard() {
 /* ===================================================================
  * Tab: Questions
  * =================================================================== */
-function QuestionsTab() {
+function QuestionsTab({ mySubjects, urlSubject }: { mySubjects: string[]; urlSubject: string }) {
   const [questions, setQuestions] = useState<AdminQuestion[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
-  const [filters, setFilters] = useState({ subject: '', type: '', difficulty: '', status: 'published', review_status: '', tags: '', search: '' });
+  // Read persisted filter subject, or use URL param, default empty (全部学科)
+  const savedSubject = readStorageItem(runtimeStorageKeys.adminQuestionFilterSubject) || urlSubject || '';
+  const [filters, setFilters] = useState({ subject: savedSubject, type: '', difficulty: '', status: '', review_status: '', tags: '', search: '' });
   const [editing, setEditing] = useState<AdminQuestion | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [reviewing, setReviewing] = useState<AdminQuestion | null>(null);
@@ -100,6 +117,9 @@ function QuestionsTab() {
   }, [filters, page]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Persist subject filter to localStorage
+  useEffect(() => { writeStorageItem(runtimeStorageKeys.adminQuestionFilterSubject, filters.subject); }, [filters.subject]);
 
   useEffect(() => { adminApi.listQuestionTags().then(r => setAllTags(r.tags)).catch(() => {}); }, [questions]);
 
@@ -172,7 +192,8 @@ function QuestionsTab() {
         <input placeholder="搜索题目内容..." value={filters.search} onChange={e => { setFilters(f => ({ ...f, search: e.target.value })); setPage(1); }}
           className="px-3 py-2 bg-gray-50 dark:bg-surface-600 border border-gray-200 dark:border-gray-500 rounded-lg text-xs w-48" />
         <SelectSm value={filters.subject} onChange={v => { setFilters(f => ({ ...f, subject: v })); setPage(1); }} options={[
-          { value: '', label: '全部学科' }, { value: '高中数学', label: '高中数学' }, { value: '高中物理', label: '高中物理' }, { value: '高中英语', label: '高中英语' },
+          { value: '', label: '全部学科' },
+          ...mySubjects.map(s => ({ value: s, label: s })),
         ]} />
         <SelectSm value={filters.type} onChange={v => { setFilters(f => ({ ...f, type: v })); setPage(1); }} options={[
           { value: '', label: '全部题型' }, ...QUESTION_TYPES.map(t => ({ value: t, label: TYPE_LABELS[t] })),
@@ -263,9 +284,9 @@ function QuestionsTab() {
       )}
 
       {/* Edit modal */}
-      {editing && <QuestionEditModal question={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
+      {editing && <QuestionEditModal question={editing} mySubjects={mySubjects} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
       {/* Create modal */}
-      {showCreate && <QuestionEditModal onClose={() => setShowCreate(false)} onSaved={() => { setShowCreate(false); load(); }} />}
+      {showCreate && <QuestionEditModal mySubjects={mySubjects} defaultSubject={urlSubject || readStorageItem(runtimeStorageKeys.adminLastCreateSubject) || ''} onClose={() => setShowCreate(false)} onSaved={() => { setShowCreate(false); load(); }} />}
       {/* Reject modal */}
       {reviewing && createPortal(
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30" onClick={() => setReviewing(null)}>
@@ -291,11 +312,11 @@ function QuestionsTab() {
   );
 }
 
-function QuestionEditModal({ question, onClose, onSaved }: { question?: AdminQuestion; onClose: () => void; onSaved: () => void }) {
+function QuestionEditModal({ question, mySubjects, defaultSubject, onClose, onSaved }: { question?: AdminQuestion; mySubjects: string[]; defaultSubject?: string; onClose: () => void; onSaved: () => void }) {
   const [stem, setStem] = useState(question?.content?.stem as string || '');
   const [answer, setAnswer] = useState(question?.content?.answer as string || '');
   const [explanation, setExplanation] = useState(question?.content?.explanation as string || '');
-  const [subject, setSubject] = useState(question?.subject || '');
+  const [subject, setSubject] = useState(question?.subject || defaultSubject || '');
   const [kp, setKp] = useState(question?.knowledge_point || '');
   const [type, setType] = useState(question?.type || 'choice');
   const [difficulty, setDifficulty] = useState(question?.difficulty || 'medium');
@@ -309,6 +330,8 @@ function QuestionEditModal({ question, onClose, onSaved }: { question?: AdminQue
         await adminApi.updateQuestion(question.id, { subject, knowledge_point: kp, type, difficulty, content });
       } else {
         await adminApi.createQuestion({ subject, knowledge_point: kp, type, difficulty, content });
+        // Remember this subject for next creation
+        if (subject) writeStorageItem(runtimeStorageKeys.adminLastCreateSubject, subject);
       }
       onSaved();
     } catch (e: any) { alert(e?.message || '保存失败'); }
@@ -321,7 +344,13 @@ function QuestionEditModal({ question, onClose, onSaved }: { question?: AdminQue
         <h3 className="font-display text-lg font-semibold mb-4">{question ? '编辑题目' : '新建题目'}</h3>
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <div><label className="text-xs text-gray-500 mb-1 block">学科</label><input value={subject} onChange={e => setSubject(e.target.value)} className="w-full px-3 py-2 bg-gray-50 dark:bg-surface-700 border rounded-lg text-sm" /></div>
+            <div><label className="text-xs text-gray-500 mb-1 block">学科 *</label>
+              <input list="subject-datalist" value={subject} onChange={e => setSubject(e.target.value)} required
+                placeholder="请选择或输入学科" className="w-full px-3 py-2 bg-gray-50 dark:bg-surface-700 border rounded-lg text-sm" />
+              <datalist id="subject-datalist">
+                {mySubjects.map(s => <option key={s} value={s} />)}
+              </datalist>
+            </div>
             <div><label className="text-xs text-gray-500 mb-1 block">知识点</label><input value={kp} onChange={e => setKp(e.target.value)} className="w-full px-3 py-2 bg-gray-50 dark:bg-surface-700 border rounded-lg text-sm" /></div>
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -353,9 +382,9 @@ function QuestionEditModal({ question, onClose, onSaved }: { question?: AdminQue
 /* ===================================================================
  * Tab: Knowledge Graph
  * =================================================================== */
-function KnowledgeTab() {
+function KnowledgeTab({ mySubjects }: { mySubjects: string[] }) {
   const [kps, setKps] = useState<AdminKP[]>([]);
-  const [subject, setSubject] = useState('高中数学');
+  const [subject, setSubject] = useState(mySubjects[0] || '');
   const [graph, setGraph] = useState<GraphData | null>(null);
   const [selected, setSelected] = useState<AdminKP | null>(null);
   const [editing, setEditing] = useState<AdminKP | null>(null);
@@ -440,9 +469,11 @@ function KnowledgeTab() {
       <div className="flex items-center justify-between">
         <h3 className="font-display text-lg font-semibold text-gray-800 dark:text-gray-100">知识图谱</h3>
         <div className="flex gap-2">
-          <SelectSm value={subject} onChange={setSubject} options={[
-            { value: '高中数学', label: '高中数学' }, { value: '高中物理', label: '高中物理' }, { value: '高中英语', label: '高中英语' },
-          ]} />
+          <SelectSm value={subject} onChange={setSubject} options={
+            mySubjects.length > 0
+              ? mySubjects.map(s => ({ value: s, label: s }))
+              : [{ value: '', label: '请先创建班级' }]
+          } />
           <button onClick={handleValidate} className="px-3 py-2 bg-gray-50 dark:bg-surface-600 border border-gray-200 dark:border-gray-500 rounded-lg text-xs font-medium hover:bg-gray-100 transition-colors">校验DAG</button>
           <button onClick={() => setShowCreate(true)} className="flex items-center gap-1 px-3 py-2 bg-brand-500 text-white rounded-lg text-xs font-medium hover:bg-brand-600 transition-colors"><Plus size={14} />新增知识点</button>
         </div>

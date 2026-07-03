@@ -44,6 +44,16 @@ export default function TeacherClassDetail() {
   const [pushDesc, setPushDesc] = useState('');
   const [pushing, setPushing] = useState(false);
 
+  // Inline question creation state
+  const [showCreateQ, setShowCreateQ] = useState(false);
+  const [newQStem, setNewQStem] = useState('');
+  const [newQAnswer, setNewQAnswer] = useState('');
+  const [newQExpl, setNewQExpl] = useState('');
+  const [newQType, setNewQType] = useState('choice');
+  const [newQDiff, setNewQDiff] = useState('medium');
+  const [newQKp, setNewQKp] = useState('');
+  const [creatingQ, setCreatingQ] = useState(false);
+
   // Student management state
   const [members, setMembers] = useState<ClassMember[]>([]);
   const [membersTotal, setMembersTotal] = useState(0);
@@ -71,9 +81,29 @@ export default function TeacherClassDetail() {
 
   const loadBankQuestions = async () => {
     try {
-      const res: any = await adminApi.listQuestions({ status: 'published', limit: 200 });
+      const params: any = { status: 'published', limit: 200 };
+      if (cs?.subject) params.subject = cs.subject;
+      const res: any = await adminApi.listQuestions(params);
       setBankQuestions(res?.questions || []);
     } catch {}
+  };
+
+  const handleCreateQuestion = async () => {
+    if (!newQStem.trim() || !newQAnswer.trim()) return;
+    setCreatingQ(true);
+    try {
+      await adminApi.createQuestion({
+        subject: cs?.subject || '',
+        knowledge_point: newQKp.trim(),
+        type: newQType,
+        difficulty: newQDiff,
+        content: { stem: newQStem.trim(), answer: newQAnswer.trim(), explanation: newQExpl.trim() },
+      });
+      setShowCreateQ(false);
+      setNewQStem(''); setNewQAnswer(''); setNewQExpl(''); setNewQKp('');
+      await loadBankQuestions();
+    } catch (e: any) { alert(e?.message || '创建失败'); }
+    setCreatingQ(false);
   };
 
   const handlePush = async () => {
@@ -159,12 +189,20 @@ export default function TeacherClassDetail() {
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
                   <h3 className="font-display text-lg font-semibold text-surface-800">推送记录</h3>
-                  <button
-                    onClick={() => { setShowPushModal(true); loadBankQuestions(); setSelectedQids(new Set()); setPushTitle(''); setPushDesc(''); }}
-                    className="flex items-center gap-1.5 px-4 py-2 bg-primary-600 text-white rounded-xl text-sm font-medium hover:bg-primary-700 transition-colors"
-                  >
-                    <Send size={14} /> 推送练习
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => nav(`/admin?subject=${encodeURIComponent(cs?.subject || '')}`)}
+                      className="flex items-center gap-1.5 px-4 py-2 bg-surface-100 border border-surface-200 text-surface-700 rounded-xl text-sm font-medium hover:bg-surface-200 transition-colors"
+                    >
+                      管理题库
+                    </button>
+                    <button
+                      onClick={() => { setShowPushModal(true); loadBankQuestions(); setSelectedQids(new Set()); setPushTitle(''); setPushDesc(''); }}
+                      className="flex items-center gap-1.5 px-4 py-2 bg-primary-600 text-white rounded-xl text-sm font-medium hover:bg-primary-700 transition-colors"
+                    >
+                      <Send size={14} /> 推送练习
+                    </button>
+                  </div>
                 </div>
                 {pushes.length === 0 ? (
                   <p className="text-surface-400 text-sm py-8 text-center">还没有推送过练习</p>
@@ -286,8 +324,72 @@ export default function TeacherClassDetail() {
                 />
               </div>
 
+              {/* 快速创建题目 */}
+              <div className="mb-4">
+                <button
+                  onClick={() => setShowCreateQ(!showCreateQ)}
+                  className="text-sm text-primary-600 hover:text-primary-700 font-medium flex items-center gap-1"
+                >
+                  <Plus size={14} /> 快速创建题目（学科自动设为「{cs?.subject || '未设置'}」）
+                </button>
+                {showCreateQ && (
+                  <div className="mt-3 p-4 bg-primary-50/50 rounded-xl border border-primary-200 space-y-3 animate-fade-in">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-xs text-surface-500 mb-1 block">题型</label>
+                        <select value={newQType} onChange={e => setNewQType(e.target.value)}
+                          className="w-full px-3 py-2 bg-white border border-surface-200 rounded-lg text-sm">
+                          <option value="choice">选择题</option>
+                          <option value="fill">填空题</option>
+                          <option value="truefalse">判断题</option>
+                          <option value="shortanswer">解答题</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-xs text-surface-500 mb-1 block">难度</label>
+                        <select value={newQDiff} onChange={e => setNewQDiff(e.target.value)}
+                          className="w-full px-3 py-2 bg-white border border-surface-200 rounded-lg text-sm">
+                          <option value="easy">简单</option>
+                          <option value="medium">中等</option>
+                          <option value="hard">困难</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-xs text-surface-500 mb-1 block">知识点</label>
+                      <input value={newQKp} onChange={e => setNewQKp(e.target.value)} placeholder="例如：二次函数"
+                        className="w-full px-3 py-2 bg-white border border-surface-200 rounded-lg text-sm" />
+                    </div>
+                    <div>
+                      <label className="text-xs text-surface-500 mb-1 block">题目内容 *</label>
+                      <textarea value={newQStem} onChange={e => setNewQStem(e.target.value)} rows={2} placeholder="题干的完整内容"
+                        className="w-full px-3 py-2 bg-white border border-surface-200 rounded-lg text-sm resize-none" />
+                    </div>
+                    <div>
+                      <label className="text-xs text-surface-500 mb-1 block">答案 *</label>
+                      <input value={newQAnswer} onChange={e => setNewQAnswer(e.target.value)} placeholder="正确答案"
+                        className="w-full px-3 py-2 bg-white border border-surface-200 rounded-lg text-sm" />
+                    </div>
+                    <div>
+                      <label className="text-xs text-surface-500 mb-1 block">解析（可选）</label>
+                      <textarea value={newQExpl} onChange={e => setNewQExpl(e.target.value)} rows={1} placeholder="答案解析"
+                        className="w-full px-3 py-2 bg-white border border-surface-200 rounded-lg text-sm resize-none" />
+                    </div>
+                    <div className="flex gap-2">
+                      <button onClick={handleCreateQuestion} disabled={creatingQ || !newQStem.trim() || !newQAnswer.trim()}
+                        className="px-4 py-2 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 disabled:opacity-50">
+                        {creatingQ ? '创建中…' : '创建并加入题库'}
+                      </button>
+                      <button onClick={() => setShowCreateQ(false)}
+                        className="px-3 py-2 text-sm text-surface-500 hover:text-surface-700">取消</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <p className="text-sm text-surface-500 mb-3">
                 选择题库中的题目进行推送 · 已选 <span className="font-semibold text-primary-600">{selectedQids.size}</span> 题
+                {cs?.subject && <span className="ml-2 text-surface-400">· 学科筛选: {cs.subject}</span>}
               </p>
 
               <div className="space-y-2 max-h-64 overflow-y-auto mb-6">

@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.db.engine import SessionLocal
-from app.db.models import AnswerRecordModel, QuestionModel, StudentQuestionModel
+from app.db.models import AnswerRecordModel, ClassSubjectMemberModel, QuestionModel, StudentQuestionModel
 from app.middleware.auth import AuthContext, require_auth
 
 logger = logging.getLogger(__name__)
@@ -307,6 +307,18 @@ def grade_answer(
         ).first()
         if question is None:
             raise HTTPException(status_code=404, detail="题目不存在")
+
+        # For teacher-pushed questions, verify student is a class member
+        if question.source == "teacher_pushed":
+            # session_id is "class_{classId}" for pushed questions
+            if question.session_id and question.session_id.startswith("class_"):
+                class_id = question.session_id[len("class_"):]
+                is_member = db.query(ClassSubjectMemberModel).filter(
+                    ClassSubjectMemberModel.class_id == class_id,
+                    ClassSubjectMemberModel.student_id == auth.learner_id,
+                ).first()
+                if not is_member:
+                    raise HTTPException(status_code=403, detail="你未加入该班级，无权作答此题目")
 
         grading = _auto_grade(question, body.answer)
 
