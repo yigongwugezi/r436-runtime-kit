@@ -146,7 +146,7 @@ function DocRenderer({ resource, type }: Props & { type: 'lecture' | 'reading' }
             }
           }
           if (sections.length <= 1) {
-            return <div className="bg-white rounded-2xl shadow-soft border border-surface-100 p-6"><div className="prose prose-base max-w-none prose-p:text-surface-700 prose-p:leading-7 prose-li:text-surface-700 prose-code:text-brand-700 prose-code:bg-brand-50 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-strong:text-surface-800"><Markdown content={enrichedContent} /></div></div>;
+            return <div className="bg-white rounded-2xl shadow-soft border border-surface-100 p-6"><div className="prose prose-base max-w-none prose-p:text-surface-700 prose-p:leading-7 prose-li:text-surface-700 prose-code:text-brand-700 prose-code:bg-brand-50 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-strong:text-surface-800"><Markdown content={content} /></div></div>;
           }
                     return sections.map((section, i) => {
             const hMatch = section.match(/^#{2,3} (.+)$/m);
