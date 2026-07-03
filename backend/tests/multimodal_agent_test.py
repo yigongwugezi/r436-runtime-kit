@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.agents.multimodal_agent import MultimodalAgent
+from app.config import load_backend_env
 from app.services import multimodal_provider as provider_mod
 from app.services.multimodal_provider import QwenImageProvider, QwenVisionProvider, WanVideoProvider
 
@@ -150,6 +151,33 @@ def test_unconfigured_vision_provider() -> None:
         })
     assert_true(result["status"] == "provider_not_configured", "vision provider should require env")
     assert_true("fake" not in str(result).lower(), "must not return fake recognition text")
+
+
+def test_backend_env_loader_populates_qwen_env_without_override() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        env_path = Path(tmp) / ".env"
+        env_path.write_text(
+            "\n".join([
+                "DASHSCOPE_API_KEY=from-file",
+                "QWEN_BASE_URL=https://example.com/v1",
+                "QWEN_VL_MODEL=qwen3-vl-plus",
+                "QWEN_IMAGE_ENDPOINT=https://example.com/images",
+            ]),
+            encoding="utf-8",
+        )
+        with EnvPatch(
+            DASHSCOPE_API_KEY=None,
+            QWEN_BASE_URL="https://system.example/v1",
+            QWEN_VL_MODEL=None,
+            QWEN_IMAGE_ENDPOINT=None,
+        ):
+            assert_true(load_backend_env(env_path) is True, "backend env should load")
+            assert_true(os.environ["DASHSCOPE_API_KEY"] == "from-file", "key should load from env file")
+            assert_true(os.environ["QWEN_BASE_URL"] == "https://system.example/v1", "existing env must not be overridden")
+            assert_true(os.environ["QWEN_VL_MODEL"] == "qwen3-vl-plus", "model should load from env file")
+            assert_true(os.environ["QWEN_IMAGE_ENDPOINT"] == "https://example.com/images", "image endpoint should load")
+
+    assert_true(load_backend_env(Path(tempfile.gettempdir()) / "missing-eduagent.env") is False, "missing env should not crash")
 
 
 def test_image_url_and_base64_classify_as_image_understanding() -> None:
@@ -405,6 +433,7 @@ if __name__ == "__main__":
     test_mindmap_llm_failure_falls_back_to_local_result()
     test_mindmap_without_context_does_not_invent_points()
     test_unconfigured_vision_provider()
+    test_backend_env_loader_populates_qwen_env_without_override()
     test_image_url_and_base64_classify_as_image_understanding()
     test_image_task_classifier_covers_learning_workflow()
     test_qwen_vision_provider_task_specific_json_response()
