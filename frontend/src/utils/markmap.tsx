@@ -20,6 +20,9 @@ function cleanNodeLabel(value: string) {
 }
 
 function mermaidMindmapToMarkdown(definition: string) {
+  const trimmed = definition.trim();
+  if (trimmed.startsWith('#') || trimmed.startsWith('- ')) return definition;
+
   const lines = definition
     .split(/\r?\n/)
     .filter((line) => line.trim() && line.trim().toLowerCase() !== 'mindmap');

@@ -768,7 +768,8 @@ _MULTIMODAL_PATTERNS = (
 def _is_multimodal_request(message: str, payload: dict[str, Any] | None = None) -> bool:
     if any(pattern in str(message or "") for pattern in _MULTIMODAL_PATTERNS):
         return True
-    return bool((payload or {}).get("attachments") or [])
+    payload = payload or {}
+    return bool(payload.get("attachments") or payload.get("image_url") or payload.get("image_base64"))
 
 
 def _multimodal_learning_path(session_id: str) -> Any:
@@ -786,6 +787,8 @@ def _multimodal_learning_path(session_id: str) -> Any:
 
 
 def _multimodal_workflow_trace(result: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(result.get("workflow_trace"), dict):
+        return result["workflow_trace"]
     status = str(result.get("status") or "failed")
     workflow_status = "success" if status == "success" else ("partial" if status in {"needs_input", "provider_not_configured", "unsupported"} else "failed")
     return {
@@ -808,6 +811,19 @@ def _multimodal_workflow_trace(result: dict[str, Any]) -> dict[str, Any]:
 def _multimodal_reply(result: dict[str, Any]) -> str:
     task_type = result.get("task_type")
     status = result.get("status")
+    if task_type == "image_understanding" and status in {"success", "partial_success"}:
+        return "已完成图片理解，识别结果已整理成结构化信息。"
+    if task_type == "image_to_mindmap" and status == "success":
+        return "已根据图片内容生成思维导图。"
+    if task_type in {"image_to_flashcards", "note_image_to_flashcards", "question_image_to_flashcards"} and status == "success":
+        count = len(((result.get("result") or {}).get("cards")) or [])
+        return f"已根据图片内容生成 {count} 张复习卡片。"
+    if task_type in {"explain_image_question", "solve_image_question"} and status in {"success", "needs_manual_review"}:
+        return "已读取题图并整理讲解信息；证据不足的部分已标记为需要人工确认。"
+    if task_type in {"video_generation", "micro_lesson_video", "video_script_generation"} and status == "script_ready_provider_not_configured":
+        return "视频模型尚未配置，但我已先生成微课脚本和分镜草稿，没有返回假视频链接。"
+    if task_type in {"image_generation", "concept_card_generation", "teaching_diagram_generation"} and status == "success":
+        return "图片生成任务已返回结果。"
     if task_type == "mindmap_generation" and status == "success":
         stage_count = ((result.get("result") or {}).get("stage_count")) or 0
         return f"已根据当前学习路径生成思维导图，共整理 {stage_count} 个阶段。"
@@ -836,6 +852,8 @@ def _multimodal_chat_payload(
         "subject_id": subject_id,
         "user_message": message,
         "attachments": payload.get("attachments") or [],
+        "image_url": payload.get("image_url") or "",
+        "image_base64": payload.get("image_base64") or "",
         "learning_path": _multimodal_learning_path(session_id),
         "knowledge_context": (state.last_result or {}).get("knowledge_context", {}) if isinstance(state.last_result, dict) else {},
         "topic": state.facts.get("target_course") or subject_id,

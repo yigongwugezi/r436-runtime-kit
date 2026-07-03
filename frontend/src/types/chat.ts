@@ -19,7 +19,24 @@ export interface ChatMessage {
   error?: string;
   /** 低置信度意图标记 — 前端需展示 clarification 交互面板 */
   isClarification?: boolean;
-  multimodalResult?: { result?: { mermaid?: string } };
+  attachments?: ChatAttachment[];
+  multimodalResult?: {
+    status?: string;
+    task_type?: string;
+    provider?: string;
+    warnings?: string[];
+    result?: any;
+  };
+}
+
+export interface ChatAttachment {
+  file_id?: string;
+  name?: string;
+  url?: string;
+  image_url?: string;
+  local_path?: string;
+  mime_type?: string;
+  size?: number;
 }
 
 export type MessageType =

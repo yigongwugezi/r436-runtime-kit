@@ -3,7 +3,7 @@ import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
 import { streamRequest } from '../api/client';
 import { sendMessage } from '../api/chat';
-import type { ChatMessage } from '../types/chat';
+import type { ChatAttachment, ChatMessage } from '../types/chat';
 import { uid } from '../utils/format';
 import { createLogger } from '../utils/logger';
 import { runtimeStorageKeys, writeStorageJson, writeStorageItem } from '../utils/storageKeys';
@@ -24,14 +24,16 @@ export function useStreamChat() {
   const userAbortedRef = useRef(false);  // distinguish user stop-click from page-unload abort
 
   const send = useCallback(
-    async (content: string) => {
-      if (isStreaming || !content.trim()) return;
+    async (content: string, attachments: ChatAttachment[] = []) => {
+      if (isStreaming || (!content.trim() && attachments.length === 0)) return;
+      const text = content.trim() || '识别这张图片';
 
       const userMsg: ChatMessage = {
         id: uid(),
         role: 'user',
-        content: content.trim(),
+        content: text,
         timestamp: Date.now(),
+        attachments,
       };
       addMessage(userMsg);
 
@@ -50,7 +52,7 @@ export function useStreamChat() {
       // 写入 pending marker，用于跨页面导航恢复
       writeStorageJson(runtimeStorageKeys.pendingGeneration, {
         sessionId: useChatStore.getState().currentSessionId,
-        userMessage: content.trim(),
+        userMessage: text,
         startedAt: Date.now(),
       });
 
@@ -62,9 +64,10 @@ export function useStreamChat() {
 
       try {
         const reader = await streamRequest('/api/chat/stream', {
-          message: content.trim(),
+          message: text,
           sessionId: useChatStore.getState().currentSessionId,
           subjectId: useSubjectStore.getState().activeSubject?.id,
+          attachments,
         }, controller.signal);
 
         const decoder = new TextDecoder();
@@ -176,9 +179,10 @@ export function useStreamChat() {
         log.warn('流式请求失败，尝试非流式回退', err instanceof Error ? err.message : err);
         try {
           const fallback = await sendMessage({
-            message: content.trim(),
+            message: text,
             sessionId: useChatStore.getState().currentSessionId,
             subjectId: useSubjectStore.getState().activeSubject?.id,
+            attachments,
           });
           log.info('非流式回退成功');
           updateLastAssistant((m) => ({
