@@ -18,8 +18,20 @@ class ToolRegistry:
         self._task_map: dict[str, str] = {
             "mindmap_generation": "MindMapTool",
             "image_understanding": "QwenVisionProvider",
+            "image_to_mindmap": "QwenVisionProvider",
+            "note_image_to_mindmap": "QwenVisionProvider",
+            "question_image_to_mindmap": "QwenVisionProvider",
+            "image_to_flashcards": "QwenVisionProvider",
+            "note_image_to_flashcards": "QwenVisionProvider",
+            "question_image_to_flashcards": "QwenVisionProvider",
+            "explain_image_question": "QwenVisionProvider",
+            "solve_image_question": "QwenVisionProvider",
             "image_generation": "QwenImageProvider",
+            "concept_card_generation": "QwenImageProvider",
+            "teaching_diagram_generation": "QwenImageProvider",
             "video_generation": "WanVideoProvider",
+            "micro_lesson_video": "WanVideoProvider",
+            "video_script_generation": "WanVideoProvider",
         }
 
     def register_tool(self, name: str, tool: Any) -> None:

@@ -1,9 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Bell, Search, Calendar, TrendingUp, User, Settings, LogOut, RefreshCw } from 'lucide-react';
+import { Bell, Search, Calendar, TrendingUp, User, Users, Settings, LogOut, RefreshCw } from 'lucide-react';
 import { getCurrentLearner, useAuthStore } from '../../store/authStore';
 import { useLearningAnalytics } from '../../hooks/useLearningAnalytics';
-import RoleSwitcher from '../common/RoleSwitcher';
 
 interface HeaderProps {
   title: string;
@@ -71,8 +70,6 @@ export default function Header({ title, subtitle }: HeaderProps) {
             </span>
           </button>
 
-          <RoleSwitcher />
-
           <div ref={menuRef} className="relative">
             <button onClick={() => setMenuOpen(v => !v)} className="w-10 h-10 rounded-full bg-gradient-to-br from-primary-400 to-accent-400 flex items-center justify-center text-white font-semibold hover:shadow-lg transition-shadow">
               {user?.name?.charAt(0) || '?'}
@@ -90,9 +87,14 @@ export default function Header({ title, subtitle }: HeaderProps) {
                   <RefreshCw size={16} />切换账户
                 </button>
                 {['admin', 'teacher'].includes(user?.role || '') && (
-                  <button onClick={() => { nav('/admin'); setMenuOpen(false); }} className="w-full flex items-center gap-2.5 px-4 py-2 text-sm text-surface-600 dark:text-gray-300 hover:bg-surface-50 dark:hover:bg-surface-700 transition-colors">
-                    <Settings size={16} />后台管理
-                  </button>
+                  <>
+                    <button onClick={() => { nav('/teacher'); setMenuOpen(false); }} className="w-full flex items-center gap-2.5 px-4 py-2 text-sm text-surface-600 dark:text-gray-300 hover:bg-surface-50 dark:hover:bg-surface-700 transition-colors">
+                      <Users size={16} />班级管理
+                    </button>
+                    <button onClick={() => { nav('/admin'); setMenuOpen(false); }} className="w-full flex items-center gap-2.5 px-4 py-2 text-sm text-surface-600 dark:text-gray-300 hover:bg-surface-50 dark:hover:bg-surface-700 transition-colors">
+                      <Settings size={16} />后台管理
+                    </button>
+                  </>
                 )}
                 <button onClick={() => { nav('/settings'); setMenuOpen(false); }} className="w-full flex items-center gap-2.5 px-4 py-2 text-sm text-surface-600 dark:text-gray-300 hover:bg-surface-50 dark:hover:bg-surface-700 transition-colors">
                   <Settings size={16} />系统设置

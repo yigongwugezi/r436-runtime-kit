@@ -98,6 +98,16 @@ export const runtimeStorageKeys = {
     primary: 'r436_runtime_font_size',
     legacy: [],
   },
+  /** 教师题库管理 - 学科筛选记忆 */
+  adminQuestionFilterSubject: {
+    primary: 'r436_admin_question_filter_subject',
+    legacy: [],
+  },
+  /** 教师题库管理 - 上次新建题目使用的学科 */
+  adminLastCreateSubject: {
+    primary: 'r436_admin_last_create_subject',
+    legacy: [],
+  },
 } satisfies Record<string, StorageKeyPair | ((suffix: string) => StorageKeyPair)>;
 
 export { readItem as readStorageItem, writeItem as writeStorageItem, readJson as readStorageJson, writeJson as writeStorageJson };

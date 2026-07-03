@@ -1,10 +1,13 @@
 import client from './client';
-import type { ChatMessage, ChatSession, GenerationProgress } from '../types/chat';
+import type { ChatAttachment, ChatMessage, ChatSession, GenerationProgress } from '../types/chat';
 
 export interface SendMessageParams {
   sessionId?: string;
   subjectId?: string;
   message: string;
+  attachments?: ChatAttachment[];
+  image_url?: string;
+  image_base64?: string;
 }
 
 export interface ChatResponse {
@@ -20,6 +23,16 @@ export interface SessionListResponse {
 export async function sendMessage(params: SendMessageParams): Promise<ChatResponse> {
   const { data } = await client.post('/api/chat/send', params);
   return data;
+}
+
+export async function uploadMultimodalImage(file: File, sessionId: string): Promise<ChatAttachment> {
+  const form = new FormData();
+  form.append('file', file);
+  form.append('session_id', sessionId);
+  const { data } = await client.post('/api/multimodal/upload', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return { ...data, name: file.name };
 }
 
 /** 获取会话列表，可按科目过滤 */

@@ -21,8 +21,10 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
+
+from app.middleware.auth import AuthContext, reject_parent
 
 from app.agents.multimodal_agent import MultimodalAgent
 from app.agents.diagnosis_agent import DiagnosisAgent
@@ -768,7 +770,8 @@ _MULTIMODAL_PATTERNS = (
 def _is_multimodal_request(message: str, payload: dict[str, Any] | None = None) -> bool:
     if any(pattern in str(message or "") for pattern in _MULTIMODAL_PATTERNS):
         return True
-    return bool((payload or {}).get("attachments") or [])
+    payload = payload or {}
+    return bool(payload.get("attachments") or payload.get("image_url") or payload.get("image_base64"))
 
 
 def _multimodal_learning_path(session_id: str) -> Any:
@@ -786,6 +789,8 @@ def _multimodal_learning_path(session_id: str) -> Any:
 
 
 def _multimodal_workflow_trace(result: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(result.get("workflow_trace"), dict):
+        return result["workflow_trace"]
     status = str(result.get("status") or "failed")
     workflow_status = "success" if status == "success" else ("partial" if status in {"needs_input", "provider_not_configured", "unsupported"} else "failed")
     return {
@@ -808,6 +813,19 @@ def _multimodal_workflow_trace(result: dict[str, Any]) -> dict[str, Any]:
 def _multimodal_reply(result: dict[str, Any]) -> str:
     task_type = result.get("task_type")
     status = result.get("status")
+    if task_type == "image_understanding" and status in {"success", "partial_success"}:
+        return "已完成图片理解，识别结果已整理成结构化信息。"
+    if task_type == "image_to_mindmap" and status == "success":
+        return "已根据图片内容生成思维导图。"
+    if task_type in {"image_to_flashcards", "note_image_to_flashcards", "question_image_to_flashcards"} and status == "success":
+        count = len(((result.get("result") or {}).get("cards")) or [])
+        return f"已根据图片内容生成 {count} 张复习卡片。"
+    if task_type in {"explain_image_question", "solve_image_question"} and status in {"success", "needs_manual_review"}:
+        return "已读取题图并整理讲解信息；证据不足的部分已标记为需要人工确认。"
+    if task_type in {"video_generation", "micro_lesson_video", "video_script_generation"} and status == "script_ready_provider_not_configured":
+        return "视频模型尚未配置，但我已先生成微课脚本和分镜草稿，没有返回假视频链接。"
+    if task_type in {"image_generation", "concept_card_generation", "teaching_diagram_generation"} and status == "success":
+        return "图片生成任务已返回结果。"
     if task_type == "mindmap_generation" and status == "success":
         stage_count = ((result.get("result") or {}).get("stage_count")) or 0
         return f"已根据当前学习路径生成思维导图，共整理 {stage_count} 个阶段。"
@@ -836,6 +854,8 @@ def _multimodal_chat_payload(
         "subject_id": subject_id,
         "user_message": message,
         "attachments": payload.get("attachments") or [],
+        "image_url": payload.get("image_url") or "",
+        "image_base64": payload.get("image_base64") or "",
         "learning_path": _multimodal_learning_path(session_id),
         "knowledge_context": (state.last_result or {}).get("knowledge_context", {}) if isinstance(state.last_result, dict) else {},
         "topic": state.facts.get("target_course") or subject_id,
@@ -1459,7 +1479,7 @@ GEN_STAGES = [
 
 
 @router.post("/chat/stream")
-def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
+def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> StreamingResponse:
     message = str(payload.get("message", "我想学习人工智能导论"))
     session_id = _payload_session_id(payload)
     subject_id = _payload_subject_id(payload)
@@ -1703,7 +1723,7 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
 
 
 @router.post("/chat/send")
-def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
+def send_chat(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     message = str(payload.get("message", "我想学习人工智能导论"))
     session_id = _payload_session_id(payload)
     subject_id = _payload_subject_id(payload)
@@ -2112,7 +2132,7 @@ def get_profile(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
 
 
 @router.post("/profile/build")
-def build_profile(payload: dict[str, Any]) -> dict[str, Any]:
+def build_profile(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     """Trigger agent pipeline and build/refresh the student profile."""
     session_id = _payload_session_id(payload)
     subject_id = _payload_subject_id(payload)
@@ -2132,7 +2152,7 @@ def build_profile(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.patch("/profile")
-def update_profile(payload: dict[str, Any]) -> dict[str, Any]:
+def update_profile(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     """Update profile fields directly (client-side edits). Persists to DB and syncs facts."""
     session_id = _payload_session_id(payload)
     state = conversation_store.get(session_id)
@@ -2723,7 +2743,7 @@ def batch_export_resources(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.post("/resources/generate")
-def generate_resource(payload: dict[str, Any]) -> dict[str, Any]:
+def generate_resource(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     """Trigger agent pipeline to generate resources for a topic."""
     session_id = _payload_session_id(payload)
     topic = str(payload.get("topic", "学习主题"))
@@ -3130,7 +3150,7 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
 
 
 @router.post("/learning-path/generate")
-def generate_learning_path(payload: dict[str, Any]) -> dict[str, Any]:
+def generate_learning_path(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     session_id = _payload_session_id(payload)
     user_message = str(payload.get("userMessage", "")).strip()
     course_id = str(payload.get("courseId", "")).strip()
@@ -3261,7 +3281,7 @@ def _log_node_progress(session_id: str, node_id: str, status: str) -> None:
 
 
 @router.patch("/learning-path/auto-advance")
-def auto_advance_node(payload: dict[str, Any]) -> dict[str, Any]:
+def auto_advance_node(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     session_id = _payload_session_id(payload)
     related_stage_id = str(payload.get("relatedStageId", ""))
     task_id = str(payload.get("taskId", "")).strip()
@@ -3733,7 +3753,7 @@ def learning_timeline(
 
 
 @router.post("/questions/generate")
-def generate_questions(payload: dict[str, Any]) -> dict[str, Any]:
+def generate_questions(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     """触发 QuestionAgent 生成试题并持久化到 DB。"""
     session_id = _payload_session_id(payload)
     subject_id = _payload_subject_id(payload)
@@ -3923,7 +3943,7 @@ def get_question(question_id: str, sessionId: str = "", reveal: bool = False) ->
 
 
 @router.post("/questions/{question_id}/grade")
-def grade_answer(question_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def grade_answer(question_id: str, payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     """提交作答，触发 GradingAgent 判卷并持久化到 DB。"""
     session_id = _payload_session_id(payload)
     student_answer = str(payload.get("answer", "")).strip()

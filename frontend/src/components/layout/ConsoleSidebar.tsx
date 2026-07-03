@@ -1,8 +1,8 @@
 import { useNavigate, useLocation } from 'react-router-dom';
-import { LayoutDashboard, User, Route, FolderOpen, MessageCircle, Settings, Sparkles, Bot, GraduationCap, History, Edit3 } from 'lucide-react';
+import { LayoutDashboard, User, Route, FolderOpen, MessageCircle, Settings, Sparkles, Bot, GraduationCap, History, Edit3, Users, BarChart3 } from 'lucide-react';
 import { getCurrentLearner } from '../../store/authStore';
 
-const NAV = [
+const STUDENT_NAV = [
   { id: 'dashboard', path: '/', label: '学习中心', icon: <LayoutDashboard size={20} /> },
   { id: 'profile', path: '/profile', label: '学习画像', icon: <User size={20} /> },
   { id: 'path', path: '/path', label: '学习路径', icon: <Route size={20} /> },
@@ -13,11 +13,32 @@ const NAV = [
   { id: 'settings', path: '/settings', label: '系统设置', icon: <Settings size={20} /> },
 ];
 
+const TEACHER_NAV = [
+  { id: 'dashboard', path: '/', label: '学习中心', icon: <LayoutDashboard size={20} /> },
+  { id: 'class-home', path: '/teacher', label: '班级管理', icon: <Users size={20} /> },
+  { id: 'admin', path: '/admin', label: '后台管理', icon: <Settings size={20} /> },
+  { id: 'settings', path: '/settings', label: '系统设置', icon: <Settings size={20} /> },
+];
+
+const PARENT_NAV = [
+  { id: 'dashboard', path: '/', label: '学习中心', icon: <LayoutDashboard size={20} /> },
+  { id: 'analytics', path: '/analytics', label: '学习分析', icon: <BarChart3 size={20} /> },
+  { id: 'timeline', path: '/timeline', label: '学习时间线', icon: <History size={20} /> },
+  { id: 'profile', path: '/profile', label: '学习画像', icon: <User size={20} /> },
+  { id: 'resources', path: '/resources', label: '资源库', icon: <FolderOpen size={20} /> },
+  { id: 'path', path: '/path', label: '学习路径', icon: <Route size={20} /> },
+  { id: 'settings', path: '/settings', label: '系统设置', icon: <Settings size={20} /> },
+];
+
 export default function ConsoleSidebar() {
   const nav = useNavigate();
   const loc = useLocation();
   const user = getCurrentLearner();
-  const isActive = (p: string) => loc.pathname === p || (p === '/resources' && loc.pathname.startsWith('/resources'));
+  const isTeacher = user?.role === 'teacher' || user?.role === 'admin';
+  const isParent = user?.role === 'parent';
+  const NAV = isTeacher ? TEACHER_NAV : (isParent ? PARENT_NAV : STUDENT_NAV);
+  const roleLabel = isTeacher ? (user?.role === 'admin' ? '管理员' : '教师') : (isParent ? '家长' : '学习平台用户');
+  const isActive = (p: string) => loc.pathname === p || (p === '/resources' && loc.pathname.startsWith('/resources')) || (p === '/teacher' && loc.pathname.startsWith('/teacher'));
 
   return (
     <div className="h-full bg-white dark:bg-surface-800 border-r border-surface-200 dark:border-surface-700 flex flex-col shadow-soft">
@@ -40,7 +61,7 @@ export default function ConsoleSidebar() {
           </div>
           <div className="flex-1 min-w-0">
             <p className="font-medium text-surface-800 dark:text-gray-200 truncate">{user?.name || '学习者'}</p>
-            <p className="text-xs text-surface-500 dark:text-gray-400 truncate">学习平台用户</p>
+            <p className="text-xs text-surface-500 dark:text-gray-400 truncate">{roleLabel}</p>
           </div>
         </div>
       </div>

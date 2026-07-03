@@ -42,6 +42,10 @@ class AuthContext:
     def is_teacher(self) -> bool:
         return self.role in ("teacher", "admin")
 
+    @property
+    def is_parent(self) -> bool:
+        return self.role == "parent"
+
 
 async def get_auth(
     request: Request,
@@ -88,4 +92,13 @@ def require_auth(auth: AuthContext = Depends(get_auth)) -> AuthContext:
     if not auth.is_authenticated:
         from fastapi import HTTPException
         raise HTTPException(status_code=401, detail="请先登录")
+    return auth
+
+
+def reject_parent(auth: AuthContext = Depends(require_auth)) -> AuthContext:
+    """Dependency: reject requests from parent accounts on write endpoints."""
+    if auth.is_parent:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=403, detail="家长账户无法执行此操作")
     return auth

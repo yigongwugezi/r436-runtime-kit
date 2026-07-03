@@ -2,13 +2,14 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useChatStore, detectOrphanedStreaming } from '../store/chatStore';
 import { useStreamChat } from '../hooks/useStreamChat';
-import { getSessionMessages, getQuickCommands, getAgents, recoverGeneration } from '../api/chat';
+import { getSessionMessages, getQuickCommands, getAgents, recoverGeneration, uploadMultimodalImage } from '../api/chat';
 import type { AgentInfo } from '../api/chat';
 import { DEFAULT_QUICK_COMMANDS } from '../utils/constants';
 import { timeAgo } from '../utils/format';
 import { runtimeStorageKeys, writeStorageItem } from '../utils/storageKeys';
-import type { ChatMessage, GenerationProgress, ProgressStep, QuickCommand } from '../types/chat';
-import { Send, Sparkles, Square, Copy, Check, AlertCircle, Bot, User, RefreshCw, ChevronDown, XCircle, History, Brain, Loader2, BrainCircuit, FileText, Video, Menu } from 'lucide-react';
+import type { ChatAttachment, ChatMessage, GenerationProgress, ProgressStep, QuickCommand } from '../types/chat';
+import { Send, Sparkles, Square, Copy, Check, AlertCircle, Bot, User, RefreshCw, ChevronDown, XCircle, History, Brain, Loader2, BrainCircuit, FileText, Video, Menu, ImagePlus, Trash2, MessageCircle } from 'lucide-react';
+import { getCurrentLearner } from '../store/authStore';
 import Markdown from '../utils/markdown';
 import MarkmapDiagram from '../utils/markmap';
 import ChatHistorySidebar from '../components/chat/ChatHistorySidebar';
@@ -83,6 +84,52 @@ function HistoryPopover({ sessions, currentSessionId, onSelect, onDelete, onRena
   );
 }
 
+function MultimodalResultView({ result }: { result: ChatMessage['multimodalResult'] }) {
+  const data = result?.result || {};
+  const vision = data.vision_result || (data.detected_text || data.summary ? data : null);
+  const diagram = data.mermaid || data.markdown;
+  return (
+    <div className="mt-3 space-y-3">
+      {vision && (
+        <div className="rounded-xl border border-surface-200 bg-white p-3 text-xs text-surface-600 space-y-1">
+          <div className="font-semibold text-surface-700">图片理解</div>
+          {vision.image_type && <div>类型：{vision.image_type}</div>}
+          {vision.subject && <div>学科：{vision.subject}</div>}
+          {vision.summary && <div>摘要：{vision.summary}</div>}
+          {vision.question_text && <div>题目：{vision.question_text}</div>}
+          {vision.detected_text && <div className="whitespace-pre-wrap">识别文本：{vision.detected_text}</div>}
+          {Array.isArray(vision.possible_knowledge_points) && vision.possible_knowledge_points.length > 0 && (
+            <div>知识点：{vision.possible_knowledge_points.join('、')}</div>
+          )}
+        </div>
+      )}
+      {diagram && (
+        <div className="rounded-xl border border-surface-200 bg-white p-3 overflow-x-auto">
+          <MarkmapDiagram definition={diagram} />
+        </div>
+      )}
+      {Array.isArray(data.cards) && data.cards.length > 0 && (
+        <div className="grid gap-2">
+          {data.cards.map((card: any, idx: number) => (
+            <div key={idx} className="rounded-xl border border-surface-200 bg-white p-3 text-xs">
+              <div className="font-semibold text-surface-700">{card.front}</div>
+              <div className="mt-1 text-surface-500">{card.back}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {Array.isArray(data.image_urls) && data.image_urls.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {data.image_urls.map((url: string) => <img key={url} src={url} className="max-h-48 rounded-xl border border-surface-200" />)}
+        </div>
+      )}
+      {data.script && (
+        <div className="rounded-xl border border-surface-200 bg-white p-3 text-xs whitespace-pre-wrap">{data.script}</div>
+      )}
+    </div>
+  );
+}
+
 function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onClarificationSelect?: (prompt: string) => void }) {
   const isUser = msg.role === 'user'; const [copied, setCopied] = useState(false);
   return (
@@ -90,14 +137,18 @@ function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onCla
       <div className={`w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 ${isUser ? 'bg-primary-600' : 'bg-gradient-to-br from-primary-500 to-accent-500'}`}>{isUser ? <User size={16} className="text-white" /> : <Bot size={16} className="text-white" />}</div>
       <div className={`max-w-2xl ${isUser ? '' : ''}`}>
         <div className={`rounded-2xl px-4 py-3 relative ${isUser ? 'bg-primary-600 text-white' : 'bg-surface-100 text-surface-700'}`}>
-          {isUser ? <p className="whitespace-pre-wrap text-sm leading-relaxed">{msg.content}</p> : (
+          {isUser ? (
+            <div>
+              <p className="whitespace-pre-wrap text-sm leading-relaxed">{msg.content}</p>
+              {msg.attachments?.map((item: ChatAttachment) => {
+                const url = item.image_url || item.url;
+                return url ? <img key={item.file_id || url} src={url} className="mt-2 max-h-36 rounded-xl border border-white/30" /> : null;
+              })}
+            </div>
+          ) : (
             <div className="text-sm leading-relaxed">
               {msg.content ? <Markdown content={msg.content} /> : msg.streaming ? <span className="text-surface-400">思考中…</span> : null}
-              {msg.multimodalResult?.result?.mermaid && (
-                <div className="mt-3 rounded-xl border border-surface-200 bg-white p-3 overflow-x-auto">
-                  <MarkmapDiagram definition={msg.multimodalResult.result.mermaid} />
-                </div>
-              )}
+              {msg.multimodalResult && <MultimodalResultView result={msg.multimodalResult} />}
               {msg.streaming && msg.content && <span className="inline-block w-1.5 h-4 bg-primary-400 animate-pulse rounded ml-0.5 align-text-bottom" />}
               {msg.error && <div className="mt-2 p-3 bg-error-50 rounded-xl flex items-start gap-2"><AlertCircle className="w-4 h-4 text-error-400 flex-shrink-0 mt-0.5" /><div><p className="text-xs text-error-600 font-medium">生成失败</p><p className="text-xs text-error-400 mt-0.5">{msg.error}</p></div></div>}
               {msg.isClarification && onClarificationSelect && <ChatClarification onSelect={onClarificationSelect} />}
@@ -131,14 +182,30 @@ function AgentPipelineProgress({ progress, onRetry, onNavigate }: { progress: Ge
 
 export default function ChatPage() {
   const loc = useLocation(); const nav = useNavigate();
+  const isParent = getCurrentLearner()?.role === 'parent';
+
+  if (isParent) {
+    return (
+      <div className="h-[calc(100vh-160px)] flex items-center justify-center animate-fade-in">
+        <div className="text-center max-w-md">
+          <div className="w-16 h-16 rounded-2xl bg-surface-100 dark:bg-surface-700 flex items-center justify-center mx-auto mb-4">
+            <MessageCircle className="w-8 h-8 text-surface-400" />
+          </div>
+          <h3 className="font-display text-lg font-semibold text-surface-800 dark:text-gray-100 mb-2">只读模式</h3>
+          <p className="text-surface-500 dark:text-gray-400 text-sm">家长账户无法使用智能对话功能。<br/>请前往学习分析、画像或资源库查看孩子的学习数据。</p>
+        </div>
+      </div>
+    );
+  }
   const initialMessage = (loc.state as any)?.initialMessage;
   const { messages, isStreaming, agentProgress, currentSessionId, setLoading } = useChatStore() as any;
   const { send, abort } = useStreamChat();
   const [input, setInput] = useState(''); const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [messagesLoaded, setMessagesLoaded] = useState(false); const [menuOpen, setMenuOpen] = useState(false); const [historyOpen, setHistoryOpen] = useState(false);
+  const [selectedImage, setSelectedImage] = useState<{ file: File; preview: string } | null>(null);
   const [quickCommands, setQuickCommands] = useState<QuickCommand[]>(DEFAULT_QUICK_COMMANDS);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const scrollRef = useRef<HTMLDivElement>(null); const inputRef = useRef<HTMLTextAreaElement>(null); const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null); const inputRef = useRef<HTMLTextAreaElement>(null); const bottomRef = useRef<HTMLDivElement>(null); const fileRef = useRef<HTMLInputElement>(null);
   const userScrolledUpRef = useRef(false);
 
   // Fetch dynamic quick commands and agents on mount
@@ -146,6 +213,7 @@ export default function ChatPage() {
     getQuickCommands().then(res => { if (res.commands?.length) setQuickCommands(res.commands); }).catch(() => {});
     getAgents().then(res => { if (res.agents?.length) setAgents(res.agents); }).catch(() => {});
   }, []);
+  useEffect(() => () => { if (selectedImage) URL.revokeObjectURL(selectedImage.preview); }, [selectedImage]);
 
   const scrollToBottom = useCallback((force = false) => {
     if (force) userScrolledUpRef.current = false;
@@ -238,7 +306,22 @@ export default function ChatPage() {
     };
   }, [messagesLoaded]);
 
-  const handleSend = () => { if (!input.trim() || isStreaming) return; send(input.trim()); setInput(''); inputRef.current?.focus(); };
+  const handleImageChange = (file: File | undefined) => {
+    if (!file || !/^image\/(png|jpe?g|webp)$/.test(file.type)) return;
+    if (selectedImage) URL.revokeObjectURL(selectedImage.preview);
+    setSelectedImage({ file, preview: URL.createObjectURL(file) });
+  };
+  const handleSend = async () => {
+    if ((!input.trim() && !selectedImage) || isStreaming) return;
+    const text = input.trim() || '识别这张图片';
+    const attachments = selectedImage ? [await uploadMultimodalImage(selectedImage.file, currentSessionId)] : [];
+    send(text, attachments);
+    setInput('');
+    if (selectedImage) URL.revokeObjectURL(selectedImage.preview);
+    setSelectedImage(null);
+    if (fileRef.current) fileRef.current.value = '';
+    inputRef.current?.focus();
+  };
   const handleKeyDown = (e: React.KeyboardEvent) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } };
 
   return (
@@ -312,14 +395,27 @@ export default function ChatPage() {
 
           <div className="border-t border-surface-100 p-4">
             {messages.length > 0 && !isStreaming && <PromptTemplates onSelect={(prompt: string) => { setInput(prompt); inputRef.current?.focus(); }} />}
+            {selectedImage && (
+              <div className="mb-3 flex items-center gap-3 rounded-xl border border-surface-200 bg-surface-50 p-2">
+                <img src={selectedImage.preview} className="h-14 w-14 rounded-lg object-cover" />
+                <div className="min-w-0 flex-1 text-xs text-surface-500 truncate">{selectedImage.file.name}</div>
+                <button onClick={() => { URL.revokeObjectURL(selectedImage.preview); setSelectedImage(null); if (fileRef.current) fileRef.current.value = ''; }} className="p-2 rounded-lg text-surface-400 hover:bg-white hover:text-error-500">
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            )}
             <div className="flex items-end gap-3">
+              <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => handleImageChange(e.target.files?.[0])} />
+              <button onClick={() => fileRef.current?.click()} disabled={isStreaming} className="p-3 rounded-xl bg-surface-100 text-surface-500 hover:bg-surface-200 disabled:opacity-50" title="上传图片">
+                <ImagePlus size={20} />
+              </button>
               <div className="flex-1 relative">
                 <textarea ref={inputRef} value={input} onChange={e => setInput(e.target.value)} onKeyDown={handleKeyDown} placeholder={isStreaming ? '生成中…' : '输入你的问题，或描述你的学习需求...'} rows={1} disabled={isStreaming} className="w-full px-4 py-3 bg-surface-50 border border-surface-200 rounded-xl text-surface-800 placeholder:text-surface-400 focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 resize-none transition-all disabled:opacity-50" style={{ minHeight: '48px', maxHeight: '120px' }} />
               </div>
               {isStreaming ? (
                 <button onClick={abort} className="p-3 rounded-xl bg-error-500 text-white hover:bg-error-600 transition-all"><Square size={20} /></button>
               ) : (
-                <button onClick={handleSend} disabled={!input.trim()} className={`p-3 rounded-xl transition-all ${input.trim() ? 'bg-gradient-to-r from-primary-600 to-accent-600 text-white hover:shadow-lg' : 'bg-surface-100 text-surface-300 cursor-not-allowed'}`}><Send size={20} /></button>
+                <button onClick={handleSend} disabled={!input.trim() && !selectedImage} className={`p-3 rounded-xl transition-all ${input.trim() || selectedImage ? 'bg-gradient-to-r from-primary-600 to-accent-600 text-white hover:shadow-lg' : 'bg-surface-100 text-surface-300 cursor-not-allowed'}`}><Send size={20} /></button>
               )}
             </div>
             <div className="flex items-center gap-4 mt-3 text-xs text-surface-400"><span>按 Enter 发送，Shift + Enter 换行</span></div>

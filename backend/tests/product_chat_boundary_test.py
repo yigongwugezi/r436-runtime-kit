@@ -331,6 +331,61 @@ def test_multimodal_mindmap_chat_response() -> None:
     assert_true(zh(r"\u601d\u7ef4\u5bfc\u56fe") in data["reply"]["content"], "reply should mention mindmap")
 
 
+def test_chat_image_url_routes_to_multimodal_agent_with_trace() -> None:
+    sid = "product_multimodal_image_url"
+    conversation_store.reset(sid)
+    contexts = []
+
+    class FakeMultimodalAgent:
+        def run(self, context: dict) -> dict:
+            contexts.append(context)
+            return {
+                "agent": "MultimodalAgent",
+                "status": "success",
+                "task_type": "image_understanding",
+                "tool": "QwenVisionProvider",
+                "provider": "qwen_vl",
+                "result": {
+                    "image_type": "question_image",
+                    "subject": "math",
+                    "detected_text": "lim x",
+                    "question_text": "lim x",
+                    "possible_knowledge_points": ["limit"],
+                    "summary": "limit question",
+                    "confidence": 0.9,
+                    "needs_manual_review": False,
+                },
+                "warnings": [],
+                "trace": {"tool_trace": {"model": "fake-vl"}},
+                "workflow_trace": {
+                    "workflow_name": "multimodal_generation",
+                    "workflow_status": "success",
+                    "pipeline_executed": True,
+                    "steps": [
+                        {"step": "multimodal_classify", "agent": "MultimodalAgent", "status": "success"},
+                        {"step": "vision_understanding", "agent": "QwenVisionProvider", "status": "success"},
+                    ],
+                },
+            }
+
+    with AttrPatch(
+        product,
+        MultimodalAgent=FakeMultimodalAgent,
+        _classify_intent=lambda _message, _session_id=None: {"action": "none", "intent": "multimodal"},
+    ):
+        response = product.send_chat({
+            "sessionId": sid,
+            "message": zh(r"\u8bc6\u522b\u8fd9\u5f20\u56fe\u7247"),
+            "image_url": "https://example.com/question.png",
+        })
+
+    data = response["data"]
+    assert_true(contexts and contexts[0]["image_url"] == "https://example.com/question.png", "image_url should be passed to MultimodalAgent")
+    assert_true(data["multimodal_result"]["task_type"] == "image_understanding", "chat response should expose multimodal_result")
+    assert_true(data["workflow_trace"]["steps"][1]["agent"] == "QwenVisionProvider", "workflow trace should include vision provider")
+    assert_true(data["workflow_trace"]["pipeline_executed"] is True, "multimodal workflow should be marked executed")
+
+
 if __name__ == "__main__":
     test_target_only_explicit_generation_runs_pipeline()
     test_calculus_reply_uses_real_stages_and_time()
@@ -340,4 +395,5 @@ if __name__ == "__main__":
     test_chat_stream_sends_keepalive_final_and_done_metadata()
     test_chat_stream_error_still_sends_done()
     test_multimodal_mindmap_chat_response()
+    test_chat_image_url_routes_to_multimodal_agent_with_trace()
     print("PASS product_chat_boundary_test")

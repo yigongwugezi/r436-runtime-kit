@@ -20,6 +20,7 @@ import {
 import { generateResource } from '../api/resources';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
+import { getCurrentLearner } from '../store/authStore';
 
 const resourceTypes = [
   { id: 'lecture', label: '课程讲义', icon: FileText, color: 'from-blue-500 to-cyan-400', description: '专业知识点讲解' },
@@ -32,6 +33,23 @@ const resourceTypes = [
 
 export default function ResourceGenerationPage() {
   const nav = useNavigate();
+  const isParent = getCurrentLearner()?.role === 'parent';
+
+  if (isParent) {
+    return (
+      <div className="space-y-6 animate-fade-in">
+        <div className="h-[calc(100vh-300px)] flex items-center justify-center">
+          <div className="text-center max-w-md">
+            <div className="w-16 h-16 rounded-2xl bg-surface-100 dark:bg-surface-700 flex items-center justify-center mx-auto mb-4">
+              <Sparkles className="w-8 h-8 text-surface-400" />
+            </div>
+            <h3 className="font-display text-lg font-semibold text-surface-800 dark:text-gray-100 mb-2">只读模式</h3>
+            <p className="text-surface-500 dark:text-gray-400 text-sm">家长账户无法生成资源。<br/>请前往资源库查看已生成的资源。</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
   const sessionId = useChatStore(s => s.currentSessionId);
   const subjectId = useSubjectStore(s => s.activeSubject?.id);
   const [selectedTypes, setSelectedTypes] = useState<string[]>(['lecture', 'mindmap', 'quiz']);

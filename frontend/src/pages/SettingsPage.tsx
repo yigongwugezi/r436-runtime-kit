@@ -187,6 +187,18 @@ export default function SettingsPage() {
 
   // ── 选中分区 ──
   const [section, setSection] = useState('account');
+  const learnerRole = learner?.role;
+  const isTeacherOrAdmin = learnerRole === 'teacher' || learnerRole === 'admin';
+  // 过滤教师/管理员不相关的分区
+  const visibleNav = isTeacherOrAdmin
+    ? NAV_SECTIONS.filter(s => s.id !== 'preferences' && s.id !== 'diagnosis')
+    : NAV_SECTIONS;
+  // 如果当前分区对教师/管理员不可见，自动跳转到账户设置
+  useEffect(() => {
+    if (isTeacherOrAdmin && (section === 'preferences' || section === 'diagnosis')) {
+      setSection('account');
+    }
+  }, [section, isTeacherOrAdmin]);
 
   // ── 账户 ──
   const [editingName, setEditingName] = useState(false);
@@ -332,10 +344,12 @@ export default function SettingsPage() {
                   ) : (
                     <>
                       <h3 className="text-xl font-bold text-gray-800 dark:text-gray-100">{learner?.name || '未命名'}</h3>
+                      {learner?.role !== 'parent' && (
                       <button onClick={() => { setNameInput(learner?.name || ''); setEditingName(true); }}
                         className="p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-surface-600 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors">
                         <Edit3 className="w-3.5 h-3.5" />
                       </button>
+                      )}
                     </>
                   )}
                 </div>
@@ -487,6 +501,8 @@ export default function SettingsPage() {
         return (
           <div className="space-y-4">
             <SectionHeader icon={Database} title="数据管理" desc="管理本地学习数据与备份" />
+            {learner?.role !== 'parent' && (
+            <>
             <p className="text-xs text-gray-400 dark:text-gray-500 font-semibold uppercase tracking-wider px-1">本地数据</p>
 
             <SettingRow label="导出数据" description="将所有本地数据导出为 JSON 备份文件">
@@ -525,6 +541,8 @@ export default function SettingsPage() {
                 </div>
               )}
             </SettingRow>
+            </>
+            )}
 
             <p className="text-xs text-gray-400 dark:text-gray-500 font-semibold uppercase tracking-wider px-1 pt-2">存储统计</p>
             <SettingRow label="本地存储用量">
@@ -630,7 +648,7 @@ export default function SettingsPage() {
         {/* ===== 左侧导航 ===== */}
         <div className="w-48 flex-shrink-0">
           <nav className="bg-white dark:bg-surface-700 rounded-2xl p-2 shadow-soft space-y-0.5 sticky top-24">
-            {NAV_SECTIONS.map(s => {
+            {visibleNav.map(s => {
               const isActive = section === s.id;
               return (
                 <button key={s.id} type="button" onClick={() => setSection(s.id)}

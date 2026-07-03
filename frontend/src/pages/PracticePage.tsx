@@ -1,9 +1,16 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useChatStore } from '../store/chatStore';
+<<<<<<< HEAD
 import { Target, BookOpen, AlertCircle, BarChart3, Play, Loader2, ChevronLeft, ChevronRight, Check, X, RefreshCw } from 'lucide-react';
 import Markdown from '../utils/markdown';
+=======
+import { Target, BookOpen, AlertCircle, BarChart3, Play, Loader2, ChevronLeft, ChevronRight, Check, X, RefreshCw, Users, GraduationCap, Edit3 } from 'lucide-react';
+import { getCurrentLearner } from '../store/authStore';
+>>>>>>> a9155d75495d4b608f99bae4ce71a01c6f961435
 import { listQuestions, gradeAnswer, getWeakQuestions, getAnswerHistory, getQuestionSets } from '../api/chat';
+import { getPushedQuestions } from '../api/classSubjects';
+import type { PushedQuestionGroup } from '../types/classSubject';
 
 interface Question {
   question_id: string; type: string; stem: string; options?: string[];
@@ -15,6 +22,21 @@ interface QuestionSet { questionSetId: string; title: string; knowledgePoints: s
 
 export default function PracticePage() {
   const nav = useNavigate();
+  const isParent = getCurrentLearner()?.role === 'parent';
+
+  if (isParent) {
+    return (
+      <div className="p-6 h-full flex items-center justify-center animate-fade-in">
+        <div className="text-center max-w-md">
+          <div className="w-16 h-16 rounded-2xl bg-surface-100 dark:bg-surface-700 flex items-center justify-center mx-auto mb-4">
+            <Edit3 className="w-8 h-8 text-surface-400" />
+          </div>
+          <h3 className="font-display text-lg font-semibold text-surface-800 dark:text-gray-100 mb-2">只读模式</h3>
+          <p className="text-surface-500 dark:text-gray-400 text-sm">家长账户无法使用练习功能。<br/>请前往学习分析查看孩子的答题情况。</p>
+        </div>
+      </div>
+    );
+  }
   const sessionId = useChatStore((s) => s.currentSessionId);
   const [view, setView] = useState<'home' | 'quiz' | 'weak' | 'history'>('home');
   const [sets, setSets] = useState<QuestionSet[]>([]);
@@ -29,12 +51,18 @@ export default function PracticePage() {
   const [stats, setStats] = useState<any>(null);
   const [weakData, setWeakData] = useState<any>(null);
   const [historyData, setHistoryData] = useState<any>(null);
+  const [pushedGroups, setPushedGroups] = useState<PushedQuestionGroup[]>([]);
+  const [classSubjectId, setClassSubjectId] = useState<string>('');
+  const [searchParams] = useSearchParams();
 
   useEffect(() => {
+    const csid = searchParams.get('classSubjectId') || '';
+    setClassSubjectId(csid);
     Promise.all([
       getQuestionSets(sessionId).then((d: any) => d?.sets || []).catch(() => []),
       getAnswerHistory(sessionId).then((d: any) => { setStats(d); setHistoryData(d); }).catch(() => {}),
       getWeakQuestions(sessionId).then(setWeakData).catch(() => {}),
+      csid ? getPushedQuestions(csid).then(setPushedGroups).catch(() => {}) : Promise.resolve(),
     ]).then(([s]) => setSets(s)).finally(() => setLoading(false));
   }, []);
 
@@ -87,6 +115,36 @@ export default function PracticePage() {
               <QuickCard icon={AlertCircle} title="错题重练" desc={weakCount > 0 ? `共${weakCount}道错题` : '暂无错题'} color="bg-error-50 text-error-600" onClick={() => weakCount > 0 ? setView('weak') : startDiagnostic()} badge={weakCount} />
               <QuickCard icon={BarChart3} title="答题历史" desc={`${totalAttempted}题·${accuracy ?? '-'}%`} color="bg-success-50 text-success-600" onClick={() => setView('history')} />
             </div>
+
+            {/* 班级练习（教师推送） */}
+            {pushedGroups.length > 0 && (
+              <div>
+                <h3 className="text-sm font-semibold text-surface-600 mb-3 flex items-center gap-1.5">
+                  <GraduationCap size={14} className="text-amber-500" /> 班级练习
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium">教师推送</span>
+                </h3>
+                <div className="space-y-2">
+                  {pushedGroups.map((pg) => (
+                    <button key={pg.pushId} onClick={() => { setAllQuestions(pg.questions as any); setQuestions(pg.questions as any); setCurrentIdx(0); setAnswers({}); setGrades({}); setView('quiz'); }}
+                      className="w-full flex items-center gap-4 p-4 bg-white rounded-xl border border-amber-200 hover:border-amber-400 hover:shadow-soft transition-all text-left border-l-4 border-l-amber-400">
+                      <Users className="w-5 h-5 text-amber-500 flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-surface-700 truncate">{pg.title}</p>
+                        <div className="flex items-center gap-2 mt-1">
+                          <span className="text-xs text-surface-400">{pg.questions.length} 题</span>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-600">教师推送</span>
+                        </div>
+                      </div>
+                      <div className="text-right flex-shrink-0">
+                        <span className="text-xs text-surface-400">
+                          {pg.questions.filter(q => q.answered).length}/{pg.questions.length} 完成
+                        </span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* 题目集列表 */}
             <div className="flex-1 min-h-0">
@@ -190,6 +248,7 @@ export default function PracticePage() {
 
           {/* 右侧题目区 */}
           <div className="flex-1 flex flex-col min-w-0">
+<<<<<<< HEAD
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-3">
                 <span className="text-lg font-bold text-primary-600">#{currentIdx + 1}</span>
@@ -209,6 +268,20 @@ export default function PracticePage() {
             <div className="flex items-center gap-2 mb-6">
               <div className="flex-1 h-2 bg-surface-100 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-primary-500 to-accent-500 rounded-full transition-all duration-500" style={{ width: `${questions.length>0?((currentIdx+1)/questions.length)*100:0}%` }} /></div>
               <span className="text-xs text-surface-400 tabular-nums w-10 text-right">{questions.length>0?Math.round(((currentIdx+1)/questions.length)*100):0}%</span>
+=======
+            <div className="flex items-center justify-between mb-4">
+              <span className="text-sm text-surface-500">第 {currentIdx + 1} / {questions.length} 题</span>
+              <div className="flex items-center gap-1.5">
+                {(currentQ as any)?.source === 'teacher_pushed' && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium flex items-center gap-1">
+                    <Users size={10} /> 教师推送
+                  </span>
+                )}
+                <span className="text-xs px-2 py-0.5 rounded-full bg-surface-100 text-surface-500">
+                  {currentQ?.type === 'choice' ? '选择题' : currentQ?.type === 'truefalse' ? '判断题' : currentQ?.type === 'fill' ? '填空题' : '解答题'}
+                </span>
+              </div>
+>>>>>>> a9155d75495d4b608f99bae4ce71a01c6f961435
             </div>
 
             <div className="flex-1 overflow-y-auto">
