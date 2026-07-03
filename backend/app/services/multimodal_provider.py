@@ -458,6 +458,25 @@ def _friendly_value(value: Any) -> str:
     return text
 
 
+_BAD_USER_TEXT = (
+    "see extracted_questions",
+    "per-question answers",
+    "extracted_questions",
+    "raw_structured_result",
+    "source_evidence",
+)
+
+
+def _is_bad_user_text(value: Any) -> bool:
+    text = _text(value).lower()
+    return bool(text) and any(marker in text for marker in _BAD_USER_TEXT)
+
+
+def _clean_user_text(value: Any) -> str:
+    text = _text(value)
+    return "" if _is_bad_user_text(text) else text
+
+
 def _safe_summary(parsed: dict[str, Any], raw_text: str) -> str:
     summary = _text(parsed.get("summary"))
     if summary and summary.strip(". "):
@@ -541,16 +560,16 @@ def _cards(value: Any, vision: dict[str, Any]) -> list[dict[str, Any]]:
     cards: list[dict[str, Any]] = []
     for item in items:
         item = _as_dict(item)
-        front = _text(item.get("front") or item.get("question") or item.get("knowledge_point"))
-        back = _text(item.get("back") or item.get("answer") or vision.get("summary"))
+        front = _clean_user_text(item.get("front") or item.get("question") or item.get("knowledge_point"))
+        back = _clean_user_text(item.get("back") or item.get("answer") or vision.get("summary"))
         if front and back:
             cards.append({
                 "front": front,
                 "back": back,
-                "knowledge_point": _text(item.get("knowledge_point")) or front,
-                "difficulty": _text(item.get("difficulty")) or "medium",
-                "card_type": _text(item.get("card_type")) or "concept",
-                "source_evidence": _text(item.get("source_evidence")) or _text(vision.get("detected_text") or vision.get("summary")),
+                "knowledge_point": _clean_user_text(item.get("knowledge_point")) or front,
+                "difficulty": _clean_user_text(item.get("difficulty")) or "medium",
+                "card_type": _clean_user_text(item.get("card_type")) or "concept",
+                "source_evidence": _clean_user_text(vision.get("detected_text") or vision.get("summary")),
             })
     return cards[:10]
 
@@ -626,13 +645,13 @@ def _normalize_task_result(task_type: str, parsed: dict[str, Any], raw_text: str
 
     if task_type in {"explain_image_question", "solve_image_question"}:
         steps = _as_list(parsed.get("explanation_steps") or parsed.get("solution_steps"))
-        display = _text(parsed.get("display_text") or parsed.get("teaching_text") or parsed.get("chat_text"))
+        display = _clean_user_text(parsed.get("display_text") or parsed.get("teaching_text") or parsed.get("chat_text"))
         if not display and (question or steps):
             display = "\n".join([
                 "我先按图片里能识别到的信息讲解：",
                 f"题目：{question}" if question else "",
                 "讲解：" + "；".join(str(step) for step in steps if _text(step)) if steps else "",
-                f"答案：{_text(parsed.get('answer'))}" if _text(parsed.get("answer")) else "",
+                f"答案：{_clean_user_text(parsed.get('answer'))}" if _clean_user_text(parsed.get("answer")) else "",
             ]).strip()
         return {
             "display_text": display,
@@ -641,7 +660,7 @@ def _normalize_task_result(task_type: str, parsed: dict[str, Any], raw_text: str
             "question_type": _friendly_value(parsed.get("question_type")),
             "subject": _text(parsed.get("subject") or vision.get("subject")),
             "knowledge_points": points,
-            "answer": _text(parsed.get("answer")),
+            "answer": _clean_user_text(parsed.get("answer")),
             "explanation_steps": steps,
             "key_method": _text(parsed.get("key_method")),
             "common_mistakes": _as_list(parsed.get("common_mistakes")),
@@ -733,6 +752,10 @@ def _normalize_task_result(task_type: str, parsed: dict[str, Any], raw_text: str
 
     if task_type == "image_to_resource_bundle":
         result = {
+            "display_text": (
+                "我已把这张图片整理成一份学习资源包。你可以先查看内容，也可以保存到资源库；"
+                "其中提取出的知识点会作为“待确认知识候选”，不会直接写入正式知识库。"
+            ),
             "understanding": _as_dict(parsed.get("understanding")) or vision,
             "explanation": _as_dict(parsed.get("explanation")),
             "note_summary": _as_dict(parsed.get("note_summary")),

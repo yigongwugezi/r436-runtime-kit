@@ -405,6 +405,20 @@ def test_cached_image_context_can_continue_specific_question() -> None:
     assert_true(result["result"]["display_text"] == result["result"]["chat_text"], "first-class display text should be present")
 
 
+def test_explain_image_question_filters_internal_placeholders() -> None:
+    vision = extracted_question_vision()
+    vision["extracted_questions"][0]["answer"] = "See extracted_questions for per-question answers"
+    result = MultimodalAgent(llm_client=FailingMindmapLLM()).run({
+        "user_message": zh(r"\u8bf7\u8be6\u7ec6\u8bb2\u89e3\u8fd9\u5f20\u56fe\u7247\u91cc\u7684\u9898\u76ee"),
+        "last_vision_result": vision,
+        "last_extracted_questions": vision["extracted_questions"],
+    })
+
+    visible = str(result["result"].get("display_text") or result["result"].get("chat_text") or "")
+    assert_true("See extracted_questions" not in visible, "internal extraction placeholder must not be user-visible")
+    assert_true("per-question answers" not in visible, "internal answer placeholder must not be user-visible")
+
+
 def test_cached_image_context_can_generate_mindmap_without_new_upload() -> None:
     result = MultimodalAgent(llm_client=FailingMindmapLLM()).run({
         "user_message": zh(r"\u6839\u636e\u8fd9\u5f20\u56fe\u751f\u6210\u601d\u7ef4\u5bfc\u56fe"),
@@ -429,7 +443,7 @@ def test_cached_image_context_can_generate_flashcards_without_new_upload() -> No
     assert_true(result["task_type"] == "image_to_flashcards", "cached image flashcard task should be selected")
     assert_true(result["provider"] == "session_cache", "flashcards should reuse cached vision result")
     assert_true(result["status"] == "success", "cached image flashcards should succeed")
-    assert_true(len(result["result"]["cards"]) >= 5, "flashcards should be enough for a multi-question image")
+    assert_true(len(result["result"]["cards"]) >= 6, "flashcards should be enough for a multi-question image")
     assert_true(result["workflow_trace"]["vision_context_reused"] is True, "trace should show reused image context")
 
 
@@ -442,7 +456,7 @@ def test_image_to_flashcards_from_vision_result() -> None:
     })
     assert_true(result["task_type"] == "image_to_flashcards", "flashcard task should be selected")
     assert_true(result["status"] == "success", "flashcards should succeed from vision result")
-    assert_true(len(result["result"]["cards"]) >= 5, "should generate at least five cards")
+    assert_true(len(result["result"]["cards"]) >= 6, "should generate at least six cards")
 
 
 def test_explain_image_question_needs_manual_review_when_question_missing() -> None:
@@ -528,6 +542,7 @@ if __name__ == "__main__":
     test_qwen_vision_provider_review_metadata_is_actionable()
     test_image_to_mindmap_from_vision_result()
     test_cached_image_context_can_continue_specific_question()
+    test_explain_image_question_filters_internal_placeholders()
     test_cached_image_context_can_generate_mindmap_without_new_upload()
     test_cached_image_context_can_generate_flashcards_without_new_upload()
     test_image_to_flashcards_from_vision_result()

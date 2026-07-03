@@ -11,10 +11,12 @@ interface Props {
 
 function normalizeBareLatex(content: string) {
   return content
+    .replace(/\\\(([\s\S]*?)\\\)/g, (_m, body) => `$${body}$`)
+    .replace(/\\\[([\s\S]*?)\\\]/g, (_m, body) => `$$${body}$$`)
     .replace(/(?<![$\\])\\frac\{[^{}]+\}\{[^{}]+\}/g, (m) => `$${m}$`)
     .replace(/(?<![$\\])\\sqrt\{[^{}]+\}/g, (m) => `$${m}$`)
     .replace(/(?<![$\\])\\varphi/g, '$\\varphi$')
-    .replace(/\\begin\{cases\}([\s\S]*?)\\end\{cases\}/g, (_m, body) => `$$\\begin{cases}${body}\\end{cases}$$`);
+    .replace(/(?<![$\\])\\begin\{cases\}([\s\S]*?)\\end\{cases\}/g, (_m, body) => `$$\\begin{cases}${body}\\end{cases}$$`);
 }
 
 export default function Markdown({ content }: Props) {
@@ -22,7 +24,7 @@ export default function Markdown({ content }: Props) {
     <div className="prose-custom text-sm text-gray-800 leading-relaxed">
       <ReactMarkdown
         remarkPlugins={[remarkMath]}
-        rehypePlugins={[rehypeKatex]}
+        rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false, errorColor: '#374151' }]]}
         components={{
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           code({ className, children, ...rest }: any) {

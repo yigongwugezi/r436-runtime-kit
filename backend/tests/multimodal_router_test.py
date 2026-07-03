@@ -245,6 +245,7 @@ def test_run_endpoint_resource_bundle_has_pending_candidates() -> None:
     assert_true(result["status"] == "success", "mock bundle should succeed")
     assert_true("explanation" not in result["result"], "empty bundle sections should be omitted")
     assert_true("mindmap" not in result["result"], "empty mindmap section should be omitted")
+    assert_true(result["result"].get("display_text"), "resource bundle should explain what the bundle means")
     assert_true(result["result"]["resource_save_candidate"]["review_status"] == "pending", "resource candidate should be pending")
     assert_true(result["result"]["resource_save_candidate"]["saved"] is False, "resource candidate should not fake save")
     assert_true(result["result"]["knowledge_candidates"][0]["review_status"] == "pending", "knowledge candidate should be pending")

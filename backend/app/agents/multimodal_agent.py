@@ -20,8 +20,39 @@ def _text(value: Any) -> str:
     return str(value or "").strip()
 
 
+_BAD_USER_TEXT = (
+    "see extracted_questions",
+    "per-question answers",
+    "extracted_questions",
+    "raw_structured_result",
+    "source_evidence",
+)
+
+
+def _is_bad_user_text(value: Any) -> bool:
+    text = _text(value).lower()
+    return bool(text) and any(marker in text for marker in _BAD_USER_TEXT)
+
+
+def _clean_user_text(value: Any) -> str:
+    text = _text(value)
+    return "" if _is_bad_user_text(text) else text
+
+
+def _clean_list(value: Any) -> list[str]:
+    return [_clean_user_text(item) for item in _as_list(value) if _clean_user_text(item)]
+
+
+def _short_title(value: Any, fallback: str = "知识点") -> str:
+    text = _clean_user_text(value) or fallback
+    text = re.sub(r"\\(?:frac|sqrt|begin|end|varphi)[^，。；\s]*", "", text)
+    text = re.sub(r"[\r\n\t]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip(" -:：，。；")
+    return (text[:28] + "…") if len(text) > 30 else text
+
+
 def _mermaid_label(value: Any) -> str:
-    return _text(value).replace("(", " ").replace(")", " ")[:80] or "未命名"
+    return _short_title(value, "未命名").replace("(", " ").replace(")", " ") or "未命名"
 
 
 def _json_to_mermaid(mindmap: dict[str, Any]) -> str:
@@ -41,7 +72,7 @@ def _json_to_mermaid(mindmap: dict[str, Any]) -> str:
 
 
 def _json_to_markdown(mindmap: dict[str, Any]) -> str:
-    lines = [f"# {_text(mindmap.get('title')) or 'Mind Map'}"]
+    lines = [f"# {_short_title(mindmap.get('title'), '图片知识结构')}"]
 
     def walk(nodes: Any, depth: int) -> None:
         if not isinstance(nodes, list):
@@ -49,7 +80,7 @@ def _json_to_markdown(mindmap: dict[str, Any]) -> str:
         for node in nodes:
             if not isinstance(node, dict):
                 continue
-            lines.append(f"{'  ' * depth}- {_text(node.get('title')) or 'Untitled'}")
+            lines.append(f"{'  ' * depth}- {_short_title(node.get('title'), '知识点')}")
             walk(node.get("children"), depth + 1)
 
     walk(mindmap.get("children"), 0)
@@ -142,7 +173,7 @@ def _extract_questions(vision: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(questions, list):
         for idx, item in enumerate(questions, start=1):
             item = item if isinstance(item, dict) else {"question_text": str(item)}
-            text = _question_text(item)
+            text = _clean_user_text(_question_text(item))
             if not text:
                 text = f"第 {idx} 题题干识别不完整"
             try:
@@ -152,16 +183,16 @@ def _extract_questions(vision: dict[str, Any]) -> list[dict[str, Any]]:
             result.append({
                 "index": question_index,
                 "question_text": text,
-                "options": _as_list(item.get("options") or item.get("choices")),
-                "knowledge_points": _as_list(item.get("knowledge_points") or item.get("possible_knowledge_points")),
-                "answer": _text(item.get("answer") or item.get("correct_answer")),
-                "explanation_steps": _as_list(item.get("explanation_steps") or item.get("solution_steps")),
-                "common_mistakes": _as_list(item.get("common_mistakes")),
+                "options": _clean_list(item.get("options") or item.get("choices")),
+                "knowledge_points": _clean_list(item.get("knowledge_points") or item.get("possible_knowledge_points")),
+                "answer": _clean_user_text(item.get("answer") or item.get("correct_answer")),
+                "explanation_steps": _clean_list(item.get("explanation_steps") or item.get("solution_steps")),
+                "common_mistakes": _clean_list(item.get("common_mistakes")),
                 "needs_manual_review": bool(item.get("needs_manual_review")),
             })
     if result:
         return result
-    question = _text(vision.get("question_text"))
+    question = _clean_user_text(vision.get("question_text"))
     if not question and "question" in _text(vision.get("image_type")).lower():
         question = _text(vision.get("detected_text"))
     if not question:
@@ -170,9 +201,9 @@ def _extract_questions(vision: dict[str, Any]) -> list[dict[str, Any]]:
         "index": 1,
         "question_text": question,
         "knowledge_points": _knowledge_points(vision),
-        "answer": _text(vision.get("answer")),
-        "explanation_steps": _as_list(vision.get("explanation_steps") or vision.get("solution_steps")),
-        "common_mistakes": _as_list(vision.get("common_mistakes")),
+        "answer": _clean_user_text(vision.get("answer")),
+        "explanation_steps": _clean_list(vision.get("explanation_steps") or vision.get("solution_steps")),
+        "common_mistakes": _clean_list(vision.get("common_mistakes")),
         "needs_manual_review": bool(vision.get("needs_manual_review")),
     }]
 
@@ -216,22 +247,27 @@ def _review_lines(result: dict[str, Any]) -> list[str]:
 
 
 def _fallback_explanation_text(questions: list[dict[str, Any]], vision: dict[str, Any]) -> str:
-    lines = ["我先按图片里能识别到的信息来讲："]
+    lines = [f"我识别到 {len(questions)} 道题。"]
+    if len(questions) > 2:
+        lines.append("下面先把能确认的题目逐题讲清楚；如果你想深入某一题，可以继续说“继续讲第 N 题”。")
+    else:
+        lines.append("我先按图片里能确认的信息来讲：")
     for item in questions:
         idx = item.get("index") or 1
         lines.append(f"\n第 {idx} 题")
-        lines.append(f"题目：{item.get('question_text')}")
-        points = [str(point) for point in _as_list(item.get("knowledge_points")) if _text(point)]
+        lines.append(f"题目：{_clean_user_text(item.get('question_text')) or f'第 {idx} 题题干识别不完整'}")
+        points = _clean_list(item.get("knowledge_points"))
         if points:
             lines.append("知识点：" + "、".join(points))
-        if item.get("answer"):
-            lines.append(f"答案：{item.get('answer')}")
-        steps = [str(step) for step in _as_list(item.get("explanation_steps")) if _text(step)]
+        answer = _clean_user_text(item.get("answer"))
+        if answer:
+            lines.append(f"答案：{answer}")
+        steps = _clean_list(item.get("explanation_steps"))
         if steps:
             lines.append("讲解：" + "；".join(steps))
         else:
             lines.append("讲解：这道题需要结合题干条件逐步推导；图片里可识别信息有限，我不会强行补不存在的条件。")
-        mistakes = [str(step) for step in _as_list(item.get("common_mistakes")) if _text(step)]
+        mistakes = _clean_list(item.get("common_mistakes"))
         if mistakes:
             lines.append("常见错误：" + "、".join(mistakes))
     lines.extend(_review_lines(vision))
@@ -241,16 +277,17 @@ def _fallback_explanation_text(questions: list[dict[str, Any]], vision: dict[str
 def _fallback_mindmap(vision: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     questions = _extract_questions(vision)
     points = _knowledge_points(vision)
-    title = _text(vision.get("summary"))[:50] or _text(context.get("topic")) or "图片知识结构"
-    point_children = [{"title": point, "children": []} for point in points]
+    title = _short_title(vision.get("summary") or context.get("topic"), "图片知识结构")
+    point_children = [{"title": _short_title(point), "children": []} for point in points]
     if questions:
-        children = [
-            {
-                "title": f"第 {item.get('index')} 题：{_text(item.get('question_text'))[:24]}",
-                "children": [{"title": str(point)} for point in (_as_list(item.get("knowledge_points")) or points[:3]) if _text(point)],
-            }
-            for item in questions
-        ]
+        children = []
+        for item in questions:
+            item_points = _clean_list(item.get("knowledge_points")) or points[:3]
+            label = _short_title(item_points[0] if item_points else item.get("question_text"), "待识别")
+            children.append({
+                "title": f"第 {item.get('index')} 题：{label}",
+                "children": [{"title": _short_title(point)} for point in item_points if _clean_user_text(point)],
+            })
     else:
         children = point_children
     if point_children:
@@ -284,6 +321,61 @@ def _mindmap_from_markdown(markdown: str) -> dict[str, Any]:
         stack[-1][1].setdefault("children", []).append(node)
         stack.append((level, node))
     return {"title": title, "children": children}
+
+
+def _flashcard_front(point: str, index: int | None = None) -> str:
+    if "定义域" in point:
+        return "求函数定义域时要同时检查哪些限制？"
+    if "奇偶" in point:
+        return "如何判断一个函数是否为奇函数或偶函数？"
+    if "反函数" in point:
+        return "反函数相关题常见易错点是什么？"
+    if "复合函数" in point:
+        return "复合函数题应该按什么顺序处理？"
+    if "分段" in point:
+        return "处理分段函数时最容易漏掉什么？"
+    if "极限" in point:
+        return "做极限题时应先观察哪些结构？"
+    if index:
+        return f"第 {index} 题主要考什么？"
+    return f"{point or '这张题图'} 的复习重点是什么？"
+
+
+def _flashcard_back(point: str, evidence: str) -> str:
+    if "定义域" in point:
+        return "先检查分母不能为 0、根号内要满足取值要求，再看对数、反三角等额外限制，最后把条件取交集。"
+    if "奇偶" in point:
+        return "先确认定义域关于 0 对称，再比较 f(-x) 与 f(x)、-f(x) 的关系；定义域不对称时不能判为奇偶函数。"
+    if "反函数" in point:
+        return "先确认函数在讨论区间内单调可逆，再交换 x、y 并解出 y，同时保留原函数值域作为反函数定义域。"
+    if "复合函数" in point:
+        return "从内层函数开始代入，先判断内层输出是否落在外层定义域内，再进行化简或求值。"
+    if "分段" in point:
+        return "重点看分段点两侧表达式和定义条件，连续性题要比较左极限、右极限和函数值。"
+    if "极限" in point:
+        return "先判断是否能直接代入，再考虑等价无穷小、因式分解、有理化或洛必达等方法。"
+    return evidence[:260] or "结合题干条件逐步判断，先找限制条件，再选择对应公式或方法。"
+
+
+def _normalize_flashcards(cards: list[Any], vision: dict[str, Any]) -> list[dict[str, Any]]:
+    cleaned: list[dict[str, Any]] = []
+    evidence = _clean_user_text(vision.get("summary") or vision.get("detected_text"))
+    for item in cards:
+        item = item if isinstance(item, dict) else {}
+        front = _clean_user_text(item.get("front") or item.get("question") or item.get("knowledge_point"))
+        back = _clean_user_text(item.get("back") or item.get("answer"))
+        point = _clean_user_text(item.get("knowledge_point")) or _short_title(front, "题图复习")
+        if not front or not back or front == back:
+            continue
+        cleaned.append({
+            "front": front,
+            "back": back,
+            "knowledge_point": point,
+            "difficulty": _clean_user_text(item.get("difficulty")) or "medium",
+            "card_type": _clean_user_text(item.get("card_type")) or "review",
+            "source_evidence": evidence,
+        })
+    return cleaned[:10]
 
 
 class MultimodalAgent:
@@ -560,8 +652,9 @@ class MultimodalAgent:
                     },
                 ], temperature=0.2)
                 parsed = parse_safe(raw)
-                cards = parsed.get("cards") if isinstance(parsed.get("cards"), list) else []
-                if len(cards) >= 5:
+                raw_cards = parsed.get("cards") if isinstance(parsed.get("cards"), list) else []
+                cards = _normalize_flashcards(raw_cards, vision)
+                if len(cards) >= 6:
                     return {
                         **executed,
                         "status": "success",
@@ -580,17 +673,22 @@ class MultimodalAgent:
                     }
             except Exception as exc:
                 executed.setdefault("warnings", []).append(f"LLM flashcard generation failed; used local result: {exc}")
-        if isinstance(vision.get("cards"), list) and len(vision.get("cards") or []) >= 5:
-            return {**executed, "trace": {**executed.get("trace", {}), "vision_status": executed.get("status"), "flashcards_generated": True, "llm_stage": False}}
+        vision_cards = _normalize_flashcards(vision.get("cards") or [], vision)
+        if len(vision_cards) >= 6:
+            return {
+                **executed,
+                "result": {**vision, "cards": vision_cards},
+                "trace": {**executed.get("trace", {}), "vision_status": executed.get("status"), "flashcards_generated": True, "llm_stage": False},
+            }
         questions = _extract_questions(vision)
         points = _knowledge_points(vision)
         cards = []
         for item in questions[:5]:
-            text = _text(item.get("question_text"))
-            point = _text((_as_list(item.get("knowledge_points")) or points or ["题图复习"])[0])
+            text = _clean_user_text(item.get("question_text"))
+            point = _clean_user_text((_as_list(item.get("knowledge_points")) or points or ["题图复习"])[0])
             cards.append({
-                "front": f"第 {item.get('index')} 题考什么？",
-                "back": text[:280] or "题干识别不完整，建议重新上传更清晰图片。",
+                "front": _flashcard_front(point, item.get("index")),
+                "back": _flashcard_back(point, text),
                 "knowledge_point": point,
                 "difficulty": "medium",
                 "card_type": "practice",
@@ -599,18 +697,22 @@ class MultimodalAgent:
         for point in points:
             if len(cards) >= 10:
                 break
+            point = _clean_user_text(point)
+            if not point:
+                continue
             cards.append({
-                "front": f"{point} 的关键点是什么？",
-                "back": _text(vision.get("summary") or vision.get("detected_text"))[:300] or "Review this point from the image.",
+                "front": _flashcard_front(point),
+                "back": _flashcard_back(point, _clean_user_text(vision.get("summary") or vision.get("detected_text"))),
                 "knowledge_point": point,
                 "difficulty": "medium",
                 "card_type": "concept",
             })
-        while len(cards) < 5:
+        while len(cards) < 6:
+            point = _clean_user_text((points + ["题图复习"])[len(cards) % max(1, len(points) or 1)])
             cards.append({
-                "front": f"第 {len(cards) + 1} 个待确认复习点是什么？",
-                "back": _text(vision.get("summary") or vision.get("detected_text"))[:300] or "图片信息不足，建议重新上传更清晰图片。",
-                "knowledge_point": "题图复习",
+                "front": _flashcard_front(point),
+                "back": _flashcard_back(point, _clean_user_text(vision.get("summary") or vision.get("detected_text"))),
+                "knowledge_point": point,
                 "difficulty": "basic",
                 "card_type": "review",
             })
@@ -695,14 +797,15 @@ class MultimodalAgent:
                 text = _text(raw)
                 if text.startswith("{"):
                     parsed = parse_safe(text)
-                    result["chat_text"] = _text(parsed.get("chat_text") or parsed.get("content")) or result["chat_text"]
+                    parsed_text = _clean_user_text(parsed.get("chat_text") or parsed.get("content"))
+                    result["chat_text"] = parsed_text or result["chat_text"]
                     if isinstance(parsed.get("questions"), list):
                         result["explained_questions"] = parsed["questions"]
                     if parsed.get("answer"):
-                        result["answer"] = _text(parsed.get("answer"))
+                        result["answer"] = _clean_user_text(parsed.get("answer"))
                     if parsed.get("common_mistakes"):
                         result["common_mistakes"] = _as_list(parsed.get("common_mistakes"))
-                elif text:
+                elif text and not _is_bad_user_text(text):
                     result["chat_text"] = text
             except Exception as exc:
                 executed.setdefault("warnings", []).append(f"LLM explanation failed: {exc}")

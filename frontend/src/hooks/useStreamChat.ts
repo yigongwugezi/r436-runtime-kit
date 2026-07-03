@@ -1,5 +1,5 @@
 import { useCallback, useRef } from 'react';
-import { useChatStore } from '../store/chatStore';
+import { imageAttachmentKey, useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
 import { streamRequest } from '../api/client';
 import { sendMessage } from '../api/chat';
@@ -31,11 +31,14 @@ export function useStreamChat() {
       const text = content.trim() || '识别这张图片';
       const store = useChatStore.getState();
       const ignoreImageContext = options.ignoreImageContext === true;
+      const selectedImageAttachment = store.imageAttachmentHistory.find(
+        (item) => imageAttachmentKey(item) === store.selectedImageAttachmentId,
+      ) || store.lastImageAttachment;
       const requestAttachments =
-        !ignoreImageContext && attachments.length === 0 && store.lastImageAttachment && IMAGE_REFERENCE_RE.test(text)
-          ? [{ ...store.lastImageAttachment, reused_from_last: true }]
+        !ignoreImageContext && attachments.length === 0 && selectedImageAttachment && IMAGE_REFERENCE_RE.test(text)
+          ? [{ ...selectedImageAttachment, reused_from_last: true }]
           : attachments;
-      if (attachments[0]) store.setLastImageAttachment(attachments[0]);
+      if (attachments[0]) store.addImageAttachment(attachments[0]);
 
       const userMsg: ChatMessage = {
         id: uid(),

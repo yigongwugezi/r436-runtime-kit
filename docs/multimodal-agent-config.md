@@ -44,7 +44,7 @@ The backend chat session keeps the latest successful image context:
 - `last_extracted_questions`
 - `last_multimodal_task_context`
 
-The frontend keeps the latest image attachment for the active chat session. It reuses that image only when the new message explicitly references the image, for example:
+The frontend keeps a small image attachment history for the active chat session. It reuses the currently selected image only when the new message explicitly references the image, for example:
 
 - 这张图 / 这张图片 / 上面这张图 / 刚才那张图
 - 图中 / 图片里 / 这道题 / 这页笔记 / 题图 / 错题图
@@ -55,15 +55,15 @@ The frontend keeps the latest image attachment for the active chat session. It r
 
 Ordinary messages such as `你好`、`帮我生成几道练习题`、`今天学习计划怎么安排`、`解释一下导数` must not automatically attach the last image.
 
-When the frontend detects an explicit reference, it shows a chip such as `正在引用上一张图片`. The user can cancel it; the request then carries `ignore_image_context=true`, and the backend must not reuse the cached image for that message.
+When the frontend detects an explicit reference, it shows an image reference chip with a thumbnail. If the current session has multiple uploaded images, the user can choose which thumbnail is the active reference. The user can also cancel it; the request then carries `ignore_image_context=true`, and the backend must not reuse the cached image for that message.
 
-New chat sessions clear the frontend image reference. Uploading a new image replaces the old reference. Backend image context is isolated by `session_id`.
+New chat sessions clear the frontend image reference history. Uploading a new image adds it to the history and selects it by default. Backend image context is isolated by `session_id`.
 
 ## Local Image Preview
 
 In local development the backend runs on `http://127.0.0.1:8000`. Vite must proxy `/api` to that port. Uploaded image URLs are relative paths such as `/api/multimodal/file/<file_id>`; they should not hardcode `8001` or any absolute local host.
 
-The chat input chip lives directly above the textarea. It shows the previous image thumbnail, `正在引用上一张图片`, and a clear `取消引用` button. After cancellation the current request sends `ignore_image_context=true`.
+The chat input chip lives directly above the textarea. It shows the selected image thumbnail, `正在引用图片`, optional `更换`, and a clear `取消引用` button. After cancellation the current request sends `ignore_image_context=true`.
 
 ## Display Rules
 
@@ -79,9 +79,9 @@ Mindmap tasks show Markmap first. OCR and image-understanding details stay colla
 
 Mindmap generation should use the full cached `last_vision_result`, including `detected_text`, extracted questions, answers, formulas, and knowledge points. If the main LLM returns a sparse map, the backend falls back to a local evidence-based map rather than showing two or three nodes.
 
-Flashcards render as real cards: front first, back folded, math rendered where possible, and extra cards folded after the first six. Multi-question images should produce at least five useful cards when enough evidence exists.
+Flashcards render as real cards: front first, back folded, math rendered where possible, and extra cards folded after the first six. Multi-question images should produce at least six useful study cards when enough evidence exists. Card fronts should be review questions, and backs should be explanatory answers rather than OCR fragments.
 
-Resource bundles hide empty sections, empty arrays, dot-only placeholders, and pending-only shells without content. AI-generated resource and knowledge candidates remain pending until the user explicitly saves or confirms them.
+Resource bundles start with a short explanation of what the bundle is, what saving does, and why knowledge candidates stay pending. Empty sections, empty arrays, dot-only placeholders, and pending-only shells without content are hidden. AI-generated resource and knowledge candidates remain pending until the user explicitly saves or confirms them.
 
 Do not show internal fields such as `type=unknown`, raw payloads, `fallback_rule`, or large JSON in the main chat bubble.
 
@@ -89,7 +89,7 @@ Do not show internal fields such as `type=unknown`, raw payloads, `fallback_rule
 
 The frontend uses the existing Markdown + `remark-math` + `rehype-katex` pipeline. A small normalization pass wraps common bare LaTeX fragments such as `\frac{1}{x}`, `\sqrt{x}`, `\varphi`, and `\begin{cases}...\end{cases}` so they render more readably.
 
-If a formula cannot be normalized, the original text remains visible rather than crashing the page.
+KaTeX is configured not to throw on parse errors. If a formula cannot be normalized, the original text remains visible rather than crashing the page or showing a red error block.
 
 ## Manual Review
 
@@ -131,4 +131,4 @@ $env:PYTHONIOENCODING="utf-8"
 .venv310\Scripts\python.exe scripts\smoke_multimodal_image_acceptance.py
 ```
 
-The script does not call real providers. It checks that preview URLs do not use `8001`, explanation has `display_text`, details do not become empty question numbers, mindmaps have enough nodes, flashcards have at least five cards, resource bundles drop empty sections, and manual review has actionable reasons.
+The script does not call real providers. It checks that preview URLs do not use `8001`, explanation has `display_text`, internal placeholders do not leak, details do not become empty question numbers, mindmap labels stay short, flashcards have at least six cards, resource bundles explain their purpose and drop empty sections, and manual review has actionable reasons.

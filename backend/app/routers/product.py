@@ -851,6 +851,25 @@ def _vision_from_multimodal_result(result: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+_BAD_MULTIMODAL_TEXT = (
+    "see extracted_questions",
+    "per-question answers",
+    "extracted_questions",
+    "raw_structured_result",
+    "source_evidence",
+)
+
+
+def _bad_multimodal_text(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return bool(text) and any(marker in text for marker in _BAD_MULTIMODAL_TEXT)
+
+
+def _clean_multimodal_text(value: Any) -> str:
+    text = str(value or "").strip()
+    return "" if _bad_multimodal_text(text) else text
+
+
 def _questions_from_vision(vision: dict[str, Any]) -> list[dict[str, Any]]:
     raw = vision.get("extracted_questions") or vision.get("questions") or []
     if isinstance(raw, dict):
@@ -859,7 +878,7 @@ def _questions_from_vision(vision: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(raw, list):
         for idx, item in enumerate(raw, start=1):
             item = item if isinstance(item, dict) else {"question_text": str(item)}
-            text = str(
+            text = _clean_multimodal_text(
                 item.get("question_text")
                 or item.get("stem")
                 or item.get("question")
@@ -867,7 +886,7 @@ def _questions_from_vision(vision: dict[str, Any]) -> list[dict[str, Any]]:
                 or item.get("content")
                 or item.get("title")
                 or ""
-            ).strip()
+            )
             try:
                 question_index = int(item.get("index") or item.get("question_index") or idx)
             except (TypeError, ValueError):
@@ -875,8 +894,9 @@ def _questions_from_vision(vision: dict[str, Any]) -> list[dict[str, Any]]:
             if not text:
                 text = f"第 {question_index} 题题干识别不完整"
             questions.append({**item, "index": question_index, "question_text": text})
-    if not questions and str(vision.get("question_text") or "").strip():
-        questions.append({"index": 1, "question_text": str(vision.get("question_text")).strip()})
+    fallback_question = _clean_multimodal_text(vision.get("question_text"))
+    if not questions and fallback_question:
+        questions.append({"index": 1, "question_text": fallback_question})
     return questions
 
 
@@ -967,8 +987,9 @@ def _multimodal_reply(result: dict[str, Any]) -> str:
     status = result.get("status")
     data = result.get("result") if isinstance(result.get("result"), dict) else {}
     for key in ("display_text", "teaching_text", "answer_text", "chat_text"):
-        if str(data.get(key) or "").strip():
-            return str(data[key]).strip()
+        text = _clean_multimodal_text(data.get(key))
+        if text:
+            return text
     if task_type == "image_understanding" and status in {"success", "partial_success", "needs_manual_review"}:
         return "已完成图片理解，识别结果已整理成结构化信息。"
     if task_type == "image_to_mindmap" and status in {"success", "needs_manual_review"}:

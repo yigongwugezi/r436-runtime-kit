@@ -40,7 +40,7 @@ Local proxy expectation: `frontend/vite.config.ts` proxies `/api` to `http://127
    继续讲第2题
    ```
 
-   Expected: the input chip says it is using the previous image; the reply uses the previous extracted questions and remains normal chat text.
+   Expected: the input chip says it is using the selected image; the reply uses the previous extracted questions and remains normal chat text.
 
 3. Same session, no new upload:
 
@@ -58,7 +58,7 @@ Local proxy expectation: `frontend/vite.config.ts` proxies `/api` to `http://127
    ```
 
    Expected: cards are generated from the cached vision result; front is visible, back is folded, and math is rendered where possible.
-   A multi-question image should produce at least five cards when there is enough recognized content.
+   A multi-question image should produce at least six useful cards when there is enough recognized content. Card fronts should read like review questions, not OCR fragments.
 
 5. Same session, no new upload:
 
@@ -66,7 +66,7 @@ Local proxy expectation: `frontend/vite.config.ts` proxies `/api` to `http://127
    根据这张图生成完整学习资源包
    ```
 
-   Expected: empty sections and `..` placeholders are hidden; resource and knowledge candidates remain pending, not automatically approved.
+   Expected: the top explains what the resource bundle is and that knowledge candidates remain pending. Empty sections and `..` placeholders are hidden; resource and knowledge candidates remain pending, not automatically approved.
 
 6. Same session, type an image reference and then click `取消引用` before sending:
 
@@ -109,9 +109,17 @@ Local proxy expectation: `frontend/vite.config.ts` proxies `/api` to `http://127
 
    Expected: uses the new image, not the previous one.
 
-10. If `needs_manual_review=true`, verify that the UI lists concrete reasons, question numbers, uncertain fields, and whether the result can still be used. It should not show only a generic error.
+10. Same session, after uploading multiple images, type an explicit reference such as:
 
-11. Expand `查看识别详情`.
+   ```text
+   根据这张图生成思维导图
+   ```
+
+   Expected: the image reference chip shows `更换`; selecting another thumbnail changes which image is sent. Ordinary text still does not attach any image.
+
+11. If `needs_manual_review=true`, verify that the UI lists concrete reasons, question numbers, uncertain fields, and whether the result can still be used. It should not show only a generic error.
+
+12. Expand `查看识别详情`.
 
    Expected: each recognized question shows a readable stem or `题干识别不完整`; it must not render a list of empty `1. 2. 3.` entries.
 

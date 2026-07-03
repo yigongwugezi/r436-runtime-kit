@@ -622,6 +622,20 @@ def test_question_detail_alias_fields_do_not_become_empty_indices() -> None:
     assert_true(questions[2]["question_text"], "missing stem should still render a useful review placeholder")
 
 
+def test_multimodal_reply_filters_internal_placeholders() -> None:
+    reply = product._multimodal_reply({
+        "status": "success",
+        "task_type": "explain_image_question",
+        "result": {
+            "display_text": "See extracted_questions for per-question answers",
+            "chat_text": zh(r"\u7b2c1\u9898\uff1a\u6309\u9898\u5e72\u6761\u4ef6\u9010\u6b65\u5206\u6790\u3002"),
+        },
+    })
+
+    assert_true("See extracted_questions" not in reply, "internal placeholder must not own final reply")
+    assert_true(zh(r"\u7b2c1\u9898") in reply, "clean chat text should be used")
+
+
 if __name__ == "__main__":
     test_target_only_explicit_generation_runs_pipeline()
     test_calculus_reply_uses_real_stages_and_time()
@@ -637,4 +651,5 @@ if __name__ == "__main__":
     test_plain_text_does_not_reuse_last_image_context()
     test_cancelled_image_reference_does_not_reuse_cache()
     test_question_detail_alias_fields_do_not_become_empty_indices()
+    test_multimodal_reply_filters_internal_placeholders()
     print("PASS product_chat_boundary_test")

@@ -48,7 +48,7 @@ class FakeVisionTool:
                 "detected_text": "函数定义域 奇偶函数 反函数 复合函数 分段函数 数列极限 无穷小比较 等价无穷小 渐近线",
                 "possible_knowledge_points": ["函数定义域", "奇偶函数", "反函数", "复合函数", "分段函数", "数列极限"],
                 "extracted_questions": [
-                    {"index": 1, "content": "求函数定义域", "knowledge_points": ["函数定义域"], "answer": "排除分母为0和根号负数"},
+                    {"index": 1, "content": "求函数定义域", "knowledge_points": ["函数定义域"], "answer": "See extracted_questions for per-question answers"},
                     {"index": 2, "content": "判断函数奇偶性", "knowledge_points": ["奇偶函数"], "answer": "比较 f(-x) 与 f(x)"},
                     {"index": 3, "content": "求反函数", "knowledge_points": ["反函数"]},
                     {"index": 4, "content": "复合函数求值", "knowledge_points": ["复合函数"]},
@@ -67,6 +67,10 @@ class FakeVisionTool:
 
 def markdown_nodes(markdown: str) -> int:
     return len([line for line in markdown.splitlines() if line.lstrip().startswith("-")])
+
+
+def markdown_node_labels(markdown: str) -> list[str]:
+    return [line.lstrip(" -").strip() for line in markdown.splitlines() if line.lstrip().startswith("-")]
 
 
 def main() -> None:
@@ -89,6 +93,7 @@ def main() -> None:
     explain = agent.run({"user_message": "请详细讲解这张图片里的题目，并指出每道题考查的知识点", "attachments": [upload]})
     assert_true(explain["result"].get("display_text"), "explain_image_question must expose display_text")
     assert_true("{" not in explain["result"]["display_text"][:20], "display_text should not be raw JSON")
+    assert_true("See extracted_questions" not in explain["result"]["display_text"], "internal placeholders must not leak")
 
     questions = product._questions_from_vision({"extracted_questions": [{"index": 1, "content": "字段别名题干"}, {"index": 2}]})
     assert_true(questions[0]["question_text"] == "字段别名题干", "question aliases should render")
@@ -96,9 +101,17 @@ def main() -> None:
 
     mindmap = agent.run({"user_message": "根据这张图生成思维导图", "attachments": [upload]})
     assert_true(markdown_nodes(mindmap["result"]["markdown"]) >= 6, "mindmap should not collapse to 2-3 nodes")
+    assert_true(max(len(label) for label in markdown_node_labels(mindmap["result"]["markdown"])) <= 40, "mindmap node labels should stay short")
 
     cards = agent.run({"user_message": "根据这张图生成复习卡片", "attachments": [upload]})
-    assert_true(len(cards["result"]["cards"]) >= 5, "flashcards should include at least five cards")
+    assert_true(len(cards["result"]["cards"]) >= 6, "flashcards should include at least six cards")
+
+    bundle = provider_mod._normalize_task_result(
+        "image_to_resource_bundle",
+        {"understanding": {"summary": "函数题资源包"}, "knowledge_candidates": [{"knowledge_point": "函数定义域"}], "confidence": 0.9},
+        "",
+    )
+    assert_true(bundle.get("display_text"), "resource bundle should explain its purpose")
 
     cleaned = provider_mod._drop_empty_sections({"a": "", "b": [], "c": {}, "d": "..", "e": {"ok": "value"}})
     assert_true(cleaned == {"e": {"ok": "value"}}, "resource bundle empty sections should be dropped")

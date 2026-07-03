@@ -34,6 +34,7 @@ export interface ChatAttachment {
   name?: string;
   url?: string;
   image_url?: string;
+  preview_url?: string;
   local_path?: string;
   mime_type?: string;
   size?: number;
