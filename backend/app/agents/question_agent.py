@@ -157,7 +157,7 @@ class QuestionAgent(BaseAgent):
 ## 规则
 1. 题目必须紧扣给定知识点，不要编造不存在的概念
 2. 选择题的干扰项要有迷惑性但明确错误
-3. 每题必有解析：讲清楚为什么对、为什么错。简单题简洁说，复杂题详细拆解。关键：解题步骤、知识点、易错点
+3. 每题解析分三步：先写解题思路和考点 → 再写分步推导 → 最后写明正确答案及为什么对。不要写"学生可能选错""常见错误"这种推测性内容——这是解析不是学情分析
 4. 难度必须与 {DIFFICULTY_LEVELS.get(params['difficulty'], '中等')} 匹配
 5. 题目之间不要重复，覆盖不同子知识点
 
@@ -169,7 +169,7 @@ class QuestionAgent(BaseAgent):
         try:
             raw = self.llm_client.chat(
                 messages=[
-                    {"role": "system", "content": "你是专业的试题生成专家。只输出JSON。"},
+                    {"role": "system", "content": "你是专业的试题生成专家。每题解析必须写清楚：正确选项/答案、解题步骤、涉及的知识点、常见错误原因。只输出JSON。"},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.3,
@@ -189,6 +189,14 @@ class QuestionAgent(BaseAgent):
                 nq = self._normalize_question(q, idx, params)
                 if nq:
                     nq["question_id"] = uuid.uuid4().hex[:12]
+                    # 解析质量差 → 用 LLM 重写
+                    expl = nq.get("explanation", "") or ""
+                    bad_quality = len(expl) < 30 or "学生可能" in expl or "学生选择了" in expl
+                    if bad_quality and self.llm_client:
+                        try:
+                            nq["explanation"] = self._expand_explanation(nq)
+                        except Exception:
+                            pass
                     normalized.append(nq)
                 else:
                     logger.warning("Question %d dropped by normalization", idx)
@@ -363,6 +371,24 @@ class QuestionAgent(BaseAgent):
                 })
 
         return questions
+
+    def _expand_explanation(self, q: dict) -> str:
+        """用 LLM 重写质量差的解析"""
+        stem = q.get("stem", "")
+        answer = q.get("correct", "") or str(q.get("answers", ""))
+        qtype = q.get("type", "choice")
+        prompt = f"""{qtype}题目：{stem}
+正确答案：{answer}
+
+写解析禁止以下内容：不要写"学生可能"、"学生选择了"、"常见错误"等学情推测——你不是在批改，你是在解析题目。直接写解法。
+格式：
+解：先说明这道题考什么、用哪个公式/定理 → 再分步推导得出答案 → 最后给结论。
+只输出解析正文，不加任何标题。"""
+        raw = self.llm_client.chat(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2, max_tokens=500,
+        )
+        return raw.strip()
 
     def _make_set_id(self, context: dict) -> str:
         session_id = str(context.get("session_id", ""))
