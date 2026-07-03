@@ -18,14 +18,19 @@ const PAGE_TITLES: Record<string, { title: string; subtitle: string }> = {
   '/analytics': { title: '学习分析', subtitle: '学习行为数据分析' },
   '/timeline': { title: '学习时间线', subtitle: '学习行为记录' },
   '/generate': { title: '资源生成', subtitle: '多智能体协同生成学习资源' },
+  '/practice': { title: '练习中心', subtitle: '答题练习与错题回顾' },
   '/settings': { title: '系统设置', subtitle: '个性化你的学习体验' },
+  '/teacher': { title: '班级管理', subtitle: '管理你的班级和学生' },
 };
 
 const HIDE_CHAT_PANEL = new Set(['/chat', '/settings', '/login']);
 
 export default function AppLayout() {
   const loc = useLocation();
-  const info = PAGE_TITLES[loc.pathname] || { title: 'EduAgent', subtitle: '' };
+  const info = PAGE_TITLES[loc.pathname]
+    || (loc.pathname.startsWith('/teacher/classes/') ? { title: '班级详情', subtitle: '练习 · 学生 · 统计' } : null)
+    || (loc.pathname.startsWith('/resources/') ? { title: '资源详情', subtitle: '个性化推荐的学习资源' } : null)
+    || { title: 'EduAgent', subtitle: '' };
   const [chatOpen, setChatOpen] = useState(false);
   const [panelWidth, setPanelWidth] = useState(420);
   const showChat = !HIDE_CHAT_PANEL.has(loc.pathname);

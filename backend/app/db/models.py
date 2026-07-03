@@ -9,7 +9,7 @@ Design notes:
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -380,8 +380,8 @@ class StudentQuestionModel(Base):
     question_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     question_set_id: Mapped[str] = mapped_column(String(64), index=True, default="")
     session_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("sessions.id", ondelete="CASCADE"), index=True
-    )
+        String(64), index=True
+    )  # May be a real session ID or synthetic like "class_{classId}" for teacher-pushed
     source_question_id: Mapped[str | None] = mapped_column(
         String(64), nullable=True, default=None
     )  # FK to QuestionModel.id (admin bank), optional
@@ -462,4 +462,76 @@ class AnswerRecordModel(Base):
     suggestions: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     strengths: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     source: Mapped[str] = mapped_column(String(32), default="llm_generated")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+# ── Class Subject (Teacher-managed classroom) ────────────────────────────
+
+
+class ClassSubjectModel(Base):
+    """A subject managed by a teacher with an invite-code for student enrollment.
+
+    Class subjects differ from personal subjects (localStorage-based):
+    - Created by teachers, joined by students via invite code
+    - Teacher can view/manage roster and push exercises to all enrolled students
+    - Teacher CANNOT see students' privately generated content
+    - Students CANNOT modify teacher-pushed content but can create their own
+    """
+
+    __tablename__ = "class_subjects"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), default="")
+    description: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    subject: Mapped[str] = mapped_column(String(64), default="")
+    teacher_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("learners.id", ondelete="CASCADE"), index=True
+    )
+    invite_code: Mapped[str] = mapped_column(String(16), unique=True, index=True)
+    student_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    teacher: Mapped["LearnerModel"] = relationship("LearnerModel")
+
+
+class ClassSubjectMemberModel(Base):
+    """Many-to-many join: students enrolled in a class subject."""
+
+    __tablename__ = "class_subject_members"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    class_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("class_subjects.id", ondelete="CASCADE"), index=True
+    )
+    student_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("learners.id", ondelete="CASCADE"), index=True
+    )
+    joined_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("class_id", "student_id", name="uq_class_member"),
+    )
+
+
+class ClassPushModel(Base):
+    """A teacher-pushed exercise set to a class.
+
+    When a teacher pushes questions, StudentQuestionModel records are created
+    with source="teacher_pushed" and session_id="class_{classId}" so the
+    existing grading pipeline works without changes.
+    """
+
+    __tablename__ = "class_pushes"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    class_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("class_subjects.id", ondelete="CASCADE"), index=True
+    )
+    teacher_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("learners.id", ondelete="CASCADE")
+    )
+    title: Mapped[str] = mapped_column(String(256), default="")
+    description: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    question_ids: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)

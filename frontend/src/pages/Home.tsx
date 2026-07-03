@@ -1,12 +1,15 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSubjectStore } from '../store/subjectStore';
 import { useLearningAnalytics } from '../hooks/useLearningAnalytics';
 import { useProfile } from '../hooks/useProfile';
 import { getCurrentLearner } from '../store/authStore';
-import { PlayCircle, FileText, BrainCircuit, Code2, Trophy, Flame, Clock, ChevronRight, Sparkles, Plus, Trash2 } from 'lucide-react';
+import { PlayCircle, FileText, BrainCircuit, Code2, Trophy, Flame, Clock, ChevronRight, Sparkles, Plus, Trash2, Users, UserPlus } from 'lucide-react';
 import DailyTaskPanel from '../components/tasks/DailyTaskPanel';
 import { useDailyTasks } from '../hooks/useDailyTasks';
+import Modal from '../components/common/Modal';
+import { getJoinedClassSubjects, joinClassSubject } from '../api/classSubjects';
+import type { ClassSubject } from '../types/classSubject';
 
 export default function Home() {
   const nav = useNavigate();
@@ -46,6 +49,39 @@ export default function Home() {
   const [newName, setNewName] = useState('');
   const submitCreate = () => { const n = newName.trim(); if (!n) return; const s = create(n); setNewName(''); setShowCreate(false); setActive(s); nav('/chat'); };
 
+  // ── 班级科目 ──────────────────────────────────────────────────────
+  const [classSubjects, setClassSubjects] = useState<ClassSubject[]>([]);
+  const [showJoin, setShowJoin] = useState(false);
+  const [inviteCode, setInviteCode] = useState('');
+  const [joining, setJoining] = useState(false);
+  const [joinError, setJoinError] = useState('');
+
+  const isTeacher = user?.role === 'teacher' || user?.role === 'admin';
+
+  useEffect(() => {
+    if (user && !isTeacher) {
+      getJoinedClassSubjects().then(setClassSubjects).catch(() => {});
+    }
+  }, []);
+
+  const handleJoin = async () => {
+    const code = inviteCode.trim().toUpperCase();
+    if (!code) { setJoinError('请输入邀请码'); return; }
+    setJoining(true);
+    setJoinError('');
+    try {
+      await joinClassSubject(code);
+      const updated = await getJoinedClassSubjects();
+      setClassSubjects(updated);
+      setShowJoin(false);
+      setInviteCode('');
+    } catch (e: any) {
+      setJoinError(e.message || '加入失败');
+    } finally {
+      setJoining(false);
+    }
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Welcome Banner */}
@@ -72,7 +108,7 @@ export default function Home() {
 
       {/* Stats Grid */}
       <div className="grid grid-cols-4 gap-5">
-        <StatCard icon={<Clock className="w-5 h-5 text-primary-600" />} label="我的科目" value={`${subjects.length}个`} color="primary" />
+        <StatCard icon={<Clock className="w-5 h-5 text-primary-600" />} label="我的科目" value={`${subjects.length + classSubjects.length}个`} color="primary" />
         <StatCard icon={<FileText className="w-5 h-5 text-accent-600" />} label="浏览资源" value={`${viewedResources}次`} color="accent" />
         <StatCard icon={<Trophy className="w-5 h-5 text-warning-600" />} label="累计学习" value={`${totalHours}h`} color="warning" />
         <StatCard icon={<Code2 className="w-5 h-5 text-success-600" />} label="测验正确率" value={quizAccuracy != null ? `${quizAccuracy}%` : '--'} color="success" />
@@ -84,32 +120,73 @@ export default function Home() {
         <div className="col-span-2 flex flex-col space-y-6">
           {/* Subject List */}
           <div className="bg-white rounded-2xl p-6 shadow-soft">
-            <div className="flex items-center justify-between mb-5">
-              <h3 className="font-display text-lg font-semibold text-surface-800">我的科目</h3>
-              <button onClick={() => setShowCreate(!showCreate)} className="text-sm text-primary-600 hover:text-primary-700 font-medium">+ 新建科目</button>
-            </div>
-            {showCreate && (
-              <div className="flex items-center gap-2 mb-4 animate-fade-in">
-                <input value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => e.key==='Enter'&&submitCreate()} placeholder="科目名称" autoFocus maxLength={30} className="flex-1 px-4 py-2.5 bg-surface-50 border border-surface-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 transition-all" />
-                <button onClick={submitCreate} disabled={!newName.trim()} className="px-4 py-2.5 bg-primary-600 text-white rounded-xl text-sm font-medium hover:bg-primary-700 disabled:opacity-50 transition-colors whitespace-nowrap">创建</button>
-                <button onClick={() => setShowCreate(false)} className="px-3 py-2.5 text-sm text-surface-400 hover:text-surface-600 whitespace-nowrap">取消</button>
-              </div>
-            )}
-            <div className="space-y-3 max-h-[220px] overflow-y-auto pr-1">
-              {subjects.length === 0 ? (
-                <p className="text-surface-400 text-sm py-4 text-center">还没有科目，点击"新建科目"创建第一个</p>
-              ) : subjects.map((s, idx) => (
-                <div key={s.id} className="space-y-2 cursor-pointer group relative" onClick={() => { setActive(s); nav('/chat'); }}>
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-surface-700 font-medium">{s.name}{activeSubject?.id===s.id&&<span className="ml-2 px-2 py-0.5 bg-primary-100 text-primary-700 rounded-full text-[10px] font-semibold">当前</span>}</span>
-                    <button onClick={e => { e.stopPropagation(); if(confirm(`删除「${s.name}」？`)) remove(s.id); }} className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-md text-surface-300 hover:text-error-500 hover:bg-error-50"><Trash2 size={14} /></button>
-                  </div>
-                  <div className="h-2 bg-surface-100 rounded-full overflow-hidden">
-                    <div className="h-full rounded-full transition-all duration-1000 ease-out" style={{ width: `${totalCompleted > 0 ? Math.min(100, Math.round((totalCompleted / Math.max(viewedResources || 1, 1)) * 100)) : 0}%`, background: `linear-gradient(90deg, ${idx===0?'#14b8a6, #3b82f6':idx===1?'#3b82f6, #8b5cf6':'#f59e0b, #ec4899'})` }} />
+            {isTeacher ? (
+              <>
+                <div className="flex items-center justify-between mb-5">
+                  <h3 className="font-display text-lg font-semibold text-surface-800">班级管理</h3>
+                </div>
+                <p className="text-surface-400 text-sm py-4 text-center">
+                  教师请前往
+                  <button onClick={() => nav('/teacher')} className="text-primary-600 hover:text-primary-700 font-medium mx-1">班级管理</button>
+                  创建和管理班级
+                </p>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center justify-between mb-5">
+                  <h3 className="font-display text-lg font-semibold text-surface-800">我的科目</h3>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => { setShowJoin(true); setInviteCode(''); setJoinError(''); }} className="text-sm text-accent-600 hover:text-accent-700 font-medium flex items-center gap-1"><UserPlus size={14} /> 加入班级</button>
+                    <button onClick={() => setShowCreate(!showCreate)} className="text-sm text-primary-600 hover:text-primary-700 font-medium">+ 新建科目</button>
                   </div>
                 </div>
-              ))}
-            </div>
+                {showCreate && (
+                  <div className="flex items-center gap-2 mb-4 animate-fade-in">
+                    <input value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => e.key==='Enter'&&submitCreate()} placeholder="科目名称" autoFocus maxLength={30} className="flex-1 px-4 py-2.5 bg-surface-50 border border-surface-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 transition-all" />
+                    <button onClick={submitCreate} disabled={!newName.trim()} className="px-4 py-2.5 bg-primary-600 text-white rounded-xl text-sm font-medium hover:bg-primary-700 disabled:opacity-50 transition-colors whitespace-nowrap">创建</button>
+                    <button onClick={() => setShowCreate(false)} className="px-3 py-2.5 text-sm text-surface-400 hover:text-surface-600 whitespace-nowrap">取消</button>
+                  </div>
+                )}
+                <div className="space-y-3 max-h-[260px] overflow-y-auto pr-1">
+                  {subjects.length === 0 && classSubjects.length === 0 ? (
+                    <p className="text-surface-400 text-sm py-4 text-center">还没有科目，点击"新建科目"创建第一个，或"加入班级"输入邀请码</p>
+                  ) : (
+                    <>
+                      {/* Personal subjects */}
+                      {subjects.map((s, idx) => (
+                        <div key={s.id} className="space-y-2 cursor-pointer group relative" onClick={() => { setActive(s); nav('/chat'); }}>
+                          <div className="flex items-center justify-between text-sm">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="text-surface-700 font-medium truncate">{s.name}{activeSubject?.id===s.id&&<span className="ml-2 px-2 py-0.5 bg-primary-100 text-primary-700 rounded-full text-[10px] font-semibold">当前</span>}</span>
+                            </div>
+                            <button onClick={e => { e.stopPropagation(); if(confirm(`删除「${s.name}」？`)) remove(s.id); }} className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-md text-surface-300 hover:text-error-500 hover:bg-error-50"><Trash2 size={14} /></button>
+                          </div>
+                          <p className="text-[11px] text-surface-400">我的科目</p>
+                          <div className="h-2 bg-surface-100 rounded-full overflow-hidden">
+                            <div className="h-full rounded-full transition-all duration-1000 ease-out" style={{ width: `${totalCompleted > 0 ? Math.min(100, Math.round((totalCompleted / Math.max(viewedResources || 1, 1)) * 100)) : 0}%`, background: `linear-gradient(90deg, ${idx===0?'#14b8a6, #3b82f6':idx===1?'#3b82f6, #8b5cf6':'#f59e0b, #ec4899'})` }} />
+                          </div>
+                        </div>
+                      ))}
+                      {/* Class subjects */}
+                      {classSubjects.map((cs, idx) => (
+                        <div key={cs.id} className="space-y-2 cursor-pointer group relative" onClick={() => { nav(`/chat?classSubjectId=${cs.id}`); }}>
+                          <div className="flex items-center justify-between text-sm">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="text-surface-700 font-medium truncate">{cs.name}</span>
+                              <span className="px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full text-[10px] font-semibold flex-shrink-0">班级</span>
+                            </div>
+                          </div>
+                          <p className="text-[11px] text-surface-400">{cs.teacher_name} · 班级</p>
+                          <div className="h-2 bg-surface-100 rounded-full overflow-hidden">
+                            <div className="h-full rounded-full bg-gradient-to-r from-amber-400 to-amber-500" style={{ width: `${Math.min(100, (cs.student_count || 0) * 5)}%` }} />
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  )}
+                </div>
+              </>
+            )}
           </div>
 
           {/* 本周学习时长 - 折线图 */}
@@ -230,6 +307,30 @@ export default function Home() {
           </div>
         </div>
       </div>
+
+      {/* 加入班级弹窗 */}
+      <Modal open={showJoin} onClose={() => { setShowJoin(false); setJoinError(''); }} title="加入班级">
+        <div className="space-y-4">
+          <p className="text-sm text-surface-500">输入老师提供的邀请码，加入班级科目</p>
+          <input
+            value={inviteCode}
+            onChange={e => { setInviteCode(e.target.value.toUpperCase()); setJoinError(''); }}
+            onKeyDown={e => e.key === 'Enter' && handleJoin()}
+            placeholder="邀请码（6位字母数字）"
+            maxLength={10}
+            autoFocus
+            className="w-full px-4 py-3 bg-surface-50 border border-surface-200 rounded-xl text-sm text-center tracking-[0.3em] font-mono uppercase outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 transition-all"
+          />
+          {joinError && <p className="text-error-500 text-sm text-center">{joinError}</p>}
+          <button
+            onClick={handleJoin}
+            disabled={joining || !inviteCode.trim()}
+            className="w-full py-2.5 bg-primary-600 text-white rounded-xl text-sm font-medium hover:bg-primary-700 disabled:opacity-50 transition-colors"
+          >
+            {joining ? '加入中…' : '加入班级'}
+          </button>
+        </div>
+      </Modal>
     </div>
   );
 }

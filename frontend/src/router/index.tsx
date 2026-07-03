@@ -12,6 +12,8 @@ import ResourceGenerationPage from '../pages/ResourceGenerationPage';
 import ConversationHistoryPage from '../pages/ConversationHistoryPage';
 import SettingsPage from '../pages/SettingsPage';
 import AdminDashboard from '../pages/AdminDashboard';
+import TeacherHome from '../pages/TeacherHome';
+import TeacherClassDetail from '../pages/TeacherClassDetail';
 import LoginPage from '../pages/LoginPage';
 import NotFound from '../pages/NotFound';
 import { useAuthStore } from '../store/authStore';
@@ -65,6 +67,8 @@ const router = createBrowserRouter([
       { path: 'history', element: <ConversationHistoryPage /> },
       { path: 'settings', element: <SettingsPage /> },
       { path: 'admin', element: <AdminDashboard /> },
+      { path: 'teacher', element: <TeacherHome /> },
+      { path: 'teacher/classes/:id', element: <TeacherClassDetail /> },
       { path: '*', element: <NotFound /> },
     ],
   },
