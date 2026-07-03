@@ -4186,6 +4186,7 @@ def _q_to_dict(q) -> dict:
     """ORM QuestionModel → dict，JSON 字段已自动反序列化。"""
     return {
         "question_id": q.question_id, "type": q.type, "stem": q.stem,
+        "question_set_id": q.question_set_id,
         "options": q.options, "correct": q.correct, "explanation": q.explanation,
         "difficulty": q.difficulty, "knowledge_points": q.knowledge_points,
         "tags": q.tags, "scoring_rubric": q.scoring_rubric,
@@ -4221,14 +4222,8 @@ def question_sets(sessionId: str = "") -> dict[str, Any]:
     session_id = _resolve_session_id(sessionId, "")
     try:
         db = SessionLocal()
-        from app.db.models import StudentQuestionModel
-        all_qs = (
-            db.query(StudentQuestionModel)
-            .filter(StudentQuestionModel.session_id == session_id)
-            .order_by(StudentQuestionModel.created_at.desc())
-            .limit(500)
-            .all()
-        )
+        from app.db.repository import get_questions as repo_get_questions
+        all_qs = repo_get_questions(db, session_id, limit=500)
 
         # 按 question_set_id 分组
         sets: dict[str, dict] = {}
