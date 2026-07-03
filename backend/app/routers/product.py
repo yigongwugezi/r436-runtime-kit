@@ -770,12 +770,18 @@ _MULTIMODAL_PATTERNS = (
 _MULTIMODAL_PATTERNS = _MULTIMODAL_PATTERNS + (
     "\u8fd9\u5f20\u56fe",
     "\u4e0a\u9762\u8fd9\u5f20\u56fe",
+    "\u521a\u624d\u90a3\u5f20\u56fe",
     "\u8fd9\u5f20\u56fe\u7247",
+    "\u56fe\u4e2d",
+    "\u56fe\u7247\u91cc",
+    "\u8fd9\u9053\u9898",
+    "\u8fd9\u9875\u7b14\u8bb0",
     "\u9519\u9898\u56fe",
     "\u9898\u56fe",
     "\u7ee7\u7eed\u8bb2\u7b2c",
     "\u6839\u636e\u8fd9\u5f20\u56fe",
     "\u590d\u4e60\u5361\u7247",
+    "\u5b8c\u6574\u5b66\u4e60\u8d44\u6e90\u5305",
 )
 
 
@@ -797,6 +803,26 @@ def _multimodal_image_input(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _has_image_input(image_input: dict[str, Any]) -> bool:
     return bool(image_input.get("attachments") or image_input.get("image_url") or image_input.get("image_base64"))
+
+
+def _reused_frontend_attachment(image_input: dict[str, Any]) -> bool:
+    attachments = image_input.get("attachments")
+    return bool(
+        image_input.get("reused_from_last")
+        or (isinstance(attachments, list) and attachments and isinstance(attachments[0], dict) and attachments[0].get("reused_from_last"))
+    )
+
+
+def _image_context_source(image_input: dict[str, Any], cached_context: dict[str, Any]) -> str:
+    if _reused_frontend_attachment(image_input):
+        return "last_uploaded_image"
+    if _has_image_input(image_input):
+        return "current_attachment"
+    if cached_context.get("last_vision_result"):
+        return "last_vision_result"
+    if cached_context.get("last_image_input") or cached_context.get("last_uploaded_file"):
+        return "last_uploaded_image"
+    return "missing"
 
 
 def _vision_from_multimodal_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -869,12 +895,31 @@ def _multimodal_learning_path(session_id: str) -> Any:
     return stored
 
 
-def _multimodal_workflow_trace(result: dict[str, Any]) -> dict[str, Any]:
+def _with_image_context_trace(trace: dict[str, Any], *, reused: bool, source: str, task_type: str) -> dict[str, Any]:
+    trace = dict(trace)
+    trace["reused_image_context"] = reused
+    trace["image_context_source"] = source
+    trace["task_type"] = task_type
+    return trace
+
+
+def _multimodal_workflow_trace(
+    result: dict[str, Any],
+    *,
+    reused_image_context: bool = False,
+    image_context_source: str = "missing",
+) -> dict[str, Any]:
+    task_type = str(result.get("task_type") or "")
     if isinstance(result.get("workflow_trace"), dict):
-        return result["workflow_trace"]
+        return _with_image_context_trace(
+            result["workflow_trace"],
+            reused=reused_image_context,
+            source=image_context_source,
+            task_type=task_type,
+        )
     status = str(result.get("status") or "failed")
     workflow_status = "success" if status == "success" else ("partial" if status in {"needs_input", "provider_not_configured", "unsupported"} else "failed")
-    return {
+    return _with_image_context_trace({
         "workflow_name": "multimodal_generation",
         "workflow_status": workflow_status,
         "pipeline_executed": True,
@@ -888,7 +933,7 @@ def _multimodal_workflow_trace(result: dict[str, Any]) -> dict[str, Any]:
                 "output_keys": ["multimodal_result"] if result.get("result") else [],
             }
         ],
-    }
+    }, reused=reused_image_context, source=image_context_source, task_type=task_type)
 
 
 def _multimodal_reply(result: dict[str, Any]) -> str:
@@ -948,6 +993,7 @@ def _multimodal_chat_payload(
     state = conversation_store.get(session_id)
     image_input = _multimodal_image_input(payload)
     cached_context = conversation_store.get_multimodal_context(session_id)
+    original_has_image = _has_image_input(image_input) and not _reused_frontend_attachment(image_input)
     if not _has_image_input(image_input):
         cached_input = cached_context.get("last_image_input") if isinstance(cached_context.get("last_image_input"), dict) else {}
         if cached_input and not cached_context.get("last_vision_result"):
@@ -955,7 +1001,10 @@ def _multimodal_chat_payload(
                 "attachments": cached_input.get("attachments") or [],
                 "image_url": cached_input.get("image_url") or "",
                 "image_base64": cached_input.get("image_base64") or "",
+                "reused_from_last": True,
             }
+    image_context_source = _image_context_source(image_input if _has_image_input(image_input) else {}, cached_context)
+    reused_image_context = (not original_has_image) and image_context_source in {"last_uploaded_image", "last_vision_result"}
     context = {
         "session_id": session_id,
         "subject_id": subject_id,
@@ -970,7 +1019,11 @@ def _multimodal_chat_payload(
         **cached_context,
     }
     result = MultimodalAgent().run(context)
-    trace = _multimodal_workflow_trace(result)
+    trace = _multimodal_workflow_trace(
+        result,
+        reused_image_context=reused_image_context,
+        image_context_source=image_context_source,
+    )
     _cache_multimodal_context(session_id, image_input, result)
     cached = state.last_result if isinstance(state.last_result, dict) else {}
     state.last_result = {**cached, "multimodal_result": result, "workflow_trace": trace}

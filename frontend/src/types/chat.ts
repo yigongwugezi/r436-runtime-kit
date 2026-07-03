@@ -37,6 +37,7 @@ export interface ChatAttachment {
   local_path?: string;
   mime_type?: string;
   size?: number;
+  reused_from_last?: boolean;
 }
 
 export type MessageType =

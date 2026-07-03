@@ -74,6 +74,7 @@ interface ChatStore {
   isStreaming: boolean;
   loading: boolean;
   agentProgress: GenerationProgress | null;
+  lastImageAttachment: import('../types/chat').ChatAttachment | null;
   /** SSE done 事件中的 debug 字段，仅开发模式展示 */
   lastDebugInfo: Record<string, unknown> | null;
   /** 动态进度条步骤（根据实际运行的 Agent 构建，替代硬编码 GEN_PIPELINE） */
@@ -86,6 +87,7 @@ interface ChatStore {
   appendToLastAssistant: (chunk: string) => void;
   setStreaming: (v: boolean) => void;
   setAgentProgress: (p: GenerationProgress | null) => void;
+  setLastImageAttachment: (attachment: import('../types/chat').ChatAttachment | null) => void;
   setLastDebugInfo: (info: Record<string, unknown> | null) => void;
   setProgressPipelineSteps: (steps: import('../types/chat').ProgressStep[]) => void;
   addProgressPipelineStep: (step: import('../types/chat').ProgressStep) => void;
@@ -116,6 +118,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   isStreaming: false,
   loading: false,
   agentProgress: null,
+  lastImageAttachment: null,
   lastDebugInfo: null,
   progressPipelineSteps: [],
   dataVersion: 0,
@@ -142,7 +145,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     const cachedMessages = targetSession?.messages || [];
 
     persistSessionId(id);
-    set({ currentSessionId: id, messages: cachedMessages, progressPipelineSteps: [], agentProgress: null });
+    set({ currentSessionId: id, messages: cachedMessages, progressPipelineSteps: [], agentProgress: null, lastImageAttachment: null });
   },
 
   addMessage: (msg) =>
@@ -200,6 +203,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   setStreaming: (v) => set({ isStreaming: v }),
   setAgentProgress: (p) => set({ agentProgress: p }),
+  setLastImageAttachment: (attachment) => set({ lastImageAttachment: attachment }),
   setLastDebugInfo: (info) => set({ lastDebugInfo: info }),
   setProgressPipelineSteps: (steps) => set({ progressPipelineSteps: steps }),
   addProgressPipelineStep: (step) =>
@@ -235,7 +239,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }
     const id = createSessionId();
     persistSessionId(id);
-    set({ currentSessionId: id, messages: [], progressPipelineSteps: [], agentProgress: null });
+    set({ currentSessionId: id, messages: [], progressPipelineSteps: [], agentProgress: null, lastImageAttachment: null });
     // dataSessionId 不变，保持科目级数据查询稳定
   },
   removeLastMessage: () =>
@@ -254,7 +258,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       if (s.currentSessionId === id) {
         const newId = createSessionId();
         persistSessionId(newId);
-        return { sessions, currentSessionId: newId, messages: [] };
+        return { sessions, currentSessionId: newId, messages: [], lastImageAttachment: null };
       }
       return { sessions };
     }),
@@ -280,7 +284,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     // 尝试从缓存恢复消息
     const cachedSession = sessions.find(s => s.id === id);
     const cachedMessages = cachedSession?.messages || [];
-    set({ currentSessionId: id, dataSessionId: id, sessions, messages: cachedMessages });
+    set({ currentSessionId: id, dataSessionId: id, sessions, messages: cachedMessages, lastImageAttachment: null });
   },
 }));
 

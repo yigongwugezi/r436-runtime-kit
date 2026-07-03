@@ -262,7 +262,7 @@ class MultimodalAgent:
         text = (user_message or "").lower()
         attachments = attachments or []
         context = context or {}
-        image_ref_words = ("这张图", "上面这张图", "这张图片", "题图", "错题图")
+        image_ref_words = ("这张图", "上面这张图", "刚才那张图", "这张图片", "图中", "图片里", "这道题", "这页笔记", "题图", "错题图")
         has_image_ref = _has_any(text, image_ref_words)
         has_image = bool(
             attachments
@@ -275,7 +275,7 @@ class MultimodalAgent:
 
         mindmap_words = ("\u601d\u7ef4\u5bfc\u56fe", "\u8111\u56fe", "\u77e5\u8bc6\u56fe\u8c31", "\u77e5\u8bc6\u56fe", "\u77e5\u8bc6\u7ed3\u6784")
         flashcard_words = ("\u590d\u4e60\u5361\u7247", "\u80cc\u8bf5\u5361", "\u62bd\u8ba4\u5361", "\u8bb0\u5fc6\u5361", "\u5361\u7247")
-        explain_words = ("\u8bb2\u4e00\u4e0b", "\u8bb2\u89e3", "\u600e\u4e48\u505a", "\u6279\u6539", "\u89e3\u8fd9", "\u89e3\u7b54", "\u7b54\u6848", "继续讲")
+        explain_words = ("\u8bb2\u4e00\u4e0b", "\u8bb2\u89e3", "\u600e\u4e48\u505a", "\u6279\u6539", "\u89e3\u8fd9", "\u89e3\u7b54", "\u7b54\u6848", "继续讲", "讲第", "只讲")
         wrong_words = ("\u9519\u9898", "\u9519\u56e0", "\u9519\u54ea", "\u8584\u5f31\u70b9", "\u5f31\u70b9")
         note_words = ("\u7b14\u8bb0", "\u8bfe\u4ef6", "\u6559\u6750", "\u8bb2\u4e49", "\u603b\u7ed3", "\u6574\u7406", "\u63d0\u70bc")
         plan_words = ("\u5b66\u4e60\u8ba1\u5212", "\u600e\u4e48\u5b66", "\u5b89\u6392", "\u8def\u5f84", "\u89c4\u5212")
@@ -483,8 +483,41 @@ class MultimodalAgent:
         if executed.get("status") not in {"success", "partial_success"}:
             return executed
         vision = _vision_result(executed)
+        client = self._get_llm_client()
+        if client is not None:
+            try:
+                raw = client.chat([
+                    {"role": "system", "content": "你是中文复习卡片助手，只输出 JSON。"},
+                    {
+                        "role": "user",
+                        "content": (
+                            "请基于图片识别结果生成 3-6 张复习卡片。"
+                            "只返回 JSON：{\"cards\":[{\"front\":\"问题\",\"back\":\"答案\",\"knowledge_point\":\"知识点\",\"difficulty\":\"basic|medium|hard\",\"card_type\":\"concept|mistake|practice\"}]}。"
+                            "内容必须来自识别结果，不要编造。\n\n"
+                            f"{json.dumps(vision, ensure_ascii=False)}"
+                        ),
+                    },
+                ], temperature=0.2)
+                parsed = parse_safe(raw)
+                cards = parsed.get("cards") if isinstance(parsed.get("cards"), list) else []
+                if cards:
+                    return {
+                        **executed,
+                        "status": "success",
+                        "result": {
+                            "vision_result": vision,
+                            "cards": cards[:6],
+                            "needs_manual_review": bool(vision.get("needs_manual_review")),
+                            "review_reasons": vision.get("review_reasons", []),
+                            "uncertain_question_indices": vision.get("uncertain_question_indices", []),
+                            "uncertain_fields": vision.get("uncertain_fields", []),
+                        },
+                        "trace": {**executed.get("trace", {}), "vision_status": executed.get("status"), "flashcards_generated": True, "llm_stage": True},
+                    }
+            except Exception as exc:
+                executed.setdefault("warnings", []).append(f"LLM flashcard generation failed; used local result: {exc}")
         if isinstance(vision.get("cards"), list):
-            return {**executed, "trace": {**executed.get("trace", {}), "vision_status": executed.get("status"), "flashcards_generated": True}}
+            return {**executed, "trace": {**executed.get("trace", {}), "vision_status": executed.get("status"), "flashcards_generated": True, "llm_stage": False}}
         points = _knowledge_points(vision)
         cards = []
         for point in (points or [_text(vision.get("summary")) or "Image content"])[:6]:
@@ -504,8 +537,15 @@ class MultimodalAgent:
         return {
             **executed,
             "status": "success",
-            "result": {"vision_result": vision, "cards": cards[:6]},
-            "trace": {**executed.get("trace", {}), "vision_status": executed.get("status"), "flashcards_generated": True},
+            "result": {
+                "vision_result": vision,
+                "cards": cards[:6],
+                "needs_manual_review": bool(vision.get("needs_manual_review")),
+                "review_reasons": vision.get("review_reasons", []),
+                "uncertain_question_indices": vision.get("uncertain_question_indices", []),
+                "uncertain_fields": vision.get("uncertain_fields", []),
+            },
+            "trace": {**executed.get("trace", {}), "vision_status": executed.get("status"), "flashcards_generated": True, "llm_stage": False},
         }
 
     def _explain_image_question(self, executed: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -586,6 +626,9 @@ class MultimodalAgent:
         workflow_status = "success" if status == "success" else ("partial" if status in {"partial_success", "needs_input", "needs_manual_review", "provider_not_configured", "script_ready_provider_not_configured", "unsupported"} else "failed")
         warnings = executed.get("warnings", []) if isinstance(executed.get("warnings"), list) else []
         task_type = str(plan.get("task_type") or "execute")
+        trace = executed.get("trace") if isinstance(executed.get("trace"), dict) else {}
+        llm_stage = bool(trace.get("llm_stage"))
+        provider = str(executed.get("provider") or "")
         task_steps = {
             "image_understanding": ["understand_image"],
             "explain_image_question": ["understand_image", "generate_explanation"],
@@ -633,6 +676,12 @@ class MultimodalAgent:
             "workflow_name": "multimodal_generation",
             "workflow_status": workflow_status,
             "pipeline_executed": True,
+            "vision_extract_by_qwen_vl": (task_type.startswith("image_") or task_type in {"explain_image_question", "solve_image_question"}) and provider != "session_cache",
+            "vision_context_reused": provider == "session_cache",
+            "teaching_generation_by_main_llm": task_type in {"explain_image_question", "solve_image_question"} and llm_stage,
+            "mindmap_generation_by_main_llm": task_type == "image_to_mindmap" and llm_stage,
+            "flashcard_generation_by_main_llm": task_type == "image_to_flashcards" and llm_stage,
+            "variant_generation_by_main_llm": task_type == "image_to_variant_questions" and llm_stage,
             "steps": steps,
         }
 

@@ -402,6 +402,20 @@ def test_cached_image_context_can_generate_mindmap_without_new_upload() -> None:
     assert_true(zh(r"\u52a0\u6cd5") in result["result"]["markdown"], "cached knowledge point should enter mindmap")
 
 
+def test_cached_image_context_can_generate_flashcards_without_new_upload() -> None:
+    result = MultimodalAgent(llm_client=FailingMindmapLLM()).run({
+        "user_message": zh(r"\u6839\u636e\u8fd9\u5f20\u56fe\u751f\u6210\u590d\u4e60\u5361\u7247"),
+        "last_vision_result": extracted_question_vision(),
+        "last_extracted_questions": extracted_question_vision()["extracted_questions"],
+    })
+
+    assert_true(result["task_type"] == "image_to_flashcards", "cached image flashcard task should be selected")
+    assert_true(result["provider"] == "session_cache", "flashcards should reuse cached vision result")
+    assert_true(result["status"] == "success", "cached image flashcards should succeed")
+    assert_true(len(result["result"]["cards"]) >= 3, "flashcards should be generated")
+    assert_true(result["workflow_trace"]["vision_context_reused"] is True, "trace should show reused image context")
+
+
 def test_image_to_flashcards_from_vision_result() -> None:
     agent = MultimodalAgent()
     agent.registry.register_tool("QwenVisionProvider", FakeVisionTool(vision_result()))
@@ -497,6 +511,7 @@ if __name__ == "__main__":
     test_image_to_mindmap_from_vision_result()
     test_cached_image_context_can_continue_specific_question()
     test_cached_image_context_can_generate_mindmap_without_new_upload()
+    test_cached_image_context_can_generate_flashcards_without_new_upload()
     test_image_to_flashcards_from_vision_result()
     test_explain_image_question_needs_manual_review_when_question_missing()
     test_unconfigured_image_provider_no_fake_url()
