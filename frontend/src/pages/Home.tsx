@@ -4,11 +4,11 @@ import { useSubjectStore } from '../store/subjectStore';
 import { useLearningAnalytics } from '../hooks/useLearningAnalytics';
 import { useProfile } from '../hooks/useProfile';
 import { getCurrentLearner } from '../store/authStore';
-import { PlayCircle, FileText, BrainCircuit, Code2, Trophy, Flame, Clock, ChevronRight, Sparkles, Plus, Trash2, Users, UserPlus } from 'lucide-react';
+import { PlayCircle, FileText, BrainCircuit, Code2, Trophy, Flame, Clock, ChevronRight, Sparkles, Plus, Trash2, Users, UserPlus, BookOpen, Settings } from 'lucide-react';
 import DailyTaskPanel from '../components/tasks/DailyTaskPanel';
 import { useDailyTasks } from '../hooks/useDailyTasks';
 import Modal from '../components/common/Modal';
-import { getJoinedClassSubjects, joinClassSubject } from '../api/classSubjects';
+import { getJoinedClassSubjects, joinClassSubject, getMyClassSubjects } from '../api/classSubjects';
 import type { ClassSubject } from '../types/classSubject';
 
 export default function Home() {
@@ -62,6 +62,8 @@ export default function Home() {
   useEffect(() => {
     if (user && !isTeacher) {
       getJoinedClassSubjects().then(setClassSubjects).catch(() => {});
+    } else if (user && isTeacher) {
+      getMyClassSubjects().then(setClassSubjects).catch(() => {});
     }
   }, []);
 
@@ -88,54 +90,121 @@ export default function Home() {
       {/* Welcome Banner */}
       <div className="relative overflow-hidden bg-gradient-to-r from-primary-600 via-primary-500 to-accent-500 rounded-2xl p-6 text-white gradient-animate">
         <div className="relative z-10">
-          <div className="flex items-center gap-2 mb-2">
-            <Flame className="w-5 h-5 text-warning-300" />
-            <span className="text-sm font-medium text-white/80">连续学习 {streak} 天</span>
-          </div>
-          <h2 className="font-display text-2xl font-bold mb-2">欢迎回来，{user?.name || '学习者'}！</h2>
-          <p className="text-white/80 mb-4">继续你的学习之旅，今天继续探索新知识</p>
-          {taskTotal > 0 && taskTotal > taskCompleted && (
-            <p className="text-white/70 text-sm mb-4 flex items-center gap-1.5">
-              <span className="w-2 h-2 bg-warning-300 rounded-full animate-pulse" />
-              今日还有 {taskTotal - taskCompleted} 项任务待完成
-            </p>
-          )}
-          {!isParent && (
-            <button onClick={() => nav('/chat')} className="flex items-center gap-2 px-5 py-2.5 bg-white rounded-xl text-primary-600 font-semibold hover:bg-primary-50 transition-colors shadow-lg">
-              <PlayCircle size={18} /> 开始学习 <ChevronRight size={18} />
-            </button>
+          {isTeacher ? (
+            <>
+              <div className="flex items-center gap-2 mb-2">
+                <Users className="w-5 h-5 text-white/80" />
+                <span className="text-sm font-medium text-white/80">{classSubjects.length} 个班级</span>
+              </div>
+              <h2 className="font-display text-2xl font-bold mb-2">欢迎回来，{user?.name || '老师'}！</h2>
+              <p className="text-white/80 mb-4">管理你的班级，查看学生学习情况</p>
+              <button onClick={() => nav('/teacher')} className="flex items-center gap-2 px-5 py-2.5 bg-white rounded-xl text-primary-600 font-semibold hover:bg-primary-50 transition-colors shadow-lg">
+                <Users size={18} /> 班级管理 <ChevronRight size={18} />
+              </button>
+            </>
+          ) : isParent ? (
+            <>
+              <div className="flex items-center gap-2 mb-2">
+                <Flame className="w-5 h-5 text-warning-300" />
+                <span className="text-sm font-medium text-white/80">连续学习 {streak} 天</span>
+              </div>
+              <h2 className="font-display text-2xl font-bold mb-2">欢迎回来，{user?.name || '家长'}！</h2>
+              <p className="text-white/80 mb-4">查看孩子的学习进展</p>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center gap-2 mb-2">
+                <Flame className="w-5 h-5 text-warning-300" />
+                <span className="text-sm font-medium text-white/80">连续学习 {streak} 天</span>
+              </div>
+              <h2 className="font-display text-2xl font-bold mb-2">欢迎回来，{user?.name || '学习者'}！</h2>
+              <p className="text-white/80 mb-4">继续你的学习之旅，今天继续探索新知识</p>
+              {taskTotal > 0 && taskTotal > taskCompleted && (
+                <p className="text-white/70 text-sm mb-4 flex items-center gap-1.5">
+                  <span className="w-2 h-2 bg-warning-300 rounded-full animate-pulse" />
+                  今日还有 {taskTotal - taskCompleted} 项任务待完成
+                </p>
+              )}
+              <button onClick={() => nav('/chat')} className="flex items-center gap-2 px-5 py-2.5 bg-white rounded-xl text-primary-600 font-semibold hover:bg-primary-50 transition-colors shadow-lg">
+                <PlayCircle size={18} /> 开始学习 <ChevronRight size={18} />
+              </button>
+            </>
           )}
         </div>
-        <div className="absolute right-8 top-1/2 -translate-y-1/2 opacity-10"><BrainCircuit size={180} /></div>
+        <div className="absolute right-8 top-1/2 -translate-y-1/2 opacity-10">
+          {isTeacher ? <Users size={180} /> : <BrainCircuit size={180} />}
+        </div>
       </div>
 
-      {/* Stats Grid */}
-      <div className="grid grid-cols-4 gap-5">
-        <StatCard icon={<Clock className="w-5 h-5 text-primary-600" />} label="我的科目" value={`${subjects.length + classSubjects.length}个`} color="primary" />
-        <StatCard icon={<FileText className="w-5 h-5 text-accent-600" />} label="浏览资源" value={`${viewedResources}次`} color="accent" />
-        <StatCard icon={<Trophy className="w-5 h-5 text-warning-600" />} label="累计学习" value={`${totalHours}h`} color="warning" />
-        <StatCard icon={<Code2 className="w-5 h-5 text-success-600" />} label="测验正确率" value={quizAccuracy != null ? `${quizAccuracy}%` : '--'} color="success" />
-      </div>
+      {/* Teacher Dashboard */}
+      {isTeacher ? (
+        <>
+          {/* Teacher Stats */}
+          <div className="grid grid-cols-4 gap-5">
+            <StatCard icon={<Users className="w-5 h-5 text-primary-600" />} label="班级数量" value={`${classSubjects.length}个`} color="primary" />
+            <StatCard icon={<Users className="w-5 h-5 text-accent-600" />} label="学生总数" value={`${classSubjects.reduce((s, c) => s + (c.student_count || 0), 0)}人`} color="accent" />
+            <StatCard icon={<BookOpen className="w-5 h-5 text-warning-600" />} label="科目覆盖" value={classSubjects.length > 0 ? `${[...new Set(classSubjects.map(c => c.subject).filter(Boolean))].length}科` : '--'} color="warning" />
+            <StatCard icon={<Settings className="w-5 h-5 text-success-600" />} label="角色" value="教师" color="success" />
+          </div>
 
-      {/* Main Content */}
-      <div className="grid grid-cols-3 gap-6">
-        {/* 左侧 - 占2列 */}
-        <div className="col-span-2 flex flex-col space-y-6">
-          {/* Subject List */}
-          <div className="bg-white rounded-2xl p-6 shadow-soft">
-            {isTeacher ? (
-              <>
-                <div className="flex items-center justify-between mb-5">
-                  <h3 className="font-display text-lg font-semibold text-surface-800">班级管理</h3>
-                </div>
-                <p className="text-surface-400 text-sm py-4 text-center">
-                  教师请前往
-                  <button onClick={() => nav('/teacher')} className="text-primary-600 hover:text-primary-700 font-medium mx-1">班级管理</button>
-                  创建和管理班级
-                </p>
-              </>
-            ) : (
-              <>
+          {/* Teacher Quick Links */}
+          <div className="grid grid-cols-2 gap-6">
+            <div className="bg-white rounded-2xl p-6 shadow-soft">
+              <h3 className="font-display text-lg font-semibold text-surface-800 mb-4">班级管理</h3>
+              <p className="text-sm text-surface-500 mb-4">创建班级、推送练习、管理学生、查看学情统计</p>
+              <button onClick={() => nav('/teacher')} className="flex items-center gap-2 px-5 py-3 bg-primary-600 text-white rounded-xl text-sm font-medium hover:bg-primary-700 transition-colors shadow-soft w-full justify-center">
+                <Users size={18} /> 进入班级管理 <ChevronRight size={18} />
+              </button>
+            </div>
+            <div className="bg-white rounded-2xl p-6 shadow-soft">
+              <h3 className="font-display text-lg font-semibold text-surface-800 mb-4">后台管理</h3>
+              <p className="text-sm text-surface-500 mb-4">管理题库、知识图谱、系统配置、模型监控</p>
+              <button onClick={() => nav('/admin')} className="flex items-center gap-2 px-5 py-3 bg-surface-700 text-white rounded-xl text-sm font-medium hover:bg-surface-800 transition-colors shadow-soft w-full justify-center">
+                <Settings size={18} /> 进入后台管理 <ChevronRight size={18} />
+              </button>
+            </div>
+          </div>
+
+          {/* Recent Classes Preview */}
+          {classSubjects.length > 0 && (
+            <div className="bg-white rounded-2xl p-6 shadow-soft">
+              <div className="flex items-center justify-between mb-5">
+                <h3 className="font-display text-lg font-semibold text-surface-800">我的班级</h3>
+                <button onClick={() => nav('/teacher')} className="text-sm text-primary-600 hover:text-primary-700 font-medium">查看全部</button>
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {classSubjects.slice(0, 4).map(cs => (
+                  <div key={cs.id} onClick={() => nav(`/teacher/classes/${cs.id}`)}
+                    className="p-4 bg-surface-50 rounded-xl border border-surface-200 hover:border-primary-300 hover:shadow-soft transition-all cursor-pointer">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="font-medium text-surface-700 text-sm">{cs.name}</p>
+                        <p className="text-xs text-surface-400 mt-0.5">
+                          {cs.subject || '未分类'} · {cs.student_count} 名学生
+                        </p>
+                      </div>
+                      <ChevronRight size={16} className="text-surface-300" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          {/* Student/Parent: Stats Grid */}
+          <div className="grid grid-cols-4 gap-5">
+            <StatCard icon={<Clock className="w-5 h-5 text-primary-600" />} label="我的科目" value={`${subjects.length + classSubjects.length}个`} color="primary" />
+            <StatCard icon={<FileText className="w-5 h-5 text-accent-600" />} label="浏览资源" value={`${viewedResources}次`} color="accent" />
+            <StatCard icon={<Trophy className="w-5 h-5 text-warning-600" />} label="累计学习" value={`${totalHours}h`} color="warning" />
+            <StatCard icon={<Code2 className="w-5 h-5 text-success-600" />} label="测验正确率" value={quizAccuracy != null ? `${quizAccuracy}%` : '--'} color="success" />
+          </div>
+
+          {/* Student/Parent: Main Content */}
+          <div className="grid grid-cols-3 gap-6">
+            <div className="col-span-2 flex flex-col space-y-6">
+              <div className="bg-white rounded-2xl p-6 shadow-soft">
                 <div className="flex items-center justify-between mb-5">
                   <h3 className="font-display text-lg font-semibold text-surface-800">我的科目</h3>
                   {!isParent && (
@@ -157,7 +226,6 @@ export default function Home() {
                     <p className="text-surface-400 text-sm py-4 text-center">还没有科目，点击"新建科目"创建第一个，或"加入班级"输入邀请码</p>
                   ) : (
                     <>
-                      {/* Personal subjects */}
                       {subjects.map((s, idx) => (
                         <div key={s.id} className="space-y-2 cursor-pointer group relative" onClick={() => { setActive(s); nav(isParent ? '/analytics' : '/chat'); }}>
                           <div className="flex items-center justify-between text-sm">
@@ -174,7 +242,6 @@ export default function Home() {
                           </div>
                         </div>
                       ))}
-                      {/* Class subjects */}
                       {classSubjects.map((cs, idx) => (
                         <div key={cs.id} className="space-y-2 cursor-pointer group relative" onClick={() => { nav(`/chat?classSubjectId=${cs.id}`); }}>
                           <div className="flex items-center justify-between text-sm">
@@ -192,130 +259,116 @@ export default function Home() {
                     </>
                   )}
                 </div>
-              </>
-            )}
-          </div>
+              </div>
 
-          {/* 本周学习时长 - 折线图 */}
-          <div className="bg-white rounded-2xl p-6 shadow-soft flex-1 flex flex-col">
-            <div className="flex items-center justify-between mb-5">
-              <h3 className="font-display text-lg font-semibold text-surface-800">本周学习时长</h3>
-              <div className="flex items-center gap-2 text-sm"><span className="text-surface-500">总时长</span><span className="font-semibold text-surface-800">{totalHours}h</span></div>
-            </div>
-            <div className="flex-1 relative min-h-[160px]">
-              <svg className="w-full h-full" viewBox="0 0 400 160" preserveAspectRatio="xMidYMid meet">
-                {/* 网格线 */}
-                {[0, 1, 2, 3, 4].map(i => (
-                  <line key={`grid-${i}`} x1="30" y1={20 + i * 30} x2="390" y2={20 + i * 30} stroke="#f1f5f9" strokeWidth="1" />
-                ))}
-                {/* Y轴标签 */}
-                <text x="28" y="24" textAnchor="end" fill="#94a3b8" fontSize="10">{chartMax}h</text>
-                <text x="28" y="54" textAnchor="end" fill="#94a3b8" fontSize="10">{Math.round(chartMax * 0.75)}h</text>
-                <text x="28" y="84" textAnchor="end" fill="#94a3b8" fontSize="10">{Math.round(chartMax * 0.5)}h</text>
-                <text x="28" y="114" textAnchor="end" fill="#94a3b8" fontSize="10">{Math.round(chartMax * 0.25)}h</text>
-                <text x="28" y="144" textAnchor="end" fill="#94a3b8" fontSize="10">0h</text>
-
-                {/* 折线图 */}
-                {(() => {
-                  const data = chartData;
-                  const maxH = chartMax || 1;
-                  const trend = analytics?.completionTrend?.slice(-7) || [];
-                  const points = data.map((h, i) => {
-                    const x = 50 + (i / Math.max(data.length - 1, 1)) * 330;
-                    const y = 140 - (h / maxH) * 120;
-                    return `${x},${y}`;
-                  }).join(' ');
-                  const area = `${points} ${50 + 330},140 50,140`;
-                  return (
-                    <>
-                      <defs>
-                        <linearGradient id="lineGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-                          <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.3" />
-                          <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.02" />
-                        </linearGradient>
-                      </defs>
-                      <polygon points={area} fill="url(#lineGrad)" />
-                      <polyline points={points} fill="none" stroke="#3b82f6" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-                      {data.map((h, i) => {
+              <div className="bg-white rounded-2xl p-6 shadow-soft flex-1 flex flex-col">
+                <div className="flex items-center justify-between mb-5">
+                  <h3 className="font-display text-lg font-semibold text-surface-800">本周学习时长</h3>
+                  <div className="flex items-center gap-2 text-sm"><span className="text-surface-500">总时长</span><span className="font-semibold text-surface-800">{totalHours}h</span></div>
+                </div>
+                <div className="flex-1 relative min-h-[160px]">
+                  <svg className="w-full h-full" viewBox="0 0 400 160" preserveAspectRatio="xMidYMid meet">
+                    {[0, 1, 2, 3, 4].map(i => (
+                      <line key={`grid-${i}`} x1="30" y1={20 + i * 30} x2="390" y2={20 + i * 30} stroke="#f1f5f9" strokeWidth="1" />
+                    ))}
+                    <text x="28" y="24" textAnchor="end" fill="#94a3b8" fontSize="10">{chartMax}h</text>
+                    <text x="28" y="54" textAnchor="end" fill="#94a3b8" fontSize="10">{Math.round(chartMax * 0.75)}h</text>
+                    <text x="28" y="84" textAnchor="end" fill="#94a3b8" fontSize="10">{Math.round(chartMax * 0.5)}h</text>
+                    <text x="28" y="114" textAnchor="end" fill="#94a3b8" fontSize="10">{Math.round(chartMax * 0.25)}h</text>
+                    <text x="28" y="144" textAnchor="end" fill="#94a3b8" fontSize="10">0h</text>
+                    {(() => {
+                      const data = chartData;
+                      const maxH = chartMax || 1;
+                      const points = data.map((h, i) => {
                         const x = 50 + (i / Math.max(data.length - 1, 1)) * 330;
                         const y = 140 - (h / maxH) * 120;
-                        const isToday = i === todayIdx;
-                        const isFuture = todayIdx >= 0 && i > todayIdx;
-                        if (isFuture) return null;
-                        return (
-                          <g key={`dot-${i}`}>
-                            {isToday && <circle cx={x} cy={y} r="10" fill="none" stroke="#3b82f6" strokeWidth="1.5" opacity="0.2" />}
-                            <circle cx={x} cy={y} r={isToday ? 5 : 3.5} fill={isToday ? '#3b82f6' : '#fff'} stroke="#3b82f6" strokeWidth={isToday ? 2.5 : 2} />
-                            {isToday && h > 0 && (
-                              <text x={x} y={y - 12} textAnchor="middle" fill="#3b82f6" fontSize="11" fontWeight={700}>{h}h</text>
-                            )}
-                          </g>
-                        );
-                      })}
-                    </>
-                  );
-                })()}
-
-                {/* X轴标签 */}
-                {(analytics?.completionTrend?.slice(-7) || []).map((p, i) => {
-                  const date = p.date ? new Date(p.date) : null;
-                  const label = date ? `${date.getMonth() + 1}/${date.getDate()}` : `${i + 1}`;
-                  const isToday = i === todayIdx;
-                  return (
-                    <text key={`day-${i}`} x={50 + (i / Math.max(chartData.length - 1, 1)) * 330} y="158" textAnchor="middle" fill={isToday ? '#3b82f6' : '#94a3b8'} fontSize="10" fontWeight={isToday ? 600 : 400}>
-                      {label}
-                    </text>
-                  );
-                })}
-              </svg>
+                        return `${x},${y}`;
+                      }).join(' ');
+                      const area = `${points} ${50 + 330},140 50,140`;
+                      return (
+                        <>
+                          <defs>
+                            <linearGradient id="lineGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+                              <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.3" />
+                              <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.02" />
+                            </linearGradient>
+                          </defs>
+                          <polygon points={area} fill="url(#lineGrad)" />
+                          <polyline points={points} fill="none" stroke="#3b82f6" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                          {data.map((h, i) => {
+                            const x = 50 + (i / Math.max(data.length - 1, 1)) * 330;
+                            const y = 140 - (h / maxH) * 120;
+                            const isToday = i === todayIdx;
+                            const isFuture = todayIdx >= 0 && i > todayIdx;
+                            if (isFuture) return null;
+                            return (
+                              <g key={`dot-${i}`}>
+                                {isToday && <circle cx={x} cy={y} r="10" fill="none" stroke="#3b82f6" strokeWidth="1.5" opacity="0.2" />}
+                                <circle cx={x} cy={y} r={isToday ? 5 : 3.5} fill={isToday ? '#3b82f6' : '#fff'} stroke="#3b82f6" strokeWidth={isToday ? 2.5 : 2} />
+                                {isToday && h > 0 && (
+                                  <text x={x} y={y - 12} textAnchor="middle" fill="#3b82f6" fontSize="11" fontWeight={700}>{h}h</text>
+                                )}
+                              </g>
+                            );
+                          })}
+                        </>
+                      );
+                    })()}
+                    {(analytics?.completionTrend?.slice(-7) || []).map((p, i) => {
+                      const date = p.date ? new Date(p.date) : null;
+                      const label = date ? `${date.getMonth() + 1}/${date.getDate()}` : `${i + 1}`;
+                      const isToday = i === todayIdx;
+                      return (
+                        <text key={`day-${i}`} x={50 + (i / Math.max(chartData.length - 1, 1)) * 330} y="158" textAnchor="middle" fill={isToday ? '#3b82f6' : '#94a3b8'} fontSize="10" fontWeight={isToday ? 600 : 400}>
+                          {label}
+                        </text>
+                      );
+                    })}
+                  </svg>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
 
-        {/* 右侧 - 占1列 */}
-        <div className="flex flex-col space-y-6">
-          {/* 每日任务 */}
-          <DailyTaskPanel />
-
-          {/* 快速操作 */}
-          {!isParent && (
-          <div className="bg-white rounded-2xl p-6 shadow-soft">
-            <h3 className="font-display text-lg font-semibold text-surface-800 mb-4">快速操作</h3>
-            <div className="space-y-3">
-              <QA icon={<Sparkles className="w-5 h-5" />} label="生成学习资源" desc="AI智能体协同生成" onClick={() => nav('/chat')} color="bg-gradient-to-r from-primary-500 to-accent-500" />
-              <QA icon={<BrainCircuit className="w-5 h-5" />} label="更新学习画像" desc="对话式画像构建" onClick={() => nav('/profile')} color="bg-gradient-to-r from-warning-500 to-error-500" />
-              <QA icon={<FileText className="w-5 h-5" />} label="浏览资源库" desc="查看个性化资源" onClick={() => nav('/resources')} color="bg-gradient-to-r from-accent-500 to-primary-500" />
-            </div>
-          </div>
-          )}
-
-          {/* 最近活动 */}
-          <div className="bg-white rounded-2xl p-6 shadow-soft flex-1 flex flex-col min-h-0">
-            <div className="flex items-center justify-between mb-4"><h3 className="font-display text-lg font-semibold text-surface-800">最近活动</h3></div>
-            <div className="space-y-3 flex-1 overflow-y-auto pr-1">
-              {analytics?.recentEvents && analytics.recentEvents.length > 0 ? (
-                analytics.recentEvents.slice(0, 6).map((evt, i) => {
-                  const isComplete = evt.event?.includes('complete');
-                  const isQuiz = evt.event?.includes('quiz');
-                  const isPractice = evt.event?.includes('practice');
-                  const label = evt.event === 'resource_complete' ? '完成了资源' : evt.event === 'resource_view' ? '浏览了资源' : evt.event === 'quiz_result' ? '完成测验' : evt.event === 'practice_result' ? '完成练习' : evt.event === 'feedback' ? '提交反馈' : '学习活动';
-                  const metaTitle = evt.metadata && typeof evt.metadata === 'object' && 'resourceTitle' in evt.metadata ? String(evt.metadata.resourceTitle) : '';
-                  return (
-                    <div key={i} className="flex items-center gap-3 p-3 rounded-xl bg-surface-50 hover:bg-surface-100 transition-colors cursor-pointer">
-                      <div className="w-8 h-8 rounded-lg bg-primary-100 flex items-center justify-center flex-shrink-0">
-                        {isComplete ? <Trophy size={16} className="text-success-600" /> : isQuiz ? <FileText size={16} className="text-accent-600" /> : isPractice ? <Code2 size={16} className="text-warning-600" /> : <PlayCircle size={16} className="text-primary-600" />}
-                      </div>
-                      <div className="flex-1 min-w-0"><p className="text-sm font-medium text-surface-700 truncate">{metaTitle || label}</p><p className="text-[10px] text-surface-400">{label}</p></div>
-                    </div>
-                  );
-                })
-              ) : (
-                <p className="text-surface-400 text-sm py-4 text-center">暂无活动记录<br /><span className="text-xs">开始学习后这里会显示近期动态</span></p>
+            <div className="flex flex-col space-y-6">
+              {!isParent && <DailyTaskPanel />}
+              {!isParent && (
+              <div className="bg-white rounded-2xl p-6 shadow-soft">
+                <h3 className="font-display text-lg font-semibold text-surface-800 mb-4">快速操作</h3>
+                <div className="space-y-3">
+                  <QA icon={<Sparkles className="w-5 h-5" />} label="生成学习资源" desc="AI智能体协同生成" onClick={() => nav('/chat')} color="bg-gradient-to-r from-primary-500 to-accent-500" />
+                  <QA icon={<BrainCircuit className="w-5 h-5" />} label="更新学习画像" desc="对话式画像构建" onClick={() => nav('/profile')} color="bg-gradient-to-r from-warning-500 to-error-500" />
+                  <QA icon={<FileText className="w-5 h-5" />} label="浏览资源库" desc="查看个性化资源" onClick={() => nav('/resources')} color="bg-gradient-to-r from-accent-500 to-primary-500" />
+                </div>
+              </div>
               )}
+              <div className="bg-white rounded-2xl p-6 shadow-soft flex-1 flex flex-col min-h-0">
+                <div className="flex items-center justify-between mb-4"><h3 className="font-display text-lg font-semibold text-surface-800">最近活动</h3></div>
+                <div className="space-y-3 flex-1 overflow-y-auto pr-1">
+                  {analytics?.recentEvents && analytics.recentEvents.length > 0 ? (
+                    analytics.recentEvents.slice(0, 6).map((evt, i) => {
+                      const isComplete = evt.event?.includes('complete');
+                      const isQuiz = evt.event?.includes('quiz');
+                      const isPractice = evt.event?.includes('practice');
+                      const label = evt.event === 'resource_complete' ? '完成了资源' : evt.event === 'resource_view' ? '浏览了资源' : evt.event === 'quiz_result' ? '完成测验' : evt.event === 'practice_result' ? '完成练习' : evt.event === 'feedback' ? '提交反馈' : '学习活动';
+                      const metaTitle = evt.metadata && typeof evt.metadata === 'object' && 'resourceTitle' in evt.metadata ? String(evt.metadata.resourceTitle) : '';
+                      return (
+                        <div key={i} className="flex items-center gap-3 p-3 rounded-xl bg-surface-50 hover:bg-surface-100 transition-colors cursor-pointer">
+                          <div className="w-8 h-8 rounded-lg bg-primary-100 flex items-center justify-center flex-shrink-0">
+                            {isComplete ? <Trophy size={16} className="text-success-600" /> : isQuiz ? <FileText size={16} className="text-accent-600" /> : isPractice ? <Code2 size={16} className="text-warning-600" /> : <PlayCircle size={16} className="text-primary-600" />}
+                          </div>
+                          <div className="flex-1 min-w-0"><p className="text-sm font-medium text-surface-700 truncate">{metaTitle || label}</p><p className="text-[10px] text-surface-400">{label}</p></div>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <p className="text-surface-400 text-sm py-4 text-center">暂无活动记录<br /><span className="text-xs">开始学习后这里会显示近期动态</span></p>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
-        </div>
-      </div>
+        </>
+      )}
 
       {/* 加入班级弹窗 */}
       <Modal open={showJoin} onClose={() => { setShowJoin(false); setJoinError(''); }} title="加入班级">

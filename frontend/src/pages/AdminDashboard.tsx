@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import {
   Database, GitGraph, BarChart3, Settings, Activity,
@@ -266,8 +267,8 @@ function QuestionsTab() {
       {/* Create modal */}
       {showCreate && <QuestionEditModal onClose={() => setShowCreate(false)} onSaved={() => { setShowCreate(false); load(); }} />}
       {/* Reject modal */}
-      {reviewing && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={() => setReviewing(null)}>
+      {reviewing && createPortal(
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30" onClick={() => setReviewing(null)}>
           <div className="bg-white dark:bg-surface-800 rounded-2xl p-6 shadow-elevated w-full max-w-sm" onClick={e => e.stopPropagation()}>
             <h3 className="font-display text-lg font-semibold mb-4">驳回题目</h3>
             <div><label className="text-xs text-gray-500 mb-1 block">驳回理由（必填）</label>
@@ -281,7 +282,8 @@ function QuestionsTab() {
               }} className="px-4 py-2 bg-red-500 text-white text-sm rounded-lg hover:bg-red-600">驳回</button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
       {/* Tag manager modal */}
       {showTagManager && <TagManagerModal tags={allTags} onClose={() => setShowTagManager(false)} onRefresh={() => adminApi.listQuestionTags().then(r => setAllTags(r.tags)).catch(() => {})} questions={questions} onSaved={load} />}
@@ -313,8 +315,8 @@ function QuestionEditModal({ question, onClose, onSaved }: { question?: AdminQue
     setSaving(false);
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={onClose}>
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30" onClick={onClose}>
       <div className="bg-white dark:bg-surface-800 rounded-2xl p-6 shadow-elevated w-full max-w-lg max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <h3 className="font-display text-lg font-semibold mb-4">{question ? '编辑题目' : '新建题目'}</h3>
         <div className="space-y-3">
@@ -343,7 +345,8 @@ function QuestionEditModal({ question, onClose, onSaved }: { question?: AdminQue
           <button onClick={save} disabled={saving} className="px-4 py-2 bg-brand-500 text-white text-sm rounded-lg hover:bg-brand-600 disabled:opacity-50">{saving ? '保存中...' : '保存'}</button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -531,8 +534,8 @@ function KnowledgeTab() {
         </div>
       </div>
 
-      {editing && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={() => setEditing(null)}>
+      {editing && createPortal(
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30" onClick={() => setEditing(null)}>
           <div className="bg-white dark:bg-surface-800 rounded-2xl p-6 shadow-elevated w-full max-w-md" onClick={e => e.stopPropagation()}>
             <h3 className="font-display text-lg font-semibold mb-4">编辑知识点</h3>
             <div className="space-y-3">
@@ -553,13 +556,15 @@ function KnowledgeTab() {
               <button onClick={async () => { await adminApi.updateKP(editing.id, { name: editing.name, description: editing.description, difficulty: editing.difficulty, importance: editing.importance, chapter: editing.chapter }); setEditing(null); load(); }} className="px-4 py-2 bg-brand-500 text-white text-sm rounded-lg hover:bg-brand-600">保存</button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
-      {showCreate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={() => setShowCreate(false)}>
+      {showCreate && createPortal(
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30" onClick={() => setShowCreate(false)}>
           <CreateKPModal subject={subject} onClose={() => setShowCreate(false)} onSaved={() => { setShowCreate(false); load(); }} />
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
@@ -738,8 +743,8 @@ function ConfigTab() {
         <div className="text-center py-12 text-gray-400 text-sm">暂无配置项</div>
       )}
 
-      {editing && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={() => setEditing(null)}>
+      {editing && createPortal(
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30" onClick={() => setEditing(null)}>
           <div className="bg-white dark:bg-surface-800 rounded-2xl p-6 shadow-elevated w-full max-w-sm" onClick={e => e.stopPropagation()}>
             <h3 className="font-display text-lg font-semibold mb-4">编辑配置</h3>
             <div className="space-y-3">
@@ -752,11 +757,12 @@ function ConfigTab() {
               <button onClick={async () => { await adminApi.updateConfig(editing.key, { value: editing.value }); setEditing(null); load(); }} className="px-4 py-2 bg-brand-500 text-white text-sm rounded-lg hover:bg-brand-600">保存</button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
-      {showCreate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={() => setShowCreate(false)}>
+      {showCreate && createPortal(
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30" onClick={() => setShowCreate(false)}>
           <div className="bg-white dark:bg-surface-800 rounded-2xl p-6 shadow-elevated w-full max-w-sm" onClick={e => e.stopPropagation()}>
             <h3 className="font-display text-lg font-semibold mb-4">新增配置</h3>
             <div className="space-y-3">
@@ -785,7 +791,8 @@ function ConfigTab() {
               }} className="px-4 py-2 bg-brand-500 text-white text-sm rounded-lg hover:bg-brand-600">创建</button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
@@ -1025,8 +1032,8 @@ function TagManagerModal({ tags, onClose, onRefresh, questions, onSaved }: { tag
     onSaved();
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={onClose}>
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30" onClick={onClose}>
       <div className="bg-white dark:bg-surface-800 rounded-2xl p-6 shadow-elevated w-full max-w-md max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <h3 className="font-display text-lg font-semibold mb-4">标签管理</h3>
         {tags.length === 0 ? (
@@ -1068,7 +1075,8 @@ function TagManagerModal({ tags, onClose, onRefresh, questions, onSaved }: { tag
           <button onClick={onClose} className="px-4 py-2 text-sm text-gray-500 hover:bg-gray-100 dark:hover:bg-surface-600 rounded-lg">关闭</button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 

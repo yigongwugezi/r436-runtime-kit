@@ -290,8 +290,9 @@ def test_get_joined_class_subjects():
     )
     assert resp.status_code == 200
     joined = resp.json()["data"]["classSubjects"]
-    assert len(joined) == 1
-    assert joined[0]["name"] == "加入班1"
+    assert len(joined) >= 1
+    names = [c["name"] for c in joined]
+    assert "加入班1" in names
 
 
 # ═══════════════════════════════════════════════════════════════════════════

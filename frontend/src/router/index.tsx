@@ -23,7 +23,6 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore(s => s.isAuthenticated);
   const loading = useAuthStore(s => s.loading);
 
-  // 正在从 localStorage 恢复令牌并验证 — 不要立即跳转到登录页
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-surface-900">
@@ -37,6 +36,16 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />;
+  }
+  return <>{children}</>;
+}
+
+/** 学生/家长守卫：教师/管理员访问学生专属页面时重定向到 /teacher */
+function RequireStudent({ children }: { children: React.ReactNode }) {
+  const role = useAuthStore(s => s.learner?.role);
+
+  if (role === 'teacher' || role === 'admin') {
+    return <Navigate to="/teacher" replace />;
   }
   return <>{children}</>;
 }
@@ -55,16 +64,16 @@ const router = createBrowserRouter([
     ),
     children: [
       { index: true, element: <Home /> },
-      { path: 'chat', element: <ChatPage /> },
-      { path: 'resources', element: <ResourceLibrary /> },
-      { path: 'resources/:id', element: <ResourceLibrary /> },
-      { path: 'path', element: <LearningPathPage /> },
-      { path: 'profile', element: <ProfilePage /> },
-      { path: 'analytics', element: <LearningAnalyticsPage /> },
-      { path: 'timeline', element: <LearningTimelinePage /> },
-      { path: 'generate', element: <ResourceGenerationPage /> },
-      { path: 'practice', element: <PracticePage /> },
-      { path: 'history', element: <ConversationHistoryPage /> },
+      { path: 'chat', element: <RequireStudent><ChatPage /></RequireStudent> },
+      { path: 'resources', element: <RequireStudent><ResourceLibrary /></RequireStudent> },
+      { path: 'resources/:id', element: <RequireStudent><ResourceLibrary /></RequireStudent> },
+      { path: 'path', element: <RequireStudent><LearningPathPage /></RequireStudent> },
+      { path: 'profile', element: <RequireStudent><ProfilePage /></RequireStudent> },
+      { path: 'analytics', element: <RequireStudent><LearningAnalyticsPage /></RequireStudent> },
+      { path: 'timeline', element: <RequireStudent><LearningTimelinePage /></RequireStudent> },
+      { path: 'generate', element: <RequireStudent><ResourceGenerationPage /></RequireStudent> },
+      { path: 'practice', element: <RequireStudent><PracticePage /></RequireStudent> },
+      { path: 'history', element: <RequireStudent><ConversationHistoryPage /></RequireStudent> },
       { path: 'settings', element: <SettingsPage /> },
       { path: 'admin', element: <AdminDashboard /> },
       { path: 'teacher', element: <TeacherHome /> },

@@ -187,6 +187,18 @@ export default function SettingsPage() {
 
   // ── 选中分区 ──
   const [section, setSection] = useState('account');
+  const learnerRole = learner?.role;
+  const isTeacherOrAdmin = learnerRole === 'teacher' || learnerRole === 'admin';
+  // 过滤教师/管理员不相关的分区
+  const visibleNav = isTeacherOrAdmin
+    ? NAV_SECTIONS.filter(s => s.id !== 'preferences' && s.id !== 'diagnosis')
+    : NAV_SECTIONS;
+  // 如果当前分区对教师/管理员不可见，自动跳转到账户设置
+  useEffect(() => {
+    if (isTeacherOrAdmin && (section === 'preferences' || section === 'diagnosis')) {
+      setSection('account');
+    }
+  }, [section, isTeacherOrAdmin]);
 
   // ── 账户 ──
   const [editingName, setEditingName] = useState(false);
@@ -636,7 +648,7 @@ export default function SettingsPage() {
         {/* ===== 左侧导航 ===== */}
         <div className="w-48 flex-shrink-0">
           <nav className="bg-white dark:bg-surface-700 rounded-2xl p-2 shadow-soft space-y-0.5 sticky top-24">
-            {NAV_SECTIONS.map(s => {
+            {visibleNav.map(s => {
               const isActive = section === s.id;
               return (
                 <button key={s.id} type="button" onClick={() => setSection(s.id)}

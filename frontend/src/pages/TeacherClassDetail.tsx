@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   BookOpen, Users, BarChart3, ChevronLeft, Plus, Trash2, Send,
@@ -262,8 +263,8 @@ export default function TeacherClassDetail() {
         </div>
 
         {/* Push Modal */}
-        {showPushModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center">
+        {showPushModal && createPortal(
+          <div className="fixed inset-0 z-[100] flex items-center justify-center">
             <div className="absolute inset-0 bg-black/40" onClick={() => setShowPushModal(false)} />
             <div className="relative bg-white rounded-2xl shadow-elevated p-6 w-full max-w-3xl max-h-[80vh] overflow-y-auto animate-fade-in">
               <h3 className="font-display text-lg font-semibold text-surface-800 mb-4">推送练习</h3>
@@ -342,7 +343,8 @@ export default function TeacherClassDetail() {
                 </button>
               </div>
             </div>
-          </div>
+          </div>,
+          document.body
         )}
       </div>
     </TeacherGuard>

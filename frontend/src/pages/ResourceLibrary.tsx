@@ -297,6 +297,7 @@ function ResourceListView({
   sessionId,
   activeTaskId,
   activeStageId,
+  isReadOnly,
 }: {
   resources: Resource[];
   total: number;

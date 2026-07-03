@@ -14,6 +14,7 @@ const STUDENT_NAV = [
 ];
 
 const TEACHER_NAV = [
+  { id: 'dashboard', path: '/', label: '学习中心', icon: <LayoutDashboard size={20} /> },
   { id: 'class-home', path: '/teacher', label: '班级管理', icon: <Users size={20} /> },
   { id: 'admin', path: '/admin', label: '后台管理', icon: <Settings size={20} /> },
   { id: 'settings', path: '/settings', label: '系统设置', icon: <Settings size={20} /> },
