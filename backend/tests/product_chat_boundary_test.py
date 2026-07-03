@@ -550,6 +550,63 @@ def test_multimodal_image_reference_without_context_is_explicit() -> None:
     assert_true(zh(r"\u6ca1\u6709\u62ff\u5230\u53ef\u590d\u7528\u7684\u56fe\u7247") in response["data"]["reply"]["content"], "reply should ask for an image")
 
 
+def test_plain_text_does_not_reuse_last_image_context() -> None:
+    sid = "product_multimodal_plain_text_no_reuse"
+    conversation_store.reset(sid)
+    conversation_store.set_multimodal_context(sid, {
+        "last_vision_result": {"summary": "old image", "extracted_questions": [{"index": 1, "question_text": "old"}]},
+        "last_extracted_questions": [{"index": 1, "question_text": "old"}],
+    })
+
+    result = product._multimodal_chat_payload(
+        zh(r"\u5e2e\u6211\u751f\u6210\u51e0\u9053\u7ec3\u4e60\u9898"),
+        sid,
+        "",
+        {},
+        {"action": "none", "intent": "practice"},
+    )
+
+    assert_true(result is None, "plain practice request should not enter image multimodal flow")
+
+
+def test_cancelled_image_reference_does_not_reuse_cache() -> None:
+    sid = "product_multimodal_cancel_image_context"
+    conversation_store.reset(sid)
+    conversation_store.set_multimodal_context(sid, {
+        "last_vision_result": {"summary": "old image", "extracted_questions": [{"index": 1, "question_text": "old"}]},
+        "last_extracted_questions": [{"index": 1, "question_text": "old"}],
+    })
+    contexts: list[dict] = []
+
+    class FakeMultimodalAgent:
+        def run(self, context: dict) -> dict:
+            contexts.append(context)
+            return {
+                "agent": "MultimodalAgent",
+                "status": "needs_input",
+                "task_type": "image_to_mindmap",
+                "tool": "QwenVisionProvider",
+                "provider": "qwen_vl",
+                "result": None,
+                "warnings": ["missing image input"],
+                "trace": {},
+                "workflow_trace": {"workflow_name": "multimodal_generation", "workflow_status": "partial", "pipeline_executed": True, "steps": []},
+            }
+
+    with AttrPatch(product, MultimodalAgent=FakeMultimodalAgent):
+        response = product._multimodal_chat_payload(
+            zh(r"\u6839\u636e\u8fd9\u5f20\u56fe\u751f\u6210\u601d\u7ef4\u5bfc\u56fe"),
+            sid,
+            "",
+            {"ignore_image_context": True},
+            {"action": "none", "intent": "multimodal"},
+        )
+
+    assert_true(response is not None, "image reference should still route to multimodal")
+    assert_true(not contexts[0].get("last_vision_result"), "cancelled reference must not reuse cached vision")
+    assert_true(response["workflow_trace"]["image_context_source"] == "missing", "trace should show missing image context")
+
+
 if __name__ == "__main__":
     test_target_only_explicit_generation_runs_pipeline()
     test_calculus_reply_uses_real_stages_and_time()
@@ -562,4 +619,6 @@ if __name__ == "__main__":
     test_chat_image_url_routes_to_multimodal_agent_with_trace()
     test_multimodal_chat_reuses_last_image_context_for_followups()
     test_multimodal_image_reference_without_context_is_explicit()
+    test_plain_text_does_not_reuse_last_image_context()
+    test_cancelled_image_reference_does_not_reuse_cache()
     print("PASS product_chat_boundary_test")

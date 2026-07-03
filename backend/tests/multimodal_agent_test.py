@@ -360,6 +360,22 @@ def test_qwen_vision_provider_non_json_is_partial_success() -> None:
     assert_true(result["result"]["summary"] == "This image contains derivative notes.", "summary should fall back to raw text")
 
 
+def test_qwen_vision_provider_review_metadata_is_actionable() -> None:
+    def post_json(_url: str, _payload: dict, _api_key: str, _timeout: int) -> dict:
+        return {"choices": [{"message": {"content": '{"detected_text":"第12题公式不清晰","summary":"错题图","confidence":0.4,"needs_manual_review":true,"review_reasons":["第12题公式 OCR 可能不完整"],"uncertain_question_indices":[12],"uncertain_fields":["cards[11].back","formula_text"]}'}}]}
+
+    with EnvPatch(DASHSCOPE_API_KEY="test-key", QWEN_API_KEY=None):
+        result = QwenVisionProvider(post_json=post_json).run({"image_base64": "dGVzdA=="})
+
+    data = result["result"]
+    assert_true(result["status"] == "needs_manual_review", "uncertain image should be marked for review")
+    assert_true(data["review_reasons"], "review reasons should be present")
+    assert_true(data["uncertain_question_indices"] == [12], "uncertain question index should be present")
+    assert_true("formula_text" in data["uncertain_fields"], "uncertain fields should be present")
+    assert_true(data["review_level"] in {"medium", "high"}, "review level should be actionable")
+    assert_true("can_continue" in data, "can_continue should be present")
+
+
 def test_image_to_mindmap_from_vision_result() -> None:
     agent = MultimodalAgent(llm_client=FailingMindmapLLM())
     agent.registry.register_tool("QwenVisionProvider", FakeVisionTool(vision_result()))
@@ -508,6 +524,7 @@ if __name__ == "__main__":
     test_qwen_vision_provider_missing_local_path_is_explicit()
     test_qwen_vision_provider_uploaded_local_path_becomes_data_url()
     test_qwen_vision_provider_non_json_is_partial_success()
+    test_qwen_vision_provider_review_metadata_is_actionable()
     test_image_to_mindmap_from_vision_result()
     test_cached_image_context_can_continue_specific_question()
     test_cached_image_context_can_generate_mindmap_without_new_upload()

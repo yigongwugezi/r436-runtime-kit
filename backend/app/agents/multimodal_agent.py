@@ -472,6 +472,9 @@ class MultimodalAgent:
         result["review_reasons"] = vision.get("review_reasons", [])
         result["uncertain_question_indices"] = vision.get("uncertain_question_indices", [])
         result["uncertain_fields"] = vision.get("uncertain_fields", [])
+        result["uncertain_spans"] = vision.get("uncertain_spans", [])
+        result["review_level"] = vision.get("review_level", "low")
+        result["can_continue"] = vision.get("can_continue", True)
         return {
             **executed,
             "status": "needs_manual_review" if result.get("needs_manual_review") else "success",
@@ -511,6 +514,9 @@ class MultimodalAgent:
                             "review_reasons": vision.get("review_reasons", []),
                             "uncertain_question_indices": vision.get("uncertain_question_indices", []),
                             "uncertain_fields": vision.get("uncertain_fields", []),
+                            "uncertain_spans": vision.get("uncertain_spans", []),
+                            "review_level": vision.get("review_level", "low"),
+                            "can_continue": vision.get("can_continue", True),
                         },
                         "trace": {**executed.get("trace", {}), "vision_status": executed.get("status"), "flashcards_generated": True, "llm_stage": True},
                     }
@@ -544,6 +550,9 @@ class MultimodalAgent:
                 "review_reasons": vision.get("review_reasons", []),
                 "uncertain_question_indices": vision.get("uncertain_question_indices", []),
                 "uncertain_fields": vision.get("uncertain_fields", []),
+                "uncertain_spans": vision.get("uncertain_spans", []),
+                "review_level": vision.get("review_level", "low"),
+                "can_continue": vision.get("can_continue", True),
             },
             "trace": {**executed.get("trace", {}), "vision_status": executed.get("status"), "flashcards_generated": True, "llm_stage": False},
         }
@@ -563,6 +572,9 @@ class MultimodalAgent:
                     "review_reasons": ["OCR 关键信息缺失"],
                     "uncertain_question_indices": [],
                     "uncertain_fields": ["question_text"],
+                    "uncertain_spans": [],
+                    "review_level": "high",
+                    "can_continue": False,
                 },
                 "warnings": [*executed.get("warnings", []), "question text was not recognized clearly"],
             }
@@ -584,6 +596,9 @@ class MultimodalAgent:
             "review_reasons": vision.get("review_reasons", []),
             "uncertain_question_indices": vision.get("uncertain_question_indices", []),
             "uncertain_fields": vision.get("uncertain_fields", []),
+            "uncertain_spans": vision.get("uncertain_spans", []),
+            "review_level": vision.get("review_level", "low"),
+            "can_continue": vision.get("can_continue", True),
         }
         client = self._get_llm_client()
         if client:

@@ -9,6 +9,14 @@ interface Props {
   content: string;
 }
 
+function normalizeBareLatex(content: string) {
+  return content
+    .replace(/(?<![$\\])\\frac\{[^{}]+\}\{[^{}]+\}/g, (m) => `$${m}$`)
+    .replace(/(?<![$\\])\\sqrt\{[^{}]+\}/g, (m) => `$${m}$`)
+    .replace(/(?<![$\\])\\varphi/g, '$\\varphi$')
+    .replace(/\\begin\{cases\}([\s\S]*?)\\end\{cases\}/g, (_m, body) => `$$\\begin{cases}${body}\\end{cases}$$`);
+}
+
 export default function Markdown({ content }: Props) {
   return (
     <div className="prose-custom text-sm text-gray-800 leading-relaxed">
@@ -44,7 +52,7 @@ export default function Markdown({ content }: Props) {
           },
         }}
       >
-        {content}
+        {normalizeBareLatex(content)}
       </ReactMarkdown>
     </div>
   );

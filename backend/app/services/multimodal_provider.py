@@ -428,6 +428,17 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _drop_empty_sections(value: dict[str, Any]) -> dict[str, Any]:
+    keep = {}
+    for key, item in value.items():
+        if item in (None, "", [], {}):
+            continue
+        if isinstance(item, str) and item.strip(". ") == "":
+            continue
+        keep[key] = item
+    return keep
+
+
 def _confidence(value: Any, default: float = 0.5) -> float:
     try:
         score = float(value)
@@ -438,6 +449,8 @@ def _confidence(value: Any, default: float = 0.5) -> float:
 
 def _friendly_value(value: Any) -> str:
     text = _text(value)
+    if text.strip(". ") == "":
+        return ""
     if text.lower() in {"unknown", "none", "null", "n/a", "na"}:
         return ""
     if text in {"未知", "无", "暂无", "未识别"}:
@@ -447,7 +460,7 @@ def _friendly_value(value: Any) -> str:
 
 def _safe_summary(parsed: dict[str, Any], raw_text: str) -> str:
     summary = _text(parsed.get("summary"))
-    if summary:
+    if summary and summary.strip(". "):
         return summary
     for key in ("detected_text", "question_text", "diagram_description"):
         value = _text(parsed.get(key))
@@ -462,6 +475,7 @@ def _safe_summary(parsed: dict[str, Any], raw_text: str) -> str:
 def _review_metadata(parsed: dict[str, Any], confidence: float, *evidence: Any) -> dict[str, Any]:
     reasons = [_text(item) for item in _as_list(parsed.get("review_reasons")) if _text(item)]
     fields = [_text(item) for item in _as_list(parsed.get("uncertain_fields")) if _text(item)]
+    spans = [_text(item) for item in _as_list(parsed.get("uncertain_spans")) if _text(item)]
     indices: list[int] = []
     for item in _as_list(parsed.get("uncertain_question_indices")):
         try:
@@ -485,11 +499,16 @@ def _review_metadata(parsed: dict[str, Any], confidence: float, *evidence: Any) 
     if any(word in blob for word in uncertainty_words):
         reasons.append("图片内容存在不清晰或不完整信息")
 
+    needs_review = bool(reasons or fields or indices or spans)
+    review_level = "high" if not any(len(_text(item)) >= 8 for item in evidence) else ("medium" if needs_review else "low")
     return {
-        "needs_manual_review": bool(reasons or fields or indices),
+        "needs_manual_review": needs_review,
         "review_reasons": list(dict.fromkeys(reasons)),
         "uncertain_question_indices": list(dict.fromkeys(indices)),
         "uncertain_fields": list(dict.fromkeys(fields)),
+        "uncertain_spans": list(dict.fromkeys(spans)),
+        "review_level": review_level,
+        "can_continue": review_level != "high",
     }
 
 
@@ -502,6 +521,9 @@ def _ensure_review_fields(result: dict[str, Any], parsed: dict[str, Any], *evide
     result["review_reasons"] = list(dict.fromkeys(_as_list(result.get("review_reasons")) + review["review_reasons"]))
     result["uncertain_question_indices"] = list(dict.fromkeys(_as_list(result.get("uncertain_question_indices")) + review["uncertain_question_indices"]))
     result["uncertain_fields"] = list(dict.fromkeys(_as_list(result.get("uncertain_fields")) + review["uncertain_fields"]))
+    result["uncertain_spans"] = list(dict.fromkeys(_as_list(result.get("uncertain_spans")) + review["uncertain_spans"]))
+    result["review_level"] = result.get("review_level") or review["review_level"]
+    result["can_continue"] = bool(result.get("can_continue", review["can_continue"]))
     return result
 
 
@@ -720,10 +742,10 @@ def _normalize_task_result(task_type: str, parsed: dict[str, Any], raw_text: str
                 "resource_type": "resource_bundle",
                 "review_status": "pending",
                 "saved": False,
-            }
+        }
         result["resource_save_candidate"]["review_status"] = "pending"
         result["resource_save_candidate"]["saved"] = False
-        return result
+        return _drop_empty_sections(result)
 
     return vision
 

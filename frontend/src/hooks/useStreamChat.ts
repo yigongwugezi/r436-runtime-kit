@@ -10,7 +10,7 @@ import { runtimeStorageKeys, writeStorageJson, writeStorageItem } from '../utils
 
 const log = createLogger('StreamChat');
 
-const IMAGE_REFERENCE_RE = /(这张图|这张图片|上面这张图|刚才那张图|图中|图片里|这道题|这页笔记|继续讲第\s*[0-9一二两三四五六七八九十]+\s*题|根据这张图生成|复习卡片|完整学习资源包)/;
+const IMAGE_REFERENCE_RE = /(这张图|这张图片|上面这张图|刚才那张图|图中|图片里|这道题|这页笔记|题图|错题图|继续讲第\s*[0-9一二两三四五六七八九十]+\s*题)/;
 
 export function useStreamChat() {
   const {
@@ -26,12 +26,13 @@ export function useStreamChat() {
   const userAbortedRef = useRef(false);  // distinguish user stop-click from page-unload abort
 
   const send = useCallback(
-    async (content: string, attachments: ChatAttachment[] = []) => {
+    async (content: string, attachments: ChatAttachment[] = [], options: { ignoreImageContext?: boolean } = {}) => {
       if (isStreaming || (!content.trim() && attachments.length === 0)) return;
       const text = content.trim() || '识别这张图片';
       const store = useChatStore.getState();
+      const ignoreImageContext = options.ignoreImageContext === true;
       const requestAttachments =
-        attachments.length === 0 && store.lastImageAttachment && IMAGE_REFERENCE_RE.test(text)
+        !ignoreImageContext && attachments.length === 0 && store.lastImageAttachment && IMAGE_REFERENCE_RE.test(text)
           ? [{ ...store.lastImageAttachment, reused_from_last: true }]
           : attachments;
       if (attachments[0]) store.setLastImageAttachment(attachments[0]);
@@ -77,6 +78,7 @@ export function useStreamChat() {
           sessionId: useChatStore.getState().currentSessionId,
           subjectId: useSubjectStore.getState().activeSubject?.id,
           attachments: requestAttachments,
+          ignore_image_context: ignoreImageContext,
         }, controller.signal);
 
         const decoder = new TextDecoder();
@@ -192,6 +194,7 @@ export function useStreamChat() {
             sessionId: useChatStore.getState().currentSessionId,
             subjectId: useSubjectStore.getState().activeSubject?.id,
             attachments: requestAttachments,
+            ignore_image_context: ignoreImageContext,
           });
           log.info('非流式回退成功');
           updateLastAssistant((m) => ({

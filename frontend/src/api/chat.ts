@@ -8,6 +8,7 @@ export interface SendMessageParams {
   attachments?: ChatAttachment[];
   image_url?: string;
   image_base64?: string;
+  ignore_image_context?: boolean;
 }
 
 export interface ChatResponse {

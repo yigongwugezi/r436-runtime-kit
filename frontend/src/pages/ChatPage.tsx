@@ -28,6 +28,74 @@ const AGENT_LABELS: Record<string, string> = {
   grading_agent: '批改作答',
 };
 const EMPTY_PIPELINE: ProgressStep[] = [];
+const IMAGE_REFERENCE_RE = /(这张图|这张图片|上面这张图|刚才那张图|图中|图片里|这道题|这页笔记|题图|错题图|继续讲第\s*[0-9一二两三四五六七八九十]+\s*题)/;
+
+const attachmentUrl = (item: ChatAttachment) => item.image_url || item.url || (item.file_id ? `/api/multimodal/file/${item.file_id}` : '');
+
+function MathText({ children }: { children: unknown }) {
+  return <Markdown content={String(children || '')} />;
+}
+
+function humanizeReviewField(value: unknown) {
+  const text = String(value || '');
+  const cardMatch = text.match(/^cards\[(\d+)\]\.(front|back|answer)$/);
+  if (cardMatch) {
+    const idx = Number(cardMatch[1]) + 1;
+    return `第${idx}张卡片${cardMatch[2] === 'front' ? '问题' : '答案'}可能缺失或不完整`;
+  }
+  const labels: Record<string, string> = {
+    question_text: '题干',
+    answer: '答案',
+    formula_text: '公式',
+    detected_text: '识别文本',
+    options: '选项',
+  };
+  return labels[text] || text;
+}
+
+function ImageAttachmentPreview({ item }: { item: ChatAttachment }) {
+  const [open, setOpen] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const url = attachmentUrl(item);
+  if (!url) return null;
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)} className="mt-2 block text-left">
+        {failed ? (
+          <span className="block rounded-xl border border-white/30 bg-white/10 px-3 py-2 text-xs">
+            图片预览加载失败，点击查看原始文件
+          </span>
+        ) : (
+          <span className="inline-flex flex-col gap-1">
+            {item.reused_from_last && <span className="text-[11px] opacity-80">引用上一张图片</span>}
+            <img
+              src={url}
+              onError={() => setFailed(true)}
+              className="max-h-44 w-40 rounded-xl border border-white/30 object-cover"
+              loading="lazy"
+            />
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-6" onClick={() => setOpen(false)}>
+          <div className="relative max-h-full max-w-5xl" onClick={(e) => e.stopPropagation()}>
+            <button className="absolute -right-3 -top-3 rounded-full bg-white p-1 text-surface-600 shadow" onClick={() => setOpen(false)}>
+              <XCircle size={22} />
+            </button>
+            {failed ? (
+              <a href={url} target="_blank" rel="noreferrer" className="rounded-xl bg-white px-4 py-3 text-sm text-primary-600">
+                打开原始文件
+              </a>
+            ) : (
+              <img src={url} className="max-h-[82vh] max-w-[88vw] rounded-2xl bg-white object-contain" />
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
 
 function HistoryPopover({ sessions, currentSessionId, onSelect, onDelete, onRename, onNew, onClose }: {
   sessions: any[]; currentSessionId: string;
@@ -102,9 +170,12 @@ function MultimodalResultView({ result }: { result: ChatMessage['multimodalResul
   const warnings = result?.warnings || [];
   const needsReview = data.needs_manual_review || result?.status === 'needs_manual_review';
   const isExplanationTask = result?.task_type === 'explain_image_question' || result?.task_type === 'solve_image_question';
+  const isMindmapTask = result?.task_type === 'image_to_mindmap';
   const reviewReasons = Array.isArray(data.review_reasons) ? data.review_reasons.filter(Boolean) : [];
   const uncertainQuestionIndices = Array.isArray(data.uncertain_question_indices) ? data.uncertain_question_indices.filter(Boolean) : [];
   const uncertainFields = Array.isArray(data.uncertain_fields) ? data.uncertain_fields.filter(Boolean) : [];
+  const uncertainSpans = Array.isArray(data.uncertain_spans) ? data.uncertain_spans.filter(Boolean) : [];
+  const [reviewDismissed, setReviewDismissed] = useState(false);
 
   const saveResource = async () => {
     setSaveState('保存中...');
@@ -127,15 +198,23 @@ function MultimodalResultView({ result }: { result: ChatMessage['multimodalResul
   };
 
   const list = (items: any[]) => items.filter(Boolean).map((item, idx) => <li key={idx}>{String(item)}</li>);
-  const ReviewNotice = () => (needsReview || warnings.length > 0 ? (
-    <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">
-      {needsReview && <div className="font-semibold">有些识别结果需要确认</div>}
+  const ReviewNotice = () => !reviewDismissed && (needsReview || warnings.length > 0) ? (
+    <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 space-y-1">
+      {needsReview && <div className="font-semibold">以下内容可能需要你确认</div>}
       {reviewReasons.map((item: string, idx: number) => <div key={`reason-${idx}`}>{item}</div>)}
       {uncertainQuestionIndices.length > 0 && <div>涉及题号：{uncertainQuestionIndices.join('、')}</div>}
-      {uncertainFields.length > 0 && <div>涉及字段：{uncertainFields.join('、')}</div>}
-      {warnings.map((item, idx) => <div key={`warning-${idx}`}>{item}</div>)}
+      {uncertainFields.length > 0 && <div>涉及字段：{uncertainFields.map(humanizeReviewField).join('、')}</div>}
+      {uncertainSpans.length > 0 && <div>可疑片段：{uncertainSpans.join('、')}</div>}
+      {warnings.map((item, idx) => <div key={`warning-${idx}`}>{String(item).replace(/cards\[(\d+)\]\.back/g, (_m, n) => `第${Number(n) + 1}张卡片答案`)}</div>)}
+      <div className="pt-1 text-amber-700">
+        {data.can_continue === false ? '建议重新上传更清晰图片后再继续。' : '你可以继续使用当前识别结果，也可以重新上传更清晰图片。'}
+      </div>
+      <div className="flex gap-2 pt-1">
+        <button onClick={() => setReviewDismissed(true)} className="rounded-lg bg-white px-2 py-1 text-amber-700 border border-amber-200">我知道了</button>
+        {data.can_continue !== false && <button onClick={() => setReviewDismissed(true)} className="rounded-lg bg-amber-100 px-2 py-1 text-amber-800">继续使用当前识别结果</button>}
+      </div>
     </div>
-  ) : null);
+  ) : null;
 
   if (isExplanationTask) {
     return (
@@ -163,7 +242,7 @@ function MultimodalResultView({ result }: { result: ChatMessage['multimodalResul
   return (
     <div className="mt-3 space-y-3">
       {(needsReview || warnings.length > 0) && <ReviewNotice />}
-      {vision && (
+      {!isMindmapTask && vision && (
         <div className="rounded-xl border border-surface-200 bg-white p-3 text-xs text-surface-600 space-y-1">
           <div className="font-semibold text-surface-700">图片理解</div>
           {vision.image_type && <div>类型：{vision.image_type}</div>}
@@ -220,13 +299,28 @@ function MultimodalResultView({ result }: { result: ChatMessage['multimodalResul
       )}
       {Array.isArray(flashcards) && flashcards.length > 0 && (
         <div className="grid gap-2">
-          {flashcards.map((card: any, idx: number) => (
-            <div key={idx} className="rounded-xl border border-surface-200 bg-white p-3 text-xs">
-              <div className="font-semibold text-surface-700">{card.front}</div>
-              <div className="mt-1 text-surface-500">{card.back}</div>
-              <div className="mt-1 text-surface-400">{card.knowledge_point} · {card.difficulty} · {card.card_type}</div>
-            </div>
+          {flashcards.slice(0, 6).map((card: any, idx: number) => (
+            <details key={idx} className="rounded-xl border border-surface-200 bg-white p-3 text-xs">
+              <summary className="cursor-pointer list-none">
+                <div className="font-semibold text-surface-700"><MathText>{card.front || `第 ${idx + 1} 张卡片`}</MathText></div>
+                <div className="mt-1 text-surface-400">{card.knowledge_point || '知识点待确认'} · {card.difficulty || 'medium'} · {card.card_type || 'review'}</div>
+              </summary>
+              <div className="mt-2 rounded-lg bg-surface-50 p-2 text-surface-600"><MathText>{card.back || '答案待补充'}</MathText></div>
+            </details>
           ))}
+          {flashcards.length > 6 && (
+            <details className="rounded-xl border border-surface-200 bg-white p-3 text-xs">
+              <summary className="cursor-pointer text-surface-600">还有 {flashcards.length - 6} 张卡片，点击展开</summary>
+              <div className="mt-2 grid gap-2">
+                {flashcards.slice(6).map((card: any, idx: number) => (
+                  <div key={idx} className="rounded-lg bg-surface-50 p-2">
+                    <div className="font-medium text-surface-700"><MathText>{card.front}</MathText></div>
+                    <div className="mt-1 text-surface-500"><MathText>{card.back}</MathText></div>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
         </div>
       )}
       {Array.isArray(path) && path.length > 0 && (
@@ -286,10 +380,7 @@ function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onCla
           {isUser ? (
             <div>
               <p className="whitespace-pre-wrap text-sm leading-relaxed">{msg.content}</p>
-              {msg.attachments?.map((item: ChatAttachment) => {
-                const url = item.image_url || item.url;
-                return url ? <img key={item.file_id || url} src={url} className="mt-2 max-h-36 rounded-xl border border-white/30" /> : null;
-              })}
+              {msg.attachments?.map((item: ChatAttachment) => <ImageAttachmentPreview key={item.file_id || attachmentUrl(item)} item={item} />)}
             </div>
           ) : (
             <div className="text-sm leading-relaxed">
@@ -344,11 +435,12 @@ export default function ChatPage() {
     );
   }
   const initialMessage = (loc.state as any)?.initialMessage;
-  const { messages, isStreaming, agentProgress, currentSessionId, setLoading } = useChatStore() as any;
+  const { messages, isStreaming, agentProgress, currentSessionId, setLoading, lastImageAttachment } = useChatStore() as any;
   const { send, abort } = useStreamChat();
   const [input, setInput] = useState(''); const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [messagesLoaded, setMessagesLoaded] = useState(false); const [menuOpen, setMenuOpen] = useState(false); const [historyOpen, setHistoryOpen] = useState(false);
   const [selectedImage, setSelectedImage] = useState<{ file: File; preview: string } | null>(null);
+  const [imageContextDisabled, setImageContextDisabled] = useState(false);
   const [quickCommands, setQuickCommands] = useState<QuickCommand[]>(DEFAULT_QUICK_COMMANDS);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null); const inputRef = useRef<HTMLTextAreaElement>(null); const bottomRef = useRef<HTMLDivElement>(null); const fileRef = useRef<HTMLInputElement>(null);
@@ -360,6 +452,11 @@ export default function ChatPage() {
     getAgents().then(res => { if (res.agents?.length) setAgents(res.agents); }).catch(() => {});
   }, []);
   useEffect(() => () => { if (selectedImage) URL.revokeObjectURL(selectedImage.preview); }, [selectedImage]);
+  const referencesLastImage = !selectedImage && Boolean(lastImageAttachment) && IMAGE_REFERENCE_RE.test(input);
+  const willUseLastImage = referencesLastImage && !imageContextDisabled;
+  useEffect(() => {
+    if (!referencesLastImage) setImageContextDisabled(false);
+  }, [referencesLastImage]);
 
   const scrollToBottom = useCallback((force = false) => {
     if (force) userScrolledUpRef.current = false;
@@ -456,13 +553,15 @@ export default function ChatPage() {
     if (!file || !/^image\/(png|jpe?g|webp)$/.test(file.type)) return;
     if (selectedImage) URL.revokeObjectURL(selectedImage.preview);
     setSelectedImage({ file, preview: URL.createObjectURL(file) });
+    setImageContextDisabled(false);
   };
   const handleSend = async () => {
     if ((!input.trim() && !selectedImage) || isStreaming) return;
     const text = input.trim() || '识别这张图片';
     const attachments = selectedImage ? [await uploadMultimodalImage(selectedImage.file, currentSessionId)] : [];
-    send(text, attachments);
+    send(text, attachments, { ignoreImageContext: referencesLastImage && imageContextDisabled });
     setInput('');
+    setImageContextDisabled(false);
     if (selectedImage) URL.revokeObjectURL(selectedImage.preview);
     setSelectedImage(null);
     if (fileRef.current) fileRef.current.value = '';
@@ -548,6 +647,17 @@ export default function ChatPage() {
                 <button onClick={() => { URL.revokeObjectURL(selectedImage.preview); setSelectedImage(null); if (fileRef.current) fileRef.current.value = ''; }} className="p-2 rounded-lg text-surface-400 hover:bg-white hover:text-error-500">
                   <Trash2 size={16} />
                 </button>
+              </div>
+            )}
+            {referencesLastImage && (
+              <div className={`mb-3 flex items-center gap-3 rounded-xl border p-2 text-xs ${willUseLastImage ? 'border-primary-200 bg-primary-50 text-primary-700' : 'border-surface-200 bg-surface-50 text-surface-500'}`}>
+                {attachmentUrl(lastImageAttachment) && <img src={attachmentUrl(lastImageAttachment)} className="h-10 w-10 rounded-lg object-cover" />}
+                <span className="flex-1">{willUseLastImage ? '正在引用上一张图片' : '已取消引用上一张图片，本条消息不会带图'}</span>
+                {willUseLastImage ? (
+                  <button onClick={() => setImageContextDisabled(true)} className="rounded-lg bg-white px-2 py-1 text-primary-600 border border-primary-100">取消引用</button>
+                ) : (
+                  <button onClick={() => setImageContextDisabled(false)} className="rounded-lg bg-white px-2 py-1 text-surface-600 border border-surface-200">重新使用</button>
+                )}
               </div>
             )}
             <div className="flex items-end gap-3">

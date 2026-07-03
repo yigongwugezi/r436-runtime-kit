@@ -780,9 +780,25 @@ _MULTIMODAL_PATTERNS = _MULTIMODAL_PATTERNS + (
     "\u9898\u56fe",
     "\u7ee7\u7eed\u8bb2\u7b2c",
     "\u6839\u636e\u8fd9\u5f20\u56fe",
-    "\u590d\u4e60\u5361\u7247",
-    "\u5b8c\u6574\u5b66\u4e60\u8d44\u6e90\u5305",
 )
+
+
+def _message_references_image(message: str) -> bool:
+    text = str(message or "")
+    if re.search(r"继续讲第\s*[0-9一二两三四五六七八九十]+\s*题", text):
+        return True
+    return any(pattern in text for pattern in (
+        "这张图",
+        "这张图片",
+        "上面这张图",
+        "刚才那张图",
+        "图中",
+        "图片里",
+        "这道题",
+        "这页笔记",
+        "题图",
+        "错题图",
+    ))
 
 
 def _is_multimodal_request(message: str, payload: dict[str, Any] | None = None) -> bool:
@@ -992,9 +1008,11 @@ def _multimodal_chat_payload(
 
     state = conversation_store.get(session_id)
     image_input = _multimodal_image_input(payload)
-    cached_context = conversation_store.get_multimodal_context(session_id)
+    ignore_image_context = bool(payload.get("ignore_image_context"))
+    references_image = _message_references_image(message)
+    cached_context = {} if ignore_image_context else conversation_store.get_multimodal_context(session_id)
     original_has_image = _has_image_input(image_input) and not _reused_frontend_attachment(image_input)
-    if not _has_image_input(image_input):
+    if not _has_image_input(image_input) and references_image:
         cached_input = cached_context.get("last_image_input") if isinstance(cached_context.get("last_image_input"), dict) else {}
         if cached_input and not cached_context.get("last_vision_result"):
             image_input = {
@@ -1005,6 +1023,7 @@ def _multimodal_chat_payload(
             }
     image_context_source = _image_context_source(image_input if _has_image_input(image_input) else {}, cached_context)
     reused_image_context = (not original_has_image) and image_context_source in {"last_uploaded_image", "last_vision_result"}
+    context_cache = cached_context if references_image or reused_image_context else {}
     context = {
         "session_id": session_id,
         "subject_id": subject_id,
@@ -1016,7 +1035,7 @@ def _multimodal_chat_payload(
         "knowledge_context": (state.last_result or {}).get("knowledge_context", {}) if isinstance(state.last_result, dict) else {},
         "topic": state.facts.get("target_course") or subject_id,
         "subject_name": state.facts.get("target_course") or "",
-        **cached_context,
+        **context_cache,
     }
     result = MultimodalAgent().run(context)
     trace = _multimodal_workflow_trace(
