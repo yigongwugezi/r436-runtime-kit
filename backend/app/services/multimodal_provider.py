@@ -214,8 +214,9 @@ import json
 import mimetypes
 import uuid
 from pathlib import Path
-from urllib import error, request
 from urllib.parse import urljoin, urlparse
+
+import httpx
 
 from app.config import settings
 from app.utils.llm_json import parse_safe
@@ -231,6 +232,19 @@ ALLOWED_IMAGE_TYPES = {
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 
+class HttpClientError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        http_status: int | None = None,
+        response_body_preview: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.http_status = http_status
+        self.response_body_preview = response_body_preview
+
+
 def _env(*names: str, default: str = "") -> str:
     for name in names:
         value = os.getenv(name)
@@ -240,17 +254,20 @@ def _env(*names: str, default: str = "") -> str:
 
 
 def _json_post(url: str, payload: dict[str, Any], api_key: str, timeout: int = 60) -> dict[str, Any]:
-    req = request.Request(
-        url=url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
+    response = httpx.post(
+        url,
+        json=payload,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        timeout=timeout,
     )
-    with request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    if response.status_code >= 400:
+        preview = response.text[:300]
+        raise HttpClientError(
+            f"HTTP {response.status_code}: {preview}",
+            http_status=response.status_code,
+            response_body_preview=preview,
+        )
+    return response.json()
 
 
 def _qwen_chat_endpoint(base_url: str) -> str:
@@ -496,8 +513,12 @@ class QwenVisionProvider:
                 result=_normalize_vision_result(parsed, raw_text),
                 trace=trace,
             ) | {"model": model, "raw_text": raw_text}
-        except (error.URLError, TimeoutError, OSError, KeyError, json.JSONDecodeError, ValueError) as exc:
-            return _response(status="failed", provider=self.provider, warnings=[str(exc)], trace={**trace, "exception_type": type(exc).__name__, "exception_message": str(exc)})
+        except (HttpClientError, httpx.HTTPError, TimeoutError, OSError, KeyError, json.JSONDecodeError, ValueError) as exc:
+            failed_trace = {**trace, "exception_type": type(exc).__name__, "exception_message": str(exc)}
+            if isinstance(exc, HttpClientError):
+                failed_trace["http_status"] = exc.http_status
+                failed_trace["response_body_preview"] = exc.response_body_preview
+            return _response(status="failed", provider=self.provider, warnings=[str(exc)], trace=failed_trace)
 
 
 class QwenImageProvider:
