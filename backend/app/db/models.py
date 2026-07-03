@@ -546,3 +546,33 @@ class ClassPushModel(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     question_ids: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+# ── Personal Subject (Student-managed) ─────────────────────────────────────
+
+
+class PersonalSubjectModel(Base):
+    """A personal subject created by a student for self-directed learning.
+
+    Stored server-side so subjects are visible across browsers and to
+    bound parent accounts.  Differs from ClassSubjectModel:
+    - Created by individual students, not teachers
+    - No invite code, membership roster, or exercise push mechanism
+    - Visible to the creating student and their bound parent(s)
+    """
+
+    __tablename__ = "personal_subjects"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    learner_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("learners.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(128), default="")
+    description: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    learner: Mapped["LearnerModel"] = relationship("LearnerModel")

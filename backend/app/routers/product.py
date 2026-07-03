@@ -1729,7 +1729,7 @@ def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(reject_pare
     _validate_message(message)
 
     # Link session to subject/learner for proper data isolation
-    _ensure_session_linked(session_id, subject_id=subject_id)
+    _ensure_session_linked(session_id, subject_id=subject_id, learner_id=auth.learner_id)
 
     conversation_store.append_message(session_id, "user", message)
     intent = _classify_intent(message, session_id)
@@ -1973,7 +1973,7 @@ def send_chat(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent
     _validate_message(message)
 
     # Link session to subject/learner for proper data isolation
-    _ensure_session_linked(session_id, subject_id=subject_id)
+    _ensure_session_linked(session_id, subject_id=subject_id, learner_id=auth.learner_id)
 
     conversation_store.append_message(session_id, "user", message)
     intent = _classify_intent(message, session_id)
@@ -2292,7 +2292,7 @@ def _ensure_session_linked(
             if changed:
                 db.commit()
     except Exception:
-        logger.warning("Failed to link session %s to subject/learner", session_id)
+        logger.warning("Failed to link session %s to subject/learner", session_id, exc_info=True)
     finally:
         db.close()
 

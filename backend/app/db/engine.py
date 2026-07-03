@@ -140,6 +140,12 @@ def init_db() -> None:
             "metadata": "JSON",
             "updated_at": "DATETIME",
         },
+        "student_questions": {
+            "needs_review": "BOOLEAN DEFAULT 0",
+            "review_reason": "VARCHAR(256)",
+            "review_status": "VARCHAR(32)",
+            "revision_note": "TEXT",
+        },
         "system_config": {
             "value": "TEXT",
             "description": "VARCHAR(256)",
@@ -151,6 +157,82 @@ def init_db() -> None:
     for table, columns in migrations.items():
         for column, definition in columns.items():
             add_column_if_missing(table, column, definition)
+
+    # ── Fix stale FK on student_questions.session_id ──────────────────
+    # Earlier versions had session_id -> sessions.id FK.  Teacher-pushed
+    # questions use synthetic ids like "class_cs_xxx" which don't exist
+    # in the sessions table, so the FK must be removed.
+    _migrate_student_questions_session_fk()
+
+
+def _migrate_student_questions_session_fk() -> None:
+    """Drop the stale FK on student_questions.session_id if it exists."""
+    with engine.connect() as conn:
+        # Check if the student_questions table exists
+        tables = {row[0] for row in conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='student_questions'")
+        ).fetchall()}
+        if "student_questions" not in tables:
+            return
+
+        # Check for FKs on session_id
+        fks = conn.execute(
+            text("PRAGMA foreign_key_list(student_questions)")
+        ).fetchall()
+        has_session_fk = any(row[3] == "session_id" for row in fks)
+
+        if not has_session_fk:
+            return
+
+        # Recreate the table without the FK
+        conn.execute(text("BEGIN TRANSACTION"))
+        try:
+            conn.execute(text("""
+                CREATE TABLE student_questions_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    question_id VARCHAR(64) UNIQUE NOT NULL,
+                    question_set_id VARCHAR(64) DEFAULT '',
+                    session_id VARCHAR(64) NOT NULL,
+                    source_question_id VARCHAR(64),
+                    type VARCHAR(16) DEFAULT 'choice',
+                    stem TEXT DEFAULT '',
+                    options JSON,
+                    correct VARCHAR(512),
+                    explanation TEXT,
+                    difficulty VARCHAR(8) DEFAULT 'medium',
+                    knowledge_points JSON,
+                    tags JSON,
+                    scoring_rubric JSON,
+                    reference_answer TEXT,
+                    source VARCHAR(32) DEFAULT 'llm_generated',
+                    quality_status VARCHAR(16) DEFAULT 'passed',
+                    needs_review BOOLEAN DEFAULT 0,
+                    review_reason VARCHAR(256),
+                    review_status VARCHAR(32),
+                    revision_note TEXT,
+                    created_at DATETIME
+                )
+            """))
+            conn.execute(text("""
+                INSERT INTO student_questions_new SELECT
+                    id, question_id, question_set_id, session_id,
+                    source_question_id, type, stem, options, correct,
+                    explanation, difficulty, knowledge_points, tags,
+                    scoring_rubric, reference_answer, source,
+                    quality_status, needs_review, review_reason,
+                    review_status, revision_note, created_at
+                FROM student_questions
+            """))
+            conn.execute(text("DROP TABLE student_questions"))
+            conn.execute(text("ALTER TABLE student_questions_new RENAME TO student_questions"))
+            # Recreate indexes
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_student_questions_question_id ON student_questions(question_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_student_questions_question_set_id ON student_questions(question_set_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_student_questions_session_id ON student_questions(session_id)"))
+            conn.execute(text("COMMIT"))
+        except Exception:
+            conn.execute(text("ROLLBACK"))
+            raise
 
 
 # Keep direct route imports and test scripts usable even when FastAPI lifespan

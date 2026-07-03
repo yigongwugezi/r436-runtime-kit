@@ -78,6 +78,10 @@ export const runtimeStorageKeys = {
     primary: `r436_runtime_active_subject_${learnerId}`,
     legacy: [`eduagent_active_subject_${learnerId}`],
   }),
+  activeClassSubject: (learnerId: string) => ({
+    primary: `r436_runtime_active_class_subject_${learnerId}`,
+    legacy: [],
+  }),
   /** 认证令牌 */
   authToken: {
     primary: 'edu_token',

@@ -8,7 +8,7 @@ import {
 import { useAuthStore } from '../store/authStore';
 import {
   getClassSubject, getClassMembers, removeClassMember,
-  getPushHistory, pushExercises, getClassStats,
+  getPushHistory, pushExercises, getClassStats, unpushExercises,
 } from '../api/classSubjects';
 import * as adminApi from '../api/admin';
 import type { ClassSubject, ClassMember, ClassPush, ClassStats } from '../types/classSubject';
@@ -107,11 +107,12 @@ export default function TeacherClassDetail() {
   };
 
   const handlePush = async () => {
-    if (!id || !pushTitle.trim() || selectedQids.size === 0) return;
+    if (!id || selectedQids.size === 0) return;
+    const title = pushTitle.trim() || `练习推送 (${new Date().toLocaleDateString()})`;
     setPushing(true);
     try {
       await pushExercises(id, {
-        title: pushTitle.trim(),
+        title,
         description: pushDesc.trim() || undefined,
         questionIds: Array.from(selectedQids),
       });
@@ -123,6 +124,15 @@ export default function TeacherClassDetail() {
       setPushes(updated);
     } catch {}
     setPushing(false);
+  };
+
+  const handleUnpush = async (pushId: string, title: string) => {
+    if (!id || !confirm(`确定要撤销推送「${title}」吗？\n\n这将从班级中移除所有已推送的题目。\n学生已提交的作答记录不会被删除。\n\n此操作不可撤销！`)) return;
+    try {
+      await unpushExercises(id, pushId);
+      const updated = await getPushHistory(id);
+      setPushes(updated);
+    } catch (e: any) { alert(e?.message || '撤销失败'); }
   };
 
   const handleRemoveMember = async (studentId: string, name: string) => {
@@ -209,13 +219,22 @@ export default function TeacherClassDetail() {
                 ) : (
                   <div className="space-y-3">
                     {pushes.map(p => (
-                      <div key={p.id} className="p-4 bg-white rounded-xl border border-surface-200 shadow-soft">
+                      <div key={p.id} className="p-4 bg-white rounded-xl border border-surface-200 shadow-soft group">
                         <div className="flex items-center justify-between">
                           <div>
                             <p className="font-medium text-surface-700">{p.title}</p>
                             {p.description && <p className="text-xs text-surface-400 mt-0.5">{p.description}</p>}
                           </div>
-                          <span className="text-xs text-surface-400">{new Date(p.created_at).toLocaleDateString()}</span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => handleUnpush(p.id, p.title)}
+                              className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-lg text-surface-300 hover:text-error-500 hover:bg-error-50"
+                              title="撤销推送"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                            <span className="text-xs text-surface-400">{new Date(p.created_at).toLocaleDateString()}</span>
+                          </div>
                         </div>
                         <div className="flex items-center gap-4 mt-2 text-xs text-surface-500">
                           <span>{p.question_count} 题</span>
@@ -311,7 +330,7 @@ export default function TeacherClassDetail() {
                 <input
                   value={pushTitle}
                   onChange={e => setPushTitle(e.target.value)}
-                  placeholder="推送标题（例如：第一周练习）*"
+                  placeholder="推送标题（可选，默认使用日期）"
                   maxLength={50}
                   className="w-full px-4 py-2.5 bg-surface-50 border border-surface-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-primary-200"
                 />
@@ -438,7 +457,7 @@ export default function TeacherClassDetail() {
                 </button>
                 <button
                   onClick={handlePush}
-                  disabled={pushing || !pushTitle.trim() || selectedQids.size === 0}
+                  disabled={pushing || selectedQids.size === 0}
                   className="px-6 py-2 bg-primary-600 text-white rounded-xl text-sm font-medium hover:bg-primary-700 disabled:opacity-50 transition-colors"
                 >
                   {pushing ? '推送中…' : `确认推送 (${selectedQids.size}题)`}

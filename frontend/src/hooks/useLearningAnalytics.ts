@@ -28,7 +28,7 @@ export function useLearningAnalytics() {
   const lastKeyRef = useRef<string | undefined>(undefined);
 
   const fetchAnalytics = useCallback(async () => {
-    if (!subjectId && !sessionId) return;
+    if (!subjectId || !sessionId) { setLoading(false); return; }
     setLoading(true);
     setError(null);
     setAnalytics(null);  // 切换科目时立即清空旧数据

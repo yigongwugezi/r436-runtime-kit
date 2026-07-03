@@ -262,7 +262,7 @@ function QuestionsTab({ mySubjects, urlSubject }: { mySubjects: string[]; urlSub
                       <button onClick={() => handleReview(q, 'submit')} className="p-1 rounded hover:bg-brand-50 dark:hover:bg-brand-500/10 text-gray-400 hover:text-brand-500" title="重新提交"><Send size={13} /></button>
                     )}
                     <button onClick={() => setEditing(q)} className="p-1 rounded hover:bg-gray-100 dark:hover:bg-surface-500 text-gray-400 hover:text-gray-600"><Edit3 size={13} /></button>
-                    <button onClick={async () => { await adminApi.deleteQuestion(q.id); load(); }} className="p-1 rounded hover:bg-red-50 dark:hover:bg-red-500/10 text-gray-400 hover:text-red-500"><Trash2 size={13} /></button>
+                    <button onClick={async () => { if (!confirm('确定要永久删除这道题目吗？\\n\\n如果该题已被推送，将同时撤销所有推送副本。\\n此操作不可撤销！')) return; await adminApi.deleteQuestion(q.id); load(); }} className="p-1 rounded hover:bg-red-50 dark:hover:bg-red-500/10 text-gray-400 hover:text-red-500"><Trash2 size={13} /></button>
                   </div>
                 </td>
               </tr>

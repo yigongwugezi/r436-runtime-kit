@@ -23,7 +23,7 @@ export function useLearningEvents(limit = 100, type?: string, range?: number) {
   const lastKeyRef = useRef<string | undefined>(undefined);
 
   const fetchEvents = useCallback(async () => {
-    if (!sessionId) return;
+    if (!sessionId) { setLoading(false); return; }
     setLoading(true);
     setError(null);
     setEvents([]);  // 切换科目时立即清空旧数据

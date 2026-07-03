@@ -86,6 +86,22 @@ export async function getPushDetail(
   return res.data;
 }
 
+// ── Teacher: Unpush ─────────────────────────────────────────────────────
+
+export async function unpushExercises(
+  classId: string,
+  pushId: string,
+): Promise<{ deletedQuestions: number }> {
+  const res = await client.delete(`/api/class-subjects/${classId}/pushes/${pushId}`);
+  return res.data;
+}
+
+// ── Teacher: Delete class ────────────────────────────────────────────────
+
+export async function deleteClassSubject(classId: string): Promise<void> {
+  await client.delete(`/api/class-subjects/${classId}`);
+}
+
 // ── Teacher: Stats ──────────────────────────────────────────────────────
 
 export async function getClassStats(classId: string): Promise<ClassStats> {

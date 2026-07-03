@@ -440,15 +440,30 @@ def update_question(question_id: str, body: QuestionUpdate, auth: AuthContext = 
 
 
 @router.delete("/admin/questions/{question_id}")
-def archive_question(question_id: str, auth: AuthContext = Depends(require_admin)) -> dict:
+def delete_question(question_id: str, auth: AuthContext = Depends(require_admin)) -> dict:
+    """Permanently delete a question and all pushed copies (if any)."""
+    from app.db.models import StudentQuestionModel
+
     db = SessionLocal()
     try:
         q = db.get(QuestionModel, question_id)
         if q is None:
             raise HTTPException(status_code=404, detail="题目不存在")
-        q.status = "archived"
+
+        # Delete pushed student copies that reference this admin question
+        deleted_copies = (
+            db.query(StudentQuestionModel)
+            .filter(StudentQuestionModel.source_question_id == question_id)
+            .delete(synchronize_session="fetch")
+        ) if question_id else 0
+
+        db.delete(q)
         db.commit()
-        return {"ok": True}
+        return {
+            "ok": True,
+            "deletedCopies": deleted_copies,
+            "message": f"已永久删除题目" + (f"，同时撤销了 {deleted_copies} 份已推送副本" if deleted_copies else ""),
+        }
     finally:
         db.close()
 
