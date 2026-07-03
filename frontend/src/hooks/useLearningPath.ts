@@ -27,8 +27,8 @@ export function useLearningPath() {
   const lastVersionRef = useRef<number>(0);
 
   const fetchPath = useCallback(async () => {
-    if (!subjectId) return;
-    if (!sessionId) return;
+    if (!subjectId) { setLoading(false); return; }
+    if (!sessionId) { setLoading(false); return; }
     setLoading(true);
     setError(null);
     setPath(null);  // 切换科目时立即清空旧路径

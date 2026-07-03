@@ -22,7 +22,7 @@ export function useResources(initialFilter?: ResourceFilter) {
   const pendingFilterRef = useRef<ResourceFilter | undefined>(undefined);
 
   const doFetch = useCallback(async (f: ResourceFilter) => {
-    if (!sessionId) return;
+    if (!sessionId) { setLoading(false); return; }
     if (fetchingRef.current) {
       pendingFilterRef.current = f;
       return;

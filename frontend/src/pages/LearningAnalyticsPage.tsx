@@ -25,7 +25,7 @@ export default function LearningAnalyticsPage() {
   if (!subjectId) return <PageEmpty icon={<TrendingUp className="w-8 h-8" />} title="请先选择科目" description="在左侧边栏选择一个科目后查看学习分析" />;
   if (loading && !analytics) return <PageLoading text="正在分析学习数据…" />;
   if (error && !analytics) return <PageError title="加载分析数据失败" description={error} onRetry={refetch} />;
-  if (!analytics) return null;
+  if (!analytics) return <PageEmpty icon={<TrendingUp className="w-8 h-8" />} title="暂无学习数据" description="开始学习后这里会显示学习分析报告" />;
 
   const rv = analytics.resourceViewCount ?? analytics.eventBreakdown['resource_view'] ?? 0;
   const rc = analytics.resourceCompleteCount ?? analytics.eventBreakdown['resource_complete'] ?? 0;

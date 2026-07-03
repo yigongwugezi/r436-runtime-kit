@@ -3,6 +3,7 @@ import type { ChatMessage, ChatSession, QuickCommand, GenerationProgress } from 
 import { getCurrentLearner } from './authStore';
 import { useSubjectStore } from './subjectStore';
 import { readStorageItem, readStorageJson, writeStorageItem, writeStorageJson, runtimeStorageKeys } from '../utils/storageKeys';
+import { getSubjectSession } from '../api/subjects';
 import { createLogger } from '../utils/logger';
 
 const log = createLogger('ChatStore');
@@ -99,7 +100,7 @@ interface ChatStore {
   renameSession: (id: string, title: string) => void;
   bumpDataVersion: () => void;
   /** 重新加载当前科目的会话 ID 和列表（科目切换后调用） */
-  reloadSession: () => void;
+  reloadSession: () => Promise<void>;
 }
 
 export const useChatStore = create<ChatStore>((set, get) => ({
@@ -273,14 +274,46 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   bumpDataVersion: () =>
     set((s) => ({ dataVersion: s.dataVersion + 1 })),
 
-  /** 科目切换后重新加载该科目下的会话 ID 和会话列表 */
-  reloadSession: () => {
+  /** 科目切换后重新加载该科目下的会话 ID 和会话列表。
+   *  家长账户：从后端解析孩子的 session，确保数据查询使用正确的 scope。 */
+  reloadSession: async () => {
+    const learner = getCurrentLearner();
+    const subjectId = useSubjectStore.getState().activeSubject?.id;
+
+    // Parent: resolve child's session from backend (localStorage has parent's
+    // own session which points to empty data).
+    if (learner?.role === 'parent' && subjectId) {
+      try {
+        const childSessionId = await getSubjectSession(subjectId);
+        if (childSessionId) {
+          set({ currentSessionId: childSessionId, dataSessionId: childSessionId, sessions: [], messages: [] });
+          return;
+        }
+      } catch (err) {
+        log.warn('Failed to resolve child session for parent', err);
+      }
+      // Child has no session yet — clear state so UI shows empty/未创建
+      set({ currentSessionId: '', dataSessionId: '', sessions: [], messages: [] });
+      return;
+    }
+
+    // Student/teacher: currentSessionId from localStorage (chat continuity),
+    // dataSessionId from backend (so analytics/profile/path queries find the
+    // correct session even when logging in from a different browser).
     const id = loadSessionId();
     const sessions = loadSessions();
-    // 尝试从缓存恢复消息
     const cachedSession = sessions.find(s => s.id === id);
     const cachedMessages = cachedSession?.messages || [];
-    set({ currentSessionId: id, dataSessionId: id, sessions, messages: cachedMessages });
+
+    let dataId = id;
+    if (subjectId) {
+      try {
+        const resolvedId = await getSubjectSession(subjectId);
+        if (resolvedId) dataId = resolvedId;
+      } catch { /* fall back to localStorage id */ }
+    }
+
+    set({ currentSessionId: id, dataSessionId: dataId, sessions, messages: cachedMessages });
   },
 }));
 

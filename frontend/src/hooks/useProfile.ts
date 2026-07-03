@@ -16,8 +16,8 @@ export function useProfile() {
   const lastVersionRef = useRef<number>(0);
 
   const fetchProfile = useCallback(async () => {
-    if (!subjectId) return;
-    if (!sessionId) return;
+    if (!subjectId) { setLoading(false); return; }
+    if (!sessionId) { setLoading(false); return; }
     setLoading(true);
     setError(null);
     store.setLoading(subjectId, true);
