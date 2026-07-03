@@ -12,6 +12,7 @@ import ResourceGenerationPage from '../pages/ResourceGenerationPage';
 import ConversationHistoryPage from '../pages/ConversationHistoryPage';
 import SettingsPage from '../pages/SettingsPage';
 import AdminDashboard from '../pages/AdminDashboard';
+import ReviewQueuePage from '../pages/ReviewQueuePage';
 import TeacherHome from '../pages/TeacherHome';
 import TeacherClassDetail from '../pages/TeacherClassDetail';
 import LoginPage from '../pages/LoginPage';
@@ -76,6 +77,7 @@ const router = createBrowserRouter([
       { path: 'history', element: <RequireStudent><ConversationHistoryPage /></RequireStudent> },
       { path: 'settings', element: <SettingsPage /> },
       { path: 'admin', element: <AdminDashboard /> },
+      { path: 'review-queue', element: <ReviewQueuePage /> },
       { path: 'teacher', element: <TeacherHome /> },
       { path: 'teacher/classes/:id', element: <TeacherClassDetail /> },
       { path: '*', element: <NotFound /> },

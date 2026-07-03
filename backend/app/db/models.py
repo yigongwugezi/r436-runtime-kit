@@ -403,6 +403,11 @@ class StudentQuestionModel(Base):
     reference_answer: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     source: Mapped[str] = mapped_column(String(32), default="llm_generated")  # llm_generated|rule_based_fallback
     quality_status: Mapped[str] = mapped_column(String(16), default="passed")  # passed|warning|fallback
+    # ── M3: 人工审核相关字段 ──
+    needs_review: Mapped[bool] = mapped_column(Boolean, default=False)
+    review_reason: Mapped[str | None] = mapped_column(String(256), nullable=True, default=None)
+    review_status: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
+    revision_note: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 

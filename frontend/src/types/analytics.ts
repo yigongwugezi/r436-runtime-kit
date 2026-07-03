@@ -72,6 +72,71 @@ export interface RecommendationItem {
   quality_status: string;
 }
 
+// ── M6 面板专用类型 ──
+
+/** 能力热力图数据点 */
+export interface HeatmapItem {
+  knowledgePoint: string;
+  mastery: number;
+  level: string;
+  evidenceCount: number;
+  confidence?: number;    // 估计置信度 0-1
+  trend?: 'improving' | 'declining' | 'stable';  // 趋势
+  lastUpdated?: string;   // ISO datetime
+}
+
+/** 薄弱榜单项 */
+export interface WeaknessRankingItem {
+  name: string;
+  priority: 'high' | 'medium' | 'low';
+  reason: string;
+  suggested_action?: string;
+  resourceIds?: string[];
+  mastery_score?: number;
+  confidence?: number;     // 0-1
+  trend?: 'improving' | 'declining' | 'stable';
+  evidence_count?: number;
+}
+
+/** 进步曲线数据点 */
+export interface ProgressCurvePoint {
+  date: string;
+  accuracy: number | null;
+  questionCount: number;
+}
+
+/** 学习日历日 */
+export interface StudyCalendarDay {
+  date: string;
+  active: boolean;
+  questionCount: number;
+  performanceLevel: number; // 0=无, 1=浏览, 2=需加强, 3=良好, 4=优秀
+}
+
+/** 目标追踪 */
+export interface GoalTracking {
+  estimatedDays: number;
+  questionsCompleted: number;
+  masteryPercentage: number;
+  stagesCompleted: number;
+  stagesTotal: number;
+  examDate?: string | null;
+  daysUntilExam?: number | null;
+  estimatedPercentile?: number;
+  progressPercent?: number;
+}
+
+/** 今日学习卡片 */
+export interface TodayCard {
+  questionsAnswered: number;
+  averageScore: number | null;
+  studyMinutes: number;
+  weakPointsCount: number;
+  rankChange?: number;  // -1=下降, 0=持平, 1=上升
+  yesterdayQuestions?: number;
+  yesterdayScore?: number | null;
+}
+
 /** 学习分析汇总 — 后端 /learning-analytics 返回 */
 export interface AnalyticsSummary {
   eventCount: number;
@@ -101,6 +166,13 @@ export interface AnalyticsSummary {
   resourceTypeBreakdown: Record<string, number>;
   recentEvents: RecentEvent[];
   summary: string;
+  // ── M6 面板数据 ──
+  heatmap?: HeatmapItem[];
+  weaknessRanking?: WeaknessRankingItem[];
+  progressCurve?: ProgressCurvePoint[];
+  studyCalendar?: StudyCalendarDay[];
+  goalTracking?: GoalTracking;
+  todayCard?: TodayCard;
 }
 
 /** 时间线事件 — 后端 /learning-events/timeline 返回 */

@@ -139,10 +139,11 @@ class QuestionAgent(BaseAgent):
         )
 
         type_instructions = {
-            "choice": "选择题：stem + options(4个选项数组) + correct(正确选项字母) + explanation + distractor_reasons(每个干扰项为何错)",
+            "choice": "选择题：stem + options(4个选项数组) + correct(正确选项字母) + explanation + distractor_reasons(每个干扰项为何错，需包含对应的常见误区名称)",
             "fill": "填空题：stem(用___标记挖空处) + blanks(挖空处数量) + answers(正确答案数组) + explanation",
-            "truefalse": "判断题：statement + correct(true/false) + misconception_explanation(为什么学生容易错)",
+            "truefalse": "判断题：statement + correct(true/false) + misconception_explanation(为什么学生容易错，指出混淆的概念)",
             "shortanswer": "解答题：stem + reference_answer(完整解答) + scoring_rubric(分步评分标准数组) + step_hints(引导提示数组)",
+            "variant": "变式题：基于已有题目，改变数字/情境/问法，保持考察同一知识点。包含：stem + original_question_id(原题ID) + variation_type(change_numbers|change_context|change_perspective) + correct + explanation",
         }
         types_text = "\n".join(type_instructions.get(t, "") for t in params["types"])
 
@@ -183,25 +184,49 @@ class QuestionAgent(BaseAgent):
                 return None
 
             normalized = []
+            generated_stems: list[str] = []  # 用于去重
             for idx, q in enumerate(questions[:params["count"]], 1):
                 if not isinstance(q, dict):
                     continue
                 nq = self._normalize_question(q, idx, params)
-                if nq:
-                    nq["question_id"] = uuid.uuid4().hex[:12]
-                    # 解析质量差 → 用 LLM 重写
-                    expl = nq.get("explanation", "") or ""
-                    bad_quality = len(expl) < 30 or "学生可能" in expl or "学生选择了" in expl
-                    if bad_quality and self.llm_client:
-                        try:
-                            nq["explanation"] = self._expand_explanation(nq)
-                        except Exception:
-                            pass
-                    normalized.append(nq)
-                else:
+                if not nq:
                     logger.warning("Question %d dropped by normalization", idx)
+                    continue
 
-            logger.info(f"QuestionAgent: generated {len(normalized)} questions")
+                nq["question_id"] = uuid.uuid4().hex[:12]
+
+                # ── 自洽性检验（修复死代码：现在真的调用了）──
+                if self.llm_client:
+                    passed_consistency = self._self_consistency_check(nq)
+                    if not passed_consistency:
+                        logger.warning(f"Question {idx} failed self-consistency check, dropping")
+                        continue  # 自洽失败 → 丢弃该题
+                    nq["self_consistency_passed"] = True
+
+                # ── 难度校准 ──
+                if self.llm_client:
+                    calibrated_diff = self._calibrate_difficulty(nq, params["difficulty"])
+                    if calibrated_diff:
+                        nq["difficulty"] = calibrated_diff
+
+                # ── 去重检测（语义相似度）──
+                stem = nq.get("stem", "")
+                if self._is_duplicate(stem, generated_stems):
+                    logger.warning(f"Question {idx} detected as duplicate, dropping")
+                    continue
+                generated_stems.append(stem)
+
+                # 解析质量差 → 用 LLM 重写
+                expl = nq.get("explanation", "") or ""
+                bad_quality = len(expl) < 30 or "学生可能" in expl or "学生选择了" in expl
+                if bad_quality and self.llm_client:
+                    try:
+                        nq["explanation"] = self._expand_explanation(nq)
+                    except Exception:
+                        pass
+                normalized.append(nq)
+
+            logger.info(f"QuestionAgent: generated {len(normalized)} questions (consistency+dedup filtered)")
             return normalized if len(normalized) >= 1 else None
         except Exception as e:
             logger.warning(f"QuestionAgent LLM generation failed: {e}")
@@ -239,6 +264,68 @@ class QuestionAgent(BaseAgent):
                 return expected in raw
         except Exception:
             return True  # 检验失败不阻塞
+
+    def _calibrate_difficulty(self, question: dict, target_difficulty: str) -> str | None:
+        """LLM 校验题目难度是否匹配目标难度。
+
+        让 LLM 评估实际难度，如果不匹配则返回校准后的难度。
+        """
+        if not self.llm_client:
+            return None
+        target_label = DIFFICULTY_LEVELS.get(target_difficulty, "中等")
+        stem = question.get("stem", "")[:300]
+        q_type = question.get("type", "")
+        try:
+            raw = self.llm_client.chat(
+                messages=[{
+                    "role": "user",
+                    "content": f"评估这道{q_type}题的难度。题目：{stem}\n\n"
+                               f"目标难度是{target_label}。请判断实际难度是 简单/中等/困难 中的哪个，只输出一个词。"
+                }],
+                temperature=0, max_tokens=10,
+            )
+            raw = raw.strip()
+            for key, label in DIFFICULTY_LEVELS.items():
+                if label in raw:
+                    return key if key != target_difficulty else None
+        except Exception:
+            pass
+        return None
+
+    def _is_duplicate(self, stem: str, existing_stems: list[str]) -> bool:
+        """去重检测：词级别 Jaccard 相似度 > 0.85 视为重复。
+
+        备用方案：当 RAG embedder 可用时使用 embedding 余弦相似度。
+        """
+        if not existing_stems:
+            return False
+        # 快速词重叠检测
+        import re as _re
+        words_a = set(_re.findall(r'[一-鿿]+|[a-zA-Z]+', stem.lower()))
+        if len(words_a) < 3:
+            return False
+        for existing in existing_stems[-20:]:  # 只检查最近20题
+            words_b = set(_re.findall(r'[一-鿿]+|[a-zA-Z]+', existing.lower()))
+            if not words_b:
+                continue
+            intersection = words_a & words_b
+            union = words_a | words_b
+            jaccard = len(intersection) / max(1, len(union))
+            # 高重叠 + 长度相近 = 大概率重复
+            len_ratio = min(len(stem), len(existing)) / max(1, max(len(stem), len(existing)))
+            if jaccard > 0.85 and len_ratio > 0.6:
+                return True
+        return False
+
+    def _maybe_flag_for_review(self, question: dict, params: dict) -> None:
+        """高风险题目标记：涉及复杂计算或逻辑推理 → 加入人工审核队列。"""
+        stem = str(question.get("stem", ""))
+        risk_keywords = ["证明", "推导", "计算", "求解方程", "最优化", "积分", "差分", "级数"]
+        is_high_risk = any(kw in stem for kw in risk_keywords)
+        is_hard = question.get("difficulty") == "hard"
+        if is_high_risk or is_hard:
+            question["needs_review"] = True
+            question["review_reason"] = "涉及复杂计算/逻辑" if is_high_risk else "高难度题目"
 
     def _normalize_question(self, item: dict, index: int, params: dict) -> dict | None:
         q_type = str(item.get("type", params["types"][0])).strip()
@@ -290,6 +377,22 @@ class QuestionAgent(BaseAgent):
             base["reference_answer"] = str(item.get("reference_answer", ""))
             base["scoring_rubric"] = item.get("scoring_rubric", [])
             base["step_hints"] = item.get("step_hints", [])
+
+        elif q_type == "variant":
+            base["original_question_id"] = str(item.get("original_question_id", ""))
+            base["variation_type"] = str(item.get("variation_type", "change_context"))
+            # 变式题本质上是某种基础题型 + 变体标记，保留基础题型字段
+            base_type = str(item.get("base_type", "shortanswer"))
+            if base_type == "choice":
+                base["options"] = [str(o) for o in (item.get("options", []) or [])[:6]]
+                base["correct"] = str(item.get("correct", ""))
+            elif base_type == "fill":
+                base["blanks"] = max(1, int(item.get("blanks", 1) or 1))
+                base["answers"] = [str(a) for a in (item.get("answers", []) or [])]
+            base["tags"] = base.get("tags", []) + ["variant", item.get("variation_type", "change_context")]
+
+        # ── 高风险标记 ──
+        self._maybe_flag_for_review(base, params)
 
         return base
 

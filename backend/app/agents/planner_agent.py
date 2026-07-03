@@ -103,17 +103,24 @@ class PlannerAgent(BaseAgent):
                 level = mastery.get("level", "初步")
                 score = mastery.get("score", 50)
 
-                if level == "精通" and score >= 90:
-                    # 加速：缩短天数或跳过
+                if level == "精通" and score >= 95:
+                    # 加速/跳过：>95% 标记为已精通，减少该知识点出现频率
+                    new_days = max(1, days // 3)
+                    adj["duration"] = f"第{days}-{new_days}天（加速）"
+                    adj["reason"] = f"诊断显示{stage_title}已精通（{score}分），大幅缩短学习时间。"
+                    adj["mastered"] = True
+                    adjustments.append(f"加速 {stage_title}：{days}天→{new_days}天")
+                elif level == "精通" and score >= 90:
+                    # 接近精通：适度加速
                     new_days = max(1, days // 2)
                     adj["duration"] = f"第{days}-{new_days}天（加速）"
-                    adj["reason"] = f"诊断显示{stage_title}已精通（{score}分），缩短学习时间。"
+                    adj["reason"] = f"诊断显示{stage_title}接近精通（{score}分），缩短学习时间。"
                     adjustments.append(f"加速 {stage_title}：{days}天→{new_days}天")
                 elif level == "未学" and score < 40:
                     # 强化：增加天数，插入前置知识
                     new_days = min(days + 3, 14)
                     adj["duration"] = f"第{days}-{new_days}天（强化）"
-                    adj["tasks"] = stage_tasks + [f"回顾 {stage_title} 的前置基础知识"]
+                    adj["tasks"] = stage_tasks + self._trace_prerequisites_bfs(stage_title, context)
                     adj["reason"] = f"诊断显示{stage_title}未掌握（{score}分），增加学习时间和前置知识回顾。"
                     adjustments.append(f"强化 {stage_title}：{days}天→{new_days}天")
             else:
@@ -149,6 +156,20 @@ class PlannerAgent(BaseAgent):
                 adj["reason"] = str(adj.get("reason", "")) + "（考前冲刺模式——增加练习密度）"
             adjustments.append("检测到考试目标，切换到考前冲刺模式")
 
+        # ── 阶段耗时过长 → 拆分为步骤引导（M5）──
+        decomposed_path = []
+        for stage in adjusted_path:
+            if not isinstance(stage, dict):
+                decomposed_path.append(stage)
+                continue
+            days = self._parse_duration_days(str(stage.get("duration", "")))
+            if days >= 10 and len(stage.get("tasks", []) or []) >= 3:
+                sub_stages = self._decompose_stage(stage)
+                decomposed_path.extend(sub_stages)
+                adjustments.append(f"拆解长阶段 {stage.get('title','')}：{days}天→{len(sub_stages)}个子阶段")
+            else:
+                decomposed_path.append(stage)
+
         diag_meta = {
             "diagnosis_used": True, "weak_topic_names": [m.get("name", "") for m in mastery_levels[:5] if isinstance(m, dict)],
             "needs_more_diagnosis": len(mastery_levels) < 3,
@@ -157,9 +178,9 @@ class PlannerAgent(BaseAgent):
             "total_days": total_days,
         }
 
-        result = self._make_result(adjusted_path, total_days, diag_meta)
+        result = self._make_result(decomposed_path, total_days, diag_meta)
         result["adjustments"] = adjustments
-        result["review_tasks"] = self._generate_review_tasks(adjusted_path)
+        result["review_tasks"] = self._generate_review_tasks(decomposed_path)
         result["consecutive_correct"] = consecutive_correct
         result["consecutive_wrong"] = consecutive_wrong
         return result
@@ -204,6 +225,102 @@ class PlannerAgent(BaseAgent):
     def get_review_for_today(review_tasks: list[dict], day_index: int) -> list[dict]:
         """获取当天应完成的复习任务。"""
         return [t for t in review_tasks if isinstance(t, dict) and t.get("interval_days") == day_index]
+
+    # ── 前置依赖 BFS 追溯（M5）──
+
+    def _trace_prerequisites_bfs(self, stage_title: str, context: dict) -> list[str]:
+        """BFS 反向追溯前置依赖链，返回需回顾的前置知识任务列表。
+
+        从给定知识点出发，沿 prerequisites 边逐层回溯，收集所有前置节点名。
+        """
+        visited: set[str] = set()
+        queue: list[str] = [stage_title]
+        prereq_names: list[str] = []
+
+        # 构建知识点邻接表（名称 → 前置依赖列表）
+        adj: dict[str, list[str]] = {}
+        course = context.get("course", {}) if isinstance(context.get("course"), dict) else {}
+        for ch in course.get("chapters", []):
+            if isinstance(ch, dict) and ch.get("title"):
+                adj[str(ch["title"])] = [str(p) for p in (ch.get("prerequisites", []) or []) if p]
+        # 也从学习路径阶段提取
+        for stage in (context.get("existing_path") or context.get("learning_path") or []):
+            if isinstance(stage, dict) and stage.get("title"):
+                title = str(stage["title"])
+                if title not in adj:
+                    adj[title] = [str(p) for p in (stage.get("prerequisites", []) or []) if p]
+
+        while queue:
+            node = queue.pop(0)
+            if node in visited:
+                continue
+            visited.add(node)
+            # 获取该节点的前置依赖
+            prereqs = adj.get(node, [])
+            for p in prereqs:
+                if p not in visited:
+                    prereq_names.append(p)
+                    queue.append(p)
+
+        # 最多追溯5个前置知识，去重保序
+        seen: set[str] = set()
+        result: list[str] = []
+        for name in prereq_names:
+            if name not in seen:
+                seen.add(name)
+                result.append(f"回顾 {name} 的核心概念")
+            if len(result) >= 5:
+                break
+        return result if result else [f"回顾 {stage_title} 的基础知识"]
+
+    # ── 知识点收益权重计算（M5）──
+
+    @staticmethod
+    def _calc_benefit_weight(point: dict, mastery_levels: list[dict], deps_count: int) -> float:
+        """计算知识点的学习收益权重。
+
+        公式：benefit = (100 - mastery) / 100 * 0.7 + min(deps_count, 5) / 5 * 0.3
+        - 前项：掌握度越低权重越高（补短板）
+        - 后项：依赖数越多权重越高（解锁更多后续知识点）
+        """
+        name = str(point.get("name", ""))
+        mastery = 50  # 默认未知
+        for m in mastery_levels:
+            if isinstance(m, dict) and m.get("name", "") == name:
+                mastery = m.get("score", 50)
+                break
+        gap_weight = (100 - mastery) / 100.0
+        dep_weight = min(deps_count, 5) / 5.0
+        return round(gap_weight * 0.7 + dep_weight * 0.3, 3)
+
+    # ── 超时拆解（M5）──
+
+    @staticmethod
+    def _decompose_stage(stage: dict) -> list[dict]:
+        """将耗时过长的阶段拆分为逐步引导的子阶段。
+
+        一个解答题 → 3个填空题引导 → 最后再回到解答。
+        """
+        title = str(stage.get("title", ""))
+        tasks = stage.get("tasks", []) or []
+        if len(tasks) <= 1:
+            return [stage]
+        # 拆成3个子阶段：概念回顾 → 引导练习 → 综合应用
+        n = len(tasks)
+        chunk1 = tasks[:max(1, n // 3)]
+        chunk2 = tasks[max(1, n // 3):max(1, 2 * n // 3)]
+        chunk3 = tasks[max(1, 2 * n // 3):]
+        return [
+            {**stage, "stage_id": f"{stage.get('stage_id','')}_step1",
+             "title": f"{title}（① 概念回顾）", "tasks": chunk1,
+             "duration": "第1-2天", "resource_types": ["lecture", "reading"]},
+            {**stage, "stage_id": f"{stage.get('stage_id','')}_step2",
+             "title": f"{title}（② 引导练习）", "tasks": chunk2,
+             "duration": "第3-4天", "resource_types": ["quiz", "fill"]},
+            {**stage, "stage_id": f"{stage.get('stage_id','')}_step3",
+             "title": f"{title}（③ 综合应用）", "tasks": chunk3,
+             "duration": "第5-6天", "resource_types": ["shortanswer", "practice"]},
+        ]
 
     def get_fallback(self, context: dict[str, Any] | None = None) -> dict[str, Any]:
         ctx = context or {}
@@ -471,20 +588,25 @@ class PlannerAgent(BaseAgent):
             for i, name in enumerate(names, 1)
         ]
 
-    def _prioritize_points(self, course_points: list[dict], weak_points: list[dict]) -> list[dict]:
+    def _prioritize_points(self, course_points: list[dict], weak_points: list[dict],
+                           mastery_levels: list[dict] | None = None) -> list[dict]:
+        """用收益权重公式排序知识点：补短板(70%) + 解锁依赖(30%)。"""
         weak_names = [str(point.get("name", "")) for point in weak_points if point.get("name")]
-        if not weak_names:
+        mastery = mastery_levels or []
+        if not weak_names and not mastery:
             return course_points
-        matched, rest = [], []
+        # 计算每个点的收益权重
         for point in course_points:
             name = str(point.get("name", ""))
+            deps = len(point.get("prerequisites", []) or [])
+            weight = self._calc_benefit_weight(point, mastery, deps)
+            point["benefit_weight"] = weight
             if any(weak and weak in name for weak in weak_names):
-                copied = dict(point)
-                copied["priority"] = "high"
-                matched.append(copied)
-            else:
-                rest.append(point)
-        return matched + rest
+                point["priority"] = "high"
+                point["benefit_weight"] = min(1.0, weight + 0.2)  # 薄弱点加成
+        # 按 benefit_weight 降序排列
+        course_points.sort(key=lambda p: -(p.get("benefit_weight", 0)))
+        return course_points
 
     # ── 诊断元信息 ──
 

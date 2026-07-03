@@ -491,3 +491,50 @@ def get_answer_history(
         }
     finally:
         db.close()
+
+
+# ==== M3: Review Queue ====
+class ReviewAction(BaseModel):
+    question_id: str
+    action: str
+    revision_note: str = ""
+
+
+@router.get("/questions/review-queue")
+def get_review_queue(status: str = Query("pending"), auth: AuthContext = Depends(require_auth)):
+    try:
+        db = SessionLocal()
+        query = db.query(StudentQuestionModel)
+        if status == "pending":
+            query = query.filter(StudentQuestionModel.needs_review == True)
+        elif status == "approved":
+            query = query.filter(StudentQuestionModel.review_status == "approved")
+        elif status == "rejected":
+            query = query.filter(StudentQuestionModel.review_status == "rejected")
+        rows = query.order_by(StudentQuestionModel.created_at.desc()).limit(50).all()
+        return {"status":"success","data":{"questions":[{"question_id":r.question_id,"stem":r.stem,"type":r.type_,"difficulty":r.difficulty,"review_reason":r.review_reason,"review_status":r.review_status or "pending","created_at":int(r.created_at.timestamp()*1000) if r.created_at else 0} for r in rows],"total":len(rows)}}
+    finally:
+        db.close()
+
+
+@router.post("/questions/review-action")
+def submit_review_action(body: ReviewAction, auth: AuthContext = Depends(require_auth)):
+    try:
+        db = SessionLocal()
+        q = db.query(StudentQuestionModel).filter(StudentQuestionModel.question_id == body.question_id).first()
+        if not q:
+            raise HTTPException(404, f"Question {body.question_id} not found")
+        if body.action == "approve":
+            q.review_status = "approved"
+            q.quality_status = "reviewed_passed"
+        elif body.action == "reject":
+            q.review_status = "rejected"
+            q.quality_status = "reviewed_rejected"
+        elif body.action == "revise":
+            q.review_status = "pending_revision"
+            if body.revision_note:
+                q.revision_note = body.revision_note
+        db.commit()
+        return {"status":"success","message":f"Question {body.question_id} marked as {body.action}"}
+    finally:
+        db.close()

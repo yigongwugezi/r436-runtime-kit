@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   AlertCircle, AlertTriangle, Info, BookOpen, MessageSquare,
   ChevronDown, ChevronUp, Target, ArrowRight, ExternalLink,
-  Sparkles, Cpu, Shield,
+  Sparkles, Cpu, Shield, TrendingUp, TrendingDown, Clock,
 } from 'lucide-react';
 import ExpandableText from '../common/ExpandableText';
 
@@ -25,6 +25,8 @@ export interface DiagnosisResult {
   recommendedStageId?: string;
   /** 建议的学习路径阶段 */
   recommendedStageTitle?: string;
+  /** 趋势统计 */
+  trendStats?: { declining: number; improving: number; total: number };
 }
 
 export interface DiagnosisWeakTopic {
@@ -47,6 +49,10 @@ export interface DiagnosisWeakTopic {
   recommendedResourceIds?: string[];
   /** 推荐学习阶段 ID */
   recommendedStageId?: string;
+  /** 趋势: improving | declining | stable */
+  trend?: 'improving' | 'declining' | 'stable';
+  /** 最后更新时间 ISO string */
+  lastUpdated?: string;
 }
 
 /* ===================================================================
@@ -92,6 +98,8 @@ function WeakTopicCard({
   totalCount,
   recommendedResourceIds,
   recommendedStageId,
+  trend,
+  lastUpdated,
 }: DiagnosisWeakTopic) {
   const navigate = useNavigate();
   const [showEvidence, setShowEvidence] = useState(false);
@@ -100,6 +108,18 @@ function WeakTopicCard({
   const hasResources = recommendedResourceIds && recommendedResourceIds.length > 0;
   const hasStage = !!recommendedStageId;
   const isLowConfidence = confidence != null && confidence < 0.5;
+
+  // 距上次更新的时间描述
+  const timeAgo = lastUpdated ? (() => {
+    try {
+      const diff = Date.now() - new Date(lastUpdated).getTime();
+      const days = Math.floor(diff / 86400000);
+      if (days < 1) return '今天更新';
+      if (days < 2) return '昨天更新';
+      if (days < 7) return `${days} 天前`;
+      return `${Math.floor(days / 7)} 周前`;
+    } catch { return ''; }
+  })() : '';
 
   return (
     <div className={`${cfg.bg} ${cfg.border} border rounded-xl p-3.5 space-y-2.5`}>
@@ -114,7 +134,7 @@ function WeakTopicCard({
         </span>
       </div>
 
-      {/* 第二行：掌握度 + 置信度 */}
+      {/* 第二行：掌握度 + 趋势 + 置信度 */}
       <div className="flex items-center gap-3 flex-wrap">
         {mastery != null && (
           <div className="flex items-center gap-1.5">
@@ -122,10 +142,10 @@ function WeakTopicCard({
             <div className="flex items-center gap-1">
               <div className="w-16 h-1.5 bg-gray-200 rounded-full overflow-hidden">
                 <div
-                  className={`h-full rounded-full ${
+                  className={`h-full rounded-full transition-all duration-500 ${
                     mastery >= 80 ? 'bg-green-400' : mastery >= 50 ? 'bg-amber-400' : 'bg-red-400'
                   }`}
-                  style={{ width: `${mastery}%` }}
+                  style={{ width: `${mastery}%`, opacity: 0.4 + (confidence ?? 0.5) * 0.6 }}
                 />
               </div>
               <span className={`text-[10px] font-medium ${
@@ -135,6 +155,17 @@ function WeakTopicCard({
               </span>
             </div>
           </div>
+        )}
+        {/* 趋势箭头 */}
+        {trend && trend !== 'stable' && (
+          <span className={`inline-flex items-center gap-0.5 text-[10px] font-medium ${
+            trend === 'improving' ? 'text-green-500' : 'text-red-500'
+          }`}>
+            {trend === 'improving'
+              ? <><TrendingUp className="w-3 h-3" />上升</>
+              : <><TrendingDown className="w-3 h-3" />下降</>
+            }
+          </span>
         )}
         {wrongCount != null && totalCount != null && (
           <span className="text-[10px] text-gray-400">
@@ -146,9 +177,14 @@ function WeakTopicCard({
             className={`text-[10px] font-medium ${
               confidence >= 0.7 ? 'text-green-500' : confidence >= 0.4 ? 'text-amber-500' : 'text-red-400'
             }`}
-            title={`置信度：${Math.round(confidence * 100)}%`}
+            title={`置信度：${Math.round(confidence * 100)}%${timeAgo ? ' · ' + timeAgo : ''}`}
           >
             {confidence >= 0.7 ? '✓ 高可信' : confidence >= 0.4 ? '~ 中等可信' : '? 低可信'}
+          </span>
+        )}
+        {timeAgo && (
+          <span className="inline-flex items-center gap-0.5 text-[10px] text-gray-400">
+            <Clock className="w-2.5 h-2.5" />{timeAgo}
           </span>
         )}
       </div>

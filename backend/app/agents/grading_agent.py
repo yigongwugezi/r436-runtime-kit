@@ -28,6 +28,16 @@ ERROR_ACTIONS: dict[str, str] = {
     "forgetting": "加入艾宾浩斯复习队列",
 }
 
+# 自动衔接：错误类型 → 系统动作
+ERROR_AUTO_ACTIONS: dict[str, dict[str, Any]] = {
+    "concept": {"action": "recommend_resources", "reason": "概念错误，推荐基础知识资源"},
+    "calculation": {"action": "suggest_practice", "reason": "计算失误，推荐同类练习"},
+    "misreading": {"action": "flag_keyword_training", "reason": "审题偏差，标注关键词训练"},
+    "method": {"action": "recommend_better_solution", "reason": "方法不当，推荐更优解法"},
+    "forgetting": {"action": "add_to_review_queue", "reason": "知识遗忘，加入艾宾浩斯复习队列",
+                   "review_intervals": [1, 2, 4, 7, 15, 30]},
+}
+
 
 class GradingAgent(BaseAgent):
     agent_id = "grading_agent"
@@ -167,6 +177,8 @@ class GradingAgent(BaseAgent):
             "strengths": raw.get("strengths", []) or [],
             "source": "llm_generated",
             "quality_status": "passed",
+            "timestamp": int(__import__("time").time()),
+            "auto_actions": ERROR_AUTO_ACTIONS.get(error_type) if error_type != "null" else None,
         }
 
     # ── 规则兜底 ──
@@ -193,6 +205,7 @@ class GradingAgent(BaseAgent):
                 "strengths": [],
                 "source": "rule_based_fallback",
                 "quality_status": "fallback",
+                "timestamp": int(__import__("time").time()),
             }
 
         if q_type == "truefalse":
@@ -216,6 +229,7 @@ class GradingAgent(BaseAgent):
                 "strengths": [],
                 "source": "rule_based_fallback",
                 "quality_status": "fallback",
+                "timestamp": int(__import__("time").time()),
             }
 
         # 填空、解答：规则无力，返回参考性评价
@@ -233,4 +247,5 @@ class GradingAgent(BaseAgent):
             "strengths": [],
             "source": "rule_based_fallback",
             "quality_status": "fallback",
+            "timestamp": int(__import__("time").time()),
         }

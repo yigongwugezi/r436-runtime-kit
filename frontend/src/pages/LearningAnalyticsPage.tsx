@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { useNavigate } from 'react-router-dom';
-import { TrendingUp, Zap, Target, BookOpen, Clock, Brain, AlertCircle, Star, RefreshCw, BarChart3, Activity, CheckCircle2 } from 'lucide-react';
+import { TrendingUp, TrendingDown, Zap, Target, BookOpen, Clock, Brain, AlertCircle, Star, RefreshCw, BarChart3, Activity, CheckCircle2 } from 'lucide-react';
 import { PageLoading, PageEmpty, PageError, RefreshOverlay } from '../components/common/PageState';
 import { formatDuration } from '../utils/format';
 import { useLearningAnalytics } from '../hooks/useLearningAnalytics';
@@ -164,7 +164,27 @@ export default function LearningAnalyticsPage() {
         </div>
       )}
 
-      {analytics.quizTrend && analytics.quizTrend.length > 0 && (
+      {/* M6: 进步曲线 — 近30天正确率+做题量双轴图 */}
+      {analytics.progressCurve && analytics.progressCurve.length > 0 && (
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <div className="flex items-center justify-between mb-5">
+            <h3 className="font-display text-lg font-semibold text-surface-800 flex items-center gap-2">
+              <TrendingUp size={18} className="text-primary-500" />进步曲线（近30天）
+            </h3>
+            <div className="flex items-center gap-4 text-xs">
+              <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 rounded-full bg-primary-500 inline-block" style={{ borderTop: '2.5px solid #3b82f6' }} />正确率</span>
+              <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-accent-200 inline-block" />做题量</span>
+            </div>
+          </div>
+          <DualAxisChart data={analytics.progressCurve} />
+          <div className="flex justify-between mt-3 text-xs text-surface-400">
+            <span>{analytics.progressCurve[0]?.date}</span>
+            <span>{analytics.progressCurve[analytics.progressCurve.length - 1]?.date}</span>
+          </div>
+        </div>
+      )}
+
+      {analytics.quizTrend && analytics.quizTrend.length > 0 && !analytics.progressCurve && (
         <div className="bg-white rounded-2xl p-6 shadow-soft">
           <h3 className="font-display text-lg font-semibold text-surface-800 mb-4">练习正确率趋势</h3>
           <div className="h-32 flex items-end gap-1">
@@ -175,17 +195,26 @@ export default function LearningAnalyticsPage() {
 
       {/* ══════════════════════════════════════════════ M6: 仪表盘新增面板 ══════════════════════════════════════════════ */}
 
-      {/* 今日学习卡片 */}
+      {/* M6: 今日学习卡片 */}
       {analytics.todayCard && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {[
-            { label: '今日答题', value: analytics.todayCard.questionsAnswered ?? '-', unit: '题', icon: BookOpen, color: 'text-primary-500' },
-            { label: '平均得分', value: analytics.todayCard.averageScore ?? '-', unit: '分', icon: Target, color: analytics.todayCard.averageScore >= 60 ? 'text-success-500' : 'text-warning-500' },
-            { label: '薄弱点', value: analytics.todayCard.weakPointsCount ?? 0, unit: '个', icon: AlertCircle, color: 'text-error-500' },
-            { label: '学习时长', value: analytics.todayCard.studyMinutes ?? 0, unit: '分钟', icon: Clock, color: 'text-accent-500' },
+            { label: '今日答题', value: analytics.todayCard.questionsAnswered ?? 0, unit: '题', icon: BookOpen, color: 'text-primary-500', trend: undefined },
+            { label: '平均得分', value: analytics.todayCard.averageScore ?? '--', unit: '分', icon: Target,
+              color: (analytics.todayCard.averageScore ?? 0) >= 60 ? 'text-success-500' : 'text-warning-500',
+              trend: analytics.todayCard.rankChange as number | undefined },
+            { label: '薄弱点', value: analytics.todayCard.weakPointsCount ?? 0, unit: '个', icon: AlertCircle, color: 'text-error-500', trend: undefined },
+            { label: '学习时长', value: analytics.todayCard.studyMinutes ?? 0, unit: '分钟', icon: Clock, color: 'text-accent-500', trend: undefined },
           ].map((card, i) => (
-            <div key={i} className="bg-white rounded-xl p-4 shadow-soft">
-              <card.icon className={`w-5 h-5 ${card.color} mb-2`} />
+            <div key={i} className="bg-white rounded-xl p-4 shadow-soft relative">
+              <div className="flex items-center justify-between mb-2">
+                <card.icon className={`w-5 h-5 ${card.color}`} />
+                {card.trend !== undefined && card.trend !== 0 && (
+                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full flex items-center gap-0.5 ${card.trend > 0 ? 'bg-success-50 text-success-600' : 'bg-error-50 text-error-600'}`}>
+                    {card.trend > 0 ? '↑' : '↓'} 趋势
+                  </span>
+                )}
+              </div>
               <p className="text-2xl font-bold text-surface-800">{card.value}<span className="text-sm text-surface-400 ml-0.5">{card.unit}</span></p>
               <p className="text-xs text-surface-500">{card.label}</p>
             </div>
@@ -193,22 +222,34 @@ export default function LearningAnalyticsPage() {
         </div>
       )}
 
-      {/* 能力热力图 */}
+      {/* M6: 能力热力图（含置信度+趋势）*/}
       {analytics.heatmap && analytics.heatmap.length > 0 && (
         <div className="bg-white rounded-2xl p-6 shadow-soft">
           <h3 className="font-display text-lg font-semibold text-surface-800 mb-4 flex items-center gap-2"><Brain size={18} className="text-primary-500" />能力热力图</h3>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
             {analytics.heatmap.map((item: any, i: number) => {
               const s = item.mastery || 50;
+              const conf = item.confidence ?? 0.5;
+              const trend = item.trend;
               const bg = s >= 80 ? 'bg-success-100 border-success-300' : s >= 50 ? 'bg-primary-50 border-primary-200' : 'bg-error-50 border-error-200';
               const text = s >= 80 ? 'text-success-700' : s >= 50 ? 'text-primary-700' : 'text-error-700';
               return (
-                <div key={i} className={`rounded-xl p-3 border ${bg}`}>
-                  <p className={`text-xs font-semibold ${text} truncate`}>{item.knowledgePoint}</p>
+                <div key={i} className={`rounded-xl p-3 border ${bg} relative`} style={{ opacity: 0.4 + conf * 0.6 }}>
+                  <div className="flex items-center gap-1.5">
+                    <p className={`text-xs font-semibold ${text} truncate`}>{item.knowledgePoint}</p>
+                    {trend === 'improving' && <TrendingUp size={12} className="text-success-500 flex-shrink-0" />}
+                    {trend === 'declining' && <TrendingDown size={12} className="text-error-500 flex-shrink-0" />}
+                  </div>
                   <div className="flex items-center justify-between mt-1">
-                    <span className="text-lg font-bold text-surface-700">{s}</span>
+                    <div className="flex items-baseline gap-1">
+                      <span className="text-lg font-bold text-surface-700">{s}</span>
+                      {conf < 0.4 && <span className="text-[9px] text-surface-400" title="置信度低">低置信</span>}
+                    </div>
                     <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${bg} ${text}`}>{item.level}</span>
                   </div>
+                  {item.evidenceCount > 0 && (
+                    <p className="text-[9px] text-surface-400 mt-1">基于 {item.evidenceCount} 次作答</p>
+                  )}
                 </div>
               );
             })}
@@ -216,61 +257,197 @@ export default function LearningAnalyticsPage() {
         </div>
       )}
 
-      {/* 薄弱榜单 Top 5 */}
+      {/* M6: 薄弱榜单 Top 5（含建议措施）*/}
       {analytics.weaknessRanking && analytics.weaknessRanking.length > 0 && (
         <div className="bg-white rounded-2xl p-6 shadow-soft">
           <h3 className="font-display text-lg font-semibold text-surface-800 mb-4 flex items-center gap-2"><AlertCircle size={18} className="text-error-500" />薄弱知识点 Top 5</h3>
           <div className="space-y-2">
             {analytics.weaknessRanking.map((item: any, i: number) => (
-              <div key={i} className="flex items-center gap-3 p-3 bg-surface-50 rounded-xl">
-                <span className="text-sm font-bold text-surface-400 w-5">{i + 1}</span>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-surface-700 truncate">{item.name}</p>
-                  <p className="text-xs text-surface-400">{item.reason}</p>
+              <div key={i} className="p-3 bg-surface-50 rounded-xl">
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-bold text-surface-400 w-5">{i + 1}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-surface-700 truncate">{item.name}</p>
+                    <p className="text-xs text-surface-400">{item.reason}</p>
+                  </div>
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium flex-shrink-0 ${item.priority === 'high' ? 'bg-error-50 text-error-600' : 'bg-warning-50 text-warning-600'}`}>{item.priority === 'high' ? '高优' : '中'}</span>
                 </div>
-                <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${item.priority === 'high' ? 'bg-error-50 text-error-600' : 'bg-warning-50 text-warning-600'}`}>{item.priority === 'high' ? '高优' : '中'}</span>
+                <div className="flex items-center gap-2 mt-2 pl-8">
+                  <Zap size={12} className="text-warning-500 flex-shrink-0" />
+                  <p className="text-xs text-surface-500 flex-1">{item.suggested_action || '建议针对性练习'}</p>
+                  {item.resourceIds?.length > 0 && (
+                    <button onClick={() => nav(`/resources?knowledgePoint=${encodeURIComponent(item.name)}`)}
+                      className="text-[10px] text-primary-600 hover:text-primary-700 font-medium flex-shrink-0">查看资源 →</button>
+                  )}
+                </div>
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* 目标追踪 */}
+      {/* M6: 目标追踪 */}
       {analytics.goalTracking && (
         <div className="bg-white rounded-2xl p-6 shadow-soft">
           <h3 className="font-display text-lg font-semibold text-surface-800 mb-4 flex items-center gap-2"><Target size={18} className="text-accent-500" />学习目标追踪</h3>
-          <div className="grid grid-cols-2 gap-4">
-            {[
-              { label: '预估总天数', value: `${analytics.goalTracking.estimatedDays ?? 14} 天` },
-              { label: '已完成题目', value: `${analytics.goalTracking.questionsCompleted ?? 0} 题` },
-              { label: '平均掌握度', value: `${analytics.goalTracking.masteryPercentage ?? 0}%` },
-              { label: '阶段进度', value: `${analytics.goalTracking.stagesCompleted ?? 0}/${analytics.goalTracking.stagesTotal ?? 0}` },
-            ].map((item, i) => (
-              <div key={i} className="text-center p-3 bg-surface-50 rounded-xl">
-                <p className="text-2xl font-bold text-surface-800">{item.value}</p>
-                <p className="text-xs text-surface-500">{item.label}</p>
-              </div>
-            ))}
+
+          {/* 进度条 */}
+          <div className="mb-5">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm text-surface-600">总体进度</span>
+              <span className="text-sm font-semibold text-surface-800">{analytics.goalTracking.progressPercent ?? analytics.goalTracking.masteryPercentage ?? 0}%</span>
+            </div>
+            <div className="h-3 bg-surface-100 rounded-full overflow-hidden">
+              <div className="h-full rounded-full bg-gradient-to-r from-primary-500 to-accent-500 transition-all duration-1000 ease-out"
+                style={{ width: `${Math.min(100, analytics.goalTracking.progressPercent ?? analytics.goalTracking.masteryPercentage ?? 0)}%` }} />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-4">
+            {/* 距考试天数 */}
+            <div className="text-center p-3 bg-surface-50 rounded-xl">
+              <p className="text-2xl font-bold text-surface-800">
+                {analytics.goalTracking.daysUntilExam != null
+                  ? (analytics.goalTracking.daysUntilExam > 0 ? analytics.goalTracking.daysUntilExam : '今天')
+                  : '--'}
+              </p>
+              <p className="text-xs text-surface-500">距考试天数</p>
+              {analytics.goalTracking.examDate && (
+                <p className="text-[10px] text-surface-400 mt-0.5">{analytics.goalTracking.examDate}</p>
+              )}
+            </div>
+            {/* 预估达成分位 */}
+            <div className="text-center p-3 bg-surface-50 rounded-xl">
+              <p className="text-2xl font-bold text-accent-600">
+                {analytics.goalTracking.estimatedPercentile != null
+                  ? `前 ${analytics.goalTracking.estimatedPercentile}%`
+                  : '--'}
+              </p>
+              <p className="text-xs text-surface-500">预估达成分位</p>
+            </div>
+            {/* 已完成题目 */}
+            <div className="text-center p-3 bg-surface-50 rounded-xl">
+              <p className="text-2xl font-bold text-surface-800">{analytics.goalTracking.questionsCompleted ?? 0}<span className="text-sm text-surface-400">题</span></p>
+              <p className="text-xs text-surface-500">累计做题</p>
+            </div>
+            {/* 平均掌握度 */}
+            <div className="text-center p-3 bg-surface-50 rounded-xl">
+              <p className="text-2xl font-bold text-primary-600">{analytics.goalTracking.masteryPercentage ?? 0}%</p>
+              <p className="text-xs text-surface-500">平均掌握度</p>
+            </div>
+            {/* 预估总天数 */}
+            <div className="text-center p-3 bg-surface-50 rounded-xl">
+              <p className="text-2xl font-bold text-surface-800">{analytics.goalTracking.estimatedDays ?? 14}<span className="text-sm text-surface-400">天</span></p>
+              <p className="text-xs text-surface-500">预估学习周期</p>
+            </div>
+            {/* 阶段进度 */}
+            <div className="text-center p-3 bg-surface-50 rounded-xl">
+              <p className="text-2xl font-bold text-surface-800">{analytics.goalTracking.stagesCompleted ?? 0}/{analytics.goalTracking.stagesTotal ?? 0}</p>
+              <p className="text-xs text-surface-500">阶段进度</p>
+            </div>
           </div>
         </div>
       )}
 
-      {/* 学习日历 */}
+      {/* M6: 学习日历（近30天，表现等级着色）*/}
       {analytics.studyCalendar && analytics.studyCalendar.length > 0 && (
         <div className="bg-white rounded-2xl p-6 shadow-soft">
-          <h3 className="font-display text-lg font-semibold text-surface-800 mb-4 flex items-center gap-2"><Activity size={18} className="text-primary-500" />学习日历（近30天）</h3>
-          <div className="grid grid-cols-7 gap-1">
-            {['一','二','三','四','五','六','日'].map(d => <div key={d} className="text-center text-[10px] text-surface-400 py-1">{d}</div>)}
-            {analytics.studyCalendar.map((day: any, i: number) => (
-              <div key={i} className={`aspect-square rounded-lg flex items-center justify-center text-xs ${day.active ? 'bg-primary-500 text-white font-semibold' : 'bg-surface-50 text-surface-400'}`}>
-                {new Date(day.date).getDate()}
-              </div>
-            ))}
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-display text-lg font-semibold text-surface-800 flex items-center gap-2"><Activity size={18} className="text-primary-500" />学习日历（近30天）</h3>
+            <div className="flex items-center gap-3 text-[10px] text-surface-400">
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-success-400" />优秀</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-primary-300" />良好</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-warning-300" />需加强</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-surface-200" />浏览</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-surface-100" />无</span>
+            </div>
+          </div>
+          <div className="grid grid-cols-7 gap-1.5">
+            {['一','二','三','四','五','六','日'].map(d => <div key={d} className="text-center text-[10px] text-surface-400 py-1 font-medium">{d}</div>)}
+            {analytics.studyCalendar.map((day, i) => {
+              const lv = (day as any).performanceLevel ?? (day.active ? 1 : 0);
+              const bg = lv === 4 ? 'bg-success-400 text-white' :
+                         lv === 3 ? 'bg-primary-300 text-white' :
+                         lv === 2 ? 'bg-warning-300 text-white' :
+                         lv === 1 ? 'bg-surface-200 text-surface-600' :
+                         'bg-surface-50 text-surface-400';
+              const d = new Date(day.date);
+              return (
+                <div key={i} title={`${day.date} · ${day.questionCount ?? 0}题 · ${['无','浏览','需加强','良好','优秀'][lv]}`}
+                  className={`aspect-square rounded-lg flex items-center justify-center text-xs font-medium transition-all hover:scale-110 cursor-default ${bg}`}>
+                  {d.getDate()}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
 
       <div className="text-center text-xs text-surface-400 pt-4 border-t border-surface-200">累计追踪 {analytics.eventCount} 条学习事件 · 数据驱动个性化学习</div>
     </div>
+  );
+}
+
+/** M6: 双轴折线+柱状混合图 — 正确率折线（左轴）+ 做题量柱（右轴） */
+function DualAxisChart({ data }: { data: { date: string; accuracy: number | null; questionCount: number }[] }) {
+  const W = 720; const H = 220; const PAD_L = 42; const PAD_R = 48; const PAD_T = 16; const PAD_B = 20;
+  const plotW = W - PAD_L - PAD_R;
+  const plotH = H - PAD_T - PAD_B;
+
+  const maxQ = Math.max(...data.map(d => d.questionCount), 5);
+  const accPoints = data.filter(d => d.accuracy != null);
+  const hasAcc = accPoints.length >= 2;
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" preserveAspectRatio="xMidYMid meet">
+      {/* 网格线 */}
+      {[0, 0.25, 0.5, 0.75, 1].map(r => {
+        const y = PAD_T + plotH * (1 - r);
+        return <line key={r} x1={PAD_L} y1={y} x2={W - PAD_R} y2={y} stroke="#f1f5f9" strokeWidth="1" />;
+      })}
+      {/* 左轴标签 */}
+      {[0, 25, 50, 75, 100].map(v => (
+        <text key={`la${v}`} x={PAD_L - 6} y={PAD_T + plotH * (1 - v / 100) + 4} textAnchor="end" fill="#94a3b8" fontSize="10">{v}%</text>
+      ))}
+      <text x={12} y={PAD_T + plotH / 2} textAnchor="middle" fill="#94a3b8" fontSize="9" transform={`rotate(-90 12 ${PAD_T + plotH / 2})`}>正确率</text>
+
+      {/* 右轴标签 */}
+      {[0, Math.round(maxQ / 2), maxQ].map((v, i) => (
+        <text key={`ra${v}`} x={W - PAD_R + 6} y={PAD_T + plotH * (1 - i / 2) + 4} textAnchor="start" fill="#94a3b8" fontSize="10">{v}</text>
+      ))}
+      <text x={W - 8} y={PAD_T + plotH / 2} textAnchor="middle" fill="#94a3b8" fontSize="9" transform={`rotate(90 ${W - 8} ${PAD_T + plotH / 2})`}>题数</text>
+
+      {/* 柱状图 — 做题量 */}
+      {data.map((d, i) => {
+        const x = PAD_L + (i / Math.max(data.length - 1, 1)) * plotW;
+        const barW = Math.max(3, plotW / data.length * 0.55);
+        const barH = (d.questionCount / maxQ) * plotH;
+        return <rect key={`bar${i}`} x={x - barW / 2} y={PAD_T + plotH - barH} width={barW} height={barH} rx="2" fill="#c7d2fe" opacity="0.7" />;
+      })}
+
+      {/* 折线 — 正确率 */}
+      {hasAcc && (() => {
+        const linePath = accPoints.map((d, i) => {
+          const dataIdx = data.indexOf(d);
+          const x = PAD_L + (dataIdx / Math.max(data.length - 1, 1)) * plotW;
+          const y = PAD_T + plotH * (1 - (d.accuracy ?? 0) / 100);
+          return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
+        }).join(' ');
+        const areaPath = linePath + ` L${PAD_L + plotW},${PAD_T + plotH} L${PAD_L},${PAD_T + plotH} Z`;
+        return (
+          <>
+            <defs><linearGradient id="accGrad" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stopColor="#3b82f6" stopOpacity="0.25" /><stop offset="100%" stopColor="#3b82f6" stopOpacity="0.02" /></linearGradient></defs>
+            <path d={areaPath} fill="url(#accGrad)" />
+            <path d={linePath} fill="none" stroke="#3b82f6" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+            {accPoints.map((d) => {
+              const dataIdx = data.indexOf(d);
+              const x = PAD_L + (dataIdx / Math.max(data.length - 1, 1)) * plotW;
+              const y = PAD_T + plotH * (1 - (d.accuracy ?? 0) / 100);
+              return <circle key={`dot${dataIdx}`} cx={x} cy={y} r="3.5" fill="#fff" stroke="#3b82f6" strokeWidth="2" />;
+            })}
+          </>
+        );
+      })()}
+    </svg>
   );
 }

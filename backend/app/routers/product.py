@@ -3552,64 +3552,216 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
 
     # ── M6: 薄弱榜单 Top 5 ──
     weak_kps = diagnosis.get("weak_knowledge_points", []) or []
-    weakness_ranking = [
-        {"name": w.get("name", ""), "priority": w.get("priority", "medium"),
-         "reason": w.get("reason", ""), "suggested_action": "建议针对性练习"}
-        for w in weak_kps[:5] if isinstance(w, dict)
-    ]
+    recommended_strategy = diagnosis.get("recommended_strategy", "")
+    weakness_ranking = []
+    for w in weak_kps[:5]:
+        if not isinstance(w, dict):
+            continue
+        # 智能建议：优先用知识点级别的 next_actions，其次用诊断级别策略
+        topic_actions = w.get("next_actions") or w.get("recommended_actions") or []
+        resource_ids = w.get("recommended_resource_ids") or []
+        if topic_actions and isinstance(topic_actions, list) and len(topic_actions) > 0:
+            suggested = f"建议：{'；'.join(str(a) for a in topic_actions[:2])}"
+        elif resource_ids and len(resource_ids) > 0:
+            suggested = f"推荐 {len(resource_ids)} 个匹配资源进行针对性学习"
+        elif recommended_strategy:
+            suggested = str(recommended_strategy)
+        else:
+            # 根据优先级给不同建议措辞
+            p = w.get("priority", "medium")
+            suggested = {"high": "优先攻克，建议每日专项练习", "medium": "按学习路径顺序逐步强化", "low": "在完成主要任务后选择性复习"}.get(p, "建议针对性练习")
+        weakness_ranking.append({
+            "name": w.get("name", ""),
+            "priority": w.get("priority", "medium"),
+            "reason": w.get("reason", ""),
+            "suggested_action": suggested,
+            "resourceIds": resource_ids[:3] if isinstance(resource_ids, list) else [],
+        })
+
+    # ── M6: 从 DB 拉取近30天的学习事件用于按日统计 ──
+    from datetime import datetime, timedelta, date as date_type
+    today = date_type.today()
+    thirty_days_ago = today - timedelta(days=29)
+
+    # 按日期聚合：{ "YYYY-MM-DD": { "questionCount": int, "accuracySum": float, "active": bool } }
+    daily_stats: dict[str, dict[str, Any]] = {}
+    for day_offset in range(29, -1, -1):
+        d = today - timedelta(days=day_offset)
+        key = d.strftime("%Y-%m-%d")
+        daily_stats[key] = {"questionCount": 0, "accuracySum": 0.0, "active": False}
+
+    try:
+        db_events = SessionLocal()
+        from app.db.models import LearningEventModel
+        from sqlalchemy import and_
+
+        rows = (
+            db_events.query(LearningEventModel)
+            .filter(
+                and_(
+                    LearningEventModel.session_id == session_id,
+                    LearningEventModel.created_at >= thirty_days_ago,
+                    LearningEventModel.event_type.in_([
+                        "quiz_result", "quiz_submit", "practice_result",
+                        "resource_view", "resource_complete",
+                    ]),
+                )
+            )
+            .order_by(LearningEventModel.created_at.asc())
+            .all()
+        )
+        db_events.close()
+
+        for row in rows:
+            if row.created_at:
+                day_key = row.created_at.strftime("%Y-%m-%d")
+                if day_key in daily_stats:
+                    daily_stats[day_key]["active"] = True
+                    meta = row.metadata_ or {}
+                    if row.event_type in ("quiz_result", "quiz_submit", "practice_result"):
+                        daily_stats[day_key]["questionCount"] += 1
+                        score = None
+                        if "accuracy" in meta:
+                            try:
+                                a = float(meta["accuracy"])
+                                score = round(a * 100) if a <= 1 else round(a)
+                            except (TypeError, ValueError):
+                                pass
+                        if score is None and "score" in meta:
+                            try:
+                                s = float(meta["score"])
+                                score = round(s * 100) if s <= 1 else round(s)
+                            except (TypeError, ValueError):
+                                pass
+                        if score is None and "correct" in meta and "total" in meta:
+                            try:
+                                c = int(meta["correct"])
+                                t = int(meta["total"])
+                                if t > 0:
+                                    score = round(c / t * 100)
+                            except (TypeError, ValueError):
+                                pass
+                        if score is not None:
+                            daily_stats[day_key]["accuracySum"] += score
+    except Exception as e:
+        logger.warning(f"Failed to query DB for daily stats: {e}")
 
     # ── M6: 进步曲线（近30天正确率+做题量）──
-    from datetime import datetime, timedelta
     progress_curve = []
     for day_offset in range(29, -1, -1):
-        date = (datetime.now() - timedelta(days=day_offset)).strftime("%m-%d")
-        progress_curve.append({"date": date, "accuracy": None, "questionCount": 0})
+        d = today - timedelta(days=day_offset)
+        key = d.strftime("%Y-%m-%d")
+        ds = daily_stats.get(key, {})
+        qc = ds.get("questionCount", 0)
+        acc_sum = ds.get("accuracySum", 0.0)
+        progress_curve.append({
+            "date": d.strftime("%m-%d"),
+            "accuracy": round(acc_sum / qc) if qc > 0 else None,
+            "questionCount": qc,
+        })
 
-    # 从 grading_results 填充真实数据
-    grading_results = last_result.get("grading_results", []) if isinstance(last_result, dict) else []
-    for gr in grading_results:
-        if not isinstance(gr, dict):
-            continue
-        score = gr.get("total_score")
-        if score is not None:
-            today_idx = min(29, 29)  # 简化：全放到今天
-            progress_curve[today_idx]["questionCount"] += 1
-            prev_acc = progress_curve[today_idx]["accuracy"] or 0
-            n = progress_curve[today_idx]["questionCount"]
-            progress_curve[today_idx]["accuracy"] = int((prev_acc * (n - 1) + score) / n)
-
-    # ── M6: 学习日历（最近30天活跃日）──
-    today = datetime.now().date()
+    # ── M6: 学习日历（最近30天活跃日+表现等级）──
     study_calendar = []
     for day_offset in range(29, -1, -1):
         d = today - timedelta(days=day_offset)
-        has_activity = any(
-            isinstance(gr, dict) for gr in grading_results[:1]
-        )  # 简化：有判卷数据=活跃
+        key = d.strftime("%Y-%m-%d")
+        ds = daily_stats.get(key, {})
+        qc = ds.get("questionCount", 0)
+        active = ds.get("active", False)
+        # 表现等级：无活动=0, 有活动无答题=1, 正确率<60=2, 正确率≥60=3, 正确率≥80=4
+        perf_level = 0
+        if active:
+            perf_level = 1
+            if qc > 0:
+                acc_sum = ds.get("accuracySum", 0.0)
+                avg_acc = acc_sum / qc
+                if avg_acc >= 80:
+                    perf_level = 4
+                elif avg_acc >= 60:
+                    perf_level = 3
+                else:
+                    perf_level = 2
         study_calendar.append({
-            "date": d.strftime("%Y-%m-%d"),
-            "active": has_activity,
-            "questionCount": 0,
+            "date": key,
+            "active": active,
+            "questionCount": qc,
+            "performanceLevel": perf_level,
         })
+
+    # ── M6: 今日统计 ──
+    today_key = today.strftime("%Y-%m-%d")
+    today_ds = daily_stats.get(today_key, {})
+    today_questions = today_ds.get("questionCount", 0)
+    today_acc_sum = today_ds.get("accuracySum", 0.0)
+    today_avg_score = round(today_acc_sum / today_questions) if today_questions > 0 else None
 
     # ── M6: 目标追踪 ──
     learning_path = last_result.get("learning_path", []) if isinstance(last_result, dict) else []
-    estimated_days = last_result.get("estimatedDays", 14) if isinstance(last_result, dict) else 14
-    completed_questions = len(grading_results)
+    exam_date_str = last_result.get("examDate") if isinstance(last_result, dict) else None
+    days_until_exam = None
+    if exam_date_str:
+        try:
+            exam_date = datetime.strptime(str(exam_date_str), "%Y-%m-%d").date()
+            days_until_exam = (exam_date - today).days
+        except (ValueError, TypeError):
+            pass
+
+    # 预估达成分位：基于掌握度加权
+    mastery_scores = [m.get("score", 0) for m in mastery_levels if isinstance(m, dict)]
+    avg_mastery = int(sum(mastery_scores) / max(1, len(mastery_scores)))
+    # 简单估算：掌握度每10分一档，映射到分位
+    estimated_percentile = min(99, max(1, avg_mastery + (10 if avg_mastery >= 70 else -5)))
+
+    # 进度条：完成阶段数 / 总阶段数
+    stages_total = len(learning_path)
+    stages_done = last_result.get("currentStageIndex", 0) if isinstance(last_result, dict) else 0
+    if isinstance(stages_done, int) and stages_total > 0:
+        progress_pct = round(stages_done / stages_total * 100)
+    elif avg_mastery > 0:
+        progress_pct = avg_mastery
+    else:
+        progress_pct = 0
+
     goal_tracking = {
-        "estimatedDays": estimated_days,
-        "questionsCompleted": completed_questions,
-        "masteryPercentage": int(sum(m.get("score", 0) for m in mastery_levels) / max(1, len(mastery_levels))),
-        "stagesCompleted": 0,
-        "stagesTotal": len(learning_path),
+        "estimatedDays": last_result.get("estimatedDays", 14) if isinstance(last_result, dict) else 14,
+        "questionsCompleted": sum(ds.get("questionCount", 0) for ds in daily_stats.values()),
+        "masteryPercentage": avg_mastery,
+        "stagesCompleted": stages_done if isinstance(stages_done, int) else 0,
+        "stagesTotal": stages_total,
+        "examDate": exam_date_str,
+        "daysUntilExam": days_until_exam,
+        "estimatedPercentile": estimated_percentile,
+        "progressPercent": progress_pct,
     }
+
+    # ── 今日 vs 昨日对比（趋势变化）──
+    yesterday_key = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+    yesterday_ds = daily_stats.get(yesterday_key, {})
+    yesterday_questions = yesterday_ds.get("questionCount", 0)
+    yesterday_acc_sum = yesterday_ds.get("accuracySum", 0.0)
+    yesterday_avg = round(yesterday_acc_sum / yesterday_questions) if yesterday_questions > 0 else None
+
+    # 趋势：比较今日和昨日的答题数+正确率
+    rank_change = 0  # 0=持平, 1=上升, -1=下降
+    if today_questions > 0 and yesterday_questions > 0:
+        today_score = today_avg_score or 0
+        yesterday_score = yesterday_avg or 0
+        if today_score > yesterday_score + 5:
+            rank_change = 1
+        elif today_score < yesterday_score - 5:
+            rank_change = -1
+    elif today_questions > 0 and yesterday_questions == 0:
+        rank_change = 1  # 昨天没学今天学了=上升
 
     # ── 今日学习卡片 ──
     today_card = {
-        "questionsAnswered": completed_questions,
-        "averageScore": int(sum(gr.get("total_score", 0) for gr in grading_results if isinstance(gr, dict)) / max(1, completed_questions)) if completed_questions > 0 else None,
-        "studyMinutes": 0,  # 需要 learning_tracker 数据
+        "questionsAnswered": today_questions,
+        "averageScore": today_avg_score,
+        "studyMinutes": analytics.get("todayStudyMinutes", 0) or 0,
         "weakPointsCount": len(weak_kps),
+        "rankChange": rank_change,
+        "yesterdayQuestions": yesterday_questions,
+        "yesterdayScore": yesterday_avg,
     }
 
     return _product_response(

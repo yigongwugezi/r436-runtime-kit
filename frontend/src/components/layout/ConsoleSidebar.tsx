@@ -1,5 +1,5 @@
 import { useNavigate, useLocation } from 'react-router-dom';
-import { LayoutDashboard, User, Route, FolderOpen, MessageCircle, Settings, Sparkles, Bot, GraduationCap, History, Edit3, Users, BarChart3 } from 'lucide-react';
+import { LayoutDashboard, User, Route, FolderOpen, MessageCircle, Settings, Sparkles, Bot, GraduationCap, History, Edit3, Users, BarChart3, Shield } from 'lucide-react';
 import { getCurrentLearner } from '../../store/authStore';
 
 const STUDENT_NAV = [
@@ -10,6 +10,7 @@ const STUDENT_NAV = [
   { id: 'chat', path: '/chat', label: '智能对话', icon: <MessageCircle size={20} /> },
   { id: 'generate', path: '/generate', label: '资源生成', icon: <Sparkles size={20} /> },
   { id: 'practice', path: '/practice', label: '练习中心', icon: <Edit3 size={20} /> },
+  { id: 'analytics', path: '/analytics', label: '学习分析', icon: <BarChart3 size={20} /> },
   { id: 'settings', path: '/settings', label: '系统设置', icon: <Settings size={20} /> },
 ];
 
@@ -17,6 +18,7 @@ const TEACHER_NAV = [
   { id: 'dashboard', path: '/', label: '学习中心', icon: <LayoutDashboard size={20} /> },
   { id: 'class-home', path: '/teacher', label: '班级管理', icon: <Users size={20} /> },
   { id: 'admin', path: '/admin', label: '后台管理', icon: <Settings size={20} /> },
+  { id: 'review-queue', path: '/review-queue', label: '题目审核', icon: <Shield size={20} /> },
   { id: 'settings', path: '/settings', label: '系统设置', icon: <Settings size={20} /> },
 ];
 

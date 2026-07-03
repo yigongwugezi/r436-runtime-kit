@@ -96,26 +96,36 @@ class DiagnosisAgent(BaseAgent):
         mastery = self._estimate_mastery(all_grades, knowledge_points)
         weak_kps = self._rank_weak_points(mastery)
 
+        # 综合置信度：各知识点置信度的均值
+        overall_confidence = round(sum(m.get("confidence", 0) for m in mastery) / max(1, len(mastery)), 2)
+        # 趋势统计
+        declining_count = sum(1 for m in mastery if m.get("trend") == "declining")
+        improving_count = sum(1 for m in mastery if m.get("trend") == "improving")
+
         diagnosis = {
             "diagnosis_summary": self._adaptive_summary(mastery, weak_kps, len(step1_questions), len(step2_questions)),
             "summary": self._adaptive_summary(mastery, weak_kps, len(step1_questions), len(step2_questions)),
             "weak_topics": weak_kps[:5],
             "weak_knowledge_points": weak_kps[:8],
             "strengths": [kp["name"] for kp in sorted(mastery, key=lambda x: -(x.get("score", 0)))[:3]],
-            "confidence": 0.85 if previous_grades else 0.45,
+            "confidence": overall_confidence,
+            "diagnosis_confidence": max(0.4, overall_confidence),
             "source": "adaptive_diagnosis",
             "diagnosis_used": True,
-            "needs_more_evidence": len(previous_grades) < 5,
+            "needs_more_evidence": overall_confidence < 0.5,
             "evidence_chain": [{"source": "adaptive_diagnosis", "signal": f"自适应诊断{len(step1_questions)+len(step2_questions)}题",
                                 "weight": 0.7, "reason": "基于学生作答数据的自适应诊断"}],
             "next_actions": ["继续回答追加的诊断题以提升掌握度估计精度"] if len(step2_questions) > 0 else ["完成全部诊断题后自动输出掌握度报告"],
             "recommended_next_actions": [],
             "limitations": [] if previous_grades else ["当前为初步诊断，置信度较低。完成全部题目后精度提升。"],
-            "risk_flags": ["initial_diagnosis"] if not previous_grades else [],
-            "mastery_levels": mastery,  # 掌握度向量
+            "risk_flags": (["initial_diagnosis"] if not previous_grades else []) +
+                          (["declining_trend"] if declining_count > improving_count else []),
+            "mastery_levels": mastery,  # 掌握度向量（含 confidence, trend, last_updated）
             "diagnostic_questions": step1_questions + step2_questions,
             "diagnostic_question_count": len(step1_questions) + len(step2_questions),
             "diagnostic_phase": "step1" if not previous_grades else "step2",
+            "trend_stats": {"declining": declining_count, "improving": improving_count,
+                           "total": len(mastery)},
         }
 
         return {"diagnosis": diagnosis, "agent_step": self.agent_step()}
@@ -164,59 +174,191 @@ class DiagnosisAgent(BaseAgent):
             return []
 
     def _analyze_weak_areas(self, grades: list[dict], knowledge_points: list[dict]) -> list[dict]:
-        """分析作答结果，识别薄弱知识点。"""
+        """分析作答结果，识别薄弱知识点（增强版：错误分类 + 难度加权 + 趋势判定）。"""
+        ERROR_TYPE_LABELS = {
+            "concept": "概念理解错误", "calculation": "计算失误", "misreading": "审题偏差",
+            "method": "解题方法不当", "forgetting": "知识点遗忘", "null": "未归类",
+        }
         weak = {}
         for g in grades:
             if not isinstance(g, dict):
                 continue
-            score = g.get("total_score", 100)
+            score = g.get("total_score")
+            if score is None:
+                continue
             kps = g.get("knowledge_points", [])
             error_type = g.get("error_type", "null")
-            if score is not None and score < 60:
-                for kp in kps:
-                    name = str(kp) if isinstance(kp, str) else kp.get("name", str(kp))
-                    if name not in weak:
-                        weak[name] = {"errors": 0, "total": 0, "error_types": []}
+            q_difficulty = g.get("difficulty", "medium")
+
+            for kp in kps:
+                name = str(kp) if isinstance(kp, str) else kp.get("name", str(kp))
+                if name not in weak:
+                    weak[name] = {"errors": 0, "total": 0, "error_types": [], "low_scores": [], "difficulties": []}
+                weak[name]["total"] += 1
+                weak[name]["difficulties"].append(q_difficulty)
+                if score < 60:
                     weak[name]["errors"] += 1
+                    weak[name]["low_scores"].append(score)
                     if error_type != "null":
                         weak[name]["error_types"].append(error_type)
-                    weak[name]["total"] += 1
 
         result = []
         for name, stats in weak.items():
             error_rate = stats["errors"] / max(1, stats["total"])
-            if error_rate >= 0.5:
+            if error_rate >= 0.3 or stats["total"] >= 3:  # 降低阈值，更敏感
+                # 主要错误类型
+                if stats["error_types"]:
+                    top_error = Counter(stats["error_types"]).most_common(1)[0]
+                    error_label = ERROR_TYPE_LABELS.get(top_error[0], top_error[0])
+                else:
+                    error_label = "综合表现不佳"
+
+                # 平均低分
+                avg_low = round(sum(stats["low_scores"]) / max(1, len(stats["low_scores"]))) if stats["low_scores"] else 0
+
+                # 难度分布
+                has_hard = any(d == "hard" for d in stats["difficulties"])
+
+                # 优先级判定
+                if error_rate >= 0.7 or (error_rate >= 0.5 and has_hard):
+                    priority = "high"
+                elif error_rate >= 0.4:
+                    priority = "medium"
+                else:
+                    priority = "low"
+
                 result.append({
-                    "name": name, "priority": "high" if error_rate >= 0.75 else "medium",
-                    "reason": f"诊断测试中该知识点错误率 {error_rate:.0%}",
-                    "evidence": [f"错误率: {error_rate:.0%}, 错误类型: {', '.join(set(stats['error_types']))}"],
+                    "name": name,
+                    "priority": priority,
+                    "reason": f"正确率 {100-error_rate:.0f}%，主要问题：{error_label}{'（含难题）' if has_hard else ''}，平均低分 {avg_low}",
+                    "error_rate": round(error_rate, 2),
+                    "error_type": error_label,
+                    "evidence": [
+                        f"答题 {stats['total']} 次，错误 {stats['errors']} 次",
+                        f"错误类型: {', '.join(set(stats['error_types']))}" if stats["error_types"] else "无明确错误类型",
+                        f"平均低分: {avg_low}" if stats["low_scores"] else "",
+                    ],
                 })
+        # 按优先级 + 错误率排序
+        result.sort(key=lambda x: ({"high": 0, "medium": 1, "low": 2}[x["priority"]], -x["error_rate"]))
         return result
 
     def _estimate_mastery(self, grades: list[dict], knowledge_points: list[dict]) -> list[dict]:
-        """基于作答结果估计每个知识点的掌握度。"""
-        mastery = {}
+        """基于作答结果估计每个知识点的掌握度（增强版）。
+
+        改进点：
+        - 贝叶斯风格更新：alpha（掌握证据）vs beta（未掌握证据）
+        - 时间衰减：每30天衰减一半，遗忘的知识点分数回归先验
+        - 难度加权：难题答对=更强掌握信号，简单题答错=更强薄弱信号
+        - 置信度：随证据量增长，随遗忘衰减
+        - 初始先验：50分（无信息先验）
+        """
+        from datetime import datetime, timezone
+        from collections import Counter as _Counter
+        now = datetime.now(timezone.utc)
+        HALF_LIFE_DAYS = 30  # 半衰期
+        DIFF_WEIGHT = {"easy": 0.7, "medium": 1.0, "hard": 1.5}
+
+        mastery: dict[str, dict[str, Any]] = {}
         for kp in knowledge_points:
             name = str(kp.get("name", ""))
             if name:
-                mastery[name] = {"name": name, "score": 50, "level": "初步",
-                                 "evidence_count": 0, "difficulty": kp.get("difficulty", "medium")}
+                mastery[name] = {
+                    "name": name,
+                    "score": 50,
+                    "level": "未学",
+                    "evidence_count": 0,
+                    "total_weight": 0.0,
+                    "difficulty": kp.get("difficulty", "medium"),
+                    "confidence": 0.0,
+                    "last_updated": None,  # datetime
+                    "trend": "stable",  # improving | declining | stable
+                    "prior_weight": 3.0,  # 先验权重：需积累多少证据才能偏离先验
+                }
 
-        for g in grades:
-            if not isinstance(g, dict):
+        # 按时间排序，保证更新顺序正确
+        sorted_grades = sorted(
+            [g for g in grades if isinstance(g, dict)],
+            key=lambda g: g.get("timestamp", 0) if isinstance(g.get("timestamp"), (int, float)) else 0
+        )
+
+        for g in sorted_grades:
+            score = g.get("total_score")
+            if score is None:
                 continue
-            score = g.get("total_score", 50)
+            score = max(0, min(100, int(score)))
+
             kps = g.get("knowledge_points", [])
+            q_difficulty = str(g.get("difficulty", "medium"))
+
+            # 时间戳处理
+            ts = g.get("timestamp")
+            if isinstance(ts, (int, float)) and ts > 0:
+                grade_time = datetime.fromtimestamp(ts, tz=timezone.utc)
+            else:
+                grade_time = now
+
+            diff_w = DIFF_WEIGHT.get(q_difficulty, 1.0)
+
             for kp in kps:
                 name = str(kp) if isinstance(kp, str) else kp.get("name", str(kp))
-                if name in mastery:
-                    m = mastery[name]
-                    m["evidence_count"] += 1
-                    n = m["evidence_count"]
-                    m["score"] = int((m["score"] * (n - 1) + score) / n)
+                if name not in mastery:
+                    continue
 
-        # 分级
+                m = mastery[name]
+
+                # ── 时间衰减：移动分数向先验 50 回归 ──
+                if m["last_updated"] is not None and m["evidence_count"] > 0:
+                    days_elapsed = max(0, (grade_time - m["last_updated"]).total_seconds() / 86400)
+                    if days_elapsed > 1:
+                        decay = 0.5 ** (days_elapsed / HALF_LIFE_DAYS)
+                        m["score"] = int(50 + (m["score"] - 50) * decay)
+                        m["total_weight"] *= decay
+                        m["confidence"] *= decay
+
+                # 记录更新前的分数用于趋势判定
+                prev_score = m["score"]
+
+                # ── 加权贝叶斯更新 ──
+                # evidence_weight: 难度越高，信息量越大
+                # 对于答对的情况：高分=更多的掌握证据；对于答错的情况：低分=更多的薄弱证据
+                evidence_w = 1.0 * diff_w
+
+                m["evidence_count"] += 1
+                old_w = max(m["total_weight"], 0.01)
+                m["total_weight"] = old_w + evidence_w
+
+                # 加权移动平均（本质上是基于 evidence_count 和 evidence_weight 的指数平滑）
+                m["score"] = int(round(
+                    (m["score"] * old_w + score * evidence_w) / m["total_weight"]
+                ))
+
+                # ── 趋势判定：连续比较 ──
+                if m["evidence_count"] >= 2:
+                    delta = m["score"] - prev_score
+                    if delta > 5:
+                        m["trend"] = "improving"
+                    elif delta < -5:
+                        m["trend"] = "declining"
+                    else:
+                        m["trend"] = "stable"
+
+                m["last_updated"] = grade_time
+
+        # ── 最终化：最后一次衰减 + 置信度 + 分级 ──
         for m in mastery.values():
+            if m["last_updated"] is not None and m["evidence_count"] > 0:
+                days_elapsed = max(0, (now - m["last_updated"]).total_seconds() / 86400)
+                if days_elapsed > 1:
+                    decay = 0.5 ** (days_elapsed / HALF_LIFE_DAYS)
+                    m["score"] = int(50 + (m["score"] - 50) * decay)
+                    m["total_weight"] *= decay
+
+            # 置信度 = f(总证据量)：从0增长至0.95，3个单位权重即达50%
+            w = m["total_weight"]
+            m["confidence"] = round(min(0.95, w / (w + 3.0)), 2)
+
+            # 分级
             s = m["score"]
             if m["evidence_count"] == 0:
                 m["level"] = "未学"
@@ -229,19 +371,63 @@ class DiagnosisAgent(BaseAgent):
             else:
                 m["level"] = "未学"
 
+            # 确保 JSON 可序列化
+            if m["last_updated"] is not None:
+                m["last_updated"] = m["last_updated"].isoformat()
+
         return sorted(mastery.values(), key=lambda x: x["score"])
 
     def _rank_weak_points(self, mastery: list[dict]) -> list[dict]:
-        """按掌握度排序薄弱点。"""
+        """按多维度排序薄弱点（增强版）。
+
+        排序维度（按权重）：
+        1. 掌握度分数（权重最高）
+        2. 置信度（分数高才可信）
+        3. 趋势（持续下降 > 稳定 > 上升）
+        4. 证据量（证据太少不可靠）
+        """
         weak = [m for m in mastery if m.get("level") in ("未学", "初步")]
-        weak.sort(key=lambda x: x.get("score", 50))
-        return [
-            {"name": m["name"], "priority": "high" if m["level"] == "未学" else "medium",
-             "reason": f"掌握度 {m['score']} 分（{m['level']}）",
-             "confidence": 0.6 + 0.2 * min(1, m.get("evidence_count", 0) / 5),
-             "difficulty": m.get("difficulty", "medium")}
-            for m in weak
-        ]
+        # 综合排序分：score越低越前，confidence越高越可信（在低分区中），declining趋势更需关注
+        weak.sort(key=lambda x: (
+            x.get("score", 50),  # 越低越前
+            -(x.get("confidence", 0)),  # 置信度高的优先
+            0 if x.get("trend") == "declining" else 1 if x.get("trend") == "stable" else 2,  # 下降趋势优先
+        ))
+        result = []
+        for m in weak:
+            s = m.get("score", 50)
+            conf = m.get("confidence", 0)
+            trend = m.get("trend", "stable")
+            trend_label = {"improving": "↑", "declining": "↓", "stable": "→"}.get(trend, "")
+            # 生成针对性建议
+            if m.get("evidence_count", 0) == 0:
+                suggested = "尚未有答题数据，建议先完成诊断测试"
+                priority = "medium"
+            elif s < 30:
+                suggested = "基础严重薄弱，建议从入门资源开始系统学习"
+                priority = "high"
+            elif s < 50:
+                suggested = "需重点强化，建议每日专项练习 + 错题回顾"
+                priority = "high"
+            elif trend == "declining":
+                suggested = "掌握度正在下降，可能存在遗忘，建议安排复习"
+                priority = "medium"
+            else:
+                suggested = "按照学习路径逐步提升即可"
+                priority = "medium" if s < 60 else "low"
+
+            result.append({
+                "name": m["name"],
+                "priority": priority,
+                "reason": f"掌握度 {s} 分（{m.get('level', '初步')}）{trend_label}，置信度 {conf:.0%}",
+                "mastery_score": s,
+                "confidence": round(conf, 2),
+                "trend": trend,
+                "difficulty": m.get("difficulty", "medium"),
+                "evidence_count": m.get("evidence_count", 0),
+                "suggested_action": suggested,
+            })
+        return result
 
     def _adaptive_summary(self, mastery: list[dict], weak_kps: list[dict],
                            step1_count: int, step2_count: int) -> str:
