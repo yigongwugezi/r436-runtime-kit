@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useChatStore } from '../store/chatStore';
-import { Target, BookOpen, AlertCircle, BarChart3, Play, Loader2, ChevronLeft, ChevronRight, Check, X, RefreshCw, Users, GraduationCap } from 'lucide-react';
+import { Target, BookOpen, AlertCircle, BarChart3, Play, Loader2, ChevronLeft, ChevronRight, Check, X, RefreshCw, Users, GraduationCap, Edit3 } from 'lucide-react';
+import { getCurrentLearner } from '../store/authStore';
 import { listQuestions, gradeAnswer, getWeakQuestions, getAnswerHistory, getQuestionSets } from '../api/chat';
 import { getPushedQuestions } from '../api/classSubjects';
 import type { PushedQuestionGroup } from '../types/classSubject';
@@ -16,6 +17,21 @@ interface QuestionSet { questionSetId: string; title: string; knowledgePoints: s
 
 export default function PracticePage() {
   const nav = useNavigate();
+  const isParent = getCurrentLearner()?.role === 'parent';
+
+  if (isParent) {
+    return (
+      <div className="p-6 h-full flex items-center justify-center animate-fade-in">
+        <div className="text-center max-w-md">
+          <div className="w-16 h-16 rounded-2xl bg-surface-100 dark:bg-surface-700 flex items-center justify-center mx-auto mb-4">
+            <Edit3 className="w-8 h-8 text-surface-400" />
+          </div>
+          <h3 className="font-display text-lg font-semibold text-surface-800 dark:text-gray-100 mb-2">只读模式</h3>
+          <p className="text-surface-500 dark:text-gray-400 text-sm">家长账户无法使用练习功能。<br/>请前往学习分析查看孩子的答题情况。</p>
+        </div>
+      </div>
+    );
+  }
   const sessionId = useChatStore((s) => s.currentSessionId);
   const [view, setView] = useState<'home' | 'quiz' | 'weak' | 'history'>('home');
   const [sets, setSets] = useState<QuestionSet[]>([]);

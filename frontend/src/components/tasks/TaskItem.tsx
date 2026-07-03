@@ -4,7 +4,7 @@ import type { DailyTask } from '../../types/dailyTask';
 
 interface TaskItemProps {
   task: DailyTask;
-  onToggle: (task: DailyTask) => Promise<void>;
+  onToggle?: ((task: DailyTask) => Promise<void>) | undefined;
   /** Optional accent color for the checkbox */
   color?: string;
 }
@@ -20,7 +20,7 @@ export default function TaskItem({ task, onToggle, color = 'primary' }: TaskItem
   const [pending, setPending] = useState(false);
 
   const handleClick = async () => {
-    if (pending) return;
+    if (!onToggle || pending) return;
     setPending(true);
     try {
       await onToggle(task);
@@ -32,10 +32,10 @@ export default function TaskItem({ task, onToggle, color = 'primary' }: TaskItem
   return (
     <button
       onClick={handleClick}
-      disabled={pending}
+      disabled={pending || !onToggle}
       className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all
         ${task.completed ? 'bg-surface-50 opacity-60' : 'bg-white hover:bg-surface-50'}
-        ${pending ? 'cursor-wait' : 'cursor-pointer'}
+        ${pending ? 'cursor-wait' : (!onToggle ? 'cursor-default' : 'cursor-pointer')}
         group`}
     >
       <div className="flex-shrink-0">

@@ -332,10 +332,12 @@ export default function SettingsPage() {
                   ) : (
                     <>
                       <h3 className="text-xl font-bold text-gray-800 dark:text-gray-100">{learner?.name || '未命名'}</h3>
+                      {learner?.role !== 'parent' && (
                       <button onClick={() => { setNameInput(learner?.name || ''); setEditingName(true); }}
                         className="p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-surface-600 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors">
                         <Edit3 className="w-3.5 h-3.5" />
                       </button>
+                      )}
                     </>
                   )}
                 </div>
@@ -487,6 +489,8 @@ export default function SettingsPage() {
         return (
           <div className="space-y-4">
             <SectionHeader icon={Database} title="数据管理" desc="管理本地学习数据与备份" />
+            {learner?.role !== 'parent' && (
+            <>
             <p className="text-xs text-gray-400 dark:text-gray-500 font-semibold uppercase tracking-wider px-1">本地数据</p>
 
             <SettingRow label="导出数据" description="将所有本地数据导出为 JSON 备份文件">
@@ -525,6 +529,8 @@ export default function SettingsPage() {
                 </div>
               )}
             </SettingRow>
+            </>
+            )}
 
             <p className="text-xs text-gray-400 dark:text-gray-500 font-semibold uppercase tracking-wider px-1 pt-2">存储统计</p>
             <SettingRow label="本地存储用量">

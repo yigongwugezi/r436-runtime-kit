@@ -4,6 +4,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Search, BookOpen, Brain, Code, FileText, Lightbulb, Play, Presentation, Clock, Star, ChevronRight, BookmarkPlus, BookmarkCheck, CheckCircle2, X, LayoutGrid, List, ChevronDown, MoreHorizontal, RotateCcw, ListChecks, Download, SlidersHorizontal, MessageSquare, Send, ArrowLeft } from 'lucide-react';
 import { useResources } from '../hooks/useResources';
 import { useChatStore } from '../store/chatStore';
+import { getCurrentLearner } from '../store/authStore';
 import { getResourceById, updateStudyStatus, autoAdvanceNode, getResourceKnowledgeGraph, batchUpdateStudyStatus, batchSetBookmark, batchExportResources } from '../api/resources';
 import { submitFeedback, logStudyEvent } from '../api/feedback';
 import type { Resource, ResourceType } from '../types/resource';
@@ -84,10 +85,12 @@ function ResourceDetailView({
   onBookmark,
   onComplete,
   onRefetch,
+  isReadOnly,
 }: {
   resource: Resource;
   onBack: () => void;
   onBookmark: (id: string) => void;
+  isReadOnly?: boolean;
   onComplete: (r: Resource) => void;
   onRefetch: () => void;
 }) {
@@ -174,10 +177,14 @@ function ResourceDetailView({
       <div className="bg-white rounded-2xl shadow-soft p-5">
         <div className="flex flex-wrap items-center gap-2">
           <button onClick={() => setShowExplain(!showExplain)} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-surface-50 text-surface-500 rounded-lg text-xs font-medium hover:bg-surface-100 transition-colors">🛡️ {showExplain ? '收起解释' : '可信解释'}</button>
+          {!isReadOnly && (
           <button onClick={() => onBookmark(resource.id)} className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${resource.bookmarked ? 'bg-primary-50 text-primary-600 border-primary-200' : 'bg-white text-surface-500 border-surface-200 hover:border-primary-300'}`}>
             {resource.bookmarked ? <BookmarkCheck className="w-3.5 h-3.5" /> : <BookmarkPlus className="w-3.5 h-3.5" />}{resource.bookmarked ? '已收藏' : '收藏'}
           </button>
+          )}
+          {!isReadOnly && (
           <button onClick={() => onComplete(resource)} className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${resource.studyStatus === 'completed' ? 'bg-warning-50 text-warning-700 hover:bg-warning-100' : 'bg-success-50 text-success-700 hover:bg-success-100'}`}><CheckCircle2 className="w-3.5 h-3.5" />{resource.studyStatus === 'completed' ? '撤销完成' : '标记完成'}</button>
+          )}
           <button onClick={async () => {
             if (showKnowledgeGraph) { setShowKnowledgeGraph(false); return; }
             setKgLoading(true);
@@ -236,10 +243,10 @@ function ResourceDetailView({
       )}
 
       {/* 反馈区 */}
-      {!showFeedback && !showThanks && (
+      {!isReadOnly && !showFeedback && !showThanks && (
         <button onClick={() => setShowFeedback(true)} className="inline-flex items-center gap-1.5 px-4 py-2 bg-white rounded-xl shadow-soft text-surface-500 text-xs font-medium hover:bg-surface-50 transition-colors"><MessageSquare className="w-3.5 h-3.5" />评价这份资源</button>
       )}
-      {showFeedback && (
+      {!isReadOnly && showFeedback && (
         <div className="bg-white rounded-2xl shadow-soft p-5 space-y-3 animate-fade-in">
           <h4 className="text-sm font-semibold text-surface-700 flex items-center gap-2"><MessageSquare className="w-4 h-4 text-primary-500" />对这份资源评价</h4>
           <div className="flex flex-wrap gap-1.5">
@@ -301,6 +308,7 @@ function ResourceListView({
   sessionId: string | null;
   activeTaskId?: string;
   activeStageId?: string;
+  isReadOnly?: boolean;
 }) {
   const nav = useNavigate();
 
@@ -418,7 +426,7 @@ function ResourceListView({
           </div>
         )}
 
-        {selectionMode && selectedIds.size > 0 && (
+        {!isReadOnly && selectionMode && selectedIds.size > 0 && (
           <div className="flex items-center gap-2 mt-3 pt-3 border-t border-surface-100">
             <span className="text-xs text-surface-500">已选 {selectedIds.size} 项</span>
             <button onClick={() => { setSelectedIds(new Set(filtered.map(r => r.id))); }} className="px-2.5 py-1 bg-surface-100 rounded-lg text-[11px] font-medium hover:bg-surface-200">全选</button>
@@ -482,6 +490,7 @@ export default function ResourceLibrary() {
 
   const { resources, total, loading, error, applyFilter, toggleBookmark, refetch } = useResources(initialFilter);
   const sessionId = useChatStore(s => s.currentSessionId);
+  const isParent = getCurrentLearner()?.role === 'parent';
 
   // 详情视图状态
   const [detailResource, setDetailResource] = useState<Resource | null>(null);
@@ -574,6 +583,7 @@ export default function ResourceLibrary() {
         onBookmark={handleBookmark}
         onComplete={handleComplete}
         onRefetch={refetch}
+        isReadOnly={isParent}
       />
     );
   }
@@ -591,6 +601,7 @@ export default function ResourceLibrary() {
       sessionId={sessionId}
       activeTaskId={searchParams.get('taskId') || undefined}
       activeStageId={searchParams.get('relatedStageId') || undefined}
+      isReadOnly={isParent}
     />
   );
 }

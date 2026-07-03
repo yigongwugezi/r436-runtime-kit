@@ -57,6 +57,7 @@ export default function Home() {
   const [joinError, setJoinError] = useState('');
 
   const isTeacher = user?.role === 'teacher' || user?.role === 'admin';
+  const isParent = user?.role === 'parent';
 
   useEffect(() => {
     if (user && !isTeacher) {
@@ -99,9 +100,11 @@ export default function Home() {
               今日还有 {taskTotal - taskCompleted} 项任务待完成
             </p>
           )}
-          <button onClick={() => nav('/chat')} className="flex items-center gap-2 px-5 py-2.5 bg-white rounded-xl text-primary-600 font-semibold hover:bg-primary-50 transition-colors shadow-lg">
-            <PlayCircle size={18} /> 开始学习 <ChevronRight size={18} />
-          </button>
+          {!isParent && (
+            <button onClick={() => nav('/chat')} className="flex items-center gap-2 px-5 py-2.5 bg-white rounded-xl text-primary-600 font-semibold hover:bg-primary-50 transition-colors shadow-lg">
+              <PlayCircle size={18} /> 开始学习 <ChevronRight size={18} />
+            </button>
+          )}
         </div>
         <div className="absolute right-8 top-1/2 -translate-y-1/2 opacity-10"><BrainCircuit size={180} /></div>
       </div>
@@ -135,10 +138,12 @@ export default function Home() {
               <>
                 <div className="flex items-center justify-between mb-5">
                   <h3 className="font-display text-lg font-semibold text-surface-800">我的科目</h3>
+                  {!isParent && (
                   <div className="flex items-center gap-2">
                     <button onClick={() => { setShowJoin(true); setInviteCode(''); setJoinError(''); }} className="text-sm text-accent-600 hover:text-accent-700 font-medium flex items-center gap-1"><UserPlus size={14} /> 加入班级</button>
                     <button onClick={() => setShowCreate(!showCreate)} className="text-sm text-primary-600 hover:text-primary-700 font-medium">+ 新建科目</button>
                   </div>
+                  )}
                 </div>
                 {showCreate && (
                   <div className="flex items-center gap-2 mb-4 animate-fade-in">
@@ -154,12 +159,14 @@ export default function Home() {
                     <>
                       {/* Personal subjects */}
                       {subjects.map((s, idx) => (
-                        <div key={s.id} className="space-y-2 cursor-pointer group relative" onClick={() => { setActive(s); nav('/chat'); }}>
+                        <div key={s.id} className="space-y-2 cursor-pointer group relative" onClick={() => { setActive(s); nav(isParent ? '/analytics' : '/chat'); }}>
                           <div className="flex items-center justify-between text-sm">
                             <div className="flex items-center gap-2 min-w-0">
                               <span className="text-surface-700 font-medium truncate">{s.name}{activeSubject?.id===s.id&&<span className="ml-2 px-2 py-0.5 bg-primary-100 text-primary-700 rounded-full text-[10px] font-semibold">当前</span>}</span>
                             </div>
+                            {!isParent && (
                             <button onClick={e => { e.stopPropagation(); if(confirm(`删除「${s.name}」？`)) remove(s.id); }} className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-md text-surface-300 hover:text-error-500 hover:bg-error-50"><Trash2 size={14} /></button>
+                            )}
                           </div>
                           <p className="text-[11px] text-surface-400">我的科目</p>
                           <div className="h-2 bg-surface-100 rounded-full overflow-hidden">
@@ -271,6 +278,7 @@ export default function Home() {
           <DailyTaskPanel />
 
           {/* 快速操作 */}
+          {!isParent && (
           <div className="bg-white rounded-2xl p-6 shadow-soft">
             <h3 className="font-display text-lg font-semibold text-surface-800 mb-4">快速操作</h3>
             <div className="space-y-3">
@@ -279,6 +287,7 @@ export default function Home() {
               <QA icon={<FileText className="w-5 h-5" />} label="浏览资源库" desc="查看个性化资源" onClick={() => nav('/resources')} color="bg-gradient-to-r from-accent-500 to-primary-500" />
             </div>
           </div>
+          )}
 
           {/* 最近活动 */}
           <div className="bg-white rounded-2xl p-6 shadow-soft flex-1 flex flex-col min-h-0">

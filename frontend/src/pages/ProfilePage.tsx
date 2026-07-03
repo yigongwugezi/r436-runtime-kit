@@ -26,6 +26,7 @@ export default function ProfilePage() {
   const chat = useChatPanel();
   const { profile, loading, error, fetchProfile, buildProfile } = useProfile();
   const sessionId = useChatStore(s => s.currentSessionId);
+  const isParent = getCurrentLearner()?.role === 'parent';
 
   const [isUpdating, setIsUpdating] = useState(false);
   const [selectedDimension, setSelectedDimension] = useState<string | null>(null);
@@ -33,6 +34,7 @@ export default function ProfilePage() {
   useEffect(() => { fetchProfile(); }, []);
 
   const handleRefresh = async () => {
+    if (isParent) return;
     if (!sessionId) { chat.setOpen(true); return; }
     setIsUpdating(true);
     try {
@@ -48,7 +50,7 @@ export default function ProfilePage() {
     <div className="space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
         <div><h2 className="font-display text-2xl font-bold text-surface-800">学习画像</h2><p className="text-surface-500 mt-1">基于AI对话构建的个性化学习特征分析</p></div>
-        <button onClick={handleRefresh} disabled={isUpdating} className="flex items-center gap-2 px-5 py-2.5 bg-primary-600 text-white rounded-xl font-medium hover:bg-primary-700 transition-colors disabled:opacity-50"><RefreshCw size={18} className={isUpdating ? 'animate-spin' : ''} />{isUpdating ? '更新中...' : '构建画像'}</button>
+        {!isParent && <button onClick={handleRefresh} disabled={isUpdating} className="flex items-center gap-2 px-5 py-2.5 bg-primary-600 text-white rounded-xl font-medium hover:bg-primary-700 transition-colors disabled:opacity-50"><RefreshCw size={18} className={isUpdating ? 'animate-spin' : ''} />{isUpdating ? '更新中...' : '构建画像'}</button>}
       </div>
       <div className="bg-white rounded-2xl p-12 shadow-soft text-center">
         <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-primary-100 to-accent-100 flex items-center justify-center mx-auto mb-6"><Brain size={36} className="text-primary-400" /></div>
@@ -69,7 +71,7 @@ export default function ProfilePage() {
     <div className="space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
         <div><h2 className="font-display text-2xl font-bold text-surface-800">学习画像</h2><p className="text-surface-500 mt-1">基于AI对话构建的个性化学习特征分析</p></div>
-        <button onClick={handleRefresh} disabled={isUpdating} className="flex items-center gap-2 px-5 py-2.5 bg-primary-600 text-white rounded-xl font-medium hover:bg-primary-700 transition-colors disabled:opacity-50"><RefreshCw size={18} className={isUpdating ? 'animate-spin' : ''} />{isUpdating ? '更新中...' : '更新画像'}</button>
+        {!isParent && <button onClick={handleRefresh} disabled={isUpdating} className="flex items-center gap-2 px-5 py-2.5 bg-primary-600 text-white rounded-xl font-medium hover:bg-primary-700 transition-colors disabled:opacity-50"><RefreshCw size={18} className={isUpdating ? 'animate-spin' : ''} />{isUpdating ? '更新中...' : '更新画像'}</button>}
       </div>
 
       <div className="grid grid-cols-3 gap-6">
@@ -96,7 +98,7 @@ export default function ProfilePage() {
             <div className="flex items-center justify-between"><span className="text-sm text-surface-500">完成专题</span><span className="font-semibold text-surface-800">{completedTopics} 个</span></div>
             <div className="flex items-center justify-between"><span className="text-sm text-surface-500">测验准确率</span><span className="font-semibold text-surface-800">{profile.history?.quizAccuracy != null ? `${Math.round(profile.history.quizAccuracy)}%` : '暂无'}</span></div>
           </div>
-          <button onClick={() => chat.setOpen(true)} className="w-full mt-6 flex items-center justify-center gap-2 px-4 py-3 bg-surface-50 rounded-xl text-surface-600 hover:bg-surface-100 transition-colors"><Edit3 size={16} /><span className="text-sm font-medium">对话更新画像</span></button>
+          {!isParent && <button onClick={() => chat.setOpen(true)} className="w-full mt-6 flex items-center justify-center gap-2 px-4 py-3 bg-surface-50 rounded-xl text-surface-600 hover:bg-surface-100 transition-colors"><Edit3 size={16} /><span className="text-sm font-medium">对话更新画像</span></button>}
         </div>
 
         {/* 雷达图 */}
@@ -187,12 +189,14 @@ export default function ProfilePage() {
       )}
 
       {/* 对话式更新横幅 */}
+      {!isParent && (
       <div className="bg-gradient-to-r from-primary-50 to-accent-50 rounded-2xl p-6 border border-primary-100">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4"><div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-primary-500 to-accent-500 flex items-center justify-center text-white"><Sparkles size={28} /></div><div><h3 className="font-display text-lg font-semibold text-surface-800">对话式画像更新</h3><p className="text-surface-500 mt-1">通过自然语言对话，智能更新你的学习特征</p></div></div>
           <button onClick={() => chat.setOpen(true)} className="flex items-center gap-2 px-6 py-3 bg-white rounded-xl font-semibold text-primary-600 hover:bg-primary-50 transition-colors shadow-card">开始对话 <ChevronRight size={18} /></button>
         </div>
       </div>
+      )}
     </div>
   );
 }

@@ -8,7 +8,8 @@ import { DEFAULT_QUICK_COMMANDS } from '../utils/constants';
 import { timeAgo } from '../utils/format';
 import { runtimeStorageKeys, writeStorageItem } from '../utils/storageKeys';
 import type { ChatAttachment, ChatMessage, GenerationProgress, ProgressStep, QuickCommand } from '../types/chat';
-import { Send, Sparkles, Square, Copy, Check, AlertCircle, Bot, User, RefreshCw, ChevronDown, XCircle, History, Brain, Loader2, BrainCircuit, FileText, Video, Menu, ImagePlus, Trash2 } from 'lucide-react';
+import { Send, Sparkles, Square, Copy, Check, AlertCircle, Bot, User, RefreshCw, ChevronDown, XCircle, History, Brain, Loader2, BrainCircuit, FileText, Video, Menu, ImagePlus, Trash2, MessageCircle } from 'lucide-react';
+import { getCurrentLearner } from '../store/authStore';
 import Markdown from '../utils/markdown';
 import MarkmapDiagram from '../utils/markmap';
 import ChatHistorySidebar from '../components/chat/ChatHistorySidebar';
@@ -181,6 +182,21 @@ function AgentPipelineProgress({ progress, onRetry, onNavigate }: { progress: Ge
 
 export default function ChatPage() {
   const loc = useLocation(); const nav = useNavigate();
+  const isParent = getCurrentLearner()?.role === 'parent';
+
+  if (isParent) {
+    return (
+      <div className="h-[calc(100vh-160px)] flex items-center justify-center animate-fade-in">
+        <div className="text-center max-w-md">
+          <div className="w-16 h-16 rounded-2xl bg-surface-100 dark:bg-surface-700 flex items-center justify-center mx-auto mb-4">
+            <MessageCircle className="w-8 h-8 text-surface-400" />
+          </div>
+          <h3 className="font-display text-lg font-semibold text-surface-800 dark:text-gray-100 mb-2">只读模式</h3>
+          <p className="text-surface-500 dark:text-gray-400 text-sm">家长账户无法使用智能对话功能。<br/>请前往学习分析、画像或资源库查看孩子的学习数据。</p>
+        </div>
+      </div>
+    );
+  }
   const initialMessage = (loc.state as any)?.initialMessage;
   const { messages, isStreaming, agentProgress, currentSessionId, setLoading } = useChatStore() as any;
   const { send, abort } = useStreamChat();

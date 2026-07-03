@@ -21,8 +21,10 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
+
+from app.middleware.auth import AuthContext, reject_parent
 
 from app.agents.multimodal_agent import MultimodalAgent
 from app.agents.diagnosis_agent import DiagnosisAgent
@@ -1471,7 +1473,7 @@ GEN_STAGES = [
 
 
 @router.post("/chat/stream")
-def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
+def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> StreamingResponse:
     message = str(payload.get("message", "我想学习人工智能导论"))
     session_id = _payload_session_id(payload)
     subject_id = _payload_subject_id(payload)
@@ -1715,7 +1717,7 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
 
 
 @router.post("/chat/send")
-def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
+def send_chat(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     message = str(payload.get("message", "我想学习人工智能导论"))
     session_id = _payload_session_id(payload)
     subject_id = _payload_subject_id(payload)
@@ -2124,7 +2126,7 @@ def get_profile(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
 
 
 @router.post("/profile/build")
-def build_profile(payload: dict[str, Any]) -> dict[str, Any]:
+def build_profile(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     """Trigger agent pipeline and build/refresh the student profile."""
     session_id = _payload_session_id(payload)
     subject_id = _payload_subject_id(payload)
@@ -2144,7 +2146,7 @@ def build_profile(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.patch("/profile")
-def update_profile(payload: dict[str, Any]) -> dict[str, Any]:
+def update_profile(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     """Update profile fields directly (client-side edits). Persists to DB and syncs facts."""
     session_id = _payload_session_id(payload)
     state = conversation_store.get(session_id)
@@ -2735,7 +2737,7 @@ def batch_export_resources(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.post("/resources/generate")
-def generate_resource(payload: dict[str, Any]) -> dict[str, Any]:
+def generate_resource(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     """Trigger agent pipeline to generate resources for a topic."""
     session_id = _payload_session_id(payload)
     topic = str(payload.get("topic", "学习主题"))
@@ -3142,7 +3144,7 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
 
 
 @router.post("/learning-path/generate")
-def generate_learning_path(payload: dict[str, Any]) -> dict[str, Any]:
+def generate_learning_path(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     session_id = _payload_session_id(payload)
     user_message = str(payload.get("userMessage", "")).strip()
     course_id = str(payload.get("courseId", "")).strip()
@@ -3273,7 +3275,7 @@ def _log_node_progress(session_id: str, node_id: str, status: str) -> None:
 
 
 @router.patch("/learning-path/auto-advance")
-def auto_advance_node(payload: dict[str, Any]) -> dict[str, Any]:
+def auto_advance_node(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     session_id = _payload_session_id(payload)
     related_stage_id = str(payload.get("relatedStageId", ""))
     task_id = str(payload.get("taskId", "")).strip()
@@ -3745,7 +3747,7 @@ def learning_timeline(
 
 
 @router.post("/questions/generate")
-def generate_questions(payload: dict[str, Any]) -> dict[str, Any]:
+def generate_questions(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     """触发 QuestionAgent 生成试题并持久化到 DB。"""
     session_id = _payload_session_id(payload)
     subject_id = _payload_subject_id(payload)
@@ -3831,7 +3833,7 @@ def get_question(question_id: str, sessionId: str = "", reveal: bool = False) ->
 
 
 @router.post("/questions/{question_id}/grade")
-def grade_answer(question_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def grade_answer(question_id: str, payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     """提交作答，触发 GradingAgent 判卷并持久化到 DB。"""
     session_id = _payload_session_id(payload)
     student_answer = str(payload.get("answer", "")).strip()

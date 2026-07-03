@@ -5,6 +5,7 @@ import { useChatPanel } from '../components/layout/AppLayout';
 import { useLearningPath } from '../hooks/useLearningPath';
 import { PlayCircle, BookOpen, Code2, FileCheck, Lock, CheckCircle2, Circle, Loader2, ChevronRight, Zap, Target, ArrowLeft, FileText, Brain, Calendar, ExternalLink, Clock } from 'lucide-react';
 import { PageLoading, PageEmpty, PageError } from '../components/common/PageState';
+import { getCurrentLearner } from '../store/authStore';
 
 const statusStyle: Record<string, { bg: string; border: string; text: string; icon: string }> = {
   mastered: { bg: 'bg-success-50', border: 'border-success-200', text: 'text-success-700', icon: 'text-success-500' },
@@ -58,6 +59,7 @@ export default function LearningPathPage() {
   const masteredNodes = allNodes.filter(n => n.status === 'mastered' || n.status === 'completed').length;
   const progress = path?.overallProgress ?? (totalNodes > 0 ? Math.round((masteredNodes / totalNodes) * 100) : 0);
   const estimatedDays = path?.estimatedDays || 14;
+  const isParent = getCurrentLearner()?.role === 'parent';
   const maxNodesInStage = Math.max(...stages.map(s => s.nodes?.length || 0), 1);
 
   // ====== 核心算法 ======
@@ -192,9 +194,11 @@ export default function LearningPathPage() {
             <Target size={18} className="text-primary-500" />
             <span className="text-sm font-medium text-surface-600">进度: {progress}%</span>
           </div>
+          {!isParent && (
           <button onClick={() => chat.setOpen(true)} className="flex items-center gap-2 px-5 py-2.5 bg-primary-600 text-white rounded-xl font-medium hover:bg-primary-700 transition-colors">
             <Zap size={18} />完善路径
           </button>
+          )}
         </div>
       </div>
 

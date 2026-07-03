@@ -1,12 +1,14 @@
 import { ClipboardList, ChevronRight } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useDailyTasks } from '../../hooks/useDailyTasks';
+import { getCurrentLearner } from '../../store/authStore';
 import TaskItem from './TaskItem';
 
 const SUBJECT_COLORS = ['primary', 'accent', 'warning', 'success'] as const;
 
 export default function DailyTaskPanel() {
   const nav = useNavigate();
+  const isParent = getCurrentLearner()?.role === 'parent';
   const {
     tasks,
     tasksBySubject,
@@ -144,7 +146,7 @@ export default function DailyTaskPanel() {
                   <TaskItem
                     key={task.id}
                     task={task}
-                    onToggle={toggleTask}
+                    onToggle={isParent ? undefined : toggleTask}
                     color={color}
                   />
                 ))}
