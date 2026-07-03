@@ -1,16 +1,12 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useChatStore } from '../store/chatStore';
-<<<<<<< HEAD
-import { Target, BookOpen, AlertCircle, BarChart3, Play, Loader2, ChevronLeft, ChevronRight, Check, X, RefreshCw } from 'lucide-react';
+import { Target, BookOpen, AlertCircle, BarChart3, Play, Loader2, ChevronLeft, ChevronRight, Check, X, RefreshCw, Edit3, Users, GraduationCap } from 'lucide-react';
 import Markdown from '../utils/markdown';
-=======
-import { Target, BookOpen, AlertCircle, BarChart3, Play, Loader2, ChevronLeft, ChevronRight, Check, X, RefreshCw, Users, GraduationCap, Edit3 } from 'lucide-react';
-import { getCurrentLearner } from '../store/authStore';
->>>>>>> a9155d75495d4b608f99bae4ce71a01c6f961435
 import { listQuestions, gradeAnswer, getWeakQuestions, getAnswerHistory, getQuestionSets } from '../api/chat';
 import { getPushedQuestions } from '../api/classSubjects';
 import type { PushedQuestionGroup } from '../types/classSubject';
+import { getCurrentLearner } from '../store/authStore';
 
 interface Question {
   question_id: string; type: string; stem: string; options?: string[];
@@ -248,7 +244,6 @@ export default function PracticePage() {
 
           {/* 右侧题目区 */}
           <div className="flex-1 flex flex-col min-w-0">
-<<<<<<< HEAD
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-3">
                 <span className="text-lg font-bold text-primary-600">#{currentIdx + 1}</span>
@@ -268,20 +263,6 @@ export default function PracticePage() {
             <div className="flex items-center gap-2 mb-6">
               <div className="flex-1 h-2 bg-surface-100 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-primary-500 to-accent-500 rounded-full transition-all duration-500" style={{ width: `${questions.length>0?((currentIdx+1)/questions.length)*100:0}%` }} /></div>
               <span className="text-xs text-surface-400 tabular-nums w-10 text-right">{questions.length>0?Math.round(((currentIdx+1)/questions.length)*100):0}%</span>
-=======
-            <div className="flex items-center justify-between mb-4">
-              <span className="text-sm text-surface-500">第 {currentIdx + 1} / {questions.length} 题</span>
-              <div className="flex items-center gap-1.5">
-                {(currentQ as any)?.source === 'teacher_pushed' && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium flex items-center gap-1">
-                    <Users size={10} /> 教师推送
-                  </span>
-                )}
-                <span className="text-xs px-2 py-0.5 rounded-full bg-surface-100 text-surface-500">
-                  {currentQ?.type === 'choice' ? '选择题' : currentQ?.type === 'truefalse' ? '判断题' : currentQ?.type === 'fill' ? '填空题' : '解答题'}
-                </span>
-              </div>
->>>>>>> a9155d75495d4b608f99bae4ce71a01c6f961435
             </div>
 
             <div className="flex-1 overflow-y-auto">
