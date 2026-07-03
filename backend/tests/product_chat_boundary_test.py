@@ -605,6 +605,21 @@ def test_cancelled_image_reference_does_not_reuse_cache() -> None:
     assert_true(response is not None, "image reference should still route to multimodal")
     assert_true(not contexts[0].get("last_vision_result"), "cancelled reference must not reuse cached vision")
     assert_true(response["workflow_trace"]["image_context_source"] == "missing", "trace should show missing image context")
+    assert_true(response["workflow_trace"]["ignore_image_context"] is True, "trace should record cancelled image context")
+
+
+def test_question_detail_alias_fields_do_not_become_empty_indices() -> None:
+    questions = product._questions_from_vision({
+        "extracted_questions": [
+            {"index": 1, "content": "content field question"},
+            {"index": 2, "title": "title field question"},
+            {"index": 3},
+        ]
+    })
+
+    assert_true(questions[0]["question_text"] == "content field question", "content should map to question text")
+    assert_true(questions[1]["question_text"] == "title field question", "title should map to question text")
+    assert_true(questions[2]["question_text"], "missing stem should still render a useful review placeholder")
 
 
 if __name__ == "__main__":
@@ -621,4 +636,5 @@ if __name__ == "__main__":
     test_multimodal_image_reference_without_context_is_explicit()
     test_plain_text_does_not_reuse_last_image_context()
     test_cancelled_image_reference_does_not_reuse_cache()
+    test_question_detail_alias_fields_do_not_become_empty_indices()
     print("PASS product_chat_boundary_test")

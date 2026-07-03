@@ -859,13 +859,22 @@ def _questions_from_vision(vision: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(raw, list):
         for idx, item in enumerate(raw, start=1):
             item = item if isinstance(item, dict) else {"question_text": str(item)}
-            text = str(item.get("question_text") or item.get("stem") or item.get("question") or item.get("text") or "").strip()
-            if text:
-                try:
-                    question_index = int(item.get("index") or item.get("question_index") or idx)
-                except (TypeError, ValueError):
-                    question_index = idx
-                questions.append({**item, "index": question_index, "question_text": text})
+            text = str(
+                item.get("question_text")
+                or item.get("stem")
+                or item.get("question")
+                or item.get("text")
+                or item.get("content")
+                or item.get("title")
+                or ""
+            ).strip()
+            try:
+                question_index = int(item.get("index") or item.get("question_index") or idx)
+            except (TypeError, ValueError):
+                question_index = idx
+            if not text:
+                text = f"第 {question_index} 题题干识别不完整"
+            questions.append({**item, "index": question_index, "question_text": text})
     if not questions and str(vision.get("question_text") or "").strip():
         questions.append({"index": 1, "question_text": str(vision.get("question_text")).strip()})
     return questions
@@ -889,6 +898,7 @@ def _cache_multimodal_context(session_id: str, image_input: dict[str, Any], resu
             "provider": result.get("provider"),
             "updated_at": int(time.time() * 1000),
         },
+        "raw_structured_result": data,
     }
     if _has_image_input(image_input):
         context["last_image_input"] = image_input
@@ -956,8 +966,9 @@ def _multimodal_reply(result: dict[str, Any]) -> str:
     task_type = result.get("task_type")
     status = result.get("status")
     data = result.get("result") if isinstance(result.get("result"), dict) else {}
-    if str(data.get("chat_text") or "").strip():
-        return str(data["chat_text"]).strip()
+    for key in ("display_text", "teaching_text", "answer_text", "chat_text"):
+        if str(data.get(key) or "").strip():
+            return str(data[key]).strip()
     if task_type == "image_understanding" and status in {"success", "partial_success", "needs_manual_review"}:
         return "已完成图片理解，识别结果已整理成结构化信息。"
     if task_type == "image_to_mindmap" and status in {"success", "needs_manual_review"}:
@@ -1043,6 +1054,8 @@ def _multimodal_chat_payload(
         reused_image_context=reused_image_context,
         image_context_source=image_context_source,
     )
+    trace["ignore_image_context"] = ignore_image_context
+    trace["session_id"] = session_id
     _cache_multimodal_context(session_id, image_input, result)
     cached = state.last_result if isinstance(state.last_result, dict) else {}
     state.last_result = {**cached, "multimodal_result": result, "workflow_trace": trace}

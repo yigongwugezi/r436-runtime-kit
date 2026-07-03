@@ -36,6 +36,33 @@ function MathText({ children }: { children: unknown }) {
   return <Markdown content={String(children || '')} />;
 }
 
+const isUseful = (value: unknown) => {
+  const text = String(value ?? '').trim();
+  return Boolean(text) && !/^(null|undefined|\.{1,}|…+)$/i.test(text);
+};
+
+const questionText = (item: any) =>
+  String(item?.question_text || item?.stem || item?.question || item?.text || item?.content || item?.title || '').trim();
+
+function QuestionDetail({ item, idx }: { item: any; idx: number }) {
+  const no = item?.index || item?.question_index || idx + 1;
+  const text = questionText(item);
+  const options = Array.isArray(item?.options) ? item.options.filter(isUseful) : [];
+  const points = Array.isArray(item?.knowledge_points || item?.possible_knowledge_points)
+    ? (item.knowledge_points || item.possible_knowledge_points).filter(isUseful)
+    : [];
+  return (
+    <li>
+      <div className="font-medium text-surface-700">第 {no} 题</div>
+      <div className="whitespace-pre-wrap">{text || '题干识别不完整'}</div>
+      {options.length > 0 && <div>选项：{options.join('；')}</div>}
+      {isUseful(item?.answer || item?.correct_answer) && <div>答案：{item.answer || item.correct_answer}</div>}
+      {points.length > 0 && <div>知识点：{points.join('、')}</div>}
+      {item?.needs_manual_review && <div className="text-amber-700">这一题有识别不确定项</div>}
+    </li>
+  );
+}
+
 function humanizeReviewField(value: unknown) {
   const text = String(value || '');
   const cardMatch = text.match(/^cards\[(\d+)\]\.(front|back|answer)$/);
@@ -168,6 +195,11 @@ function MultimodalResultView({ result }: { result: ChatMessage['multimodalResul
   const variants = data.optional_variants || data.variants || [];
   const candidates = data.knowledge_candidates || [];
   const warnings = result?.warnings || [];
+  const extractedQuestions = Array.isArray(data.extracted_questions)
+    ? data.extracted_questions
+    : Array.isArray(vision?.extracted_questions)
+      ? vision.extracted_questions
+      : [];
   const needsReview = data.needs_manual_review || result?.status === 'needs_manual_review';
   const isExplanationTask = result?.task_type === 'explain_image_question' || result?.task_type === 'solve_image_question';
   const isMindmapTask = result?.task_type === 'image_to_mindmap';
@@ -219,37 +251,34 @@ function MultimodalResultView({ result }: { result: ChatMessage['multimodalResul
   if (isExplanationTask) {
     return (
       <div className="mt-3 space-y-2">
-        <ReviewNotice />
         <details className="rounded-xl border border-surface-200 bg-white/70 p-3 text-xs text-surface-600">
           <summary className="cursor-pointer font-medium text-surface-700">查看识别详情</summary>
           <div className="mt-2 space-y-1">
-            {vision?.summary && <div>摘要：{vision.summary}</div>}
-            {vision?.question_text && <div className="whitespace-pre-wrap">题目：{vision.question_text}</div>}
-            {vision?.detected_text && <div className="whitespace-pre-wrap">识别文本：{vision.detected_text}</div>}
-            {Array.isArray(data.extracted_questions) && data.extracted_questions.length > 0 && (
+            {isUseful(vision?.summary) && <div>摘要：{vision.summary}</div>}
+            {isUseful(vision?.question_text) && <div className="whitespace-pre-wrap">题目：{vision.question_text}</div>}
+            {isUseful(vision?.detected_text) && <div className="whitespace-pre-wrap">识别文本：{vision.detected_text}</div>}
+            {extractedQuestions.length > 0 && (
               <ol className="list-decimal pl-4 space-y-1">
-                {data.extracted_questions.map((item: any, idx: number) => (
-                  <li key={idx}>{item.question_text || item.text || item.stem}</li>
-                ))}
+                {extractedQuestions.map((item: any, idx: number) => <QuestionDetail key={idx} item={item} idx={idx} />)}
               </ol>
             )}
           </div>
         </details>
+        <ReviewNotice />
       </div>
     );
   }
 
   return (
     <div className="mt-3 space-y-3">
-      {(needsReview || warnings.length > 0) && <ReviewNotice />}
       {!isMindmapTask && vision && (
         <div className="rounded-xl border border-surface-200 bg-white p-3 text-xs text-surface-600 space-y-1">
           <div className="font-semibold text-surface-700">图片理解</div>
-          {vision.image_type && <div>类型：{vision.image_type}</div>}
-          {vision.subject && <div>学科：{vision.subject}</div>}
-          {vision.summary && <div>摘要：{vision.summary}</div>}
-          {vision.question_text && <div>题目：{vision.question_text}</div>}
-          {vision.detected_text && <div className="whitespace-pre-wrap">识别文本：{vision.detected_text}</div>}
+          {isUseful(vision.image_type) && vision.image_type !== 'unknown' && <div>类型：{vision.image_type}</div>}
+          {isUseful(vision.subject) && <div>学科：{vision.subject}</div>}
+          {isUseful(vision.summary) && <div>摘要：{vision.summary}</div>}
+          {isUseful(vision.question_text) && <div>题目：{vision.question_text}</div>}
+          {isUseful(vision.detected_text) && <div className="whitespace-pre-wrap">识别文本：{vision.detected_text}</div>}
           {Array.isArray(vision.possible_knowledge_points) && vision.possible_knowledge_points.length > 0 && (
             <div>知识点：{vision.possible_knowledge_points.join('、')}</div>
           )}
@@ -366,6 +395,7 @@ function MultimodalResultView({ result }: { result: ChatMessage['multimodalResul
           {candidates.length > 0 && <div>知识候选：{candidates.map((item: any) => item.knowledge_point).filter(Boolean).join('、')}（待确认）</div>}
         </div>
       )}
+      <ReviewNotice />
     </div>
   );
 }
@@ -650,13 +680,16 @@ export default function ChatPage() {
               </div>
             )}
             {referencesLastImage && (
-              <div className={`mb-3 flex items-center gap-3 rounded-xl border p-2 text-xs ${willUseLastImage ? 'border-primary-200 bg-primary-50 text-primary-700' : 'border-surface-200 bg-surface-50 text-surface-500'}`}>
-                {attachmentUrl(lastImageAttachment) && <img src={attachmentUrl(lastImageAttachment)} className="h-10 w-10 rounded-lg object-cover" />}
-                <span className="flex-1">{willUseLastImage ? '正在引用上一张图片' : '已取消引用上一张图片，本条消息不会带图'}</span>
+              <div className={`mb-3 flex items-center gap-3 rounded-2xl border-2 p-3 text-sm shadow-soft ${willUseLastImage ? 'border-primary-300 bg-primary-50 text-primary-800' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+                {attachmentUrl(lastImageAttachment) && <img src={attachmentUrl(lastImageAttachment)} className="h-14 w-14 rounded-xl object-cover border border-white" />}
+                <div className="flex-1">
+                  <div className="font-semibold">{willUseLastImage ? '正在引用上一张图片' : '已取消引用上一张图片'}</div>
+                  <div className="text-xs opacity-80">{willUseLastImage ? '本条消息将使用上一张图的识别结果' : '本条消息不会带图，也不会复用旧图'}</div>
+                </div>
                 {willUseLastImage ? (
-                  <button onClick={() => setImageContextDisabled(true)} className="rounded-lg bg-white px-2 py-1 text-primary-600 border border-primary-100">取消引用</button>
+                  <button onClick={() => setImageContextDisabled(true)} className="rounded-xl bg-white px-3 py-2 text-error-600 border border-error-100 font-medium">取消引用</button>
                 ) : (
-                  <button onClick={() => setImageContextDisabled(false)} className="rounded-lg bg-white px-2 py-1 text-surface-600 border border-surface-200">重新使用</button>
+                  <button onClick={() => setImageContextDisabled(false)} className="rounded-xl bg-white px-3 py-2 text-primary-600 border border-primary-100 font-medium">重新使用</button>
                 )}
               </div>
             )}

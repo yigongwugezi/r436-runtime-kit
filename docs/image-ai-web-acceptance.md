@@ -21,6 +21,8 @@ npm run dev
 
 Open [http://localhost:5173/](http://localhost:5173/).
 
+Local proxy expectation: `frontend/vite.config.ts` proxies `/api` to `http://127.0.0.1:8000`. Uploaded image previews use `/api/multimodal/file/...`; DevTools should not show `127.0.0.1:8001`.
+
 ## Smoke Cases
 
 1. Upload a question image and send:
@@ -30,6 +32,7 @@ Open [http://localhost:5173/](http://localhost:5173/).
    ```
 
    Expected: normal chat text is the main answer; the user message shows a thumbnail; extraction details are collapsed behind `查看识别详情`.
+   The text should include a first-pass teaching explanation, not only `已读取题图并整理讲解信息`.
 
 2. Same session, no new upload:
 
@@ -46,6 +49,7 @@ Open [http://localhost:5173/](http://localhost:5173/).
    ```
 
    Expected: the chip appears, Markmap renders first, and OCR details stay collapsed.
+   The map should have a real two-to-three-level knowledge structure, not only two or three nodes.
 
 4. Same session, no new upload:
 
@@ -54,6 +58,7 @@ Open [http://localhost:5173/](http://localhost:5173/).
    ```
 
    Expected: cards are generated from the cached vision result; front is visible, back is folded, and math is rendered where possible.
+   A multi-question image should produce at least five cards when there is enough recognized content.
 
 5. Same session, no new upload:
 
@@ -106,6 +111,10 @@ Open [http://localhost:5173/](http://localhost:5173/).
 
 10. If `needs_manual_review=true`, verify that the UI lists concrete reasons, question numbers, uncertain fields, and whether the result can still be used. It should not show only a generic error.
 
+11. Expand `查看识别详情`.
+
+   Expected: each recognized question shows a readable stem or `题干识别不完整`; it must not render a list of empty `1. 2. 3.` entries.
+
 ## Optional API Smoke
 
 This does not require a real API key:
@@ -116,4 +125,5 @@ $env:PYTHONIOENCODING="utf-8"
 .venv310\Scripts\python.exe tests\multimodal_agent_test.py
 .venv310\Scripts\python.exe tests\multimodal_router_test.py
 .venv310\Scripts\python.exe tests\product_chat_boundary_test.py
+.venv310\Scripts\python.exe scripts\smoke_multimodal_image_acceptance.py
 ```

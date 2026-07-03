@@ -402,6 +402,7 @@ def test_cached_image_context_can_continue_specific_question() -> None:
     assert_true(result["status"] == "success", "cached question explanation should succeed")
     assert_true(result["result"]["selected_question_indices"] == [2], "requested question index should be selected")
     assert_true(zh(r"\u7b2c2\u9898") in result["result"]["chat_text"], "chat text should explain the requested question")
+    assert_true(result["result"]["display_text"] == result["result"]["chat_text"], "first-class display text should be present")
 
 
 def test_cached_image_context_can_generate_mindmap_without_new_upload() -> None:
@@ -428,7 +429,7 @@ def test_cached_image_context_can_generate_flashcards_without_new_upload() -> No
     assert_true(result["task_type"] == "image_to_flashcards", "cached image flashcard task should be selected")
     assert_true(result["provider"] == "session_cache", "flashcards should reuse cached vision result")
     assert_true(result["status"] == "success", "cached image flashcards should succeed")
-    assert_true(len(result["result"]["cards"]) >= 3, "flashcards should be generated")
+    assert_true(len(result["result"]["cards"]) >= 5, "flashcards should be enough for a multi-question image")
     assert_true(result["workflow_trace"]["vision_context_reused"] is True, "trace should show reused image context")
 
 
@@ -441,7 +442,7 @@ def test_image_to_flashcards_from_vision_result() -> None:
     })
     assert_true(result["task_type"] == "image_to_flashcards", "flashcard task should be selected")
     assert_true(result["status"] == "success", "flashcards should succeed from vision result")
-    assert_true(len(result["result"]["cards"]) >= 3, "should generate at least three cards")
+    assert_true(len(result["result"]["cards"]) >= 5, "should generate at least five cards")
 
 
 def test_explain_image_question_needs_manual_review_when_question_missing() -> None:

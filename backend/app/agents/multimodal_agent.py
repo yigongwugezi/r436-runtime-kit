@@ -66,11 +66,13 @@ def _vision_result(executed: dict[str, Any]) -> dict[str, Any]:
 
 
 def _knowledge_points(vision: dict[str, Any]) -> list[str]:
-    points = vision.get("possible_knowledge_points")
-    if isinstance(points, list):
-        cleaned = [_text(point) for point in points if _text(point)]
-        if cleaned:
-            return cleaned[:8]
+    raw_points = []
+    for key in ("possible_knowledge_points", "knowledge_points", "target_knowledge_points"):
+        raw_points.extend(_as_list(vision.get(key)))
+    cleaned = [_text(point) for point in raw_points if _text(point)]
+    cleaned.extend(_topic_hints(vision))
+    if cleaned:
+        return list(dict.fromkeys(cleaned))[:12]
     fallback = _text(vision.get("summary") or vision.get("detected_text") or vision.get("question_text"))
     return [part.strip() for part in fallback.replace("\n", ".").split(".") if part.strip()][:6]
 
@@ -87,6 +89,51 @@ def _current_image_supplied(context: dict[str, Any]) -> bool:
     return bool(context.get("attachments") or context.get("image_url") or context.get("image_base64"))
 
 
+def _question_text(item: dict[str, Any]) -> str:
+    return _text(
+        item.get("question_text")
+        or item.get("stem")
+        or item.get("question")
+        or item.get("text")
+        or item.get("content")
+        or item.get("title")
+    )
+
+
+def _topic_hints(vision: dict[str, Any]) -> list[str]:
+    text = "\n".join(_text(vision.get(key)) for key in ("detected_text", "question_text", "summary"))
+    hints = [
+        ("定义域", "函数定义域"),
+        ("奇偶", "奇偶函数"),
+        ("反函数", "反函数"),
+        ("复合函数", "复合函数"),
+        ("分段", "分段函数"),
+        ("数列", "数列极限"),
+        ("无穷小", "无穷小比较"),
+        ("等价无穷小", "等价无穷小"),
+        ("渐近线", "渐近线"),
+    ]
+    return [label for needle, label in hints if needle in text]
+
+
+def _vision_evidence(vision: dict[str, Any], questions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    questions = questions if questions is not None else _extract_questions(vision)
+    return {
+        "summary": _text(vision.get("summary")),
+        "subject": _text(vision.get("subject")),
+        "detected_text": _text(vision.get("detected_text")),
+        "question_text": _text(vision.get("question_text")),
+        "knowledge_points": _knowledge_points(vision),
+        "questions": questions,
+        "answers": _as_list(vision.get("answers") or vision.get("answer")),
+        "formulas": _as_list(vision.get("formulas") or vision.get("formula_text")),
+    }
+
+
+def _markdown_node_count(markdown: str) -> int:
+    return len([line for line in markdown.splitlines() if line.lstrip().startswith("-")])
+
+
 def _extract_questions(vision: dict[str, Any]) -> list[dict[str, Any]]:
     questions = vision.get("extracted_questions") or vision.get("questions") or []
     if isinstance(questions, dict):
@@ -95,9 +142,9 @@ def _extract_questions(vision: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(questions, list):
         for idx, item in enumerate(questions, start=1):
             item = item if isinstance(item, dict) else {"question_text": str(item)}
-            text = _text(item.get("question_text") or item.get("stem") or item.get("question") or item.get("text"))
+            text = _question_text(item)
             if not text:
-                continue
+                text = f"第 {idx} 题题干识别不完整"
             try:
                 question_index = int(item.get("index") or item.get("question_index") or idx)
             except (TypeError, ValueError):
@@ -105,6 +152,7 @@ def _extract_questions(vision: dict[str, Any]) -> list[dict[str, Any]]:
             result.append({
                 "index": question_index,
                 "question_text": text,
+                "options": _as_list(item.get("options") or item.get("choices")),
                 "knowledge_points": _as_list(item.get("knowledge_points") or item.get("possible_knowledge_points")),
                 "answer": _text(item.get("answer") or item.get("correct_answer")),
                 "explanation_steps": _as_list(item.get("explanation_steps") or item.get("solution_steps")),
@@ -194,16 +242,20 @@ def _fallback_mindmap(vision: dict[str, Any], context: dict[str, Any]) -> dict[s
     questions = _extract_questions(vision)
     points = _knowledge_points(vision)
     title = _text(vision.get("summary"))[:50] or _text(context.get("topic")) or "图片知识结构"
+    point_children = [{"title": point, "children": []} for point in points]
     if questions:
         children = [
             {
-                "title": f"第 {item.get('index')} 题",
-                "children": [{"title": str(point)} for point in _as_list(item.get("knowledge_points")) if _text(point)],
+                "title": f"第 {item.get('index')} 题：{_text(item.get('question_text'))[:24]}",
+                "children": [{"title": str(point)} for point in (_as_list(item.get("knowledge_points")) or points[:3]) if _text(point)],
             }
             for item in questions
         ]
     else:
-        children = [{"title": point, "children": []} for point in points]
+        children = point_children
+    if point_children:
+        children.insert(0, {"title": "核心知识点", "children": point_children[:10]})
+    children.append({"title": "常见错误", "children": [{"title": "题干条件看漏"}, {"title": "公式适用条件混淆"}, {"title": "计算步骤跳步"}]})
     mindmap = {"title": title, "children": children or [{"title": "待补充识别结果", "children": []}]}
     return {
         "title": title,
@@ -211,7 +263,7 @@ def _fallback_mindmap(vision: dict[str, Any], context: dict[str, Any]) -> dict[s
         "mindmap_json": mindmap,
         "markdown": _json_to_markdown(mindmap),
         "mermaid": _json_to_mermaid(mindmap),
-        "nodes_count": len(children),
+        "nodes_count": len(children) + sum(len(node.get("children") or []) for node in children),
         "vision_result": vision,
     }
 
@@ -441,11 +493,14 @@ class MultimodalAgent:
         result = None
         if client is not None:
             try:
+                questions = _extract_questions(vision)
+                evidence = _vision_evidence(vision, questions)
                 prompt = (
                     "请基于下面图片识别结果生成 Markmap 可渲染的 Markdown 层级脑图。"
+                    "至少包含 8 个有意义知识节点，使用两到三级层级。"
                     "只输出 Markdown，不要解释，不要包代码块。\n\n"
                     f"用户请求：{_text(context.get('user_message'))}\n"
-                    f"图片识别结果：{json.dumps(vision, ensure_ascii=False)}"
+                    f"完整图片证据：{json.dumps(evidence, ensure_ascii=False)}"
                 )
                 markdown = _text(client.chat([
                     {"role": "system", "content": "你是教学内容整理助手，负责把图片题目或笔记整理成清晰脑图。"},
@@ -454,6 +509,8 @@ class MultimodalAgent:
                 if markdown.startswith("```"):
                     markdown = "\n".join(line for line in markdown.splitlines() if not line.strip().startswith("```")).strip()
                 if markdown:
+                    if _markdown_node_count(markdown) < 6:
+                        raise ValueError("mindmap content too sparse")
                     title = markdown.splitlines()[0].lstrip("# ").strip() or _text(vision.get("summary"))[:50] or "图片知识结构"
                     result = {
                         "title": title,
@@ -489,27 +546,28 @@ class MultimodalAgent:
         client = self._get_llm_client()
         if client is not None:
             try:
+                evidence = _vision_evidence(vision)
                 raw = client.chat([
                     {"role": "system", "content": "你是中文复习卡片助手，只输出 JSON。"},
                     {
                         "role": "user",
                         "content": (
-                            "请基于图片识别结果生成 3-6 张复习卡片。"
+                            "请基于图片识别结果生成 6-10 张复习卡片。"
                             "只返回 JSON：{\"cards\":[{\"front\":\"问题\",\"back\":\"答案\",\"knowledge_point\":\"知识点\",\"difficulty\":\"basic|medium|hard\",\"card_type\":\"concept|mistake|practice\"}]}。"
                             "内容必须来自识别结果，不要编造。\n\n"
-                            f"{json.dumps(vision, ensure_ascii=False)}"
+                            f"{json.dumps(evidence, ensure_ascii=False)}"
                         ),
                     },
                 ], temperature=0.2)
                 parsed = parse_safe(raw)
                 cards = parsed.get("cards") if isinstance(parsed.get("cards"), list) else []
-                if cards:
+                if len(cards) >= 5:
                     return {
                         **executed,
                         "status": "success",
                         "result": {
                             "vision_result": vision,
-                            "cards": cards[:6],
+                            "cards": cards[:10],
                             "needs_manual_review": bool(vision.get("needs_manual_review")),
                             "review_reasons": vision.get("review_reasons", []),
                             "uncertain_question_indices": vision.get("uncertain_question_indices", []),
@@ -522,30 +580,46 @@ class MultimodalAgent:
                     }
             except Exception as exc:
                 executed.setdefault("warnings", []).append(f"LLM flashcard generation failed; used local result: {exc}")
-        if isinstance(vision.get("cards"), list):
+        if isinstance(vision.get("cards"), list) and len(vision.get("cards") or []) >= 5:
             return {**executed, "trace": {**executed.get("trace", {}), "vision_status": executed.get("status"), "flashcards_generated": True, "llm_stage": False}}
+        questions = _extract_questions(vision)
         points = _knowledge_points(vision)
         cards = []
-        for point in (points or [_text(vision.get("summary")) or "Image content"])[:6]:
+        for item in questions[:5]:
+            text = _text(item.get("question_text"))
+            point = _text((_as_list(item.get("knowledge_points")) or points or ["题图复习"])[0])
             cards.append({
-                "front": point,
+                "front": f"第 {item.get('index')} 题考什么？",
+                "back": text[:280] or "题干识别不完整，建议重新上传更清晰图片。",
+                "knowledge_point": point,
+                "difficulty": "medium",
+                "card_type": "practice",
+                "source_evidence": text,
+            })
+        for point in points:
+            if len(cards) >= 10:
+                break
+            cards.append({
+                "front": f"{point} 的关键点是什么？",
                 "back": _text(vision.get("summary") or vision.get("detected_text"))[:300] or "Review this point from the image.",
                 "knowledge_point": point,
                 "difficulty": "medium",
+                "card_type": "concept",
             })
-        while len(cards) < 3:
+        while len(cards) < 5:
             cards.append({
-                "front": f"Review point {len(cards) + 1}",
-                "back": _text(vision.get("summary")) or "Needs manual review.",
-                "knowledge_point": "image_review",
+                "front": f"第 {len(cards) + 1} 个待确认复习点是什么？",
+                "back": _text(vision.get("summary") or vision.get("detected_text"))[:300] or "图片信息不足，建议重新上传更清晰图片。",
+                "knowledge_point": "题图复习",
                 "difficulty": "basic",
+                "card_type": "review",
             })
         return {
             **executed,
             "status": "success",
             "result": {
                 "vision_result": vision,
-                "cards": cards[:6],
+                "cards": cards[:10],
                 "needs_manual_review": bool(vision.get("needs_manual_review")),
                 "review_reasons": vision.get("review_reasons", []),
                 "uncertain_question_indices": vision.get("uncertain_question_indices", []),
@@ -584,6 +658,8 @@ class MultimodalAgent:
             "selected_question_indices": [item.get("index") for item in questions],
             "question_text": "\n".join(str(item.get("question_text")) for item in questions),
             "chat_text": _fallback_explanation_text(questions, vision),
+            "display_text": "",
+            "teaching_text": "",
             "answer": "",
             "knowledge_points": list(dict.fromkeys(
                 str(point)
@@ -605,11 +681,12 @@ class MultimodalAgent:
             try:
                 prompt = (
                     "请把图片里的题目讲成普通聊天回答，不要输出大块 JSON，不要写成文档卡片。"
-                    "如果有多题要逐题讲；如果用户指定第几题，只讲对应题。"
-                    "每题包含：题目概述、知识点、解题步骤、答案、常见错误、不确定项。\n\n"
+                    "如果用户没有指定题号，先说明识别到几道题，列出每题考点概览，并详细讲第 1 题和第 2 题。"
+                    "如果用户指定第几题，只讲对应题。"
+                    "讲解包含：题目概述、知识点、解题步骤、答案、常见错误、不确定项。"
+                    "最后提示用户可以说“继续讲第3题”。\n\n"
                     f"用户请求：{_text(context.get('user_message'))}\n"
-                    f"待讲题目：{json.dumps(questions, ensure_ascii=False)}\n"
-                    f"图片识别结果：{json.dumps(vision, ensure_ascii=False)}"
+                    f"完整图片证据：{json.dumps(_vision_evidence(vision, questions), ensure_ascii=False)}"
                 )
                 raw = client.chat([
                     {"role": "system", "content": "你是耐心的中文教学助教，只输出自然的聊天文本。"},
@@ -629,6 +706,8 @@ class MultimodalAgent:
                     result["chat_text"] = text
             except Exception as exc:
                 executed.setdefault("warnings", []).append(f"LLM explanation failed: {exc}")
+        result["display_text"] = result["chat_text"]
+        result["teaching_text"] = result["chat_text"]
         return {
             **executed,
             "status": "success" if not result.get("needs_manual_review") else "needs_manual_review",

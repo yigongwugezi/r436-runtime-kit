@@ -625,13 +625,24 @@ def _normalize_task_result(task_type: str, parsed: dict[str, Any], raw_text: str
     question = _text(parsed.get("question_text") or vision.get("question_text") or vision.get("detected_text"))
 
     if task_type in {"explain_image_question", "solve_image_question"}:
+        steps = _as_list(parsed.get("explanation_steps") or parsed.get("solution_steps"))
+        display = _text(parsed.get("display_text") or parsed.get("teaching_text") or parsed.get("chat_text"))
+        if not display and (question or steps):
+            display = "\n".join([
+                "我先按图片里能识别到的信息讲解：",
+                f"题目：{question}" if question else "",
+                "讲解：" + "；".join(str(step) for step in steps if _text(step)) if steps else "",
+                f"答案：{_text(parsed.get('answer'))}" if _text(parsed.get("answer")) else "",
+            ]).strip()
         return {
+            "display_text": display,
+            "teaching_text": display,
             "question_text": question,
             "question_type": _friendly_value(parsed.get("question_type")),
             "subject": _text(parsed.get("subject") or vision.get("subject")),
             "knowledge_points": points,
             "answer": _text(parsed.get("answer")),
-            "explanation_steps": _as_list(parsed.get("explanation_steps") or parsed.get("solution_steps")),
+            "explanation_steps": steps,
             "key_method": _text(parsed.get("key_method")),
             "common_mistakes": _as_list(parsed.get("common_mistakes")),
             "extracted_questions": vision.get("extracted_questions", []),

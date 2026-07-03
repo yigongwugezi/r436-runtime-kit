@@ -59,15 +59,27 @@ When the frontend detects an explicit reference, it shows a chip such as `正在
 
 New chat sessions clear the frontend image reference. Uploading a new image replaces the old reference. Backend image context is isolated by `session_id`.
 
+## Local Image Preview
+
+In local development the backend runs on `http://127.0.0.1:8000`. Vite must proxy `/api` to that port. Uploaded image URLs are relative paths such as `/api/multimodal/file/<file_id>`; they should not hardcode `8001` or any absolute local host.
+
+The chat input chip lives directly above the textarea. It shows the previous image thumbnail, `正在引用上一张图片`, and a clear `取消引用` button. After cancellation the current request sends `ignore_image_context=true`.
+
 ## Display Rules
 
 `explain_image_question` uses normal chat text as the main answer. Structured extraction stays behind `查看识别详情`.
+
+The stable main text fields are `display_text`, `teaching_text`, or `chat_text`; product chat returns those before any fallback status sentence.
+
+`查看识别详情` accepts question fields named `question_text`, `stem`, `question`, `text`, `content`, or `title`. If a question has no readable stem, show `题干识别不完整` and list it in review metadata instead of rendering an empty number.
 
 User image messages render a 120-200px thumbnail. The thumbnail opens a larger preview modal. If the image cannot load, the UI shows a clear fallback link instead of a broken icon.
 
 Mindmap tasks show Markmap first. OCR and image-understanding details stay collapsed. Markdown fallback remains available if Markmap rendering fails.
 
-Flashcards render as real cards: front first, back folded, math rendered where possible, and extra cards folded after the first six.
+Mindmap generation should use the full cached `last_vision_result`, including `detected_text`, extracted questions, answers, formulas, and knowledge points. If the main LLM returns a sparse map, the backend falls back to a local evidence-based map rather than showing two or three nodes.
+
+Flashcards render as real cards: front first, back folded, math rendered where possible, and extra cards folded after the first six. Multi-question images should produce at least five useful cards when enough evidence exists.
 
 Resource bundles hide empty sections, empty arrays, dot-only placeholders, and pending-only shells without content. AI-generated resource and knowledge candidates remain pending until the user explicitly saves or confirms them.
 
@@ -108,3 +120,15 @@ The frontend should say `以下内容可能需要你确认`, list concrete reaso
 - `variant_generation_by_main_llm`
 
 Never include API keys in traces, logs, docs, or tests.
+
+## Smoke
+
+Mock acceptance smoke:
+
+```powershell
+cd C:\Users\20825\Documents\Codex\2026-06-07\seedance-ai-claude-code-ai-ai\backend
+$env:PYTHONIOENCODING="utf-8"
+.venv310\Scripts\python.exe scripts\smoke_multimodal_image_acceptance.py
+```
+
+The script does not call real providers. It checks that preview URLs do not use `8001`, explanation has `display_text`, details do not become empty question numbers, mindmaps have enough nodes, flashcards have at least five cards, resource bundles drop empty sections, and manual review has actionable reasons.
