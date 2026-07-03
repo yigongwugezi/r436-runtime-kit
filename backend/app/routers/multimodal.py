@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import json
+import uuid
 from email.parser import BytesParser
 from email.policy import default
 from typing import Any
@@ -11,6 +13,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from app.agents.multimodal_agent import MultimodalAgent
+from app.db.engine import SessionLocal
+from app.db.repository import upsert_resource
 from app.services.multimodal_provider import UPLOAD_ROOT, save_multimodal_upload
 
 router = APIRouter(prefix="/multimodal", tags=["multimodal"])
@@ -28,6 +32,43 @@ def run_multimodal(payload: dict[str, Any]) -> dict[str, Any]:
         "image_url": payload.get("image_url") or context.get("image_url") or "",
         "image_base64": payload.get("image_base64") or context.get("image_base64") or "",
     })
+
+
+def _session_id(payload: dict[str, Any]) -> str:
+    return str(payload.get("session_id") or payload.get("sessionId") or "anonymous").strip() or "anonymous"
+
+
+def _result_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    result = payload.get("result")
+    return result if isinstance(result, dict) else payload
+
+
+def _knowledge_candidates(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    candidates = []
+    for item in value:
+        if not isinstance(item, dict):
+            item = {"knowledge_point": str(item)}
+        point = str(item.get("knowledge_point") or item.get("title") or "").strip()
+        if not point:
+            continue
+        try:
+            confidence = float(item.get("confidence") or 0.5)
+        except (TypeError, ValueError):
+            confidence = 0.5
+        candidates.append({
+            "course": str(item.get("course") or "").strip(),
+            "knowledge_point": point,
+            "parent": str(item.get("parent") or "").strip(),
+            "description": str(item.get("description") or "").strip(),
+            "prerequisites": item.get("prerequisites") if isinstance(item.get("prerequisites"), list) else [],
+            "common_mistakes": item.get("common_mistakes") if isinstance(item.get("common_mistakes"), list) else [],
+            "source_resource_id": str(item.get("source_resource_id") or "").strip(),
+            "confidence": confidence,
+            "review_status": "pending",
+        })
+    return candidates
 
 
 def _parse_multipart(body: bytes, content_type: str) -> tuple[dict[str, str], tuple[str, str, bytes] | None]:
@@ -86,6 +127,47 @@ async def upload_multimodal(request: Request) -> dict[str, Any]:
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/save-resource")
+async def save_multimodal_resource(request: Request) -> dict[str, Any]:
+    payload = await request.json()
+    result = _result_payload(payload)
+    candidate = result.get("resource_save_candidate") if isinstance(result.get("resource_save_candidate"), dict) else {}
+    title = str(candidate.get("title") or result.get("title") or "图片学习资源").strip()
+    resource_type = str(candidate.get("resource_type") or payload.get("resource_type") or payload.get("task_type") or "resource_bundle").strip()
+    resource_id = str(candidate.get("id") or f"mm_{uuid.uuid4().hex}").strip()
+    session_id = _session_id(payload)
+    data = {
+        "id": resource_id,
+        "type": resource_type[:32],
+        "title": title,
+        "description": str(candidate.get("description") or "由图片 AI 学习功能生成，待人工确认。"),
+        "content": json.dumps(result, ensure_ascii=False),
+        "knowledge_points": result.get("weak_points") or result.get("target_knowledge_points") or result.get("possible_knowledge_points") or [],
+        "tags": ["multimodal", "ai_generated", "pending_review"],
+        "format": "json",
+        "source": "agent_generated",
+        "study_status": "new",
+    }
+    db = None
+    try:
+        db = SessionLocal()
+        saved = upsert_resource(db, session_id, data)
+        return {"status": "success", "saved": True, "resource_id": saved.id, "review_status": "pending"}
+    except Exception as exc:
+        return {"status": "failed", "saved": False, "warnings": [str(exc)]}
+    finally:
+        if db is not None:
+            db.close()
+
+
+@router.post("/knowledge-candidates")
+async def multimodal_knowledge_candidates(request: Request) -> dict[str, Any]:
+    payload = await request.json()
+    result = _result_payload(payload)
+    candidates = _knowledge_candidates(result.get("knowledge_candidates") or payload.get("knowledge_candidates"))
+    return {"status": "success", "persisted": False, "candidates": candidates}
 
 
 @router.get("/file/{file_id:path}")

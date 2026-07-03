@@ -160,19 +160,65 @@ def test_image_url_and_base64_classify_as_image_understanding() -> None:
     assert_true(task_type == "image_understanding", "image_base64 should enter vision task")
 
 
+def test_image_task_classifier_covers_learning_workflow() -> None:
+    agent = MultimodalAgent()
+    cases = [
+        (zh(r"\u5206\u6790\u8fd9\u5f20\u9519\u9898\u56fe"), "image_wrong_question_analysis"),
+        (zh(r"\u628a\u8fd9\u9875\u7b14\u8bb0\u6574\u7406\u6210\u603b\u7ed3"), "image_note_summary"),
+        (zh(r"\u6839\u636e\u8fd9\u5f20\u56fe\u751f\u6210\u4e00\u4e2a\u5b66\u4e60\u8ba1\u5212"), "image_to_learning_plan"),
+        (zh(r"\u6839\u636e\u8fd9\u9053\u9898\u518d\u51fa\u51e0\u9053\u53d8\u5f0f\u9898"), "image_to_variant_questions"),
+        (zh(r"\u4e00\u952e\u6574\u7406\u8fd9\u5f20\u56fe\u6210\u5b66\u4e60\u8d44\u6e90\u5305"), "image_to_resource_bundle"),
+    ]
+    for message, expected in cases:
+        task_type, _ = agent.classify_task(message, [{"image_url": "https://example.com/a.png"}], {})
+        assert_true(task_type == expected, f"{message} should classify as {expected}")
+
+
+def test_qwen_vision_provider_task_specific_json_response() -> None:
+    payloads: dict[str, dict] = {}
+
+    responses = {
+        "explain_image_question": '{"question_text":"What is 1+1?","answer":"2","explanation_steps":["add one and one"],"knowledge_points":["addition"],"confidence":0.9,"needs_manual_review":false}',
+        "image_wrong_question_analysis": '{"question_text":"What is 1+1?","mistake_type":"calculation","mistake_reason":"added incorrectly","weak_knowledge_points":["addition"],"remediation_plan":["practice addition"],"confidence":0.88,"needs_manual_review":false}',
+        "image_note_summary": '{"title":"Limit notes","summary":"Notes about limits","key_points":["limit definition"],"formulas":["lim"],"definitions":["limit"],"pitfalls":["missing condition"],"next_actions":["review examples"],"confidence":0.9,"needs_manual_review":false}',
+        "image_to_learning_plan": '{"diagnosed_level":"beginner","weak_points":["limit"],"recommended_path":[{"stage_title":"Limits","objective":"master basics","knowledge_points":["limit"],"estimated_minutes":30,"practice_suggestions":["do 5 questions"]}],"confidence":0.9,"needs_manual_review":false}',
+        "image_to_variant_questions": '{"source_question_summary":"addition","target_knowledge_points":["addition"],"variants":[{"question":"1+2=?","answer":"3","explanation":"add","difficulty":"easy","variation_type":"number_change"},{"question":"2+2=?","answer":"4","explanation":"add","difficulty":"easy","variation_type":"number_change"},{"question":"3+2=?","answer":"5","explanation":"add","difficulty":"easy","variation_type":"number_change"}],"confidence":0.9,"needs_manual_review":false}',
+        "image_to_resource_bundle": '{"understanding":{"summary":"addition image"},"next_actions":["review"],"knowledge_candidates":[{"knowledge_point":"addition","confidence":0.8}],"confidence":0.9,"needs_manual_review":false}',
+    }
+
+    def post_json(_url: str, payload: dict, _api_key: str, _timeout: int) -> dict:
+        prompt = payload["messages"][0]["content"][0]["text"]
+        task = prompt.split("task_type=", 1)[1].split("。", 1)[0]
+        payloads[task] = payload
+        return {"choices": [{"message": {"content": responses[task]}}]}
+
+    results: dict[str, dict] = {}
+    with EnvPatch(DASHSCOPE_API_KEY="test-key", QWEN_API_KEY=None):
+        for task_type in responses:
+            result = QwenVisionProvider(post_json=post_json).run({"task_type": task_type, "image_url": "https://example.com/q.png"})
+            results[task_type] = result
+            assert_true(result["status"] == "success", f"{task_type} should succeed")
+            assert_true(result["result"], f"{task_type} should return result")
+
+    assert_true(payloads["explain_image_question"]["messages"][0]["content"][1]["image_url"]["url"] == "https://example.com/q.png", "image URL should stay in payload")
+    bundle = results["image_to_resource_bundle"]
+    assert_true(bundle["result"]["resource_save_candidate"]["review_status"] == "pending", "resource candidate should be pending")
+    assert_true(bundle["result"]["knowledge_candidates"][0]["review_status"] == "pending", "knowledge candidate should be pending")
+
+
 def test_qwen_vision_provider_mock_json_response() -> None:
     captured: dict = {}
 
     def post_json(url: str, payload: dict, api_key: str, timeout: int) -> dict:
         captured.update({"url": url, "payload": payload, "api_key": api_key, "timeout": timeout})
-        return {"choices": [{"message": {"content": '{"image_type":"question_image","subject":"math","detected_text":"lim x","question_text":"lim x","possible_knowledge_points":["limit"],"summary":"limit question","confidence":0.9,"needs_manual_review":false}'}}]}
+        return {"choices": [{"message": {"content": '{"image_type":"question_image","subject":"math","detected_text":"Find the limit of the displayed expression","question_text":"Find the limit of the displayed expression","possible_knowledge_points":["limit"],"summary":"limit question","confidence":0.9,"needs_manual_review":false}'}}]}
 
     with EnvPatch(DASHSCOPE_API_KEY="test-key", QWEN_API_KEY=None, QWEN_BASE_URL="https://example.com/v1", QWEN_VL_MODEL="qwen-test"):
         result = QwenVisionProvider(post_json=post_json).run({"image_url": "https://example.com/q.png"})
 
     assert_true(result["status"] == "success", "mock JSON should parse")
     assert_true(result["provider"] == "qwen_vl", "provider should be qwen_vl")
-    assert_true(result["result"]["question_text"] == "lim x", "question text should parse")
+    assert_true(result["result"]["question_text"].startswith("Find the limit"), "question text should parse")
     assert_true(captured["url"] == "https://example.com/v1/chat/completions", "OpenAI-compatible endpoint should be used")
     assert_true(captured["api_key"] == "test-key", "configured key should be used")
     image_part = captured["payload"]["messages"][0]["content"][1]
@@ -184,7 +230,7 @@ def test_qwen_vision_provider_data_url_passes_through() -> None:
 
     def post_json(_url: str, payload: dict, _api_key: str, _timeout: int) -> dict:
         captured["payload"] = payload
-        return {"choices": [{"message": {"content": '{"summary":"ok"}'}}]}
+        return {"choices": [{"message": {"content": '{"detected_text":"clear image text for testing","summary":"ok","needs_manual_review":false}'}}]}
 
     data_url = "data:image/png;base64,dGVzdA=="
     with EnvPatch(DASHSCOPE_API_KEY="test-key", QWEN_API_KEY=None):
@@ -200,7 +246,7 @@ def test_qwen_vision_provider_wraps_bare_base64() -> None:
 
     def post_json(_url: str, payload: dict, _api_key: str, _timeout: int) -> dict:
         captured["payload"] = payload
-        return {"choices": [{"message": {"content": '{"summary":"ok"}'}}]}
+        return {"choices": [{"message": {"content": '{"detected_text":"clear image text for testing","summary":"ok","needs_manual_review":false}'}}]}
 
     with EnvPatch(DASHSCOPE_API_KEY="test-key", QWEN_API_KEY=None):
         result = QwenVisionProvider(post_json=post_json).run({"image_base64": "dGVzdA=="})
@@ -226,7 +272,7 @@ def test_qwen_vision_provider_uploaded_local_path_becomes_data_url() -> None:
 
     def post_json(_url: str, payload: dict, _api_key: str, _timeout: int) -> dict:
         captured["payload"] = payload
-        return {"choices": [{"message": {"content": '{"summary":"ok"}'}}]}
+        return {"choices": [{"message": {"content": '{"detected_text":"clear image text for testing","summary":"ok","needs_manual_review":false}'}}]}
 
     old_root = provider_mod.UPLOAD_ROOT
     old_project = provider_mod.settings.project_root
@@ -360,6 +406,8 @@ if __name__ == "__main__":
     test_mindmap_without_context_does_not_invent_points()
     test_unconfigured_vision_provider()
     test_image_url_and_base64_classify_as_image_understanding()
+    test_image_task_classifier_covers_learning_workflow()
+    test_qwen_vision_provider_task_specific_json_response()
     test_qwen_vision_provider_mock_json_response()
     test_qwen_vision_provider_data_url_passes_through()
     test_qwen_vision_provider_wraps_bare_base64()

@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useChatStore, detectOrphanedStreaming } from '../store/chatStore';
 import { useStreamChat } from '../hooks/useStreamChat';
-import { getSessionMessages, getQuickCommands, getAgents, recoverGeneration, uploadMultimodalImage } from '../api/chat';
+import { getSessionMessages, getQuickCommands, getAgents, recoverGeneration, uploadMultimodalImage, saveMultimodalResource, prepareKnowledgeCandidates } from '../api/chat';
 import type { AgentInfo } from '../api/chat';
 import { DEFAULT_QUICK_COMMANDS } from '../utils/constants';
 import { timeAgo } from '../utils/format';
@@ -86,10 +86,52 @@ function HistoryPopover({ sessions, currentSessionId, onSelect, onDelete, onRena
 
 function MultimodalResultView({ result }: { result: ChatMessage['multimodalResult'] }) {
   const data = result?.result || {};
-  const vision = data.vision_result || (data.detected_text || data.summary ? data : null);
-  const diagram = data.mermaid || data.markdown;
+  const sessionId = useChatStore((s) => s.currentSessionId);
+  const [saveState, setSaveState] = useState('');
+  const [candidateState, setCandidateState] = useState('');
+  const vision = data.vision_result || data.understanding || (data.detected_text || data.summary ? data : null);
+  const explanation = data.explanation || (data.explanation_steps ? data : null);
+  const wrong = data.wrong_question_analysis || (data.mistake_reason ? data : null);
+  const note = data.note_summary || (data.key_points ? data : null);
+  const mindmap = data.mindmap || data;
+  const diagram = mindmap?.markdown || mindmap?.mermaid || data.markdown || data.mermaid;
+  const flashcards = data.flashcards || data.cards || [];
+  const path = data.recommended_path || [];
+  const variants = data.optional_variants || data.variants || [];
+  const candidates = data.knowledge_candidates || [];
+  const warnings = result?.warnings || [];
+  const needsReview = data.needs_manual_review || result?.status === 'needs_manual_review';
+
+  const saveResource = async () => {
+    setSaveState('保存中...');
+    try {
+      const res = await saveMultimodalResource({ sessionId, task_type: result?.task_type, result: data });
+      setSaveState(res.saved ? '已保存为学习资源，待确认' : '保存失败');
+    } catch {
+      setSaveState('保存失败');
+    }
+  };
+
+  const prepareCandidates = async () => {
+    setCandidateState('生成中...');
+    try {
+      const res = await prepareKnowledgeCandidates({ result: data, knowledge_candidates: candidates });
+      setCandidateState(`已生成 ${res.candidates?.length || 0} 条知识候选，待确认`);
+    } catch {
+      setCandidateState('生成失败');
+    }
+  };
+
+  const list = (items: any[]) => items.filter(Boolean).map((item, idx) => <li key={idx}>{String(item)}</li>);
+
   return (
     <div className="mt-3 space-y-3">
+      {(needsReview || warnings.length > 0) && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">
+          {needsReview && <div className="font-semibold">识别结果需要人工确认</div>}
+          {warnings.map((item, idx) => <div key={idx}>{item}</div>)}
+        </div>
+      )}
       {vision && (
         <div className="rounded-xl border border-surface-200 bg-white p-3 text-xs text-surface-600 space-y-1">
           <div className="font-semibold text-surface-700">图片理解</div>
@@ -101,20 +143,83 @@ function MultimodalResultView({ result }: { result: ChatMessage['multimodalResul
           {Array.isArray(vision.possible_knowledge_points) && vision.possible_knowledge_points.length > 0 && (
             <div>知识点：{vision.possible_knowledge_points.join('、')}</div>
           )}
+          {typeof vision.confidence === 'number' && <div>置信度：{Math.round(vision.confidence * 100)}%</div>}
+        </div>
+      )}
+      {explanation && (
+        <div className="rounded-xl border border-surface-200 bg-white p-3 text-xs text-surface-600 space-y-2">
+          <div className="font-semibold text-surface-700">题目讲解</div>
+          {explanation.question_text && <div className="whitespace-pre-wrap">题目：{explanation.question_text}</div>}
+          {Array.isArray(explanation.knowledge_points) && <div>知识点：{explanation.knowledge_points.join('、')}</div>}
+          {Array.isArray(explanation.explanation_steps) && <ol className="list-decimal pl-4 space-y-1">{list(explanation.explanation_steps)}</ol>}
+          {explanation.answer && <div>答案：{explanation.answer}</div>}
+          {Array.isArray(explanation.common_mistakes) && explanation.common_mistakes.length > 0 && <div>常见错误：{explanation.common_mistakes.join('、')}</div>}
+        </div>
+      )}
+      {wrong && (
+        <div className="rounded-xl border border-surface-200 bg-white p-3 text-xs text-surface-600 space-y-1">
+          <div className="font-semibold text-surface-700">错题分析</div>
+          {wrong.mistake_type && <div>错误类型：{wrong.mistake_type}</div>}
+          {wrong.mistake_reason && <div>错因：{wrong.mistake_reason}</div>}
+          {Array.isArray(wrong.weak_knowledge_points) && <div>薄弱点：{wrong.weak_knowledge_points.join('、')}</div>}
+          {Array.isArray(wrong.remediation_plan) && <ul className="list-disc pl-4">{list(wrong.remediation_plan)}</ul>}
+          {Array.isArray(wrong.similar_practice_suggestions) && wrong.similar_practice_suggestions.length > 0 && <div>练习建议：{wrong.similar_practice_suggestions.join('、')}</div>}
+        </div>
+      )}
+      {note && (
+        <div className="rounded-xl border border-surface-200 bg-white p-3 text-xs text-surface-600 space-y-1">
+          <div className="font-semibold text-surface-700">笔记总结</div>
+          {note.title && <div className="font-medium">{note.title}</div>}
+          {note.summary && <div>{note.summary}</div>}
+          {Array.isArray(note.key_points) && note.key_points.length > 0 && <ul className="list-disc pl-4">{list(note.key_points)}</ul>}
+          {Array.isArray(note.formulas) && note.formulas.length > 0 && <div>公式：{note.formulas.join('、')}</div>}
+          {Array.isArray(note.definitions) && note.definitions.length > 0 && <div>定义：{note.definitions.join('、')}</div>}
+          {Array.isArray(note.pitfalls) && note.pitfalls.length > 0 && <div>易错点：{note.pitfalls.join('、')}</div>}
+          {Array.isArray(note.next_actions) && note.next_actions.length > 0 && <div>下一步：{note.next_actions.join('、')}</div>}
         </div>
       )}
       {diagram && (
         <div className="rounded-xl border border-surface-200 bg-white p-3 overflow-x-auto">
           <MarkmapDiagram definition={diagram} />
+          <details className="mt-2 text-xs text-surface-500">
+            <summary>查看 Markdown</summary>
+            <pre className="mt-2 whitespace-pre-wrap">{diagram}</pre>
+          </details>
         </div>
       )}
-      {Array.isArray(data.cards) && data.cards.length > 0 && (
+      {Array.isArray(flashcards) && flashcards.length > 0 && (
         <div className="grid gap-2">
-          {data.cards.map((card: any, idx: number) => (
+          {flashcards.map((card: any, idx: number) => (
             <div key={idx} className="rounded-xl border border-surface-200 bg-white p-3 text-xs">
               <div className="font-semibold text-surface-700">{card.front}</div>
               <div className="mt-1 text-surface-500">{card.back}</div>
+              <div className="mt-1 text-surface-400">{card.knowledge_point} · {card.difficulty} · {card.card_type}</div>
             </div>
+          ))}
+        </div>
+      )}
+      {Array.isArray(path) && path.length > 0 && (
+        <div className="rounded-xl border border-surface-200 bg-white p-3 text-xs text-surface-600 space-y-2">
+          <div className="font-semibold text-surface-700">学习计划</div>
+          {path.map((stage: any, idx: number) => (
+            <div key={idx} className="border-l-2 border-primary-200 pl-3">
+              <div className="font-medium text-surface-700">{stage.stage_title}</div>
+              {stage.objective && <div>{stage.objective}</div>}
+              {Array.isArray(stage.knowledge_points) && <div>知识点：{stage.knowledge_points.join('、')}</div>}
+              {stage.estimated_minutes && <div>{stage.estimated_minutes} 分钟</div>}
+            </div>
+          ))}
+        </div>
+      )}
+      {Array.isArray(variants) && variants.length > 0 && (
+        <div className="rounded-xl border border-surface-200 bg-white p-3 text-xs text-surface-600 space-y-2">
+          <div className="font-semibold text-surface-700">变式题</div>
+          {variants.map((item: any, idx: number) => (
+            <details key={idx} className="rounded-lg bg-surface-50 p-2">
+              <summary className="cursor-pointer font-medium">{item.question}</summary>
+              <div className="mt-2">答案：{item.answer}</div>
+              <div className="mt-1">{item.explanation}</div>
+            </details>
           ))}
         </div>
       )}
@@ -125,6 +230,16 @@ function MultimodalResultView({ result }: { result: ChatMessage['multimodalResul
       )}
       {data.script && (
         <div className="rounded-xl border border-surface-200 bg-white p-3 text-xs whitespace-pre-wrap">{data.script}</div>
+      )}
+      {(data.resource_save_candidate || candidates.length > 0) && (
+        <div className="rounded-xl border border-surface-200 bg-white p-3 text-xs text-surface-600 space-y-2">
+          <div className="font-semibold text-surface-700">资源与知识候选</div>
+          {data.resource_save_candidate && <button onClick={saveResource} className="px-3 py-1.5 rounded-lg bg-primary-600 text-white">保存为学习资源</button>}
+          {candidates.length > 0 && <button onClick={prepareCandidates} className="ml-2 px-3 py-1.5 rounded-lg border border-surface-200">生成知识候选</button>}
+          {saveState && <div>{saveState}</div>}
+          {candidateState && <div>{candidateState}</div>}
+          {candidates.length > 0 && <div>知识候选：{candidates.map((item: any) => item.knowledge_point).filter(Boolean).join('、')}（待确认）</div>}
+        </div>
       )}
     </div>
   );

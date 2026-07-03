@@ -104,20 +104,45 @@ class MultimodalAgent:
         context = context or {}
         has_image = bool(attachments or context.get("image_url") or context.get("image_base64"))
 
-        mindmap_words = ("\u601d\u7ef4\u5bfc\u56fe", "\u8111\u56fe", "\u77e5\u8bc6\u56fe\u8c31", "\u77e5\u8bc6\u56fe")
-        flashcard_words = ("\u590d\u4e60\u5361\u7247", "\u80cc\u8bf5\u5361", "\u5361\u7247")
-        explain_words = ("\u8bb2\u4e00\u4e0b", "\u8bb2\u89e3", "\u600e\u4e48\u505a", "\u6279\u6539", "\u89e3\u8fd9")
-        vision_words = ("\u8bc6\u522b", "\u770b\u770b", "\u9898\u56fe", "\u56fe\u7247", "\u622a\u56fe", "\u7b14\u8bb0", "\u63d0\u53d6\u77e5\u8bc6\u70b9", "\u603b\u7ed3")
+        mindmap_words = ("\u601d\u7ef4\u5bfc\u56fe", "\u8111\u56fe", "\u77e5\u8bc6\u56fe\u8c31", "\u77e5\u8bc6\u56fe", "\u77e5\u8bc6\u7ed3\u6784")
+        flashcard_words = ("\u590d\u4e60\u5361\u7247", "\u80cc\u8bf5\u5361", "\u62bd\u8ba4\u5361", "\u8bb0\u5fc6\u5361", "\u5361\u7247")
+        explain_words = ("\u8bb2\u4e00\u4e0b", "\u8bb2\u89e3", "\u600e\u4e48\u505a", "\u6279\u6539", "\u89e3\u8fd9", "\u89e3\u7b54", "\u7b54\u6848")
+        wrong_words = ("\u9519\u9898", "\u9519\u56e0", "\u9519\u54ea", "\u8584\u5f31\u70b9", "\u5f31\u70b9")
+        note_words = ("\u7b14\u8bb0", "\u8bfe\u4ef6", "\u6559\u6750", "\u8bb2\u4e49", "\u603b\u7ed3", "\u6574\u7406", "\u63d0\u70bc")
+        plan_words = ("\u5b66\u4e60\u8ba1\u5212", "\u600e\u4e48\u5b66", "\u5b89\u6392", "\u8def\u5f84", "\u89c4\u5212")
+        variant_words = ("\u53d8\u5f0f\u9898", "\u7c7b\u4f3c\u9898", "\u4e3e\u4e00\u53cd\u4e09", "\u518d\u51fa\u51e0\u9053")
+        bundle_words = ("\u4e00\u952e\u6574\u7406", "\u5b66\u4e60\u8d44\u6599", "\u8d44\u6e90\u5305", "\u5b66\u4e60\u5305", "\u5b8c\u6574")
+        vision_words = ("\u8bc6\u522b", "\u770b\u770b", "\u8fd9\u662f\u4ec0\u4e48", "\u5206\u6790\u8fd9\u5f20\u56fe", "\u9898\u56fe", "\u56fe\u7247", "\u622a\u56fe", "\u63d0\u53d6\u77e5\u8bc6\u70b9")
         image_words = ("\u751f\u6210\u4e00\u5f20", "\u751f\u6210\u56fe\u7247", "\u753b\u56fe", "\u6559\u5b66\u56fe", "\u6982\u5ff5\u56fe", "\u77e5\u8bc6\u5361\u7247")
         video_words = ("\u751f\u6210\u89c6\u9891", "\u8bb2\u89e3\u89c6\u9891", "\u5fae\u8bfe\u89c6\u9891", "\u52a8\u753b")
         script_words = ("\u5206\u955c\u811a\u672c", "\u5fae\u8bfe\u811a\u672c")
 
-        if has_image and _has_any(text, mindmap_words):
-            return "image_to_mindmap", "image input asks for a mind map"
-        if has_image and _has_any(text, flashcard_words):
-            return "image_to_flashcards", "image input asks for flashcards"
-        if has_image and _has_any(text, explain_words):
-            return "explain_image_question", "image input asks for question explanation"
+        if has_image:
+            matches = [
+                _has_any(text, mindmap_words),
+                _has_any(text, flashcard_words),
+                _has_any(text, explain_words),
+                _has_any(text, wrong_words),
+                _has_any(text, note_words),
+                _has_any(text, plan_words),
+                _has_any(text, variant_words),
+            ]
+            if _has_any(text, bundle_words) or sum(1 for item in matches if item) > 1:
+                return "image_to_resource_bundle", "image input asks for a resource bundle"
+            if matches[0]:
+                return "image_to_mindmap", "image input asks for a mind map"
+            if matches[1]:
+                return "image_to_flashcards", "image input asks for flashcards"
+            if matches[2]:
+                return "explain_image_question", "image input asks for question explanation"
+            if matches[3]:
+                return "image_wrong_question_analysis", "image input asks for wrong-question analysis"
+            if matches[4]:
+                return "image_note_summary", "image input asks for note summary"
+            if matches[5]:
+                return "image_to_learning_plan", "image input asks for learning plan"
+            if matches[6]:
+                return "image_to_variant_questions", "image input asks for variant questions"
         if has_image or (_has_any(text, vision_words) and not _has_any(text, image_words)):
             return "image_understanding", "message or attachments ask for image understanding"
         if _has_any(text, mindmap_words):
@@ -171,7 +196,7 @@ class MultimodalAgent:
                 "warnings": [f"Tool not registered: {tool_name}"],
                 "trace": {"tool": tool_name},
             }
-        executed = tool.run(context)
+        executed = tool.run({**context, "task_type": plan.get("task_type")})
         if plan.get("task_type") == "mindmap_generation" and executed.get("status") == "success":
             return self._enhance_mindmap_with_llm(executed, context)
         if plan.get("task_type") in {"image_to_mindmap", "note_image_to_mindmap", "question_image_to_mindmap"}:
@@ -223,6 +248,8 @@ class MultimodalAgent:
         if executed.get("status") not in {"success", "partial_success"}:
             return executed
         vision = _vision_result(executed)
+        if vision.get("markdown") or vision.get("mindmap_json"):
+            return {**executed, "trace": {**executed.get("trace", {}), "vision_status": executed.get("status"), "mindmap_generated": True}}
         points = _knowledge_points(vision)
         title = _text(vision.get("summary"))[:50] or _text(context.get("topic")) or "Image knowledge"
         children = [{"title": point, "children": []} for point in points] or [{"title": "Needs manual review", "children": []}]
@@ -243,6 +270,8 @@ class MultimodalAgent:
         if executed.get("status") not in {"success", "partial_success"}:
             return executed
         vision = _vision_result(executed)
+        if isinstance(vision.get("cards"), list):
+            return {**executed, "trace": {**executed.get("trace", {}), "vision_status": executed.get("status"), "flashcards_generated": True}}
         points = _knowledge_points(vision)
         cards = []
         for point in (points or [_text(vision.get("summary")) or "Image content"])[:6]:
@@ -270,6 +299,8 @@ class MultimodalAgent:
         if executed.get("status") not in {"success", "partial_success"}:
             return executed
         vision = _vision_result(executed)
+        if vision.get("explanation_steps") or vision.get("answer"):
+            return {**executed, "trace": {**executed.get("trace", {}), "vision_status": executed.get("status"), "question_explained": True}}
         question = _text(vision.get("question_text") or vision.get("detected_text"))
         if not question:
             return {
@@ -310,13 +341,51 @@ class MultimodalAgent:
     def _workflow_trace(self, plan: dict[str, Any], executed: dict[str, Any]) -> dict[str, Any]:
         status = str(executed.get("status") or "failed")
         workflow_status = "success" if status == "success" else ("partial" if status in {"partial_success", "needs_input", "needs_manual_review", "provider_not_configured", "script_ready_provider_not_configured", "unsupported"} else "failed")
+        warnings = executed.get("warnings", []) if isinstance(executed.get("warnings"), list) else []
+        task_type = str(plan.get("task_type") or "execute")
+        task_steps = {
+            "image_understanding": ["understand_image"],
+            "explain_image_question": ["understand_image", "generate_explanation"],
+            "solve_image_question": ["understand_image", "generate_explanation"],
+            "image_wrong_question_analysis": ["understand_image", "analyze_wrong_question"],
+            "image_note_summary": ["understand_image", "generate_note_summary"],
+            "image_to_mindmap": ["understand_image", "generate_mindmap"],
+            "image_to_flashcards": ["understand_image", "generate_flashcards"],
+            "image_to_learning_plan": ["understand_image", "generate_learning_plan"],
+            "image_to_variant_questions": ["understand_image", "generate_variants"],
+            "image_to_resource_bundle": [
+                "understand_image",
+                "generate_explanation",
+                "analyze_wrong_question",
+                "generate_note_summary",
+                "generate_mindmap",
+                "generate_flashcards",
+                "generate_learning_plan",
+                "generate_variants",
+                "build_resource_bundle",
+                "prepare_resource_candidate",
+                "prepare_knowledge_candidates",
+            ],
+        }.get(task_type, [task_type])
         steps = [
-            {"step": "multimodal_classify", "agent": self.name, "status": "success"},
-            {"step": str(plan.get("task_type") or "execute"), "agent": str(plan.get("tool") or self.name), "status": status},
+            {"step": "classify_image_task", "agent": self.name, "status": "success", "summary": task_type, "warnings": []},
         ]
-        trace = executed.get("trace") if isinstance(executed.get("trace"), dict) else {}
-        if "vision_status" in trace:
-            steps.insert(1, {"step": "vision_understanding", "agent": "QwenVisionProvider", "status": str(trace.get("vision_status"))})
+        for step in task_steps:
+            if step == "understand_image":
+                steps.append({
+                    "step": "vision_understanding",
+                    "agent": "QwenVisionProvider",
+                    "status": status,
+                    "summary": f"{task_type} -> {status}",
+                    "warnings": warnings,
+                })
+            steps.append({
+                "step": step,
+                "agent": str(plan.get("tool") or self.name),
+                "status": status,
+                "summary": f"{task_type} -> {status}",
+                "warnings": warnings,
+            })
         return {
             "workflow_name": "multimodal_generation",
             "workflow_status": workflow_status,

@@ -101,7 +101,7 @@ def test_run_endpoint_sends_public_image_url_to_qwen_payload() -> None:
 
     class FakeResponse:
         status_code = 200
-        text = '{"choices":[{"message":{"content":"{\\"summary\\":\\"ok\\"}"}}]}'
+        text = '{"choices":[{"message":{"content":"{\\"detected_text\\":\\"clear image text for testing\\",\\"summary\\":\\"ok\\",\\"needs_manual_review\\":false}"}}]}'
 
         def json(self) -> dict:
             return json.loads(self.text)
@@ -217,6 +217,37 @@ def test_unconfigured_video_returns_script_not_fake_success() -> None:
     assert_true(not result["result"].get("video_url"), "provider placeholder must not fake video output")
 
 
+def test_run_endpoint_resource_bundle_has_pending_candidates() -> None:
+    image_url = "https://example.com/note.png"
+
+    class FakeResponse:
+        status_code = 200
+        text = (
+            '{"choices":[{"message":{"content":"'
+            '{\\"understanding\\":{\\"summary\\":\\"limit notes\\"},'
+            '\\"knowledge_candidates\\":[{\\"knowledge_point\\":\\"limit\\",\\"confidence\\":0.8}],'
+            '\\"confidence\\":0.9,\\"needs_manual_review\\":false}'
+            '"}}]}'
+        )
+
+        def json(self) -> dict:
+            return json.loads(self.text)
+
+    old_post = provider_mod.httpx.post
+    provider_mod.httpx.post = lambda *args, **kwargs: FakeResponse()
+    try:
+        with EnvPatch(DASHSCOPE_API_KEY="test-key", QWEN_API_KEY=None):
+            result = run_multimodal({"message": zh(r"\u4e00\u952e\u6574\u7406\u8fd9\u5f20\u56fe\u6210\u5b66\u4e60\u8d44\u6e90\u5305"), "image_url": image_url})
+    finally:
+        provider_mod.httpx.post = old_post
+
+    assert_true(result["task_type"] == "image_to_resource_bundle", "bundle request should route to bundle")
+    assert_true(result["status"] == "success", "mock bundle should succeed")
+    assert_true(result["result"]["resource_save_candidate"]["review_status"] == "pending", "resource candidate should be pending")
+    assert_true(result["result"]["resource_save_candidate"]["saved"] is False, "resource candidate should not fake save")
+    assert_true(result["result"]["knowledge_candidates"][0]["review_status"] == "pending", "knowledge candidate should be pending")
+
+
 if __name__ == "__main__":
     test_run_endpoint_calls_mindmap_tool()
     test_run_endpoint_returns_unified_structure()
@@ -226,4 +257,5 @@ if __name__ == "__main__":
     test_run_endpoint_qwen_network_error_has_safe_trace()
     test_upload_save_uses_safe_file_id_and_rejects_invalid_type()
     test_unconfigured_video_returns_script_not_fake_success()
+    test_run_endpoint_resource_bundle_has_pending_candidates()
     print("PASS multimodal_router_test")

@@ -813,15 +813,26 @@ def _multimodal_workflow_trace(result: dict[str, Any]) -> dict[str, Any]:
 def _multimodal_reply(result: dict[str, Any]) -> str:
     task_type = result.get("task_type")
     status = result.get("status")
-    if task_type == "image_understanding" and status in {"success", "partial_success"}:
+    if task_type == "image_understanding" and status in {"success", "partial_success", "needs_manual_review"}:
         return "已完成图片理解，识别结果已整理成结构化信息。"
-    if task_type == "image_to_mindmap" and status == "success":
+    if task_type == "image_to_mindmap" and status in {"success", "needs_manual_review"}:
         return "已根据图片内容生成思维导图。"
-    if task_type in {"image_to_flashcards", "note_image_to_flashcards", "question_image_to_flashcards"} and status == "success":
+    if task_type in {"image_to_flashcards", "note_image_to_flashcards", "question_image_to_flashcards"} and status in {"success", "needs_manual_review"}:
         count = len(((result.get("result") or {}).get("cards")) or [])
         return f"已根据图片内容生成 {count} 张复习卡片。"
     if task_type in {"explain_image_question", "solve_image_question"} and status in {"success", "needs_manual_review"}:
         return "已读取题图并整理讲解信息；证据不足的部分已标记为需要人工确认。"
+    if task_type == "image_wrong_question_analysis" and status in {"success", "needs_manual_review"}:
+        return "已根据图片整理错题分析；证据不足的部分已标记为需要人工确认。"
+    if task_type == "image_note_summary" and status in {"success", "needs_manual_review"}:
+        return "已根据图片整理笔记总结。"
+    if task_type == "image_to_learning_plan" and status in {"success", "needs_manual_review"}:
+        return "已根据图片中的知识点整理学习计划。"
+    if task_type == "image_to_variant_questions" and status in {"success", "needs_manual_review"}:
+        count = len(((result.get("result") or {}).get("variants")) or [])
+        return f"已根据题图生成 {count} 道变式题；识别不确定处已标记。"
+    if task_type == "image_to_resource_bundle" and status in {"success", "needs_manual_review"}:
+        return "已整理图片学习资源包，并生成待确认的资源保存候选和知识候选。"
     if task_type in {"video_generation", "micro_lesson_video", "video_script_generation"} and status == "script_ready_provider_not_configured":
         return "视频模型尚未配置，但我已先生成微课脚本和分镜草稿，没有返回假视频链接。"
     if task_type in {"image_generation", "concept_card_generation", "teaching_diagram_generation"} and status == "success":
