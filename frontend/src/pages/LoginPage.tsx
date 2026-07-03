@@ -25,6 +25,7 @@ export default function LoginPage() {
   const [grade, setGrade] = useState('');
   const [targetExam, setTargetExam] = useState('');
   const [studentNo, setStudentNo] = useState('');
+  const [employeeId, setEmployeeId] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -40,6 +41,15 @@ export default function LoginPage() {
   }, []);
 
   const trimId = identifier.replace(/\s/g, '');
+
+  const handleRoleChange = (newRole: string) => {
+    setRole(newRole);
+    // Clear role-specific fields to avoid stale data cross-contamination
+    setGrade('');
+    setTargetExam('');
+    setStudentNo('');
+    setEmployeeId('');
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -63,9 +73,10 @@ export default function LoginPage() {
           password,
           nickname: nickname.trim() || '学习者',
           role,
-          grade: grade || null,
-          target_exam: targetExam || null,
-          student_no: studentNo.trim() || null,
+          grade: role === 'student' ? (grade || null) : null,
+          target_exam: role === 'student' ? (targetExam || null) : null,
+          student_no: (role === 'student' || role === 'parent') ? (studentNo.trim() || null) : null,
+          employee_id: role === 'teacher' ? (employeeId.trim() || null) : null,
         });
       }
       nav('/');
@@ -164,7 +175,7 @@ export default function LoginPage() {
                   <label className="text-xs font-medium text-surface-500 dark:text-gray-400 mb-1 block">角色</label>
                   <div className="grid grid-cols-3 gap-2">
                     {ROLES.map(r => (
-                      <button key={r.value} type="button" onClick={() => setRole(r.value)}
+                      <button key={r.value} type="button" onClick={() => handleRoleChange(r.value)}
                         className={`py-2.5 px-2 rounded-xl text-xs font-medium border transition-all ${
                           role === r.value
                             ? 'bg-primary-50 dark:bg-primary-500/20 border-primary-300 dark:border-primary-500/40 text-primary-700 dark:text-primary-300'
@@ -176,40 +187,69 @@ export default function LoginPage() {
                   </div>
                 </div>
 
-                {/* Grade + Target Exam row */}
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="text-xs font-medium text-surface-500 dark:text-gray-400 mb-1 block">
-                      <GraduationCap size={12} className="inline mr-1" />年级
-                    </label>
-                    <select value={grade} onChange={e => setGrade(e.target.value)}
-                      className="w-full px-3 py-3 bg-surface-50 dark:bg-surface-700 border border-surface-200 dark:border-surface-600 rounded-xl text-sm outline-none focus:ring-2 focus:ring-primary-200 dark:focus:ring-primary-500/30 dark:text-gray-100 transition-all appearance-none cursor-pointer">
-                      <option value="">不选择</option>
-                      {gradeOptions.map(g => <option key={g} value={g}>{g}</option>)}
-                    </select>
+                {/* Student fields */}
+                {role === 'student' && (
+                  <div className="animate-fade-in space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-xs font-medium text-surface-500 dark:text-gray-400 mb-1 block">
+                          <GraduationCap size={12} className="inline mr-1" />年级
+                        </label>
+                        <select value={grade} onChange={e => setGrade(e.target.value)}
+                          className="w-full px-3 py-3 bg-surface-50 dark:bg-surface-700 border border-surface-200 dark:border-surface-600 rounded-xl text-sm outline-none focus:ring-2 focus:ring-primary-200 dark:focus:ring-primary-500/30 dark:text-gray-100 transition-all appearance-none cursor-pointer">
+                          <option value="">不选择</option>
+                          {gradeOptions.map(g => <option key={g} value={g}>{g}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-xs font-medium text-surface-500 dark:text-gray-400 mb-1 block">
+                          <FileText size={12} className="inline mr-1" />目标考试
+                        </label>
+                        <select value={targetExam} onChange={e => setTargetExam(e.target.value)}
+                          className="w-full px-3 py-3 bg-surface-50 dark:bg-surface-700 border border-surface-200 dark:border-surface-600 rounded-xl text-sm outline-none focus:ring-2 focus:ring-primary-200 dark:focus:ring-primary-500/30 dark:text-gray-100 transition-all appearance-none cursor-pointer">
+                          <option value="">不选择</option>
+                          {examOptions.map(ex => <option key={ex} value={ex}>{ex}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-surface-500 dark:text-gray-400 mb-1 block">学号（可选）</label>
+                      <input
+                        type="text" value={studentNo} maxLength={32}
+                        onChange={e => setStudentNo(e.target.value)}
+                        placeholder="如：2024001"
+                        className="w-full px-4 py-3 bg-surface-50 dark:bg-surface-700 border border-surface-200 dark:border-surface-600 rounded-xl text-sm outline-none focus:ring-2 focus:ring-primary-200 dark:focus:ring-primary-500/30 dark:text-gray-100 transition-all"
+                      />
+                    </div>
                   </div>
-                  <div>
-                    <label className="text-xs font-medium text-surface-500 dark:text-gray-400 mb-1 block">
-                      <FileText size={12} className="inline mr-1" />目标考试
-                    </label>
-                    <select value={targetExam} onChange={e => setTargetExam(e.target.value)}
-                      className="w-full px-3 py-3 bg-surface-50 dark:bg-surface-700 border border-surface-200 dark:border-surface-600 rounded-xl text-sm outline-none focus:ring-2 focus:ring-primary-200 dark:focus:ring-primary-500/30 dark:text-gray-100 transition-all appearance-none cursor-pointer">
-                      <option value="">不选择</option>
-                      {examOptions.map(ex => <option key={ex} value={ex}>{ex}</option>)}
-                    </select>
-                  </div>
-                </div>
+                )}
 
-                {/* Student No */}
-                <div>
-                  <label className="text-xs font-medium text-surface-500 dark:text-gray-400 mb-1 block">学号（可选）</label>
-                  <input
-                    type="text" value={studentNo} maxLength={32}
-                    onChange={e => setStudentNo(e.target.value)}
-                    placeholder="如：2024001"
-                    className="w-full px-4 py-3 bg-surface-50 dark:bg-surface-700 border border-surface-200 dark:border-surface-600 rounded-xl text-sm outline-none focus:ring-2 focus:ring-primary-200 dark:focus:ring-primary-500/30 dark:text-gray-100 transition-all"
-                  />
-                </div>
+                {/* Teacher field */}
+                {role === 'teacher' && (
+                  <div className="animate-fade-in">
+                    <label className="text-xs font-medium text-surface-500 dark:text-gray-400 mb-1 block">职工号</label>
+                    <input
+                      type="text" value={employeeId} maxLength={32}
+                      onChange={e => setEmployeeId(e.target.value)}
+                      placeholder="如：T2024001"
+                      className="w-full px-4 py-3 bg-surface-50 dark:bg-surface-700 border border-surface-200 dark:border-surface-600 rounded-xl text-sm outline-none focus:ring-2 focus:ring-primary-200 dark:focus:ring-primary-500/30 dark:text-gray-100 transition-all"
+                    />
+                  </div>
+                )}
+
+                {/* Parent field */}
+                {role === 'parent' && (
+                  <div className="animate-fade-in">
+                    <label className="text-xs font-medium text-surface-500 dark:text-gray-400 mb-1 block">孩子的学号</label>
+                    <input
+                      type="text" value={studentNo} maxLength={32}
+                      onChange={e => setStudentNo(e.target.value)}
+                      placeholder="请输入孩子的学号"
+                      className="w-full px-4 py-3 bg-surface-50 dark:bg-surface-700 border border-surface-200 dark:border-surface-600 rounded-xl text-sm outline-none focus:ring-2 focus:ring-primary-200 dark:focus:ring-primary-500/30 dark:text-gray-100 transition-all"
+                    />
+                    <p className="text-xs text-surface-400 dark:text-gray-500 mt-1">绑定后可查看孩子的学习进度</p>
+                  </div>
+                )}
               </>
             )}
 

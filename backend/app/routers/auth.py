@@ -32,6 +32,7 @@ class RegisterRequest(BaseModel):
     grade: str | None = None
     target_exam: str | None = None
     student_no: str | None = Field(default=None, min_length=1, max_length=32)
+    employee_id: str | None = Field(default=None, min_length=1, max_length=32)
 
 
 class LoginRequest(BaseModel):
@@ -66,6 +67,7 @@ def _learner_dict(learner: LearnerModel) -> dict[str, Any]:
         "target_exam": learner.target_exam,
         "school": learner.school,
         "student_no": learner.student_no,
+        "employee_id": learner.employee_id,
         "avatar_url": learner.avatar_url,
         "created_at": learner.created_at.isoformat() if learner.created_at else None,
         "updated_at": updated.isoformat() if updated else None,
@@ -95,16 +97,38 @@ def register(body: RegisterRequest) -> dict[str, Any]:
             raise HTTPException(status_code=409, detail="该手机号已注册")
 
         learner_id = f"learner_{uuid.uuid4().hex[:12]}"
-        learner = LearnerModel(
-            id=learner_id,
-            nickname=body.nickname,
-            phone=body.phone,
-            password_hash=hash_password(body.password),
-            role=body.role,
-            grade=body.grade,
-            target_exam=body.target_exam,
-            student_no=body.student_no,
-        )
+
+        # Build learner kwargs based on role
+        learner_kwargs: dict[str, Any] = {
+            "id": learner_id,
+            "nickname": body.nickname,
+            "phone": body.phone,
+            "password_hash": hash_password(body.password),
+            "role": body.role,
+        }
+
+        if body.role == "student":
+            learner_kwargs["grade"] = body.grade
+            learner_kwargs["target_exam"] = body.target_exam
+            learner_kwargs["student_no"] = body.student_no
+
+        elif body.role == "teacher":
+            learner_kwargs["employee_id"] = body.employee_id
+
+        elif body.role == "parent":
+            if body.student_no:
+                child = db.query(LearnerModel).filter(
+                    LearnerModel.student_no == body.student_no
+                ).first()
+                if child is not None and child.parent_id is None:
+                    child.parent_id = learner_id
+                    db.flush()
+                elif child is None:
+                    # Child account not found yet — store for later binding
+                    learner_kwargs["pending_child_student_no"] = body.student_no
+                # else: child already bound — skip silently
+
+        learner = LearnerModel(**learner_kwargs)
         db.add(learner)
         db.commit()
         db.refresh(learner)

@@ -62,6 +62,12 @@ class LearnerModel(Base):
     target_exam: Mapped[str | None] = mapped_column(
         String(64), nullable=True, default=None
     )  # 中考 | 高考 | 考研 | 雅思 | 托福 | 期末
+    employee_id: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, default=None, index=True
+    )  # 职工号 — teacher employee ID
+    pending_child_student_no: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, default=None
+    )  # Internal: child's student_no stored when parent registers but child not found
     school: Mapped[str | None] = mapped_column(
         String(128), nullable=True, default=None
     )

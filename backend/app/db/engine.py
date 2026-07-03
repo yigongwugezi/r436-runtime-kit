@@ -79,6 +79,8 @@ def init_db() -> None:
             "role": "VARCHAR(16) DEFAULT 'student'",
             "grade": "VARCHAR(16)",
             "target_exam": "VARCHAR(64)",
+            "employee_id": "VARCHAR(32)",
+            "pending_child_student_no": "VARCHAR(32)",
             "school": "VARCHAR(128)",
             "avatar_url": "VARCHAR(512)",
             "parent_id": "VARCHAR(64)",

@@ -33,7 +33,7 @@
 > ```
 > `stage_complete` 和 `chat_feedback` 为后端内部事件类型，不通过此公开接口写入。
 
-> **统一响应信封 (v0.4.0)**: 所有 Product API（第 3 节）的响应均包裹在统一信封中：
+> **统一响应信封 (v0.4.0)**: 所有 Product API（第 4 节）的响应均包裹在统一信封中：
 > ```json
 > {
 >   "status": "success",
@@ -329,7 +329,49 @@ Configuration (``.env``):
 | RAG_INDEX_PATH | ./data/faiss/eduagent_knowledge.faiss | FAISS index file path |
 | HF_HOME | ./data/huggingface_cache | HuggingFace model cache directory |
 
-## 3. Product APIs For React Frontend
+## 3. Auth APIs
+
+### POST /api/auth/register
+
+Purpose: register a new learner account with role-differentiated fields.
+
+Request:
+
+```json
+{
+  "phone": "13800000001",
+  "password": "123456",
+  "nickname": "学习者",
+  "role": "student",
+  "grade": "大三",
+  "target_exam": "考研",
+  "student_no": "2024001",
+  "employee_id": null
+}
+```
+
+Role-differentiated field handling:
+
+| Role | Relevant Fields | Behavior |
+|---|---|---|
+| `student` | `grade`, `target_exam`, `student_no` | Stored as learner profile fields (optional). |
+| `teacher` | `employee_id` | Stored as teacher staff ID; `grade`/`target_exam`/`student_no` discarded. |
+| `parent` | `student_no` | Treated as the **child's** student number. If a student with matching `student_no` is found and unbound, the child's `parent_id` is set to the new parent account. If not found, the value is stored internally for later resolution. |
+
+All roles require `phone`, `password`, `nickname` (unchanged). `grade`, `target_exam`, `student_no`, `employee_id` are optional and role-dependent.
+
+Response: `TokenResponse` — includes `access_token`, `refresh_token`, `token_type`, and `learner` object. The `learner` object now includes an `employee_id` field (nullable).
+
+### POST /api/auth/login
+### POST /api/auth/refresh
+### POST /api/auth/logout
+### GET /api/auth/me
+
+Standard auth endpoints. See backend `auth.py` router for full schema details.
+
+---
+
+## 4. Product APIs For React Frontend
 
 ### POST /chat/stream
 
@@ -1296,7 +1338,7 @@ Event types and their display config:
 | `stage_complete` | 完成了阶段 | 🎯 | rose |
 | `node_progress` | 学习节点更新 | 📌 | gray |
 
-## 4. Agent Workflow
+## 5. Agent Workflow
 
 Current agent pipeline (6 agents, orchestrated by `AgentOrchestrator`):
 
@@ -1345,7 +1387,7 @@ progress_feedback, unsafe, unknown
 
 `ProfileAgent` and `ResourceAgent` receive the LLM client. When `LLM_PROVIDER=deepseek`, they call the DeepSeek API with retry logic (`llm_retry_count` configurable). When `LLM_PROVIDER=mock`, they return deterministic mock responses. Other agents use mock data and will be upgraded to real LLM generation per the mock-to-real roadmap.
 
-## 5. Development Rules
+## 6. Development Rules
 
 - React frontend calls Product APIs.
 - Backend agents keep `/api/agents/run` stable.
@@ -1355,7 +1397,7 @@ progress_feedback, unsafe, unknown
 
 ---
 
-## 4. 多科目架构 (Multi-Subject Architecture) — v0.3.0 [TARGET / PLANNED]
+## 5. 多科目架构 (Multi-Subject Architecture) — v0.3.0 [TARGET / PLANNED]
 
 > **Status**: The endpoints and data models in this section describe the **target architecture**.
 > They have **NOT yet been implemented** in the backend. Current product APIs (Section 3)

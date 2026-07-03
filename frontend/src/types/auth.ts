@@ -9,6 +9,7 @@ export interface Learner {
   target_exam: string | null;
   school: string | null;
   student_no: string | null;
+  employee_id: string | null;
   avatar_url: string | null;
   created_at: string | null;
   updated_at: string | null;
@@ -30,6 +31,7 @@ export interface RegisterRequest {
   grade?: string | null;
   target_exam?: string | null;
   student_no?: string | null;
+  employee_id?: string | null;
 }
 
 export interface TokenResponse {
@@ -45,6 +47,7 @@ export interface UpdateProfileRequest {
   target_exam?: string | null;
   school?: string | null;
   avatar_url?: string | null;
+  employee_id?: string | null;
 }
 
 export interface SwitchRoleRequest {

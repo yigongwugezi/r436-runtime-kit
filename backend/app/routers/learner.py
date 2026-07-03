@@ -28,6 +28,7 @@ class UpdateProfileRequest(BaseModel):
     target_exam: str | None = Field(default=None, max_length=64)
     school: str | None = Field(default=None, max_length=128)
     avatar_url: str | None = Field(default=None, max_length=512)
+    employee_id: str | None = Field(default=None, max_length=32)
 
 
 class SwitchRoleRequest(BaseModel):
@@ -61,6 +62,7 @@ def _learner_full(learner: LearnerModel) -> dict[str, Any]:
         "target_exam": learner.target_exam,
         "school": learner.school,
         "student_no": learner.student_no,
+        "employee_id": learner.employee_id,
         "avatar_url": learner.avatar_url,
         "created_at": learner.created_at.isoformat() if learner.created_at else None,
         "updated_at": updated.isoformat() if updated else None,
