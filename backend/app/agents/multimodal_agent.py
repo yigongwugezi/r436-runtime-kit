@@ -140,8 +140,11 @@ def _topic_hints(vision: dict[str, Any]) -> list[str]:
         ("复合函数", "复合函数"),
         ("分段", "分段函数"),
         ("数列", "数列极限"),
+        ("有界", "有界性与收敛性"),
+        ("收敛", "有界性与收敛性"),
         ("无穷小", "无穷小比较"),
         ("等价无穷小", "等价无穷小"),
+        ("极限", "极限计算"),
         ("渐近线", "渐近线"),
     ]
     return [label for needle, label in hints if needle in text]
@@ -161,8 +164,52 @@ def _vision_evidence(vision: dict[str, Any], questions: list[dict[str, Any]] | N
     }
 
 
+def _mindmap_generation_context(vision: dict[str, Any]) -> dict[str, Any]:
+    questions = _extract_questions(vision)
+    return {
+        "image_summary": _clean_user_text(vision.get("summary")),
+        "detected_text": _clean_user_text(vision.get("detected_text")),
+        "questions": questions,
+        "answers": [item.get("answer") for item in questions if _clean_user_text(item.get("answer"))],
+        "knowledge_points": _knowledge_points(vision),
+        "possible_knowledge_points": _clean_list(vision.get("possible_knowledge_points")),
+        "formulas": _clean_list(vision.get("formulas") or vision.get("formula_text")),
+        "common_mistakes": [
+            mistake
+            for item in questions
+            for mistake in _clean_list(item.get("common_mistakes"))
+        ],
+        "subject": _clean_user_text(vision.get("subject")),
+        "image_type": _clean_user_text(vision.get("image_type")),
+    }
+
+
 def _markdown_node_count(markdown: str) -> int:
     return len([line for line in markdown.splitlines() if line.lstrip().startswith("-")])
+
+
+def _markdown_top_level_count(markdown: str) -> int:
+    return len([line for line in markdown.splitlines() if line.startswith("- ")])
+
+
+def _markdown_labels(markdown: str) -> list[str]:
+    return [line.lstrip(" -").strip() for line in markdown.splitlines() if line.lstrip().startswith("-")]
+
+
+def _mindmap_quality_ok(markdown: str, questions: list[dict[str, Any]]) -> bool:
+    labels = _markdown_labels(markdown)
+    if _markdown_top_level_count(markdown) < 6 or len(labels) < 20:
+        return False
+    if any(len(label) > 70 for label in labels):
+        return False
+    if len(questions) >= 6:
+        referenced = set()
+        for label in labels:
+            for match in re.findall(r"第\s*(\d+)\s*题", label):
+                referenced.add(match)
+        if 0 < len(referenced) <= 2:
+            return False
+    return True
 
 
 def _extract_questions(vision: dict[str, Any]) -> list[dict[str, Any]]:
@@ -278,21 +325,49 @@ def _fallback_mindmap(vision: dict[str, Any], context: dict[str, Any]) -> dict[s
     questions = _extract_questions(vision)
     points = _knowledge_points(vision)
     title = _short_title(vision.get("summary") or context.get("topic"), "图片知识结构")
-    point_children = [{"title": _short_title(point), "children": []} for point in points]
-    if questions:
-        children = []
-        for item in questions:
-            item_points = _clean_list(item.get("knowledge_points")) or points[:3]
-            label = _short_title(item_points[0] if item_points else item.get("question_text"), "待识别")
-            children.append({
-                "title": f"第 {item.get('index')} 题：{label}",
-                "children": [{"title": _short_title(point)} for point in item_points if _clean_user_text(point)],
-            })
-    else:
-        children = point_children
-    if point_children:
-        children.insert(0, {"title": "核心知识点", "children": point_children[:10]})
-    children.append({"title": "常见错误", "children": [{"title": "题干条件看漏"}, {"title": "公式适用条件混淆"}, {"title": "计算步骤跳步"}]})
+    blob = "\n".join([
+        _text(vision.get("detected_text")),
+        _text(vision.get("question_text")),
+        _text(vision.get("summary")),
+        " ".join(points),
+        " ".join(_question_text(item) for item in questions),
+    ])
+    topic_specs = [
+        ("函数定义域", ("定义域", "函数"), ["分母不能为零", "根号内非负", "对数真数大于 0"]),
+        ("奇偶函数", ("奇偶", "奇函数", "偶函数"), ["定义域关于原点对称", "比较 f(-x) 与 f(x)", "对应题号"]),
+        ("反函数", ("反函数",), ["单调可逆", "交换 x 与 y", "值域变定义域"]),
+        ("复合函数", ("复合函数", "复合"), ["先算内层函数", "检查外层定义域", "再代入化简"]),
+        ("分段函数", ("分段",), ["判断输入区间", "代入对应表达式", "检查分段点"]),
+        ("数列极限", ("数列",), ["单调性", "有界性", "收敛性"]),
+        ("有界性与收敛性", ("有界", "收敛"), ["有界不一定收敛", "单调有界可收敛", "区分充分必要"]),
+        ("无穷小比较", ("无穷小",), ["高阶无穷小", "同阶无穷小", "等价无穷小"]),
+        ("等价无穷小", ("等价",), ["常见等价替换", "乘除可替换", "加减慎用"]),
+        ("极限计算", ("极限",), ["直接代入", "因式分解", "等价替换"]),
+    ]
+    children = []
+    for title_text, needles, defaults in topic_specs:
+        if title_text in points or any(needle in blob for needle in needles):
+            qids = [
+                f"第{item.get('index')}题"
+                for item in questions
+                if any(needle in (_question_text(item) + " ".join(_clean_list(item.get("knowledge_points")))) for needle in needles)
+            ][:4]
+            child_titles = defaults + ([f"对应题目：{'、'.join(qids)}"] if qids else ["对应题目：待确认"])
+            children.append({"title": title_text, "children": [{"title": item} for item in child_titles[:4]]})
+
+    if len(children) < 6:
+        for point in points:
+            title_text = _short_title(point)
+            if title_text and all(node["title"] != title_text for node in children):
+                children.append({"title": title_text, "children": [{"title": "概念辨析"}, {"title": "典型题型"}]})
+            if len(children) >= 6:
+                break
+    children.extend([
+        {"title": "对应题号", "children": [{"title": f"第 {item.get('index')} 题：{_short_title((_clean_list(item.get('knowledge_points')) or [_question_text(item)])[0])}"} for item in questions[:12]] or [{"title": "题号待确认"}]},
+        {"title": "常见错误", "children": [{"title": "忽略定义域"}, {"title": "公式适用条件混淆"}, {"title": "等价替换误用"}]},
+        {"title": "复习顺序", "children": [{"title": "先函数性质"}, {"title": "再极限计算"}, {"title": "最后综合题"}]},
+        {"title": "做题策略", "children": [{"title": "先圈条件"}, {"title": "再判题型"}, {"title": "最后验算"}]},
+    ])
     mindmap = {"title": title, "children": children or [{"title": "待补充识别结果", "children": []}]}
     return {
         "title": title,
@@ -302,6 +377,7 @@ def _fallback_mindmap(vision: dict[str, Any], context: dict[str, Any]) -> dict[s
         "mermaid": _json_to_mermaid(mindmap),
         "nodes_count": len(children) + sum(len(node.get("children") or []) for node in children),
         "vision_result": vision,
+        "mindmap_generation_context_source": "full_vision_result",
     }
 
 
@@ -586,10 +662,13 @@ class MultimodalAgent:
         if client is not None:
             try:
                 questions = _extract_questions(vision)
-                evidence = _vision_evidence(vision, questions)
+                evidence = _mindmap_generation_context(vision)
                 prompt = (
                     "请基于下面图片识别结果生成 Markmap 可渲染的 Markdown 层级脑图。"
-                    "至少包含 8 个有意义知识节点，使用两到三级层级。"
+                    "必须基于整张图片的完整知识结构，不要只围绕用户当前追问或某一道题。"
+                    "一级知识点至少 6 个，总节点至少 20 个，使用两到三级层级。"
+                    "节点标题必须是短知识点，不要塞整道题干或长公式。"
+                    "优先整理函数定义域、奇偶函数、反函数、复合函数、分段函数、数列极限、无穷小比较、极限计算、常见错误、做题策略等结构。"
                     "只输出 Markdown，不要解释，不要包代码块。\n\n"
                     f"用户请求：{_text(context.get('user_message'))}\n"
                     f"完整图片证据：{json.dumps(evidence, ensure_ascii=False)}"
@@ -601,7 +680,7 @@ class MultimodalAgent:
                 if markdown.startswith("```"):
                     markdown = "\n".join(line for line in markdown.splitlines() if not line.strip().startswith("```")).strip()
                 if markdown:
-                    if _markdown_node_count(markdown) < 6:
+                    if not _mindmap_quality_ok(markdown, questions):
                         raise ValueError("mindmap content too sparse")
                     title = markdown.splitlines()[0].lstrip("# ").strip() or _text(vision.get("summary"))[:50] or "图片知识结构"
                     result = {
@@ -612,11 +691,13 @@ class MultimodalAgent:
                         "mermaid": "",
                         "nodes_count": max(1, len([line for line in markdown.splitlines() if line.lstrip().startswith("-")])),
                         "vision_result": vision,
+                        "mindmap_generation_context_source": "full_vision_result",
                     }
             except Exception as exc:
                 executed.setdefault("warnings", []).append(f"LLM mindmap generation failed; used local result: {exc}")
         if result is None:
             result = _fallback_mindmap(vision, context)
+        result["mindmap_generation_context"] = _mindmap_generation_context(vision)
         result["needs_manual_review"] = bool(vision.get("needs_manual_review"))
         result["review_reasons"] = vision.get("review_reasons", [])
         result["uncertain_question_indices"] = vision.get("uncertain_question_indices", [])
@@ -628,7 +709,16 @@ class MultimodalAgent:
             **executed,
             "status": "needs_manual_review" if result.get("needs_manual_review") else "success",
             "result": result,
-            "trace": {**executed.get("trace", {}), "vision_status": executed.get("status"), "mindmap_generated": True, "llm_stage": client is not None},
+            "trace": {
+                **executed.get("trace", {}),
+                "vision_status": executed.get("status"),
+                "mindmap_generated": True,
+                "llm_stage": client is not None,
+                "mindmap_generation_context_source": result.get("mindmap_generation_context_source", "full_vision_result"),
+                "mindmap_top_level_count": _markdown_top_level_count(result.get("markdown", "")),
+                "mindmap_nodes_count": _markdown_node_count(result.get("markdown", "")),
+                "selected_image_attachment_id": _text(context.get("selected_image_attachment_id")),
+            },
         }
 
     def _image_to_flashcards(self, executed: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -869,7 +959,7 @@ class MultimodalAgent:
                 "summary": f"{task_type} -> {status}",
                 "warnings": warnings,
             })
-        return {
+        workflow = {
             "workflow_name": "multimodal_generation",
             "workflow_status": workflow_status,
             "pipeline_executed": True,
@@ -881,6 +971,10 @@ class MultimodalAgent:
             "variant_generation_by_main_llm": task_type == "image_to_variant_questions" and llm_stage,
             "steps": steps,
         }
+        for key in ("selected_image_attachment_id", "mindmap_generation_context_source", "mindmap_top_level_count", "mindmap_nodes_count"):
+            if trace.get(key) not in (None, ""):
+                workflow[key] = trace.get(key)
+        return workflow
 
     def summarize(self, plan: dict[str, Any], executed: dict[str, Any]) -> dict[str, Any]:
         status = str(executed.get("status") or "failed")

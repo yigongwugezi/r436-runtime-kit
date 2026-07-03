@@ -829,6 +829,28 @@ def _reused_frontend_attachment(image_input: dict[str, Any]) -> bool:
     )
 
 
+def _selected_image_attachment_id(image_input: dict[str, Any], cached_context: dict[str, Any] | None = None) -> str:
+    attachments = image_input.get("attachments")
+    if isinstance(attachments, list) and attachments and isinstance(attachments[0], dict):
+        item = attachments[0]
+        selected = item.get("file_id") or item.get("image_url") or item.get("url") or item.get("local_path") or ""
+        if selected:
+            return str(selected)
+    selected = image_input.get("image_url") or ""
+    if selected:
+        return str(selected)
+    cached = cached_context or {}
+    uploaded = cached.get("last_uploaded_file")
+    if isinstance(uploaded, dict):
+        selected = uploaded.get("file_id") or uploaded.get("image_url") or uploaded.get("url") or uploaded.get("local_path") or ""
+        if selected:
+            return str(selected)
+    last_input = cached.get("last_image_input")
+    if isinstance(last_input, dict):
+        return _selected_image_attachment_id(last_input)
+    return ""
+
+
 def _image_context_source(image_input: dict[str, Any], cached_context: dict[str, Any]) -> str:
     if _reused_frontend_attachment(image_input):
         return "last_uploaded_image"
@@ -941,11 +963,13 @@ def _multimodal_learning_path(session_id: str) -> Any:
     return stored
 
 
-def _with_image_context_trace(trace: dict[str, Any], *, reused: bool, source: str, task_type: str) -> dict[str, Any]:
+def _with_image_context_trace(trace: dict[str, Any], *, reused: bool, source: str, task_type: str, selected_image_attachment_id: str = "") -> dict[str, Any]:
     trace = dict(trace)
     trace["reused_image_context"] = reused
     trace["image_context_source"] = source
     trace["task_type"] = task_type
+    if selected_image_attachment_id:
+        trace["selected_image_attachment_id"] = selected_image_attachment_id
     return trace
 
 
@@ -954,6 +978,7 @@ def _multimodal_workflow_trace(
     *,
     reused_image_context: bool = False,
     image_context_source: str = "missing",
+    selected_image_attachment_id: str = "",
 ) -> dict[str, Any]:
     task_type = str(result.get("task_type") or "")
     if isinstance(result.get("workflow_trace"), dict):
@@ -962,6 +987,7 @@ def _multimodal_workflow_trace(
             reused=reused_image_context,
             source=image_context_source,
             task_type=task_type,
+            selected_image_attachment_id=selected_image_attachment_id,
         )
     status = str(result.get("status") or "failed")
     workflow_status = "success" if status == "success" else ("partial" if status in {"needs_input", "provider_not_configured", "unsupported"} else "failed")
@@ -979,7 +1005,7 @@ def _multimodal_workflow_trace(
                 "output_keys": ["multimodal_result"] if result.get("result") else [],
             }
         ],
-    }, reused=reused_image_context, source=image_context_source, task_type=task_type)
+    }, reused=reused_image_context, source=image_context_source, task_type=task_type, selected_image_attachment_id=selected_image_attachment_id)
 
 
 def _multimodal_reply(result: dict[str, Any]) -> str:
@@ -1063,6 +1089,7 @@ def _multimodal_chat_payload(
         "attachments": image_input.get("attachments") or [],
         "image_url": image_input.get("image_url") or "",
         "image_base64": image_input.get("image_base64") or "",
+        "selected_image_attachment_id": _selected_image_attachment_id(image_input, cached_context),
         "learning_path": _multimodal_learning_path(session_id),
         "knowledge_context": (state.last_result or {}).get("knowledge_context", {}) if isinstance(state.last_result, dict) else {},
         "topic": state.facts.get("target_course") or subject_id,
@@ -1074,6 +1101,7 @@ def _multimodal_chat_payload(
         result,
         reused_image_context=reused_image_context,
         image_context_source=image_context_source,
+        selected_image_attachment_id=_selected_image_attachment_id(image_input, cached_context),
     )
     trace["ignore_image_context"] = ignore_image_context
     trace["session_id"] = session_id

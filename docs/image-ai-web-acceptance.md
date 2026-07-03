@@ -135,3 +135,17 @@ $env:PYTHONIOENCODING="utf-8"
 .venv310\Scripts\python.exe tests\product_chat_boundary_test.py
 .venv310\Scripts\python.exe scripts\smoke_multimodal_image_acceptance.py
 ```
+
+## Mindmap Completeness Checks
+
+For a full calculus/high-math question page, sending `根据这张图生成思维导图` should:
+
+- show which image the mindmap is based on;
+- render Markmap first, with Markdown still available;
+- include at least 6 first-level knowledge nodes;
+- include at least 20 total nodes;
+- use short knowledge labels rather than long OCR stems;
+- include topics such as function domain, odd/even functions, inverse functions, piecewise functions, sequence limits, and infinitesimal comparison when they appear in the image evidence;
+- remain based on the whole image after a follow-up like `继续讲第2题`;
+- expose the selected image through `selected_image_attachment_id` in trace;
+- ask for an image after the image reference chip is cancelled, instead of silently reusing an old image.

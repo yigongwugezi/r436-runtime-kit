@@ -187,6 +187,7 @@ function HistoryPopover({ sessions, currentSessionId, onSelect, onDelete, onRena
 
 function MultimodalResultView({ result }: { result: ChatMessage['multimodalResult'] }) {
   const data = result?.result || {};
+  const trace = result?.trace || result?.workflow_trace || {};
   const sessionId = useChatStore((s) => s.currentSessionId);
   const [saveState, setSaveState] = useState('');
   const [candidateState, setCandidateState] = useState('');
@@ -218,6 +219,13 @@ function MultimodalResultView({ result }: { result: ChatMessage['multimodalResul
   const uncertainFields = Array.isArray(data.uncertain_fields) ? data.uncertain_fields.filter(Boolean) : [];
   const uncertainSpans = Array.isArray(data.uncertain_spans) ? data.uncertain_spans.filter(Boolean) : [];
   const [reviewDismissed, setReviewDismissed] = useState(false);
+  const imageSourceLabel = (() => {
+    const source = String(trace.image_context_source || data.image_context_source || '');
+    if (source === 'current_attachment') return '当前上传图片';
+    if (source === 'last_uploaded_image') return '当前选中图片';
+    if (source === 'last_vision_result') return '已缓存图片识别结果';
+    return '图片识别结果';
+  })();
 
   const saveResource = async () => {
     setSaveState('保存中...');
@@ -350,6 +358,12 @@ function MultimodalResultView({ result }: { result: ChatMessage['multimodalResul
       )}
       {diagram && (
         <div className="rounded-xl border border-surface-200 bg-white p-3 overflow-x-auto">
+          {isMindmapTask && (
+            <div className="mb-2 text-xs text-surface-500">
+              基于图片：{imageSourceLabel}
+              {trace.selected_image_attachment_id ? ` · ${String(trace.selected_image_attachment_id).slice(-24)}` : ''}
+            </div>
+          )}
           <MarkmapDiagram definition={diagram} />
           <details className="mt-2 text-xs text-surface-500">
             <summary>查看 Markdown</summary>

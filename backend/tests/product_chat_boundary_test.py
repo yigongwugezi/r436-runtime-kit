@@ -510,12 +510,14 @@ def test_multimodal_chat_reuses_last_image_context_for_followups() -> None:
         fifth = product.send_chat({"sessionId": sid, "message": zh(r"\u6839\u636e\u8fd9\u5f20\u56fe\u751f\u6210\u5b8c\u6574\u5b66\u4e60\u8d44\u6e90\u5305")})
 
     assert_true(first["data"]["multimodal_result"]["status"] == "success", "first image explanation should succeed")
+    assert_true(first["data"]["workflow_trace"]["selected_image_attachment_id"] == "https://example.com/question.png", "image URL should enter trace as selected image id")
     assert_true(contexts[1].get("last_vision_result") == vision, "follow-up should receive cached vision result")
     assert_true(contexts[1].get("last_extracted_questions") == vision["extracted_questions"], "follow-up should receive cached questions")
     assert_true(not contexts[1].get("image_url"), "follow-up should not require a re-uploaded image URL")
     assert_true(zh(r"\u7b2c2\u9898\u8bb2\u89e3") in second["data"]["reply"]["content"], "second reply should explain requested question")
     assert_true(third["data"]["multimodal_result"]["task_type"] == "image_to_mindmap", "third request should generate image mindmap")
     assert_true(third["data"]["multimodal_result"]["status"] == "success", "cached image mindmap should succeed")
+    assert_true(third["data"]["workflow_trace"]["selected_image_attachment_id"] == "https://example.com/question.png", "cached image id should remain visible in trace")
     assert_true(fourth["data"]["multimodal_result"]["task_type"] == "image_to_flashcards", "fourth request should generate flashcards")
     assert_true(fifth["data"]["multimodal_result"]["task_type"] == "image_to_resource_bundle", "fifth request should generate resource bundle")
 

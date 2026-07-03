@@ -19,6 +19,10 @@ def assert_true(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+def zh(escaped: str) -> str:
+    return escaped.encode("ascii").decode("unicode_escape")
+
+
 class SparseLLM:
     def is_available(self) -> bool:
         return True
@@ -65,8 +69,66 @@ class FakeVisionTool:
         }
 
 
+def rich_vision_result() -> dict:
+    points = [
+        zh(r"\u51fd\u6570\u5b9a\u4e49\u57df"),
+        zh(r"\u5947\u5076\u51fd\u6570"),
+        zh(r"\u53cd\u51fd\u6570"),
+        zh(r"\u590d\u5408\u51fd\u6570"),
+        zh(r"\u5206\u6bb5\u51fd\u6570"),
+        zh(r"\u6570\u5217\u6781\u9650"),
+        zh(r"\u6709\u754c\u6027\u4e0e\u6536\u655b\u6027"),
+        zh(r"\u65e0\u7a77\u5c0f\u6bd4\u8f83"),
+        zh(r"\u7b49\u4ef7\u65e0\u7a77\u5c0f"),
+        zh(r"\u6781\u9650\u8ba1\u7b97"),
+    ]
+    prefix = zh(r"\u7b2c")
+    suffix = zh(r"\u9898\uff1a")
+    questions = [
+        {
+            "index": index,
+            "content": f"{prefix}{index}{suffix}{point}",
+            "knowledge_points": [point],
+            "answer": "See extracted_questions for per-question answers" if index == 1 else zh(r"\u6839\u636e\u56fe\u4e2d\u9898\u76ee\u8bb2\u89e3"),
+        }
+        for index, point in enumerate(points, start=1)
+    ]
+    return {
+        "image_type": "question_image",
+        "subject": zh(r"\u9ad8\u7b49\u6570\u5b66"),
+        "summary": zh(r"\u9ad8\u6570\u51fd\u6570\u4e0e\u6781\u9650\u9898\u56fe"),
+        "detected_text": " ".join(points),
+        "possible_knowledge_points": points,
+        "formulas": ["f(-x)=f(x)", "lim x->0 sinx/x=1"],
+        "extracted_questions": questions,
+        "needs_manual_review": True,
+        "review_reasons": [zh(r"\u7b2c3\u9898\u53cd\u51fd\u6570\u6761\u4ef6\u53ef\u80fd\u4e0d\u5b8c\u6574")],
+        "uncertain_question_indices": [3],
+        "uncertain_fields": ["question_text"],
+        "review_level": "medium",
+        "can_continue": True,
+    }
+
+
+class RichFakeVisionTool:
+    provider = "qwen_vl"
+
+    def run(self, _context: dict) -> dict:
+        return {
+            "status": "success",
+            "provider": self.provider,
+            "warnings": [],
+            "trace": {"model": "fake-vl"},
+            "result": rich_vision_result(),
+        }
+
+
 def markdown_nodes(markdown: str) -> int:
     return len([line for line in markdown.splitlines() if line.lstrip().startswith("-")])
+
+
+def markdown_top_level(markdown: str) -> int:
+    return len([line for line in markdown.splitlines() if line.startswith("- ")])
 
 
 def markdown_node_labels(markdown: str) -> list[str]:
@@ -88,7 +150,7 @@ def main() -> None:
     assert_true("8001" not in upload["url"], "upload URL must not hardcode 8001")
 
     agent = MultimodalAgent(llm_client=SparseLLM())
-    agent.registry.register_tool("QwenVisionProvider", FakeVisionTool())
+    agent.registry.register_tool("QwenVisionProvider", RichFakeVisionTool())
 
     explain = agent.run({"user_message": "请详细讲解这张图片里的题目，并指出每道题考查的知识点", "attachments": [upload]})
     assert_true(explain["result"].get("display_text"), "explain_image_question must expose display_text")
@@ -100,7 +162,10 @@ def main() -> None:
     assert_true(questions[1]["question_text"], "empty question index should get a useful placeholder")
 
     mindmap = agent.run({"user_message": "根据这张图生成思维导图", "attachments": [upload]})
-    assert_true(markdown_nodes(mindmap["result"]["markdown"]) >= 6, "mindmap should not collapse to 2-3 nodes")
+    assert_true(markdown_top_level(mindmap["result"]["markdown"]) >= 6, "mindmap should have at least six first-level nodes")
+    assert_true(markdown_nodes(mindmap["result"]["markdown"]) >= 20, "mindmap should not collapse to 2-3 nodes")
+    for label in [zh(r"\u51fd\u6570\u5b9a\u4e49\u57df"), zh(r"\u5947\u5076\u51fd\u6570"), zh(r"\u53cd\u51fd\u6570"), zh(r"\u5206\u6bb5\u51fd\u6570"), zh(r"\u6570\u5217\u6781\u9650"), zh(r"\u65e0\u7a77\u5c0f\u6bd4\u8f83")]:
+        assert_true(label in mindmap["result"]["markdown"], f"{label} should be included")
     assert_true(max(len(label) for label in markdown_node_labels(mindmap["result"]["markdown"])) <= 40, "mindmap node labels should stay short")
 
     cards = agent.run({"user_message": "根据这张图生成复习卡片", "attachments": [upload]})

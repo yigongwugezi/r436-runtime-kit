@@ -25,6 +25,8 @@ export interface ChatMessage {
     task_type?: string;
     provider?: string;
     warnings?: string[];
+    trace?: Record<string, unknown>;
+    workflow_trace?: Record<string, unknown>;
     result?: any;
   };
 }

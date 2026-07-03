@@ -58,6 +58,14 @@ class FailingMindmapLLM:
         return False
 
 
+class SparseMindmapLLM:
+    def chat(self, messages: list[dict[str, str]], **kwargs) -> str:
+        return zh(r"# \u4e0a\u5b66\u671f\u5fae\u79ef\u5206\u4e60\u9898\n- \u5355\u9879\u9009\u62e9\u9898\n  - \u7b2c2\u9898\n    - \u5947\u51fd\u6570")
+
+    def is_available(self) -> bool:
+        return True
+
+
 class FakeVisionTool:
     provider = "qwen_vl"
 
@@ -122,6 +130,51 @@ def extracted_question_vision() -> dict:
         },
     ]
     return result
+
+
+def calculus_page_vision() -> dict:
+    points = [
+        zh(r"\u51fd\u6570\u5b9a\u4e49\u57df"),
+        zh(r"\u5947\u5076\u51fd\u6570"),
+        zh(r"\u53cd\u51fd\u6570"),
+        zh(r"\u590d\u5408\u51fd\u6570"),
+        zh(r"\u5206\u6bb5\u51fd\u6570"),
+        zh(r"\u6570\u5217\u6781\u9650"),
+        zh(r"\u6709\u754c\u6027\u4e0e\u6536\u655b\u6027"),
+        zh(r"\u65e0\u7a77\u5c0f\u6bd4\u8f83"),
+        zh(r"\u7b49\u4ef7\u65e0\u7a77\u5c0f"),
+        zh(r"\u6781\u9650\u8ba1\u7b97"),
+    ]
+    questions = []
+    prefix = zh(r"\u7b2c")
+    suffix = zh(r"\u9898\uff1a")
+    for index, point in enumerate(points, start=1):
+        questions.append({
+            "index": index,
+            "question_text": f"{prefix}{index}{suffix}{point}",
+            "knowledge_points": [point],
+            "answer": zh(r"\u5f85\u6839\u636e\u56fe\u7247\u7ed3\u679c\u8bb2\u89e3"),
+            "common_mistakes": [zh(r"\u5ffd\u7565\u6761\u4ef6")],
+        })
+    return {
+        "image_type": "question_image",
+        "subject": zh(r"\u9ad8\u7b49\u6570\u5b66"),
+        "summary": zh(r"\u4e0a\u5b66\u671f\u5fae\u79ef\u5206\u4e60\u9898\u6574\u9875"),
+        "detected_text": " ".join(points),
+        "possible_knowledge_points": points,
+        "formulas": ["f(-x)=f(x)", "lim x->0 sinx/x=1"],
+        "extracted_questions": questions,
+        "confidence": 0.91,
+        "needs_manual_review": False,
+    }
+
+
+def markdown_nodes(markdown: str) -> int:
+    return len([line for line in markdown.splitlines() if line.lstrip().startswith("-")])
+
+
+def markdown_top_level(markdown: str) -> int:
+    return len([line for line in markdown.splitlines() if line.startswith("- ")])
 
 
 def test_mindmap_from_learning_path() -> None:
@@ -433,6 +486,36 @@ def test_cached_image_context_can_generate_mindmap_without_new_upload() -> None:
     assert_true(zh(r"\u52a0\u6cd5") in result["result"]["markdown"], "cached knowledge point should enter mindmap")
 
 
+def test_image_mindmap_sparse_llm_falls_back_to_full_vision_result() -> None:
+    vision = calculus_page_vision()
+    result = MultimodalAgent(llm_client=SparseMindmapLLM()).run({
+        "user_message": zh(r"\u6839\u636e\u8fd9\u5f20\u56fe\u751f\u6210\u601d\u7ef4\u5bfc\u56fe"),
+        "last_vision_result": vision,
+        "last_extracted_questions": vision["extracted_questions"],
+        "selected_image_attachment_id": "upload/calculus-page.png",
+    })
+
+    markdown = result["result"]["markdown"]
+    assert_true(result["task_type"] == "image_to_mindmap", "image mindmap task should be selected")
+    assert_true(result["provider"] == "session_cache", "mindmap should reuse cached vision result")
+    assert_true(result["status"] == "success", "sparse LLM output should still produce a usable mindmap")
+    assert_true(markdown_top_level(markdown) >= 6, "fallback mindmap should have at least six top-level nodes")
+    assert_true(markdown_nodes(markdown) >= 20, "fallback mindmap should have at least twenty nodes")
+    for label in [
+        zh(r"\u51fd\u6570\u5b9a\u4e49\u57df"),
+        zh(r"\u5947\u5076\u51fd\u6570"),
+        zh(r"\u53cd\u51fd\u6570"),
+        zh(r"\u5206\u6bb5\u51fd\u6570"),
+        zh(r"\u6570\u5217\u6781\u9650"),
+        zh(r"\u65e0\u7a77\u5c0f\u6bd4\u8f83"),
+    ]:
+        assert_true(label in markdown, f"{label} should come from full vision evidence")
+    assert_true(len(result["result"]["mindmap_generation_context"]["questions"]) >= 10, "full questions should be available to mindmap generation")
+    assert_true(result["trace"]["tool_trace"]["mindmap_generation_context_source"] == "full_vision_result", "tool trace should record full vision source")
+    assert_true(result["workflow_trace"]["mindmap_generation_context_source"] == "full_vision_result", "workflow trace should record full vision source")
+    assert_true(result["workflow_trace"]["selected_image_attachment_id"] == "upload/calculus-page.png", "workflow trace should keep selected image id")
+
+
 def test_cached_image_context_can_generate_flashcards_without_new_upload() -> None:
     result = MultimodalAgent(llm_client=FailingMindmapLLM()).run({
         "user_message": zh(r"\u6839\u636e\u8fd9\u5f20\u56fe\u751f\u6210\u590d\u4e60\u5361\u7247"),
@@ -544,6 +627,7 @@ if __name__ == "__main__":
     test_cached_image_context_can_continue_specific_question()
     test_explain_image_question_filters_internal_placeholders()
     test_cached_image_context_can_generate_mindmap_without_new_upload()
+    test_image_mindmap_sparse_llm_falls_back_to_full_vision_result()
     test_cached_image_context_can_generate_flashcards_without_new_upload()
     test_image_to_flashcards_from_vision_result()
     test_explain_image_question_needs_manual_review_when_question_missing()

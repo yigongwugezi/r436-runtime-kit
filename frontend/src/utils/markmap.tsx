@@ -55,7 +55,7 @@ export default function MarkmapDiagram({ definition, className }: MarkmapDiagram
       markmapRef.current = Markmap.create(svgRef.current, {
         autoFit: true,
         duration: 250,
-        maxWidth: 180,
+        maxWidth: 200,
         paddingX: 12,
       }, root);
     } else {
@@ -65,7 +65,7 @@ export default function MarkmapDiagram({ definition, className }: MarkmapDiagram
   }, [markdown]);
 
   return (
-    <div className={`h-[420px] min-w-[560px] ${className || ''}`}>
+    <div className={`h-[480px] min-w-[560px] ${className || ''}`}>
       <svg ref={svgRef} className="h-full w-full" />
     </div>
   );

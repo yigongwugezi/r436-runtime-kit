@@ -79,6 +79,12 @@ Mindmap tasks show Markmap first. OCR and image-understanding details stay colla
 
 Mindmap generation should use the full cached `last_vision_result`, including `detected_text`, extracted questions, answers, formulas, and knowledge points. If the main LLM returns a sparse map, the backend falls back to a local evidence-based map rather than showing two or three nodes.
 
+Image mindmaps must be knowledge-structure maps, not OCR trees and not a continuation of only the current follow-up question. The generation context is built from full vision evidence: `image_summary`, `detected_text`, `questions`, `answers`, `knowledge_points`, `possible_knowledge_points`, `formulas`, `common_mistakes`, `subject`, and `image_type`.
+
+The backend treats an LLM mindmap as too sparse when it has fewer than 6 first-level nodes, fewer than 20 total nodes, very long node labels, or only references one or two questions from a multi-question page. In that case it uses the local evidence-based fallback. For calculus/high-math question pages, the map should usually include short nodes such as function domain, odd/even functions, inverse functions, piecewise functions, sequence limits, infinitesimal comparison, common mistakes, and problem-solving strategy.
+
+When multiple images exist, the current selected image is passed as `selected_image_attachment_id` and exposed in `workflow_trace` with `image_context_source`, `reused_image_context`, and `mindmap_generation_context_source`. If the user cancels the image reference, the request carries `ignore_image_context=true`; the backend must not silently reuse the old image.
+
 Flashcards render as real cards: front first, back folded, math rendered where possible, and extra cards folded after the first six. Multi-question images should produce at least six useful study cards when enough evidence exists. Card fronts should be review questions, and backs should be explanatory answers rather than OCR fragments.
 
 Resource bundles start with a short explanation of what the bundle is, what saving does, and why knowledge candidates stay pending. Empty sections, empty arrays, dot-only placeholders, and pending-only shells without content are hidden. AI-generated resource and knowledge candidates remain pending until the user explicitly saves or confirms them.
