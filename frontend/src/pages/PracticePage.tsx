@@ -65,10 +65,7 @@ export default function PracticePage() {
   const loadSet = async (qsid: string) => {
     setActiveSetId(qsid);
     const res: any = await listQuestions(sessionId);
-    const qs = (res?.questions || []).filter((q: Question) => {
-      // Try to match by knowledge points or just load all for the set
-      return true;
-    });
+    const qs = (res?.questions || []).filter((q: any) => q.question_set_id === qsid);
     setAllQuestions(qs);
     setQuestions(qs);
     setCurrentIdx(0);

@@ -4221,8 +4221,14 @@ def question_sets(sessionId: str = "") -> dict[str, Any]:
     session_id = _resolve_session_id(sessionId, "")
     try:
         db = SessionLocal()
-        from app.db.repository import get_questions as repo_get_questions
-        all_qs = repo_get_questions(db, session_id, limit=500)
+        from app.db.models import StudentQuestionModel
+        all_qs = (
+            db.query(StudentQuestionModel)
+            .filter(StudentQuestionModel.session_id == session_id)
+            .order_by(StudentQuestionModel.created_at.desc())
+            .limit(500)
+            .all()
+        )
 
         # 按 question_set_id 分组
         sets: dict[str, dict] = {}
