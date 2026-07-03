@@ -13,7 +13,7 @@ import type { ClassSubject } from '../types/classSubject';
 
 export default function Home() {
   const nav = useNavigate();
-  const { subjects, activeSubject, create, setActive, remove } = useSubjectStore();
+  const { subjects, activeSubject, activeClassSubject, create, setActive, setActiveClassSubject, remove } = useSubjectStore();
   const { analytics } = useLearningAnalytics();
   const { profile } = useProfile();
   const { completedCount: taskCompleted, totalCount: taskTotal } = useDailyTasks();
@@ -243,10 +243,11 @@ export default function Home() {
                         </div>
                       ))}
                       {classSubjects.map((cs, idx) => (
-                        <div key={cs.id} className="space-y-2 cursor-pointer group relative" onClick={() => { nav(`/chat?classSubjectId=${cs.id}`); }}>
+                        <div key={cs.id} className="space-y-2 cursor-pointer group relative" onClick={() => { setActiveClassSubject(cs); nav(`/chat?classSubjectId=${cs.id}`); }}>
                           <div className="flex items-center justify-between text-sm">
                             <div className="flex items-center gap-2 min-w-0">
                               <span className="text-surface-700 font-medium truncate">{cs.name}</span>
+                              {activeClassSubject?.id === cs.id && <span className="px-2 py-0.5 bg-primary-100 text-primary-700 rounded-full text-[10px] font-semibold flex-shrink-0">当前</span>}
                               <span className="px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full text-[10px] font-semibold flex-shrink-0">班级</span>
                             </div>
                           </div>

@@ -107,11 +107,12 @@ export default function TeacherClassDetail() {
   };
 
   const handlePush = async () => {
-    if (!id || !pushTitle.trim() || selectedQids.size === 0) return;
+    if (!id || selectedQids.size === 0) return;
+    const title = pushTitle.trim() || `练习推送 (${new Date().toLocaleDateString()})`;
     setPushing(true);
     try {
       await pushExercises(id, {
-        title: pushTitle.trim(),
+        title,
         description: pushDesc.trim() || undefined,
         questionIds: Array.from(selectedQids),
       });
@@ -329,7 +330,7 @@ export default function TeacherClassDetail() {
                 <input
                   value={pushTitle}
                   onChange={e => setPushTitle(e.target.value)}
-                  placeholder="推送标题（例如：第一周练习）*"
+                  placeholder="推送标题（可选，默认使用日期）"
                   maxLength={50}
                   className="w-full px-4 py-2.5 bg-surface-50 border border-surface-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-primary-200"
                 />
@@ -456,7 +457,7 @@ export default function TeacherClassDetail() {
                 </button>
                 <button
                   onClick={handlePush}
-                  disabled={pushing || !pushTitle.trim() || selectedQids.size === 0}
+                  disabled={pushing || selectedQids.size === 0}
                   className="px-6 py-2 bg-primary-600 text-white rounded-xl text-sm font-medium hover:bg-primary-700 disabled:opacity-50 transition-colors"
                 >
                   {pushing ? '推送中…' : `确认推送 (${selectedQids.size}题)`}

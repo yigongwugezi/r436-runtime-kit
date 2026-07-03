@@ -7,6 +7,7 @@ import { listQuestions, gradeAnswer, getWeakQuestions, getAnswerHistory, getQues
 import { getPushedQuestions } from '../api/classSubjects';
 import type { PushedQuestionGroup } from '../types/classSubject';
 import { getCurrentLearner } from '../store/authStore';
+import { useSubjectStore } from '../store/subjectStore';
 
 interface Question {
   question_id: string; type: string; stem: string; options?: string[];
@@ -52,7 +53,8 @@ export default function PracticePage() {
   const [searchParams] = useSearchParams();
 
   useEffect(() => {
-    const csid = searchParams.get('classSubjectId') || '';
+    // Read from URL first, fall back to store (persists across navigations)
+    const csid = searchParams.get('classSubjectId') || useSubjectStore.getState().activeClassSubject?.id || '';
     setClassSubjectId(csid);
     Promise.all([
       getQuestionSets(sessionId).then((d: any) => d?.sets || []).catch(() => []),

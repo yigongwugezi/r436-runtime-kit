@@ -3,6 +3,7 @@ import { getCurrentLearner } from './authStore';
 import { readStorageJson, writeStorageJson, runtimeStorageKeys } from '../utils/storageKeys';
 import * as subjectsApi from '../api/subjects';
 import type { Subject } from '../types/subject';
+import type { ClassSubject } from '../types/classSubject';
 
 /* ===================================================================
  * 科目存储管理 — localStorage 辅助函数（本地缓存层）
@@ -15,6 +16,11 @@ const subjectsKey = () => {
 const activeSubjectKey = () => {
   const learner = getCurrentLearner();
   return runtimeStorageKeys.activeSubject(learner?.id || 'anonymous');
+};
+
+const activeClassSubjectKey = () => {
+  const learner = getCurrentLearner();
+  return runtimeStorageKeys.activeClassSubject(learner?.id || 'anonymous');
 };
 
 const createSubjectId = () => `subject_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -44,24 +50,45 @@ function persistActiveSubject(subject: Subject | null) {
   }
 }
 
+function loadActiveClassSubject(): ClassSubject | null {
+  return readStorageJson(activeClassSubjectKey(), null);
+}
+
+function persistActiveClassSubject(cs: ClassSubject | null) {
+  if (cs) {
+    writeStorageJson(activeClassSubjectKey(), cs);
+  } else {
+    try {
+      localStorage.removeItem(activeClassSubjectKey().primary);
+      for (const legacyKey of activeClassSubjectKey().legacy) {
+        localStorage.removeItem(legacyKey);
+      }
+    } catch {}
+  }
+}
+
 /* ===================================================================
  * 科目 Store — API 优先 + localStorage 缓存
  * =================================================================== */
 interface SubjectStore {
   subjects: Subject[];
   activeSubject: Subject | null;
+  activeClassSubject: ClassSubject | null;
   loading: boolean;
   error: string | null;
   load: () => Promise<void>;
   create: (name: string) => Promise<Subject>;
   remove: (id: string) => Promise<void>;
   setActive: (subject: Subject) => void;
+  setActiveClassSubject: (cs: ClassSubject) => void;
+  clearActiveClassSubject: () => void;
   clearError: () => void;
 }
 
 export const useSubjectStore = create<SubjectStore>((set, get) => ({
   subjects: loadSubjects(),
   activeSubject: loadActiveSubject(),
+  activeClassSubject: loadActiveClassSubject(),
   loading: false,
   error: null,
 
@@ -158,7 +185,19 @@ export const useSubjectStore = create<SubjectStore>((set, get) => ({
 
   setActive: (subject: Subject) => {
     persistActiveSubject(subject);
-    set({ activeSubject: subject });
+    persistActiveClassSubject(null);  // Clear class subject when personal subject is active
+    set({ activeSubject: subject, activeClassSubject: null });
+  },
+
+  setActiveClassSubject: (cs: ClassSubject) => {
+    persistActiveClassSubject(cs);
+    persistActiveSubject(null);  // Clear personal subject when class subject is active
+    set({ activeClassSubject: cs, activeSubject: null });
+  },
+
+  clearActiveClassSubject: () => {
+    persistActiveClassSubject(null);
+    set({ activeClassSubject: null });
   },
 
   clearError: () => set({ error: null }),
