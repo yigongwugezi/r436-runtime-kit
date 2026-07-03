@@ -70,18 +70,7 @@ function DocRenderer({ resource, type }: Props & { type: 'lecture' | 'reading' }
     id: m[2].trim().replace(/\s+/g, '-').replace(/[^\w一-鿿-]/g, ''),
   }));
 
-  // 给内容中的标题加 id 锚点
-  let enrichedContent = content;
-  let offset = 0;
-  for (const h of headings) {
-    const pattern = `${'#'.repeat(h.level)} ${h.text}`;
-    const idx = enrichedContent.indexOf(pattern, offset);
-    if (idx >= 0) {
-      const anchor = `\n${'#'.repeat(h.level)} <span id="${h.id}">${h.text}</span>\n`;
-      enrichedContent = enrichedContent.slice(0, idx) + anchor + enrichedContent.slice(idx + pattern.length);
-      offset = idx + anchor.length;
-    }
-  }
+  // 锚点注入留给 TOC 用的 enrichedContent（不用于渲染）
 
   // 提取关键概念块（--- 或 > **重点** 包裹的内容）
   const conceptBlocks = [...content.matchAll(/> \*\*(重点|关键|核心|注意|考点|提示)\*\*[：:]\s*(.+)/g)];
@@ -143,10 +132,58 @@ function DocRenderer({ resource, type }: Props & { type: 'lecture' | 'reading' }
           </div>
         )}
 
-        {/* Markdown 正文 */}
-        <div className="prose prose-sm max-w-none prose-headings:text-surface-800 prose-h2:text-lg prose-h2:font-bold prose-h2:mt-8 prose-h2:mb-3 prose-h2:pb-2 prose-h2:border-b prose-h2:border-surface-100 prose-h3:text-base prose-h3:font-semibold prose-h3:mt-6 prose-h3:mb-2 prose-p:text-surface-600 prose-p:leading-relaxed prose-li:text-surface-600 prose-code:text-brand-600 prose-code:bg-brand-50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-surface-800 prose-pre:text-surface-100 prose-table:text-xs prose-th:bg-surface-50 prose-th:font-medium prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2">
-          <LongContent content={enrichedContent} maxLen={3000} />
-        </div>
+        {/* 卡片化正文 */}
+        {(() => {
+          let sections = content.split(/^(?=## )/m).filter(s => s.trim());
+          if (sections.length <= 1) sections = content.split(/^(?=### )/m).filter(s => s.trim());
+          if (sections.length <= 1) {
+            sections = content.split(/(?=^(?:题型|例题|解答|解析|总结|注意|考点|示例|习题)\b)/m).filter(s => s.trim());
+            if (sections.length <= 1) {
+              const paras = content.split(/\n\n+/).filter(p => p.trim());
+              const chunks: string[] = [];
+              for (let i = 0; i < paras.length; i += 2) chunks.push(paras.slice(i, i + 2).join('\n\n'));
+              sections = chunks;
+            }
+          }
+          if (sections.length <= 1) {
+            return <div className="bg-white rounded-2xl shadow-soft border border-surface-100 p-6"><div className="prose prose-base max-w-none prose-p:text-surface-700 prose-p:leading-7 prose-li:text-surface-700 prose-code:text-brand-700 prose-code:bg-brand-50 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-strong:text-surface-800"><Markdown content={enrichedContent} /></div></div>;
+          }
+                    return sections.map((section, i) => {
+            const hMatch = section.match(/^#{2,3} (.+)$/m);
+            const nMatch = section.match(/^(题型|例题|解答|解析|总结|注意|考点|示例|习题)([：:].*|.*)$/m);
+            const heading = hMatch ? hMatch[1] : (nMatch ? (nMatch[1] + (nMatch[2] || '')) : `章节 ${i + 1}`);
+            const body = (hMatch || nMatch) ? section.replace(hMatch?.[0] || nMatch?.[0] || '', '').trim() : section;
+            const isExample = nMatch && ['例题','示例','习题'].includes(nMatch[1]);
+            const isSolution = nMatch && ['解答','解析'].includes(nMatch[1]);
+            const isNote = nMatch && ['注意','考点'].includes(nMatch[1]);
+            const isSummary = nMatch && ['总结'].includes(nMatch[1]);
+            const cardStyle = isExample ? 'border-l-4 border-l-primary-400 bg-primary-50/30' :
+              isSolution ? 'border-l-4 border-l-success-400 bg-success-50/30' :
+              isNote ? 'border-l-4 border-l-amber-400 bg-amber-50/40' :
+              isSummary ? 'border-l-4 border-l-accent-400 bg-accent-50/30' :
+              'border border-surface-100';
+            const icon = isExample ? '📝' : isSolution ? '✏️' : isNote ? '⚠️' : isSummary ? '📋' : '';
+            return (
+              <div key={i} className={`rounded-2xl p-6 mb-5 shadow-md border-2 ${cardStyle}`}>
+                <div className="flex items-center gap-3 mb-4 pb-3 border-b-2 border-surface-100">
+                  <span className="w-8 h-8 rounded-xl bg-primary-500 text-white flex items-center justify-center text-sm font-bold shadow-sm">{i + 1}</span>
+                  <h4 className="text-base font-bold text-surface-800">{icon} {heading}</h4>
+                </div>
+                <div className="prose prose-sm max-w-none text-surface-600
+                  prose-p:leading-7 prose-p:my-2
+                  prose-li:my-1
+                  prose-code:text-brand-600 prose-code:bg-brand-50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded
+                  prose-strong:text-surface-800
+                  prose-table:text-xs prose-th:bg-surface-50 prose-th:font-semibold prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2
+                  prose-blockquote:border-l-3 prose-blockquote:border-brand-400 prose-blockquote:bg-brand-50/30 prose-blockquote:px-4 prose-blockquote:py-2 prose-blockquote:rounded-r-xl prose-blockquote:not-italic prose-blockquote:text-sm
+                  prose-pre:bg-surface-800 prose-pre:text-surface-100 prose-pre:rounded-xl
+                  [&_.katex]:text-sm [&_.katex-display]:my-3">
+                  <Markdown content={body} />
+                </div>
+              </div>
+            );
+          });
+        })()}
       </div>
     </div>
   );
@@ -179,7 +216,12 @@ function MindmapRenderer({ resource }: Props) {
     if (!mermaidCode || !containerRef.current) return;
     let cancelled = false;
     renderMermaid(containerRef.current, mermaidCode)
-      .then((result) => { if (!cancelled) { setSvg(result); setError(null); } })
+      .then((result) => {
+        if (!cancelled) {
+          if (result.includes('error')) { setError('渲染失败'); setSvg(null); }
+          else { setSvg(result); setError(null); }
+        }
+      })
       .catch((e: any) => { if (!cancelled) setError(e?.message || String(e)); });
     return () => { cancelled = true; };
   }, [mermaidCode]);
