@@ -3834,58 +3834,59 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
         daily_stats[key] = {"questionCount": 0, "accuracySum": 0.0, "active": False}
 
     try:
-        db_events = SessionLocal()
-        from app.db.models import LearningEventModel
-        from sqlalchemy import and_
+        try:
+            db_events = SessionLocal()
+            from app.db.models import LearningEventModel
+            from sqlalchemy import and_
 
-        rows = (
-            db_events.query(LearningEventModel)
-            .filter(
-                and_(
-                    LearningEventModel.session_id == session_id,
-                    LearningEventModel.created_at >= thirty_days_ago,
-                    LearningEventModel.event_type.in_([
-                        "quiz_result", "quiz_submit", "practice_result",
-                        "resource_view", "resource_complete",
-                    ]),
+            rows = (
+                db_events.query(LearningEventModel)
+                .filter(
+                    and_(
+                        LearningEventModel.session_id == session_id,
+                        LearningEventModel.created_at >= thirty_days_ago,
+                        LearningEventModel.event_type.in_([
+                            "quiz_result", "quiz_submit", "practice_result",
+                            "resource_view", "resource_complete",
+                        ]),
+                    )
                 )
+                .order_by(LearningEventModel.created_at.asc())
+                .all()
             )
-            .order_by(LearningEventModel.created_at.asc())
-            .all()
-        )
-        db_events.close()
-
-        for row in rows:
-            if row.created_at:
-                day_key = row.created_at.strftime("%Y-%m-%d")
-                if day_key in daily_stats:
-                    daily_stats[day_key]["active"] = True
-                    meta = row.metadata_ or {}
-                    if row.event_type in ("quiz_result", "quiz_submit", "practice_result"):
-                        daily_stats[day_key]["questionCount"] += 1
-                        score = None
-                        if "accuracy" in meta:
-                            try:
-                                a = float(meta["accuracy"])
-                                score = round(a * 100) if a <= 1 else round(a)
-                            except (TypeError, ValueError):
-                                pass
-                        if score is None and "score" in meta:
-                            try:
-                                s = float(meta["score"])
-                                score = round(s * 100) if s <= 1 else round(s)
-                            except (TypeError, ValueError):
-                                pass
-                        if score is None and "correct" in meta and "total" in meta:
-                            try:
-                                c = int(meta["correct"])
-                                t = int(meta["total"])
-                                if t > 0:
-                                    score = round(c / t * 100)
-                            except (TypeError, ValueError):
-                                pass
-                        if score is not None:
-                            daily_stats[day_key]["accuracySum"] += score
+            for row in rows:
+                if row.created_at:
+                    day_key = row.created_at.strftime("%Y-%m-%d")
+                    if day_key in daily_stats:
+                        daily_stats[day_key]["active"] = True
+                        meta = row.metadata_ or {}
+                        if row.event_type in ("quiz_result", "quiz_submit", "practice_result"):
+                            daily_stats[day_key]["questionCount"] += 1
+                            score = None
+                            if "accuracy" in meta:
+                                try:
+                                    a = float(meta["accuracy"])
+                                    score = round(a * 100) if a <= 1 else round(a)
+                                except (TypeError, ValueError):
+                                    pass
+                            if score is None and "score" in meta:
+                                try:
+                                    s = float(meta["score"])
+                                    score = round(s * 100) if s <= 1 else round(s)
+                                except (TypeError, ValueError):
+                                    pass
+                            if score is None and "correct" in meta and "total" in meta:
+                                try:
+                                    c = int(meta["correct"])
+                                    t = int(meta["total"])
+                                    if t > 0:
+                                        score = round(c / t * 100)
+                                except (TypeError, ValueError):
+                                    pass
+                            if score is not None:
+                                daily_stats[day_key]["accuracySum"] += score
+        finally:
+            db_events.close()
     except Exception as e:
         logger.warning(f"Failed to query DB for daily stats: {e}")
 
