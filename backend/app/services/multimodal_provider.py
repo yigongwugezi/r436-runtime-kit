@@ -259,6 +259,22 @@ def _data_url_from_base64(value: str) -> str:
     return f"data:image/png;base64,{value}"
 
 
+def _is_remote_or_data_image(value: str) -> bool:
+    lowered = _text(value).lower()
+    return lowered.startswith(("http://", "https://", "data:image/"))
+
+
+def _local_file_data_url(local_path: str) -> tuple[str, str]:
+    local_path = _text(local_path)
+    if not local_path:
+        return "", "missing local image path"
+    local = _resolve_upload_path(local_path)
+    if not local or not local.exists():
+        return "", f"local image file not found: {local_path}"
+    mime = mimetypes.guess_type(local.name)[0] or "image/png"
+    return f"data:{mime};base64,{base64.b64encode(local.read_bytes()).decode('ascii')}", ""
+
+
 def _resolve_upload_path(local_path: str) -> Path | None:
     if not local_path:
         return None
@@ -275,24 +291,37 @@ def _resolve_upload_path(local_path: str) -> Path | None:
     return None
 
 
-def image_input_from_context(context: dict[str, Any]) -> str:
-    if _text(context.get("image_url")):
-        return _text(context.get("image_url"))
-    if _text(context.get("image_base64")):
-        return _data_url_from_base64(_text(context.get("image_base64")))
+def image_input_from_context(context: dict[str, Any]) -> tuple[str, str]:
+    image_url = _text(context.get("image_url"))
+    if image_url:
+        if _is_remote_or_data_image(image_url):
+            return image_url, ""
+        return _local_file_data_url(image_url)
+
+    image_base64 = _text(context.get("image_base64"))
+    if image_base64:
+        return _data_url_from_base64(image_base64), ""
+
+    warning = ""
     for item in context.get("attachments") or []:
         if not isinstance(item, dict):
             continue
-        for key in ("image_url", "url"):
-            if _text(item.get(key)):
-                return _text(item.get(key))
         if _text(item.get("image_base64")):
-            return _data_url_from_base64(_text(item.get("image_base64")))
-        local = _resolve_upload_path(_text(item.get("local_path")))
-        if local and local.exists():
-            mime = mimetypes.guess_type(local.name)[0] or "image/png"
-            return f"data:{mime};base64,{base64.b64encode(local.read_bytes()).decode('ascii')}"
-    return ""
+            return _data_url_from_base64(_text(item.get("image_base64"))), ""
+        if _text(item.get("local_path")):
+            data_url, warning = _local_file_data_url(_text(item.get("local_path")))
+            if data_url:
+                return data_url, ""
+        for key in ("image_url", "url"):
+            url = _text(item.get(key))
+            if not url:
+                continue
+            if _is_remote_or_data_image(url):
+                return url, ""
+            data_url, warning = _local_file_data_url(url)
+            if data_url:
+                return data_url, ""
+    return "", warning
 
 
 def save_multimodal_upload(
@@ -411,11 +440,11 @@ class QwenVisionProvider:
         api_key = _env("DASHSCOPE_API_KEY", "QWEN_API_KEY")
         model = _env("QWEN_VL_MODEL", default="qwen-vl-plus")
         base_url = _env("QWEN_BASE_URL", default="https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
-        image = image_input_from_context(context)
+        image, image_warning = image_input_from_context(context)
         if not api_key:
             return _response(status="provider_not_configured", provider=self.provider, warnings=["Qwen vision provider is not configured."], trace={"required_env": ["DASHSCOPE_API_KEY or QWEN_API_KEY"]})
         if not image:
-            return _response(status="needs_input", provider=self.provider, warnings=["missing image input"], trace={"input_keys": sorted(context.keys())})
+            return _response(status="needs_input", provider=self.provider, warnings=[image_warning or "missing image input"], trace={"input_keys": sorted(context.keys())})
 
         prompt = (
             "Analyze this learning image. Return JSON only with keys: "

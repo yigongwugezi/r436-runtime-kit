@@ -1,10 +1,12 @@
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.agents.multimodal_agent import MultimodalAgent
+from app.services import multimodal_provider as provider_mod
 from app.services.multimodal_provider import QwenImageProvider, QwenVisionProvider, WanVideoProvider
 
 
@@ -173,6 +175,80 @@ def test_qwen_vision_provider_mock_json_response() -> None:
     assert_true(result["result"]["question_text"] == "lim x", "question text should parse")
     assert_true(captured["url"] == "https://example.com/v1/chat/completions", "OpenAI-compatible endpoint should be used")
     assert_true(captured["api_key"] == "test-key", "configured key should be used")
+    image_part = captured["payload"]["messages"][0]["content"][1]
+    assert_true(image_part["image_url"]["url"] == "https://example.com/q.png", "remote image_url should pass through unchanged")
+
+
+def test_qwen_vision_provider_data_url_passes_through() -> None:
+    captured: dict = {}
+
+    def post_json(_url: str, payload: dict, _api_key: str, _timeout: int) -> dict:
+        captured["payload"] = payload
+        return {"choices": [{"message": {"content": '{"summary":"ok"}'}}]}
+
+    data_url = "data:image/png;base64,dGVzdA=="
+    with EnvPatch(DASHSCOPE_API_KEY="test-key", QWEN_API_KEY=None):
+        result = QwenVisionProvider(post_json=post_json).run({"image_base64": data_url})
+
+    assert_true(result["status"] == "success", "data URL should be accepted")
+    image_part = captured["payload"]["messages"][0]["content"][1]
+    assert_true(image_part["image_url"]["url"] == data_url, "data URL should pass through unchanged")
+
+
+def test_qwen_vision_provider_wraps_bare_base64() -> None:
+    captured: dict = {}
+
+    def post_json(_url: str, payload: dict, _api_key: str, _timeout: int) -> dict:
+        captured["payload"] = payload
+        return {"choices": [{"message": {"content": '{"summary":"ok"}'}}]}
+
+    with EnvPatch(DASHSCOPE_API_KEY="test-key", QWEN_API_KEY=None):
+        result = QwenVisionProvider(post_json=post_json).run({"image_base64": "dGVzdA=="})
+
+    assert_true(result["status"] == "success", "bare base64 should be accepted")
+    image_part = captured["payload"]["messages"][0]["content"][1]
+    assert_true(image_part["image_url"]["url"] == "data:image/png;base64,dGVzdA==", "bare base64 should be wrapped")
+
+
+def test_qwen_vision_provider_missing_local_path_is_explicit() -> None:
+    def post_json(_url: str, _payload: dict, _api_key: str, _timeout: int) -> dict:
+        raise AssertionError("provider should not call HTTP when local image is missing")
+
+    with EnvPatch(DASHSCOPE_API_KEY="test-key", QWEN_API_KEY=None):
+        result = QwenVisionProvider(post_json=post_json).run({"image_url": "uploads/multimodal/missing.png"})
+
+    assert_true(result["status"] == "needs_input", "missing local path should be explicit")
+    assert_true("not found" in " ".join(result["warnings"]), "warning should explain missing local file")
+
+
+def test_qwen_vision_provider_uploaded_local_path_becomes_data_url() -> None:
+    captured: dict = {}
+
+    def post_json(_url: str, payload: dict, _api_key: str, _timeout: int) -> dict:
+        captured["payload"] = payload
+        return {"choices": [{"message": {"content": '{"summary":"ok"}'}}]}
+
+    old_root = provider_mod.UPLOAD_ROOT
+    old_project = provider_mod.settings.project_root
+    with tempfile.TemporaryDirectory() as tmp:
+        project = Path(tmp)
+        provider_mod.settings.project_root = project
+        provider_mod.UPLOAD_ROOT = project / "uploads" / "multimodal"
+        local = provider_mod.UPLOAD_ROOT / "s" / "a.png"
+        local.parent.mkdir(parents=True)
+        local.write_bytes(b"\x89PNG\r\n\x1a\n")
+        try:
+            with EnvPatch(DASHSCOPE_API_KEY="test-key", QWEN_API_KEY=None):
+                result = QwenVisionProvider(post_json=post_json).run({
+                    "attachments": [{"local_path": "uploads/multimodal/s/a.png"}],
+                })
+        finally:
+            provider_mod.UPLOAD_ROOT = old_root
+            provider_mod.settings.project_root = old_project
+
+    assert_true(result["status"] == "success", "uploaded local image should be accepted")
+    image_part = captured["payload"]["messages"][0]["content"][1]
+    assert_true(image_part["image_url"]["url"].startswith("data:image/png;base64,"), "uploaded local file should be converted to data URL")
 
 
 def test_qwen_vision_provider_non_json_is_partial_success() -> None:
@@ -285,6 +361,10 @@ if __name__ == "__main__":
     test_unconfigured_vision_provider()
     test_image_url_and_base64_classify_as_image_understanding()
     test_qwen_vision_provider_mock_json_response()
+    test_qwen_vision_provider_data_url_passes_through()
+    test_qwen_vision_provider_wraps_bare_base64()
+    test_qwen_vision_provider_missing_local_path_is_explicit()
+    test_qwen_vision_provider_uploaded_local_path_becomes_data_url()
     test_qwen_vision_provider_non_json_is_partial_success()
     test_image_to_mindmap_from_vision_result()
     test_image_to_flashcards_from_vision_result()
