@@ -386,6 +386,258 @@ def test_chat_image_url_routes_to_multimodal_agent_with_trace() -> None:
     assert_true(data["workflow_trace"]["pipeline_executed"] is True, "multimodal workflow should be marked executed")
 
 
+def test_multimodal_chat_reuses_last_image_context_for_followups() -> None:
+    sid = "product_multimodal_reuse_last_image"
+    conversation_store.reset(sid)
+    contexts: list[dict] = []
+
+    vision = {
+        "image_type": "question_image",
+        "subject": "math",
+        "detected_text": zh(r"\u7b2c1\u9898\uff1a1+1=?\n\u7b2c2\u9898\uff1a2+3=?"),
+        "summary": zh(r"\u4e24\u9053\u52a0\u6cd5\u9898"),
+        "possible_knowledge_points": [zh(r"\u52a0\u6cd5")],
+        "extracted_questions": [
+            {"index": 1, "question_text": zh(r"\u7b2c1\u9898\uff1a1+1=?"), "knowledge_points": [zh(r"\u52a0\u6cd5")], "answer": "2"},
+            {"index": 2, "question_text": zh(r"\u7b2c2\u9898\uff1a2+3=?"), "knowledge_points": [zh(r"\u52a0\u6cd5")], "answer": "5"},
+        ],
+        "confidence": 0.9,
+        "needs_manual_review": False,
+    }
+
+    class FakeMultimodalAgent:
+        def run(self, context: dict) -> dict:
+            contexts.append(context)
+            message = context.get("user_message", "")
+            if zh(r"\u601d\u7ef4\u5bfc\u56fe") in message:
+                return {
+                    "agent": "MultimodalAgent",
+                    "status": "success",
+                    "task_type": "image_to_mindmap",
+                    "tool": "QwenVisionProvider",
+                    "provider": "session_cache",
+                    "result": {
+                        "vision_result": context["last_vision_result"],
+                        "markdown": zh(r"# \u4e24\u9053\u52a0\u6cd5\u9898\n- \u52a0\u6cd5"),
+                        "mindmap_json": {"title": zh(r"\u4e24\u9053\u52a0\u6cd5\u9898"), "children": []},
+                        "needs_manual_review": False,
+                    },
+                    "warnings": [],
+                    "trace": {"cache_hit": True},
+                    "workflow_trace": {"workflow_name": "multimodal_generation", "workflow_status": "success", "pipeline_executed": True, "steps": []},
+                }
+            if zh(r"\u590d\u4e60\u5361\u7247") in message:
+                return {
+                    "agent": "MultimodalAgent",
+                    "status": "success",
+                    "task_type": "image_to_flashcards",
+                    "tool": "QwenVisionProvider",
+                    "provider": "session_cache",
+                    "result": {
+                        "vision_result": context["last_vision_result"],
+                        "cards": [{"front": zh(r"\u52a0\u6cd5\u600e\u4e48\u7b97\uff1f"), "back": "2+3=5", "knowledge_point": zh(r"\u52a0\u6cd5")}],
+                        "needs_manual_review": False,
+                    },
+                    "warnings": [],
+                    "trace": {"cache_hit": True},
+                    "workflow_trace": {"workflow_name": "multimodal_generation", "workflow_status": "success", "pipeline_executed": True, "steps": []},
+                }
+            if zh(r"\u5b8c\u6574\u5b66\u4e60\u8d44\u6e90\u5305") in message:
+                return {
+                    "agent": "MultimodalAgent",
+                    "status": "success",
+                    "task_type": "image_to_resource_bundle",
+                    "tool": "QwenVisionProvider",
+                    "provider": "session_cache",
+                    "result": {
+                        "vision_result": context["last_vision_result"],
+                        "resource_save_candidate": {"title": zh(r"\u52a0\u6cd5\u9898\u8d44\u6e90\u5305"), "review_status": "pending", "saved": False},
+                        "knowledge_candidates": [{"knowledge_point": zh(r"\u52a0\u6cd5"), "review_status": "pending"}],
+                        "needs_manual_review": False,
+                    },
+                    "warnings": [],
+                    "trace": {"cache_hit": True},
+                    "workflow_trace": {"workflow_name": "multimodal_generation", "workflow_status": "success", "pipeline_executed": True, "steps": []},
+                }
+            if zh(r"\u7ee7\u7eed\u8bb2") in message:
+                return {
+                    "agent": "MultimodalAgent",
+                    "status": "success",
+                    "task_type": "explain_image_question",
+                    "tool": "QwenVisionProvider",
+                    "provider": "session_cache",
+                    "result": {
+                        "vision_result": context["last_vision_result"],
+                        "extracted_questions": context["last_extracted_questions"],
+                        "selected_question_indices": [2],
+                        "chat_text": zh(r"\u7b2c2\u9898\u8bb2\u89e3\uff1a2+3=5\u3002"),
+                        "needs_manual_review": False,
+                    },
+                    "warnings": [],
+                    "trace": {"cache_hit": True},
+                    "workflow_trace": {"workflow_name": "multimodal_generation", "workflow_status": "success", "pipeline_executed": True, "steps": []},
+                }
+            return {
+                "agent": "MultimodalAgent",
+                "status": "success",
+                "task_type": "explain_image_question",
+                "tool": "QwenVisionProvider",
+                "provider": "qwen_vl",
+                "result": {
+                    "vision_result": vision,
+                    "extracted_questions": vision["extracted_questions"],
+                    "chat_text": zh(r"\u5df2\u8bc6\u522b\u4e24\u9053\u9898\u5e76\u5b8c\u6210\u8bb2\u89e3\u3002"),
+                    "needs_manual_review": False,
+                },
+                "warnings": [],
+                "trace": {"model": "fake-vl"},
+                "workflow_trace": {"workflow_name": "multimodal_generation", "workflow_status": "success", "pipeline_executed": True, "steps": []},
+            }
+
+    with AttrPatch(
+        product,
+        MultimodalAgent=FakeMultimodalAgent,
+        _classify_intent=lambda _message, _session_id=None: {"action": "none", "intent": "multimodal"},
+    ):
+        first = product.send_chat({
+            "sessionId": sid,
+            "message": zh(r"\u8bf7\u8be6\u7ec6\u8bb2\u89e3\u8fd9\u5f20\u56fe\u7247\u91cc\u7684\u9898\u76ee"),
+            "image_url": "https://example.com/question.png",
+        })
+        second = product.send_chat({"sessionId": sid, "message": zh(r"\u7ee7\u7eed\u8bb2\u7b2c2\u9898")})
+        third = product.send_chat({"sessionId": sid, "message": zh(r"\u6839\u636e\u8fd9\u5f20\u56fe\u751f\u6210\u601d\u7ef4\u5bfc\u56fe")})
+        fourth = product.send_chat({"sessionId": sid, "message": zh(r"\u6839\u636e\u8fd9\u5f20\u56fe\u751f\u6210\u590d\u4e60\u5361\u7247")})
+        fifth = product.send_chat({"sessionId": sid, "message": zh(r"\u6839\u636e\u8fd9\u5f20\u56fe\u751f\u6210\u5b8c\u6574\u5b66\u4e60\u8d44\u6e90\u5305")})
+
+    assert_true(first["data"]["multimodal_result"]["status"] == "success", "first image explanation should succeed")
+    assert_true(first["data"]["workflow_trace"]["selected_image_attachment_id"] == "https://example.com/question.png", "image URL should enter trace as selected image id")
+    assert_true(contexts[1].get("last_vision_result") == vision, "follow-up should receive cached vision result")
+    assert_true(contexts[1].get("last_extracted_questions") == vision["extracted_questions"], "follow-up should receive cached questions")
+    assert_true(not contexts[1].get("image_url"), "follow-up should not require a re-uploaded image URL")
+    assert_true(zh(r"\u7b2c2\u9898\u8bb2\u89e3") in second["data"]["reply"]["content"], "second reply should explain requested question")
+    assert_true(third["data"]["multimodal_result"]["task_type"] == "image_to_mindmap", "third request should generate image mindmap")
+    assert_true(third["data"]["multimodal_result"]["status"] == "success", "cached image mindmap should succeed")
+    assert_true(third["data"]["workflow_trace"]["selected_image_attachment_id"] == "https://example.com/question.png", "cached image id should remain visible in trace")
+    assert_true(fourth["data"]["multimodal_result"]["task_type"] == "image_to_flashcards", "fourth request should generate flashcards")
+    assert_true(fifth["data"]["multimodal_result"]["task_type"] == "image_to_resource_bundle", "fifth request should generate resource bundle")
+
+
+def test_multimodal_image_reference_without_context_is_explicit() -> None:
+    sid = "product_multimodal_missing_image_context"
+    conversation_store.reset(sid)
+
+    class FakeMultimodalAgent:
+        def run(self, context: dict) -> dict:
+            assert_true(not context.get("last_vision_result"), "test should start without image context")
+            return {
+                "agent": "MultimodalAgent",
+                "status": "needs_input",
+                "task_type": "image_to_mindmap",
+                "tool": "QwenVisionProvider",
+                "provider": "qwen_vl",
+                "result": None,
+                "warnings": ["missing image input"],
+                "trace": {},
+                "workflow_trace": {"workflow_name": "multimodal_generation", "workflow_status": "partial", "pipeline_executed": True, "steps": []},
+            }
+
+    with AttrPatch(
+        product,
+        MultimodalAgent=FakeMultimodalAgent,
+        _classify_intent=lambda _message, _session_id=None: {"action": "none", "intent": "multimodal"},
+    ):
+        response = product.send_chat({"sessionId": sid, "message": zh(r"\u6839\u636e\u8fd9\u5f20\u56fe\u751f\u6210\u601d\u7ef4\u5bfc\u56fe")})
+
+    assert_true(response["data"]["multimodal_result"]["status"] == "needs_input", "missing image context should be explicit")
+    assert_true(zh(r"\u6ca1\u6709\u62ff\u5230\u53ef\u590d\u7528\u7684\u56fe\u7247") in response["data"]["reply"]["content"], "reply should ask for an image")
+
+
+def test_plain_text_does_not_reuse_last_image_context() -> None:
+    sid = "product_multimodal_plain_text_no_reuse"
+    conversation_store.reset(sid)
+    conversation_store.set_multimodal_context(sid, {
+        "last_vision_result": {"summary": "old image", "extracted_questions": [{"index": 1, "question_text": "old"}]},
+        "last_extracted_questions": [{"index": 1, "question_text": "old"}],
+    })
+
+    result = product._multimodal_chat_payload(
+        zh(r"\u5e2e\u6211\u751f\u6210\u51e0\u9053\u7ec3\u4e60\u9898"),
+        sid,
+        "",
+        {},
+        {"action": "none", "intent": "practice"},
+    )
+
+    assert_true(result is None, "plain practice request should not enter image multimodal flow")
+
+
+def test_cancelled_image_reference_does_not_reuse_cache() -> None:
+    sid = "product_multimodal_cancel_image_context"
+    conversation_store.reset(sid)
+    conversation_store.set_multimodal_context(sid, {
+        "last_vision_result": {"summary": "old image", "extracted_questions": [{"index": 1, "question_text": "old"}]},
+        "last_extracted_questions": [{"index": 1, "question_text": "old"}],
+    })
+    contexts: list[dict] = []
+
+    class FakeMultimodalAgent:
+        def run(self, context: dict) -> dict:
+            contexts.append(context)
+            return {
+                "agent": "MultimodalAgent",
+                "status": "needs_input",
+                "task_type": "image_to_mindmap",
+                "tool": "QwenVisionProvider",
+                "provider": "qwen_vl",
+                "result": None,
+                "warnings": ["missing image input"],
+                "trace": {},
+                "workflow_trace": {"workflow_name": "multimodal_generation", "workflow_status": "partial", "pipeline_executed": True, "steps": []},
+            }
+
+    with AttrPatch(product, MultimodalAgent=FakeMultimodalAgent):
+        response = product._multimodal_chat_payload(
+            zh(r"\u6839\u636e\u8fd9\u5f20\u56fe\u751f\u6210\u601d\u7ef4\u5bfc\u56fe"),
+            sid,
+            "",
+            {"ignore_image_context": True},
+            {"action": "none", "intent": "multimodal"},
+        )
+
+    assert_true(response is not None, "image reference should still route to multimodal")
+    assert_true(not contexts[0].get("last_vision_result"), "cancelled reference must not reuse cached vision")
+    assert_true(response["workflow_trace"]["image_context_source"] == "missing", "trace should show missing image context")
+    assert_true(response["workflow_trace"]["ignore_image_context"] is True, "trace should record cancelled image context")
+
+
+def test_question_detail_alias_fields_do_not_become_empty_indices() -> None:
+    questions = product._questions_from_vision({
+        "extracted_questions": [
+            {"index": 1, "content": "content field question"},
+            {"index": 2, "title": "title field question"},
+            {"index": 3},
+        ]
+    })
+
+    assert_true(questions[0]["question_text"] == "content field question", "content should map to question text")
+    assert_true(questions[1]["question_text"] == "title field question", "title should map to question text")
+    assert_true(questions[2]["question_text"], "missing stem should still render a useful review placeholder")
+
+
+def test_multimodal_reply_filters_internal_placeholders() -> None:
+    reply = product._multimodal_reply({
+        "status": "success",
+        "task_type": "explain_image_question",
+        "result": {
+            "display_text": "See extracted_questions for per-question answers",
+            "chat_text": zh(r"\u7b2c1\u9898\uff1a\u6309\u9898\u5e72\u6761\u4ef6\u9010\u6b65\u5206\u6790\u3002"),
+        },
+    })
+
+    assert_true("See extracted_questions" not in reply, "internal placeholder must not own final reply")
+    assert_true(zh(r"\u7b2c1\u9898") in reply, "clean chat text should be used")
+
+
 if __name__ == "__main__":
     test_target_only_explicit_generation_runs_pipeline()
     test_calculus_reply_uses_real_stages_and_time()
@@ -396,4 +648,10 @@ if __name__ == "__main__":
     test_chat_stream_error_still_sends_done()
     test_multimodal_mindmap_chat_response()
     test_chat_image_url_routes_to_multimodal_agent_with_trace()
+    test_multimodal_chat_reuses_last_image_context_for_followups()
+    test_multimodal_image_reference_without_context_is_explicit()
+    test_plain_text_does_not_reuse_last_image_context()
+    test_cancelled_image_reference_does_not_reuse_cache()
+    test_question_detail_alias_fields_do_not_become_empty_indices()
+    test_multimodal_reply_filters_internal_placeholders()
     print("PASS product_chat_boundary_test")

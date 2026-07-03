@@ -1,10 +1,13 @@
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.agents.multimodal_agent import MultimodalAgent
+from app.config import load_backend_env
+from app.services import multimodal_provider as provider_mod
 from app.services.multimodal_provider import QwenImageProvider, QwenVisionProvider, WanVideoProvider
 
 
@@ -55,6 +58,14 @@ class FailingMindmapLLM:
         return False
 
 
+class SparseMindmapLLM:
+    def chat(self, messages: list[dict[str, str]], **kwargs) -> str:
+        return zh(r"# \u4e0a\u5b66\u671f\u5fae\u79ef\u5206\u4e60\u9898\n- \u5355\u9879\u9009\u62e9\u9898\n  - \u7b2c2\u9898\n    - \u5947\u51fd\u6570")
+
+    def is_available(self) -> bool:
+        return True
+
+
 class FakeVisionTool:
     provider = "qwen_vl"
 
@@ -96,6 +107,74 @@ def vision_result(*, question: str = "") -> dict:
         "confidence": 0.86,
         "needs_manual_review": False,
     }
+
+
+def extracted_question_vision() -> dict:
+    result = vision_result(question=zh(r"\u7b2c1\u9898\uff1a1+1=?\n\u7b2c2\u9898\uff1a2+3=?"))
+    result["extracted_questions"] = [
+        {
+            "index": 1,
+            "question_text": zh(r"\u7b2c1\u9898\uff1a1+1=?"),
+            "knowledge_points": [zh(r"\u52a0\u6cd5")],
+            "answer": "2",
+            "explanation_steps": [zh(r"\u628a 1 \u548c 1 \u76f8\u52a0")],
+            "common_mistakes": [],
+        },
+        {
+            "index": 2,
+            "question_text": zh(r"\u7b2c2\u9898\uff1a2+3=?"),
+            "knowledge_points": [zh(r"\u52a0\u6cd5")],
+            "answer": "5",
+            "explanation_steps": [zh(r"\u628a 2 \u548c 3 \u76f8\u52a0")],
+            "common_mistakes": [zh(r"\u628a 2+3 \u7b97\u6210 4")],
+        },
+    ]
+    return result
+
+
+def calculus_page_vision() -> dict:
+    points = [
+        zh(r"\u51fd\u6570\u5b9a\u4e49\u57df"),
+        zh(r"\u5947\u5076\u51fd\u6570"),
+        zh(r"\u53cd\u51fd\u6570"),
+        zh(r"\u590d\u5408\u51fd\u6570"),
+        zh(r"\u5206\u6bb5\u51fd\u6570"),
+        zh(r"\u6570\u5217\u6781\u9650"),
+        zh(r"\u6709\u754c\u6027\u4e0e\u6536\u655b\u6027"),
+        zh(r"\u65e0\u7a77\u5c0f\u6bd4\u8f83"),
+        zh(r"\u7b49\u4ef7\u65e0\u7a77\u5c0f"),
+        zh(r"\u6781\u9650\u8ba1\u7b97"),
+    ]
+    questions = []
+    prefix = zh(r"\u7b2c")
+    suffix = zh(r"\u9898\uff1a")
+    for index, point in enumerate(points, start=1):
+        questions.append({
+            "index": index,
+            "question_text": f"{prefix}{index}{suffix}{point}",
+            "knowledge_points": [point],
+            "answer": zh(r"\u5f85\u6839\u636e\u56fe\u7247\u7ed3\u679c\u8bb2\u89e3"),
+            "common_mistakes": [zh(r"\u5ffd\u7565\u6761\u4ef6")],
+        })
+    return {
+        "image_type": "question_image",
+        "subject": zh(r"\u9ad8\u7b49\u6570\u5b66"),
+        "summary": zh(r"\u4e0a\u5b66\u671f\u5fae\u79ef\u5206\u4e60\u9898\u6574\u9875"),
+        "detected_text": " ".join(points),
+        "possible_knowledge_points": points,
+        "formulas": ["f(-x)=f(x)", "lim x->0 sinx/x=1"],
+        "extracted_questions": questions,
+        "confidence": 0.91,
+        "needs_manual_review": False,
+    }
+
+
+def markdown_nodes(markdown: str) -> int:
+    return len([line for line in markdown.splitlines() if line.lstrip().startswith("-")])
+
+
+def markdown_top_level(markdown: str) -> int:
+    return len([line for line in markdown.splitlines() if line.startswith("- ")])
 
 
 def test_mindmap_from_learning_path() -> None:
@@ -150,6 +229,33 @@ def test_unconfigured_vision_provider() -> None:
     assert_true("fake" not in str(result).lower(), "must not return fake recognition text")
 
 
+def test_backend_env_loader_populates_qwen_env_without_override() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        env_path = Path(tmp) / ".env"
+        env_path.write_text(
+            "\n".join([
+                "DASHSCOPE_API_KEY=from-file",
+                "QWEN_BASE_URL=https://example.com/v1",
+                "QWEN_VL_MODEL=qwen3-vl-plus",
+                "QWEN_IMAGE_ENDPOINT=https://example.com/images",
+            ]),
+            encoding="utf-8",
+        )
+        with EnvPatch(
+            DASHSCOPE_API_KEY=None,
+            QWEN_BASE_URL="https://system.example/v1",
+            QWEN_VL_MODEL=None,
+            QWEN_IMAGE_ENDPOINT=None,
+        ):
+            assert_true(load_backend_env(env_path) is True, "backend env should load")
+            assert_true(os.environ["DASHSCOPE_API_KEY"] == "from-file", "key should load from env file")
+            assert_true(os.environ["QWEN_BASE_URL"] == "https://system.example/v1", "existing env must not be overridden")
+            assert_true(os.environ["QWEN_VL_MODEL"] == "qwen3-vl-plus", "model should load from env file")
+            assert_true(os.environ["QWEN_IMAGE_ENDPOINT"] == "https://example.com/images", "image endpoint should load")
+
+    assert_true(load_backend_env(Path(tempfile.gettempdir()) / "missing-eduagent.env") is False, "missing env should not crash")
+
+
 def test_image_url_and_base64_classify_as_image_understanding() -> None:
     agent = MultimodalAgent()
     task_type, _ = agent.classify_task(zh(r"\u8bc6\u522b\u8fd9\u5f20\u56fe\u7247"), [], {"image_url": "https://example.com/a.png"})
@@ -158,21 +264,141 @@ def test_image_url_and_base64_classify_as_image_understanding() -> None:
     assert_true(task_type == "image_understanding", "image_base64 should enter vision task")
 
 
+def test_image_task_classifier_covers_learning_workflow() -> None:
+    agent = MultimodalAgent()
+    cases = [
+        (zh(r"\u5206\u6790\u8fd9\u5f20\u9519\u9898\u56fe"), "image_wrong_question_analysis"),
+        (zh(r"\u628a\u8fd9\u9875\u7b14\u8bb0\u6574\u7406\u6210\u603b\u7ed3"), "image_note_summary"),
+        (zh(r"\u6839\u636e\u8fd9\u5f20\u56fe\u751f\u6210\u4e00\u4e2a\u5b66\u4e60\u8ba1\u5212"), "image_to_learning_plan"),
+        (zh(r"\u6839\u636e\u8fd9\u9053\u9898\u518d\u51fa\u51e0\u9053\u53d8\u5f0f\u9898"), "image_to_variant_questions"),
+        (zh(r"\u4e00\u952e\u6574\u7406\u8fd9\u5f20\u56fe\u6210\u5b66\u4e60\u8d44\u6e90\u5305"), "image_to_resource_bundle"),
+    ]
+    for message, expected in cases:
+        task_type, _ = agent.classify_task(message, [{"image_url": "https://example.com/a.png"}], {})
+        assert_true(task_type == expected, f"{message} should classify as {expected}")
+
+
+def test_qwen_vision_provider_task_specific_json_response() -> None:
+    payloads: dict[str, dict] = {}
+
+    responses = {
+        "explain_image_question": '{"question_text":"What is 1+1?","answer":"2","explanation_steps":["add one and one"],"knowledge_points":["addition"],"confidence":0.9,"needs_manual_review":false}',
+        "image_wrong_question_analysis": '{"question_text":"What is 1+1?","mistake_type":"calculation","mistake_reason":"added incorrectly","weak_knowledge_points":["addition"],"remediation_plan":["practice addition"],"confidence":0.88,"needs_manual_review":false}',
+        "image_note_summary": '{"title":"Limit notes","summary":"Notes about limits","key_points":["limit definition"],"formulas":["lim"],"definitions":["limit"],"pitfalls":["missing condition"],"next_actions":["review examples"],"confidence":0.9,"needs_manual_review":false}',
+        "image_to_learning_plan": '{"diagnosed_level":"beginner","weak_points":["limit"],"recommended_path":[{"stage_title":"Limits","objective":"master basics","knowledge_points":["limit"],"estimated_minutes":30,"practice_suggestions":["do 5 questions"]}],"confidence":0.9,"needs_manual_review":false}',
+        "image_to_variant_questions": '{"source_question_summary":"addition","target_knowledge_points":["addition"],"variants":[{"question":"1+2=?","answer":"3","explanation":"add","difficulty":"easy","variation_type":"number_change"},{"question":"2+2=?","answer":"4","explanation":"add","difficulty":"easy","variation_type":"number_change"},{"question":"3+2=?","answer":"5","explanation":"add","difficulty":"easy","variation_type":"number_change"}],"confidence":0.9,"needs_manual_review":false}',
+        "image_to_resource_bundle": '{"understanding":{"summary":"addition image"},"next_actions":["review"],"knowledge_candidates":[{"knowledge_point":"addition","confidence":0.8}],"confidence":0.9,"needs_manual_review":false}',
+    }
+
+    def post_json(_url: str, payload: dict, _api_key: str, _timeout: int) -> dict:
+        prompt = payload["messages"][0]["content"][0]["text"]
+        task = prompt.split("task_type=", 1)[1].split("。", 1)[0]
+        payloads[task] = payload
+        return {"choices": [{"message": {"content": responses[task]}}]}
+
+    results: dict[str, dict] = {}
+    with EnvPatch(DASHSCOPE_API_KEY="test-key", QWEN_API_KEY=None):
+        for task_type in responses:
+            result = QwenVisionProvider(post_json=post_json).run({"task_type": task_type, "image_url": "https://example.com/q.png"})
+            results[task_type] = result
+            assert_true(result["status"] == "success", f"{task_type} should succeed")
+            assert_true(result["result"], f"{task_type} should return result")
+
+    assert_true(payloads["explain_image_question"]["messages"][0]["content"][1]["image_url"]["url"] == "https://example.com/q.png", "image URL should stay in payload")
+    bundle = results["image_to_resource_bundle"]
+    assert_true(bundle["result"]["resource_save_candidate"]["review_status"] == "pending", "resource candidate should be pending")
+    assert_true(bundle["result"]["knowledge_candidates"][0]["review_status"] == "pending", "knowledge candidate should be pending")
+
+
 def test_qwen_vision_provider_mock_json_response() -> None:
     captured: dict = {}
 
     def post_json(url: str, payload: dict, api_key: str, timeout: int) -> dict:
         captured.update({"url": url, "payload": payload, "api_key": api_key, "timeout": timeout})
-        return {"choices": [{"message": {"content": '{"image_type":"question_image","subject":"math","detected_text":"lim x","question_text":"lim x","possible_knowledge_points":["limit"],"summary":"limit question","confidence":0.9,"needs_manual_review":false}'}}]}
+        return {"choices": [{"message": {"content": '{"image_type":"question_image","subject":"math","detected_text":"Find the limit of the displayed expression","question_text":"Find the limit of the displayed expression","possible_knowledge_points":["limit"],"summary":"limit question","confidence":0.9,"needs_manual_review":false}'}}]}
 
     with EnvPatch(DASHSCOPE_API_KEY="test-key", QWEN_API_KEY=None, QWEN_BASE_URL="https://example.com/v1", QWEN_VL_MODEL="qwen-test"):
         result = QwenVisionProvider(post_json=post_json).run({"image_url": "https://example.com/q.png"})
 
     assert_true(result["status"] == "success", "mock JSON should parse")
     assert_true(result["provider"] == "qwen_vl", "provider should be qwen_vl")
-    assert_true(result["result"]["question_text"] == "lim x", "question text should parse")
+    assert_true(result["result"]["question_text"].startswith("Find the limit"), "question text should parse")
     assert_true(captured["url"] == "https://example.com/v1/chat/completions", "OpenAI-compatible endpoint should be used")
     assert_true(captured["api_key"] == "test-key", "configured key should be used")
+    image_part = captured["payload"]["messages"][0]["content"][1]
+    assert_true(image_part["image_url"]["url"] == "https://example.com/q.png", "remote image_url should pass through unchanged")
+
+
+def test_qwen_vision_provider_data_url_passes_through() -> None:
+    captured: dict = {}
+
+    def post_json(_url: str, payload: dict, _api_key: str, _timeout: int) -> dict:
+        captured["payload"] = payload
+        return {"choices": [{"message": {"content": '{"detected_text":"clear image text for testing","summary":"ok","needs_manual_review":false}'}}]}
+
+    data_url = "data:image/png;base64,dGVzdA=="
+    with EnvPatch(DASHSCOPE_API_KEY="test-key", QWEN_API_KEY=None):
+        result = QwenVisionProvider(post_json=post_json).run({"image_base64": data_url})
+
+    assert_true(result["status"] == "success", "data URL should be accepted")
+    image_part = captured["payload"]["messages"][0]["content"][1]
+    assert_true(image_part["image_url"]["url"] == data_url, "data URL should pass through unchanged")
+
+
+def test_qwen_vision_provider_wraps_bare_base64() -> None:
+    captured: dict = {}
+
+    def post_json(_url: str, payload: dict, _api_key: str, _timeout: int) -> dict:
+        captured["payload"] = payload
+        return {"choices": [{"message": {"content": '{"detected_text":"clear image text for testing","summary":"ok","needs_manual_review":false}'}}]}
+
+    with EnvPatch(DASHSCOPE_API_KEY="test-key", QWEN_API_KEY=None):
+        result = QwenVisionProvider(post_json=post_json).run({"image_base64": "dGVzdA=="})
+
+    assert_true(result["status"] == "success", "bare base64 should be accepted")
+    image_part = captured["payload"]["messages"][0]["content"][1]
+    assert_true(image_part["image_url"]["url"] == "data:image/png;base64,dGVzdA==", "bare base64 should be wrapped")
+
+
+def test_qwen_vision_provider_missing_local_path_is_explicit() -> None:
+    def post_json(_url: str, _payload: dict, _api_key: str, _timeout: int) -> dict:
+        raise AssertionError("provider should not call HTTP when local image is missing")
+
+    with EnvPatch(DASHSCOPE_API_KEY="test-key", QWEN_API_KEY=None):
+        result = QwenVisionProvider(post_json=post_json).run({"image_url": "uploads/multimodal/missing.png"})
+
+    assert_true(result["status"] == "needs_input", "missing local path should be explicit")
+    assert_true("not found" in " ".join(result["warnings"]), "warning should explain missing local file")
+
+
+def test_qwen_vision_provider_uploaded_local_path_becomes_data_url() -> None:
+    captured: dict = {}
+
+    def post_json(_url: str, payload: dict, _api_key: str, _timeout: int) -> dict:
+        captured["payload"] = payload
+        return {"choices": [{"message": {"content": '{"detected_text":"clear image text for testing","summary":"ok","needs_manual_review":false}'}}]}
+
+    old_root = provider_mod.UPLOAD_ROOT
+    old_project = provider_mod.settings.project_root
+    with tempfile.TemporaryDirectory() as tmp:
+        project = Path(tmp)
+        provider_mod.settings.project_root = project
+        provider_mod.UPLOAD_ROOT = project / "uploads" / "multimodal"
+        local = provider_mod.UPLOAD_ROOT / "s" / "a.png"
+        local.parent.mkdir(parents=True)
+        local.write_bytes(b"\x89PNG\r\n\x1a\n")
+        try:
+            with EnvPatch(DASHSCOPE_API_KEY="test-key", QWEN_API_KEY=None):
+                result = QwenVisionProvider(post_json=post_json).run({
+                    "attachments": [{"local_path": "uploads/multimodal/s/a.png"}],
+                })
+        finally:
+            provider_mod.UPLOAD_ROOT = old_root
+            provider_mod.settings.project_root = old_project
+
+    assert_true(result["status"] == "success", "uploaded local image should be accepted")
+    image_part = captured["payload"]["messages"][0]["content"][1]
+    assert_true(image_part["image_url"]["url"].startswith("data:image/png;base64,"), "uploaded local file should be converted to data URL")
 
 
 def test_qwen_vision_provider_non_json_is_partial_success() -> None:
@@ -187,8 +413,24 @@ def test_qwen_vision_provider_non_json_is_partial_success() -> None:
     assert_true(result["result"]["summary"] == "This image contains derivative notes.", "summary should fall back to raw text")
 
 
+def test_qwen_vision_provider_review_metadata_is_actionable() -> None:
+    def post_json(_url: str, _payload: dict, _api_key: str, _timeout: int) -> dict:
+        return {"choices": [{"message": {"content": '{"detected_text":"第12题公式不清晰","summary":"错题图","confidence":0.4,"needs_manual_review":true,"review_reasons":["第12题公式 OCR 可能不完整"],"uncertain_question_indices":[12],"uncertain_fields":["cards[11].back","formula_text"]}'}}]}
+
+    with EnvPatch(DASHSCOPE_API_KEY="test-key", QWEN_API_KEY=None):
+        result = QwenVisionProvider(post_json=post_json).run({"image_base64": "dGVzdA=="})
+
+    data = result["result"]
+    assert_true(result["status"] == "needs_manual_review", "uncertain image should be marked for review")
+    assert_true(data["review_reasons"], "review reasons should be present")
+    assert_true(data["uncertain_question_indices"] == [12], "uncertain question index should be present")
+    assert_true("formula_text" in data["uncertain_fields"], "uncertain fields should be present")
+    assert_true(data["review_level"] in {"medium", "high"}, "review level should be actionable")
+    assert_true("can_continue" in data, "can_continue should be present")
+
+
 def test_image_to_mindmap_from_vision_result() -> None:
-    agent = MultimodalAgent()
+    agent = MultimodalAgent(llm_client=FailingMindmapLLM())
     agent.registry.register_tool("QwenVisionProvider", FakeVisionTool(vision_result()))
     result = agent.run({
         "user_message": zh(r"\u6839\u636e\u8fd9\u5f20\u56fe\u751f\u6210\u601d\u7ef4\u5bfc\u56fe"),
@@ -201,6 +443,93 @@ def test_image_to_mindmap_from_vision_result() -> None:
     assert_true(result["workflow_trace"]["steps"][1]["step"] == "vision_understanding", "trace should include vision step")
 
 
+def test_cached_image_context_can_continue_specific_question() -> None:
+    result = MultimodalAgent(llm_client=FailingMindmapLLM()).run({
+        "user_message": zh(r"\u7ee7\u7eed\u8bb2\u7b2c2\u9898"),
+        "last_vision_result": extracted_question_vision(),
+        "last_extracted_questions": extracted_question_vision()["extracted_questions"],
+    })
+
+    assert_true(result["task_type"] == "explain_image_question", "follow-up question should route to explanation")
+    assert_true(result["provider"] == "session_cache", "follow-up should reuse cached vision result")
+    assert_true(result["status"] == "success", "cached question explanation should succeed")
+    assert_true(result["result"]["selected_question_indices"] == [2], "requested question index should be selected")
+    assert_true(zh(r"\u7b2c2\u9898") in result["result"]["chat_text"], "chat text should explain the requested question")
+    assert_true(result["result"]["display_text"] == result["result"]["chat_text"], "first-class display text should be present")
+
+
+def test_explain_image_question_filters_internal_placeholders() -> None:
+    vision = extracted_question_vision()
+    vision["extracted_questions"][0]["answer"] = "See extracted_questions for per-question answers"
+    result = MultimodalAgent(llm_client=FailingMindmapLLM()).run({
+        "user_message": zh(r"\u8bf7\u8be6\u7ec6\u8bb2\u89e3\u8fd9\u5f20\u56fe\u7247\u91cc\u7684\u9898\u76ee"),
+        "last_vision_result": vision,
+        "last_extracted_questions": vision["extracted_questions"],
+    })
+
+    visible = str(result["result"].get("display_text") or result["result"].get("chat_text") or "")
+    assert_true("See extracted_questions" not in visible, "internal extraction placeholder must not be user-visible")
+    assert_true("per-question answers" not in visible, "internal answer placeholder must not be user-visible")
+
+
+def test_cached_image_context_can_generate_mindmap_without_new_upload() -> None:
+    result = MultimodalAgent(llm_client=FailingMindmapLLM()).run({
+        "user_message": zh(r"\u6839\u636e\u8fd9\u5f20\u56fe\u751f\u6210\u601d\u7ef4\u5bfc\u56fe"),
+        "last_vision_result": extracted_question_vision(),
+        "last_extracted_questions": extracted_question_vision()["extracted_questions"],
+    })
+
+    assert_true(result["task_type"] == "image_to_mindmap", "cached image mindmap task should be selected")
+    assert_true(result["provider"] == "session_cache", "mindmap should reuse cached vision result")
+    assert_true(result["status"] == "success", "cached image mindmap should succeed")
+    assert_true("markdown" in result["result"], "mindmap markdown should be available")
+    assert_true(zh(r"\u52a0\u6cd5") in result["result"]["markdown"], "cached knowledge point should enter mindmap")
+
+
+def test_image_mindmap_sparse_llm_falls_back_to_full_vision_result() -> None:
+    vision = calculus_page_vision()
+    result = MultimodalAgent(llm_client=SparseMindmapLLM()).run({
+        "user_message": zh(r"\u6839\u636e\u8fd9\u5f20\u56fe\u751f\u6210\u601d\u7ef4\u5bfc\u56fe"),
+        "last_vision_result": vision,
+        "last_extracted_questions": vision["extracted_questions"],
+        "selected_image_attachment_id": "upload/calculus-page.png",
+    })
+
+    markdown = result["result"]["markdown"]
+    assert_true(result["task_type"] == "image_to_mindmap", "image mindmap task should be selected")
+    assert_true(result["provider"] == "session_cache", "mindmap should reuse cached vision result")
+    assert_true(result["status"] == "success", "sparse LLM output should still produce a usable mindmap")
+    assert_true(markdown_top_level(markdown) >= 6, "fallback mindmap should have at least six top-level nodes")
+    assert_true(markdown_nodes(markdown) >= 20, "fallback mindmap should have at least twenty nodes")
+    for label in [
+        zh(r"\u51fd\u6570\u5b9a\u4e49\u57df"),
+        zh(r"\u5947\u5076\u51fd\u6570"),
+        zh(r"\u53cd\u51fd\u6570"),
+        zh(r"\u5206\u6bb5\u51fd\u6570"),
+        zh(r"\u6570\u5217\u6781\u9650"),
+        zh(r"\u65e0\u7a77\u5c0f\u6bd4\u8f83"),
+    ]:
+        assert_true(label in markdown, f"{label} should come from full vision evidence")
+    assert_true(len(result["result"]["mindmap_generation_context"]["questions"]) >= 10, "full questions should be available to mindmap generation")
+    assert_true(result["trace"]["tool_trace"]["mindmap_generation_context_source"] == "full_vision_result", "tool trace should record full vision source")
+    assert_true(result["workflow_trace"]["mindmap_generation_context_source"] == "full_vision_result", "workflow trace should record full vision source")
+    assert_true(result["workflow_trace"]["selected_image_attachment_id"] == "upload/calculus-page.png", "workflow trace should keep selected image id")
+
+
+def test_cached_image_context_can_generate_flashcards_without_new_upload() -> None:
+    result = MultimodalAgent(llm_client=FailingMindmapLLM()).run({
+        "user_message": zh(r"\u6839\u636e\u8fd9\u5f20\u56fe\u751f\u6210\u590d\u4e60\u5361\u7247"),
+        "last_vision_result": extracted_question_vision(),
+        "last_extracted_questions": extracted_question_vision()["extracted_questions"],
+    })
+
+    assert_true(result["task_type"] == "image_to_flashcards", "cached image flashcard task should be selected")
+    assert_true(result["provider"] == "session_cache", "flashcards should reuse cached vision result")
+    assert_true(result["status"] == "success", "cached image flashcards should succeed")
+    assert_true(len(result["result"]["cards"]) >= 6, "flashcards should be enough for a multi-question image")
+    assert_true(result["workflow_trace"]["vision_context_reused"] is True, "trace should show reused image context")
+
+
 def test_image_to_flashcards_from_vision_result() -> None:
     agent = MultimodalAgent()
     agent.registry.register_tool("QwenVisionProvider", FakeVisionTool(vision_result()))
@@ -210,7 +539,7 @@ def test_image_to_flashcards_from_vision_result() -> None:
     })
     assert_true(result["task_type"] == "image_to_flashcards", "flashcard task should be selected")
     assert_true(result["status"] == "success", "flashcards should succeed from vision result")
-    assert_true(len(result["result"]["cards"]) >= 3, "should generate at least three cards")
+    assert_true(len(result["result"]["cards"]) >= 6, "should generate at least six cards")
 
 
 def test_explain_image_question_needs_manual_review_when_question_missing() -> None:
@@ -283,10 +612,23 @@ if __name__ == "__main__":
     test_mindmap_llm_failure_falls_back_to_local_result()
     test_mindmap_without_context_does_not_invent_points()
     test_unconfigured_vision_provider()
+    test_backend_env_loader_populates_qwen_env_without_override()
     test_image_url_and_base64_classify_as_image_understanding()
+    test_image_task_classifier_covers_learning_workflow()
+    test_qwen_vision_provider_task_specific_json_response()
     test_qwen_vision_provider_mock_json_response()
+    test_qwen_vision_provider_data_url_passes_through()
+    test_qwen_vision_provider_wraps_bare_base64()
+    test_qwen_vision_provider_missing_local_path_is_explicit()
+    test_qwen_vision_provider_uploaded_local_path_becomes_data_url()
     test_qwen_vision_provider_non_json_is_partial_success()
+    test_qwen_vision_provider_review_metadata_is_actionable()
     test_image_to_mindmap_from_vision_result()
+    test_cached_image_context_can_continue_specific_question()
+    test_explain_image_question_filters_internal_placeholders()
+    test_cached_image_context_can_generate_mindmap_without_new_upload()
+    test_image_mindmap_sparse_llm_falls_back_to_full_vision_result()
+    test_cached_image_context_can_generate_flashcards_without_new_upload()
     test_image_to_flashcards_from_vision_result()
     test_explain_image_question_needs_manual_review_when_question_missing()
     test_unconfigured_image_provider_no_fake_url()

@@ -1,7 +1,34 @@
 from pathlib import Path
+import logging
+import os
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
+
+
+def load_backend_env(env_path: Path | None = None) -> bool:
+    path = env_path or (Path(__file__).resolve().parents[1] / ".env")
+    if not path.exists():
+        logger.info("Backend env file missing: %s", path)
+        return False
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line.removeprefix("export ").strip()
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key:
+            os.environ.setdefault(key, value)
+    logger.info("Backend env file loaded: %s", path)
+    return True
+
+
+load_backend_env()
 
 
 class Settings(BaseSettings):

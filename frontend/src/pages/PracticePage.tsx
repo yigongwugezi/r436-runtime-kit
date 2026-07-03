@@ -221,9 +221,9 @@ export default function PracticePage() {
 
   if (view === 'quiz') {
     return (
-      <div className="p-6 h-full flex flex-col animate-fade-in">
+      <div className="p-6 h-full flex flex-col animate-fade-in max-h-screen">
         <button onClick={() => setView('home')} className="text-sm text-surface-500 hover:text-surface-700 mb-4 flex-shrink-0"><ChevronLeft className="w-4 h-4 inline" /> 返回</button>
-        <div className="flex gap-4 flex-1 min-h-0">
+        <div className="flex gap-4 flex-1 min-h-0 overflow-hidden">
           {/* 左侧题号列表 */}
           <div className="w-52 flex-shrink-0 bg-white rounded-2xl shadow-soft p-3 overflow-y-auto">
             <p className="text-[10px] text-surface-400 uppercase tracking-wider mb-2 font-semibold">题目列表</p>
@@ -245,8 +245,8 @@ export default function PracticePage() {
           </div>
 
           {/* 右侧题目区 */}
-          <div className="flex-1 flex flex-col min-w-0">
-            <div className="flex items-center justify-between mb-3">
+          <div className="flex-1 flex flex-col min-w-0 min-h-0">
+            <div className="flex items-center justify-between mb-3 flex-shrink-0">
               <div className="flex items-center gap-3">
                 <span className="text-lg font-bold text-primary-600">#{currentIdx + 1}</span>
                 <span className="text-sm text-surface-400">/ {questions.length} 题</span>
@@ -262,12 +262,12 @@ export default function PracticePage() {
                 )}
               </div>
             </div>
-            <div className="flex items-center gap-2 mb-6">
+            <div className="flex items-center gap-2 mb-6 flex-shrink-0">
               <div className="flex-1 h-2 bg-surface-100 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-primary-500 to-accent-500 rounded-full transition-all duration-500" style={{ width: `${questions.length>0?((currentIdx+1)/questions.length)*100:0}%` }} /></div>
               <span className="text-xs text-surface-400 tabular-nums w-10 text-right">{questions.length>0?Math.round(((currentIdx+1)/questions.length)*100):0}%</span>
             </div>
 
-            <div className="flex-1 overflow-y-auto">
+            <div className="flex-1 overflow-y-auto min-h-0 pb-2">
               <div className="bg-white rounded-2xl shadow-soft p-8 mb-6">
                 <div className="text-xl font-semibold text-surface-800 mb-2 leading-relaxed"><Markdown content={currentQ?.stem || ''} /></div>
                 {currentQ?.knowledge_points && currentQ.knowledge_points.length > 0 && (
@@ -309,11 +309,12 @@ export default function PracticePage() {
               )}
             </div>
 
-            <div className="flex items-center justify-between flex-shrink-0 pt-2 border-t border-surface-100">
-              <button onClick={() => currentIdx > 0 && setCurrentIdx(i => i - 1)} disabled={currentIdx === 0} className="flex items-center gap-1 px-4 py-2 text-sm text-surface-500 disabled:opacity-30"><ChevronLeft className="w-4 h-4" />上一题</button>
-              {!grade && answer && <button onClick={handleSubmit} disabled={grading} className="px-6 py-2 bg-primary-500 text-white rounded-xl text-sm font-medium">{grading ? '批改中…' : '提交批改'}</button>}
-              {grade && <button onClick={() => setGrades(g => { const n = { ...g }; delete n[currentQ.question_id]; return n; })} className="px-3 py-2 text-xs bg-surface-100 rounded-lg text-surface-500 hover:bg-surface-200"><RefreshCw className="w-3 h-3 inline mr-1" />重做</button>}
-              <button onClick={() => currentIdx < questions.length - 1 && setCurrentIdx(i => i + 1)} disabled={currentIdx >= questions.length - 1} className="flex items-center gap-1 px-4 py-2 text-sm text-surface-500 disabled:opacity-30">下一题<ChevronRight className="w-4 h-4" /></button>
+            <div className="sticky bottom-0 flex items-center justify-between flex-shrink-0 pt-3 pb-1 px-1 border-t border-surface-200 bg-white/95 backdrop-blur-sm rounded-b-2xl z-10">
+              <button onClick={() => currentIdx > 0 && setCurrentIdx(i => i - 1)} disabled={currentIdx === 0} className="flex items-center gap-1 px-4 py-2.5 text-sm text-surface-500 disabled:opacity-30 hover:bg-surface-50 rounded-xl transition-colors"><ChevronLeft className="w-4 h-4" />上一题</button>
+              {!grade && answer && <button onClick={handleSubmit} disabled={grading} className="px-8 py-2.5 bg-primary-500 text-white rounded-xl text-sm font-medium hover:bg-primary-600 transition-colors shadow-sm">{grading ? '批改中…' : '提交批改'}</button>}
+              {!grade && !answer && <span className="px-8 py-2.5 text-xs text-surface-400">输入答案后提交</span>}
+              {grade && <button onClick={() => { setGrades(g => { const n = { ...g }; delete n[currentQ.question_id]; return n; }); setAnswers(a => { const n = { ...a }; delete n[currentQ.question_id]; return n; }); }} className="px-4 py-2.5 text-sm bg-surface-100 rounded-xl text-surface-500 hover:bg-surface-200 transition-colors"><RefreshCw className="w-3 h-3 inline mr-1" />重做</button>}
+              <button onClick={() => currentIdx < questions.length - 1 && setCurrentIdx(i => i + 1)} disabled={currentIdx >= questions.length - 1} className="flex items-center gap-1 px-4 py-2.5 text-sm text-surface-500 disabled:opacity-30 hover:bg-surface-50 rounded-xl transition-colors">下一题<ChevronRight className="w-4 h-4" /></button>
             </div>
           </div>
         </div>

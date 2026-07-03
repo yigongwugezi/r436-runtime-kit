@@ -1,5 +1,5 @@
 import { useCallback, useRef } from 'react';
-import { useChatStore } from '../store/chatStore';
+import { imageAttachmentKey, useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
 import { streamRequest } from '../api/client';
 import { sendMessage } from '../api/chat';
@@ -9,6 +9,8 @@ import { createLogger } from '../utils/logger';
 import { runtimeStorageKeys, writeStorageJson, writeStorageItem } from '../utils/storageKeys';
 
 const log = createLogger('StreamChat');
+
+const IMAGE_REFERENCE_RE = /(这张图|这张图片|上面这张图|刚才那张图|图中|图片里|这道题|这页笔记|题图|错题图|继续讲第\s*[0-9一二两三四五六七八九十]+\s*题)/;
 
 export function useStreamChat() {
   const {
@@ -24,16 +26,26 @@ export function useStreamChat() {
   const userAbortedRef = useRef(false);  // distinguish user stop-click from page-unload abort
 
   const send = useCallback(
-    async (content: string, attachments: ChatAttachment[] = []) => {
+    async (content: string, attachments: ChatAttachment[] = [], options: { ignoreImageContext?: boolean } = {}) => {
       if (isStreaming || (!content.trim() && attachments.length === 0)) return;
       const text = content.trim() || '识别这张图片';
+      const store = useChatStore.getState();
+      const ignoreImageContext = options.ignoreImageContext === true;
+      const selectedImageAttachment = store.imageAttachmentHistory.find(
+        (item) => imageAttachmentKey(item) === store.selectedImageAttachmentId,
+      ) || store.lastImageAttachment;
+      const requestAttachments =
+        !ignoreImageContext && attachments.length === 0 && selectedImageAttachment && IMAGE_REFERENCE_RE.test(text)
+          ? [{ ...selectedImageAttachment, reused_from_last: true }]
+          : attachments;
+      if (attachments[0]) store.addImageAttachment(attachments[0]);
 
       const userMsg: ChatMessage = {
         id: uid(),
         role: 'user',
         content: text,
         timestamp: Date.now(),
-        attachments,
+        attachments: requestAttachments,
       };
       addMessage(userMsg);
 
@@ -68,7 +80,8 @@ export function useStreamChat() {
           message: text,
           sessionId: useChatStore.getState().currentSessionId,
           subjectId: useSubjectStore.getState().activeSubject?.id,
-          attachments,
+          attachments: requestAttachments,
+          ignore_image_context: ignoreImageContext,
         }, controller.signal);
 
         const decoder = new TextDecoder();
@@ -183,7 +196,8 @@ export function useStreamChat() {
             message: text,
             sessionId: useChatStore.getState().currentSessionId,
             subjectId: useSubjectStore.getState().activeSubject?.id,
-            attachments,
+            attachments: requestAttachments,
+            ignore_image_context: ignoreImageContext,
           });
           log.info('非流式回退成功');
           updateLastAssistant((m) => ({

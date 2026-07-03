@@ -8,15 +8,18 @@ interface MarkmapDiagramProps {
 }
 
 function cleanNodeLabel(value: string) {
-  return value
+  const cleaned = value
     .trim()
     .replace(/^root\s*/i, '')
     .replace(/^[\w-]+\s*\(\((.*)\)\)\s*$/, '$1')
     .replace(/^[\w-]+\s*\((.*)\)\s*$/, '$1')
     .replace(/^\(\((.*)\)\)$/, '$1')
     .replace(/^\((.*)\)$/, '$1')
+    .replace(/\\(?:frac|sqrt|begin|end|varphi)[^，。；\s]*/g, '')
+    .replace(/\s+/g, ' ')
     .replace(/^["']|["']$/g, '')
     .trim();
+  return cleaned.length > 34 ? `${cleaned.slice(0, 32)}…` : cleaned;
 }
 
 function mermaidMindmapToMarkdown(definition: string) {
@@ -52,7 +55,7 @@ export default function MarkmapDiagram({ definition, className }: MarkmapDiagram
       markmapRef.current = Markmap.create(svgRef.current, {
         autoFit: true,
         duration: 250,
-        maxWidth: 260,
+        maxWidth: 200,
         paddingX: 12,
       }, root);
     } else {
@@ -62,7 +65,7 @@ export default function MarkmapDiagram({ definition, className }: MarkmapDiagram
   }, [markdown]);
 
   return (
-    <div className={`h-80 min-w-[520px] ${className || ''}`}>
+    <div className={`h-[480px] min-w-[560px] ${className || ''}`}>
       <svg ref={svgRef} className="h-full w-full" />
     </div>
   );

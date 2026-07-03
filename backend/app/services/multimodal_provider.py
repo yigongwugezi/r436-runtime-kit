@@ -214,7 +214,9 @@ import json
 import mimetypes
 import uuid
 from pathlib import Path
-from urllib import error, request
+from urllib.parse import urljoin, urlparse
+
+import httpx
 
 from app.config import settings
 from app.utils.llm_json import parse_safe
@@ -230,6 +232,19 @@ ALLOWED_IMAGE_TYPES = {
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 
+class HttpClientError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        http_status: int | None = None,
+        response_body_preview: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.http_status = http_status
+        self.response_body_preview = response_body_preview
+
+
 def _env(*names: str, default: str = "") -> str:
     for name in names:
         value = os.getenv(name)
@@ -239,17 +254,30 @@ def _env(*names: str, default: str = "") -> str:
 
 
 def _json_post(url: str, payload: dict[str, Any], api_key: str, timeout: int = 60) -> dict[str, Any]:
-    req = request.Request(
-        url=url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
+    response = httpx.post(
+        url,
+        json=payload,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        timeout=timeout,
     )
-    with request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    if response.status_code >= 400:
+        preview = response.text[:300]
+        raise HttpClientError(
+            f"HTTP {response.status_code}: {preview}",
+            http_status=response.status_code,
+            response_body_preview=preview,
+        )
+    return response.json()
+
+
+def _qwen_chat_endpoint(base_url: str) -> str:
+    endpoint = _text(base_url)
+    if not endpoint.endswith("/chat/completions"):
+        endpoint = urljoin(endpoint.rstrip("/") + "/", "chat/completions")
+    parsed = urlparse(endpoint)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"invalid Qwen base URL: {base_url}")
+    return endpoint
 
 
 def _data_url_from_base64(value: str) -> str:
@@ -257,6 +285,22 @@ def _data_url_from_base64(value: str) -> str:
     if value.startswith("data:image/"):
         return value
     return f"data:image/png;base64,{value}"
+
+
+def _is_remote_or_data_image(value: str) -> bool:
+    lowered = _text(value).lower()
+    return lowered.startswith(("http://", "https://", "data:image/"))
+
+
+def _local_file_data_url(local_path: str) -> tuple[str, str, str]:
+    local_path = _text(local_path)
+    if not local_path:
+        return "", "missing local image path", "missing"
+    local = _resolve_upload_path(local_path)
+    if not local or not local.exists():
+        return "", f"local image file not found: {local_path}", "missing"
+    mime = mimetypes.guess_type(local.name)[0] or "image/png"
+    return f"data:{mime};base64,{base64.b64encode(local.read_bytes()).decode('ascii')}", "", "local_file"
 
 
 def _resolve_upload_path(local_path: str) -> Path | None:
@@ -275,24 +319,39 @@ def _resolve_upload_path(local_path: str) -> Path | None:
     return None
 
 
-def image_input_from_context(context: dict[str, Any]) -> str:
-    if _text(context.get("image_url")):
-        return _text(context.get("image_url"))
-    if _text(context.get("image_base64")):
-        return _data_url_from_base64(_text(context.get("image_base64")))
+def image_input_from_context(context: dict[str, Any]) -> tuple[str, str, str]:
+    image_url = _text(context.get("image_url"))
+    if image_url:
+        if _is_remote_or_data_image(image_url):
+            return image_url, "", "data_url" if image_url.lower().startswith("data:image/") else "public_url"
+        return _local_file_data_url(image_url)
+
+    image_base64 = _text(context.get("image_base64"))
+    if image_base64:
+        return _data_url_from_base64(image_base64), "", "data_url" if image_base64.lower().startswith("data:image/") else "raw_base64"
+
+    warning = ""
+    kind = "missing"
     for item in context.get("attachments") or []:
         if not isinstance(item, dict):
             continue
-        for key in ("image_url", "url"):
-            if _text(item.get(key)):
-                return _text(item.get(key))
         if _text(item.get("image_base64")):
-            return _data_url_from_base64(_text(item.get("image_base64")))
-        local = _resolve_upload_path(_text(item.get("local_path")))
-        if local and local.exists():
-            mime = mimetypes.guess_type(local.name)[0] or "image/png"
-            return f"data:{mime};base64,{base64.b64encode(local.read_bytes()).decode('ascii')}"
-    return ""
+            value = _text(item.get("image_base64"))
+            return _data_url_from_base64(value), "", "data_url" if value.lower().startswith("data:image/") else "raw_base64"
+        if _text(item.get("local_path")):
+            data_url, warning, kind = _local_file_data_url(_text(item.get("local_path")))
+            if data_url:
+                return data_url, "", kind
+        for key in ("image_url", "url"):
+            url = _text(item.get(key))
+            if not url:
+                continue
+            if _is_remote_or_data_image(url):
+                return url, "", "data_url" if url.lower().startswith("data:image/") else "public_url"
+            data_url, warning, kind = _local_file_data_url(url)
+            if data_url:
+                return data_url, "", kind
+    return "", warning, kind
 
 
 def save_multimodal_upload(
@@ -335,19 +394,415 @@ def save_multimodal_upload(
 
 
 def _normalize_vision_result(parsed: dict[str, Any], raw_text: str) -> dict[str, Any]:
+    confidence = _confidence(parsed.get("confidence"), 0.5)
+    detected = _text(parsed.get("detected_text"))
+    review = _review_metadata(parsed, confidence, detected, parsed.get("summary"), parsed.get("question_text"))
     return {
-        "image_type": _text(parsed.get("image_type")) or "unknown",
-        "subject": _text(parsed.get("subject")) or "unknown",
-        "detected_text": _text(parsed.get("detected_text")),
+        "image_type": _friendly_value(parsed.get("image_type")),
+        "subject": _friendly_value(parsed.get("subject")),
+        "detected_text": detected,
         "question_text": _text(parsed.get("question_text")),
         "student_answer": _text(parsed.get("student_answer")),
         "formula_text": _text(parsed.get("formula_text")),
         "diagram_description": _text(parsed.get("diagram_description")),
-        "possible_knowledge_points": parsed.get("possible_knowledge_points") if isinstance(parsed.get("possible_knowledge_points"), list) else [],
-        "summary": _text(parsed.get("summary")) or raw_text[:500],
-        "confidence": float(parsed.get("confidence") or 0.5),
-        "needs_manual_review": bool(parsed.get("needs_manual_review", False)),
+        "possible_knowledge_points": _as_list(parsed.get("possible_knowledge_points")),
+        "extracted_questions": _as_list(parsed.get("extracted_questions") or parsed.get("questions")),
+        "summary": _safe_summary(parsed, raw_text),
+        "confidence": confidence,
+        **review,
     }
+
+
+def _as_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        parts = re.split(r"[\n,，;；、]+", value)
+        return [part.strip() for part in parts if part.strip()]
+    return [value]
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _drop_empty_sections(value: dict[str, Any]) -> dict[str, Any]:
+    keep = {}
+    for key, item in value.items():
+        if item in (None, "", [], {}):
+            continue
+        if isinstance(item, str) and item.strip(". ") == "":
+            continue
+        keep[key] = item
+    return keep
+
+
+def _confidence(value: Any, default: float = 0.5) -> float:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        score = default
+    return max(0.0, min(1.0, score))
+
+
+def _friendly_value(value: Any) -> str:
+    text = _text(value)
+    if text.strip(". ") == "":
+        return ""
+    if text.lower() in {"unknown", "none", "null", "n/a", "na"}:
+        return ""
+    if text in {"未知", "无", "暂无", "未识别"}:
+        return ""
+    return text
+
+
+_BAD_USER_TEXT = (
+    "see extracted_questions",
+    "per-question answers",
+    "extracted_questions",
+    "raw_structured_result",
+    "source_evidence",
+)
+
+
+def _is_bad_user_text(value: Any) -> bool:
+    text = _text(value).lower()
+    return bool(text) and any(marker in text for marker in _BAD_USER_TEXT)
+
+
+def _clean_user_text(value: Any) -> str:
+    text = _text(value)
+    return "" if _is_bad_user_text(text) else text
+
+
+def _safe_summary(parsed: dict[str, Any], raw_text: str) -> str:
+    summary = _text(parsed.get("summary"))
+    if summary and summary.strip(". "):
+        return summary
+    for key in ("detected_text", "question_text", "diagram_description"):
+        value = _text(parsed.get(key))
+        if value:
+            return value[:500]
+    raw = _text(raw_text)
+    if raw.startswith("{") or raw.startswith("["):
+        return ""
+    return raw[:500]
+
+
+def _review_metadata(parsed: dict[str, Any], confidence: float, *evidence: Any) -> dict[str, Any]:
+    reasons = [_text(item) for item in _as_list(parsed.get("review_reasons")) if _text(item)]
+    fields = [_text(item) for item in _as_list(parsed.get("uncertain_fields")) if _text(item)]
+    spans = [_text(item) for item in _as_list(parsed.get("uncertain_spans")) if _text(item)]
+    indices: list[int] = []
+    for item in _as_list(parsed.get("uncertain_question_indices")):
+        try:
+            indices.append(int(item))
+        except (TypeError, ValueError):
+            continue
+
+    blob = " ".join([_text(value) for value in evidence] + [_text(parsed.get("uncertainty")), _text(parsed.get("notes"))])
+    uncertainty_words = (
+        "uncertain", "not clear", "unclear", "truncated", "incomplete", "low confidence",
+        "不确定", "不清晰", "看不清", "截断", "不完整", "置信度不足", "无法确认",
+    )
+    if parsed.get("needs_manual_review") is True and not reasons:
+        reasons.append("模型标记识别结果不确定")
+    if parsed.get("confidence") not in (None, "") and confidence < 0.55:
+        reasons.append("识别置信度偏低")
+    if not any(len(_text(item)) >= 8 for item in evidence):
+        reasons.append("OCR 关键信息缺失")
+        if "detected_text" not in fields:
+            fields.append("detected_text")
+    if any(word in blob for word in uncertainty_words):
+        reasons.append("图片内容存在不清晰或不完整信息")
+
+    needs_review = bool(reasons or fields or indices or spans)
+    review_level = "high" if not any(len(_text(item)) >= 8 for item in evidence) else ("medium" if needs_review else "low")
+    return {
+        "needs_manual_review": needs_review,
+        "review_reasons": list(dict.fromkeys(reasons)),
+        "uncertain_question_indices": list(dict.fromkeys(indices)),
+        "uncertain_fields": list(dict.fromkeys(fields)),
+        "uncertain_spans": list(dict.fromkeys(spans)),
+        "review_level": review_level,
+        "can_continue": review_level != "high",
+    }
+
+
+def _ensure_review_fields(result: dict[str, Any], parsed: dict[str, Any], *evidence: Any) -> dict[str, Any]:
+    confidence = _confidence(result.get("confidence") or parsed.get("confidence"), 0.5)
+    review = _review_metadata(parsed, confidence, *evidence)
+    if result.get("needs_manual_review") is True and not review["review_reasons"]:
+        review["review_reasons"] = ["模型标记识别结果不确定"]
+    result["needs_manual_review"] = bool(result.get("needs_manual_review") or review["needs_manual_review"])
+    result["review_reasons"] = list(dict.fromkeys(_as_list(result.get("review_reasons")) + review["review_reasons"]))
+    result["uncertain_question_indices"] = list(dict.fromkeys(_as_list(result.get("uncertain_question_indices")) + review["uncertain_question_indices"]))
+    result["uncertain_fields"] = list(dict.fromkeys(_as_list(result.get("uncertain_fields")) + review["uncertain_fields"]))
+    result["uncertain_spans"] = list(dict.fromkeys(_as_list(result.get("uncertain_spans")) + review["uncertain_spans"]))
+    result["review_level"] = result.get("review_level") or review["review_level"]
+    result["can_continue"] = bool(result.get("can_continue", review["can_continue"]))
+    return result
+
+
+def _int(value: Any, default: int = 30) -> int:
+    match = re.search(r"\d+", str(value or ""))
+    return int(match.group(0)) if match else default
+
+
+def _needs_review(parsed: dict[str, Any], confidence: float, *evidence: Any) -> bool:
+    return _review_metadata(parsed, confidence, *evidence)["needs_manual_review"]
+
+
+def _cards(value: Any, vision: dict[str, Any]) -> list[dict[str, Any]]:
+    items = _as_list(value)
+    cards: list[dict[str, Any]] = []
+    for item in items:
+        item = _as_dict(item)
+        front = _clean_user_text(item.get("front") or item.get("question") or item.get("knowledge_point"))
+        back = _clean_user_text(item.get("back") or item.get("answer") or vision.get("summary"))
+        if front and back:
+            cards.append({
+                "front": front,
+                "back": back,
+                "knowledge_point": _clean_user_text(item.get("knowledge_point")) or front,
+                "difficulty": _clean_user_text(item.get("difficulty")) or "medium",
+                "card_type": _clean_user_text(item.get("card_type")) or "concept",
+                "source_evidence": _clean_user_text(vision.get("detected_text") or vision.get("summary")),
+            })
+    return cards[:10]
+
+
+def _variants(value: Any) -> list[dict[str, Any]]:
+    variants: list[dict[str, Any]] = []
+    for item in _as_list(value):
+        item = _as_dict(item)
+        question = _text(item.get("question"))
+        if question:
+            variants.append({
+                "question": question,
+                "answer": _text(item.get("answer")),
+                "explanation": _text(item.get("explanation")),
+                "difficulty": _text(item.get("difficulty")) or "medium",
+                "variation_type": _text(item.get("variation_type")) or "same_knowledge_point",
+            })
+    return variants[:8]
+
+
+def _recommended_path(value: Any) -> list[dict[str, Any]]:
+    path: list[dict[str, Any]] = []
+    for item in _as_list(value):
+        item = _as_dict(item)
+        title = _text(item.get("stage_title") or item.get("title"))
+        if title:
+            path.append({
+                "stage_title": title,
+                "objective": _text(item.get("objective") or item.get("goal")),
+                "knowledge_points": _as_list(item.get("knowledge_points")),
+                "estimated_minutes": _int(item.get("estimated_minutes") or item.get("minutes"), 30),
+                "practice_suggestions": _as_list(item.get("practice_suggestions")),
+            })
+    return path[:6]
+
+
+def _knowledge_candidates(value: Any, vision: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = []
+    source_points = _as_list(value) or _as_list(vision.get("possible_knowledge_points"))
+    for item in source_points[:8]:
+        item = item if isinstance(item, dict) else {"knowledge_point": item}
+        point = _text(item.get("knowledge_point") or item.get("title") or item.get("name"))
+        if not point:
+            continue
+        candidates.append({
+            "course": _text(item.get("course") or vision.get("subject")),
+            "knowledge_point": point,
+            "parent": _text(item.get("parent")),
+            "description": _text(item.get("description") or vision.get("summary")),
+            "prerequisites": _as_list(item.get("prerequisites")),
+            "common_mistakes": _as_list(item.get("common_mistakes")),
+            "source_resource_id": _text(item.get("source_resource_id")),
+            "confidence": _confidence(item.get("confidence"), _confidence(vision.get("confidence"), 0.5)),
+            "review_status": "pending",
+        })
+    return candidates
+
+
+def _mindmap_from_markdown(markdown: str, title: str) -> dict[str, Any]:
+    children = []
+    for line in markdown.splitlines():
+        text = line.lstrip("#- ").strip()
+        if text and text != title:
+            children.append({"title": text, "children": []})
+    return {"title": title or "图片知识结构", "children": children[:12]}
+
+
+def _normalize_task_result(task_type: str, parsed: dict[str, Any], raw_text: str) -> dict[str, Any]:
+    vision = _normalize_vision_result(parsed, raw_text)
+    confidence = _confidence(parsed.get("confidence"), vision["confidence"])
+    points = _as_list(parsed.get("knowledge_points") or parsed.get("possible_knowledge_points")) or vision["possible_knowledge_points"]
+    question = _text(parsed.get("question_text") or vision.get("question_text") or vision.get("detected_text"))
+
+    if task_type in {"explain_image_question", "solve_image_question"}:
+        steps = _as_list(parsed.get("explanation_steps") or parsed.get("solution_steps"))
+        display = _clean_user_text(parsed.get("display_text") or parsed.get("teaching_text") or parsed.get("chat_text"))
+        if not display and (question or steps):
+            display = "\n".join([
+                "我先按图片里能识别到的信息讲解：",
+                f"题目：{question}" if question else "",
+                "讲解：" + "；".join(str(step) for step in steps if _text(step)) if steps else "",
+                f"答案：{_clean_user_text(parsed.get('answer'))}" if _clean_user_text(parsed.get("answer")) else "",
+            ]).strip()
+        return {
+            "display_text": display,
+            "teaching_text": display,
+            "question_text": question,
+            "question_type": _friendly_value(parsed.get("question_type")),
+            "subject": _text(parsed.get("subject") or vision.get("subject")),
+            "knowledge_points": points,
+            "answer": _clean_user_text(parsed.get("answer")),
+            "explanation_steps": steps,
+            "key_method": _text(parsed.get("key_method")),
+            "common_mistakes": _as_list(parsed.get("common_mistakes")),
+            "extracted_questions": vision.get("extracted_questions", []),
+            "confidence": confidence,
+            "needs_manual_review": _needs_review(parsed, confidence, question, parsed.get("answer")),
+            "evidence_from_image": _text(parsed.get("evidence_from_image") or vision.get("detected_text")),
+            "vision_result": vision,
+        }
+
+    if task_type == "image_wrong_question_analysis":
+        return {
+            "question_text": question,
+            "correct_answer": _text(parsed.get("correct_answer")),
+            "student_answer": _text(parsed.get("student_answer") or vision.get("student_answer")),
+            "mistake_type": _text(parsed.get("mistake_type")) or "待确认",
+            "mistake_reason": _text(parsed.get("mistake_reason")),
+            "weak_knowledge_points": _as_list(parsed.get("weak_knowledge_points") or points),
+            "remediation_plan": _as_list(parsed.get("remediation_plan")),
+            "similar_practice_suggestions": _as_list(parsed.get("similar_practice_suggestions")),
+            "confidence": confidence,
+            "needs_manual_review": _needs_review(parsed, confidence, question, parsed.get("mistake_reason")),
+            "vision_result": vision,
+        }
+
+    if task_type == "image_note_summary":
+        return {
+            "title": _text(parsed.get("title")) or _text(vision.get("summary"))[:40] or "图片笔记总结",
+            "summary": _text(parsed.get("summary") or vision.get("summary")),
+            "key_points": _as_list(parsed.get("key_points") or points),
+            "structure": _as_list(parsed.get("structure")),
+            "formulas": _as_list(parsed.get("formulas")),
+            "definitions": _as_list(parsed.get("definitions")),
+            "pitfalls": _as_list(parsed.get("pitfalls")),
+            "next_actions": _as_list(parsed.get("next_actions")),
+            "confidence": confidence,
+            "needs_manual_review": _needs_review(parsed, confidence, parsed.get("summary"), vision.get("detected_text")),
+            "vision_result": vision,
+        }
+
+    if task_type == "image_to_mindmap":
+        markdown = _text(parsed.get("markdown"))
+        title = _text(parsed.get("title") or parsed.get("root_topic") or vision.get("summary"))[:80] or "图片知识结构"
+        if not markdown and points:
+            markdown = "# " + title + "\n" + "\n".join(f"- {point}" for point in points)
+        mindmap = _as_dict(parsed.get("mindmap_json")) or _mindmap_from_markdown(markdown, title)
+        return {
+            "title": title,
+            "root_topic": _text(parsed.get("root_topic")) or title,
+            "markdown": markdown,
+            "mindmap_json": mindmap,
+            "mermaid": _text(parsed.get("mermaid")),
+            "nodes_count": int(parsed.get("nodes_count") or len(points) or len(mindmap.get("children") or [])),
+            "confidence": confidence,
+            "needs_manual_review": _needs_review(parsed, confidence, markdown, vision.get("detected_text")),
+            "vision_result": vision,
+        }
+
+    if task_type == "image_to_flashcards":
+        cards = _cards(parsed.get("cards"), vision)
+        return {
+            "title": _text(parsed.get("title")) or "图片复习卡片",
+            "cards": cards,
+            "confidence": confidence,
+            "needs_manual_review": _needs_review(parsed, confidence, cards, vision.get("detected_text")) or len(cards) < 3,
+            "vision_result": vision,
+        }
+
+    if task_type == "image_to_learning_plan":
+        return {
+            "diagnosed_level": _text(parsed.get("diagnosed_level")) or "待评估",
+            "weak_points": _as_list(parsed.get("weak_points") or points),
+            "recommended_path": _recommended_path(parsed.get("recommended_path")),
+            "confidence": confidence,
+            "needs_manual_review": _needs_review(parsed, confidence, parsed.get("recommended_path"), vision.get("detected_text")),
+            "vision_result": vision,
+        }
+
+    if task_type == "image_to_variant_questions":
+        variants = _variants(parsed.get("variants"))
+        return {
+            "source_question_summary": _text(parsed.get("source_question_summary") or question),
+            "target_knowledge_points": points,
+            "variants": variants,
+            "confidence": confidence,
+            "needs_manual_review": _needs_review(parsed, confidence, question, variants) or len(variants) < 3,
+            "vision_result": vision,
+        }
+
+    if task_type == "image_to_resource_bundle":
+        result = {
+            "display_text": (
+                "我已把这张图片整理成一份学习资源包。你可以先查看内容，也可以保存到资源库；"
+                "其中提取出的知识点会作为“待确认知识候选”，不会直接写入正式知识库。"
+            ),
+            "understanding": _as_dict(parsed.get("understanding")) or vision,
+            "explanation": _as_dict(parsed.get("explanation")),
+            "note_summary": _as_dict(parsed.get("note_summary")),
+            "mindmap": _as_dict(parsed.get("mindmap")),
+            "flashcards": _as_list(parsed.get("flashcards") or parsed.get("cards")),
+            "wrong_question_analysis": _as_dict(parsed.get("wrong_question_analysis")),
+            "weak_points": _as_list(parsed.get("weak_points") or points),
+            "next_actions": _as_list(parsed.get("next_actions")),
+            "optional_variants": _variants(parsed.get("optional_variants") or parsed.get("variants")),
+            "resource_save_candidate": _as_dict(parsed.get("resource_save_candidate")),
+            "knowledge_candidates": _knowledge_candidates(parsed.get("knowledge_candidates"), vision),
+            "confidence": confidence,
+            "needs_manual_review": _needs_review(parsed, confidence, vision.get("detected_text"), parsed.get("understanding")),
+        }
+        if not result["resource_save_candidate"]:
+            result["resource_save_candidate"] = {
+                "title": _text(vision.get("summary"))[:60] or "图片学习资源包",
+                "resource_type": "resource_bundle",
+                "review_status": "pending",
+                "saved": False,
+        }
+        result["resource_save_candidate"]["review_status"] = "pending"
+        result["resource_save_candidate"]["saved"] = False
+        return _drop_empty_sections(result)
+
+    return vision
+
+
+def _vision_prompt(task_type: str) -> str:
+    common = (
+        "你是图片学习助手。只根据图片中可见内容回答，不要编造。"
+        "必须只返回 JSON，不要 markdown。confidence 是 0 到 1。"
+        "看不清、证据不足或题干不完整时 needs_manual_review=true，并给出 review_reasons、uncertain_question_indices、uncertain_fields。"
+    )
+    fields = {
+        "image_understanding": "image_type, subject, detected_text, summary, possible_knowledge_points, extracted_questions, confidence, needs_manual_review, review_reasons, uncertain_question_indices, uncertain_fields",
+        "explain_image_question": "extracted_questions, question_text, question_type, subject, knowledge_points, answer, explanation_steps, key_method, common_mistakes, confidence, needs_manual_review, review_reasons, uncertain_question_indices, uncertain_fields, evidence_from_image",
+        "solve_image_question": "extracted_questions, question_text, question_type, subject, knowledge_points, answer, explanation_steps, key_method, common_mistakes, confidence, needs_manual_review, review_reasons, uncertain_question_indices, uncertain_fields, evidence_from_image",
+        "image_wrong_question_analysis": "question_text, correct_answer, student_answer, mistake_type, mistake_reason, weak_knowledge_points, remediation_plan, similar_practice_suggestions, confidence, needs_manual_review, review_reasons, uncertain_question_indices, uncertain_fields",
+        "image_note_summary": "title, summary, key_points, structure, formulas, definitions, pitfalls, next_actions, extracted_questions, confidence, needs_manual_review, review_reasons, uncertain_question_indices, uncertain_fields",
+        "image_to_mindmap": "image_type, subject, detected_text, summary, possible_knowledge_points, extracted_questions, confidence, needs_manual_review, review_reasons, uncertain_question_indices, uncertain_fields",
+        "image_to_flashcards": "title, cards, confidence, needs_manual_review; each card: front, back, knowledge_point, difficulty, card_type, source_evidence",
+        "image_to_learning_plan": "diagnosed_level, weak_points, recommended_path, confidence, needs_manual_review; each recommended_path item: stage_title, objective, knowledge_points, estimated_minutes, practice_suggestions",
+        "image_to_variant_questions": "source_question_summary, target_knowledge_points, variants, confidence, needs_manual_review; at least 3 variants if the source question is clear",
+        "image_to_resource_bundle": "understanding, explanation, note_summary, mindmap, flashcards, wrong_question_analysis, weak_points, next_actions, optional_variants, resource_save_candidate, knowledge_candidates, confidence, needs_manual_review",
+    }
+    return f"{common} 当前任务 task_type={task_type}。返回字段：{fields.get(task_type, fields['image_understanding'])}。"
 
 
 class MindMapTool:
@@ -411,17 +866,19 @@ class QwenVisionProvider:
         api_key = _env("DASHSCOPE_API_KEY", "QWEN_API_KEY")
         model = _env("QWEN_VL_MODEL", default="qwen-vl-plus")
         base_url = _env("QWEN_BASE_URL", default="https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
-        image = image_input_from_context(context)
+        task_type = _text(context.get("task_type")) or "image_understanding"
+        image, image_warning, image_kind = image_input_from_context(context)
+        endpoint = ""
+        try:
+            endpoint = _qwen_chat_endpoint(base_url)
+        except ValueError as exc:
+            return _response(status="failed", provider=self.provider, warnings=[str(exc)], trace={"model": model, "base_url": base_url, "endpoint": endpoint, "task_type": task_type, "image_input_kind": image_kind, "payload_image_url_preview": image[:80], "exception_type": type(exc).__name__, "exception_message": str(exc)})
         if not api_key:
             return _response(status="provider_not_configured", provider=self.provider, warnings=["Qwen vision provider is not configured."], trace={"required_env": ["DASHSCOPE_API_KEY or QWEN_API_KEY"]})
         if not image:
-            return _response(status="needs_input", provider=self.provider, warnings=["missing image input"], trace={"input_keys": sorted(context.keys())})
+            return _response(status="needs_input", provider=self.provider, warnings=[image_warning or "missing image input"], trace={"input_keys": sorted(context.keys()), "model": model, "base_url": base_url, "endpoint": endpoint, "task_type": task_type, "image_input_kind": image_kind})
 
-        prompt = (
-            "Analyze this learning image. Return JSON only with keys: "
-            "image_type, subject, detected_text, question_text, student_answer, formula_text, "
-            "diagram_description, possible_knowledge_points, summary, confidence, needs_manual_review."
-        )
+        prompt = _vision_prompt(task_type)
         payload = {
             "model": model,
             "messages": [{
@@ -433,8 +890,9 @@ class QwenVisionProvider:
             }],
             "temperature": 0.1,
         }
+        trace = {"model": model, "base_url": base_url, "endpoint": endpoint, "task_type": task_type, "image_input_kind": image_kind, "payload_image_url_preview": image[:80]}
         try:
-            body = self.post_json(f"{base_url}/chat/completions", payload, api_key, int(os.getenv("QWEN_TIMEOUT", "60")))
+            body = self.post_json(endpoint, payload, api_key, int(os.getenv("QWEN_TIMEOUT", "60")))
             raw_text = _text(body.get("choices", [{}])[0].get("message", {}).get("content"))
             try:
                 parsed = parse_safe(raw_text)
@@ -442,14 +900,28 @@ class QwenVisionProvider:
             except Exception:
                 parsed = {}
                 status = "partial_success"
+            result = _ensure_review_fields(
+                _normalize_task_result(task_type, parsed, raw_text),
+                parsed,
+                raw_text,
+                parsed.get("detected_text"),
+                parsed.get("question_text"),
+                parsed.get("answer"),
+            )
+            if result.get("needs_manual_review") and status == "success":
+                status = "needs_manual_review"
             return _response(
                 status=status,
                 provider=self.provider,
-                result=_normalize_vision_result(parsed, raw_text),
-                trace={"model": model, "base_url": base_url},
+                result=result,
+                trace=trace,
             ) | {"model": model, "raw_text": raw_text}
-        except (error.URLError, TimeoutError, OSError, KeyError, json.JSONDecodeError, ValueError) as exc:
-            return _response(status="failed", provider=self.provider, warnings=[str(exc)], trace={"model": model, "base_url": base_url})
+        except (HttpClientError, httpx.HTTPError, TimeoutError, OSError, KeyError, json.JSONDecodeError, ValueError) as exc:
+            failed_trace = {**trace, "exception_type": type(exc).__name__, "exception_message": str(exc)}
+            if isinstance(exc, HttpClientError):
+                failed_trace["http_status"] = exc.http_status
+                failed_trace["response_body_preview"] = exc.response_body_preview
+            return _response(status="failed", provider=self.provider, warnings=[str(exc)], trace=failed_trace)
 
 
 class QwenImageProvider:

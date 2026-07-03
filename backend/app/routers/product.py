@@ -767,11 +767,186 @@ _MULTIMODAL_PATTERNS = (
 )
 
 
+_MULTIMODAL_PATTERNS = _MULTIMODAL_PATTERNS + (
+    "\u8fd9\u5f20\u56fe",
+    "\u4e0a\u9762\u8fd9\u5f20\u56fe",
+    "\u521a\u624d\u90a3\u5f20\u56fe",
+    "\u8fd9\u5f20\u56fe\u7247",
+    "\u56fe\u4e2d",
+    "\u56fe\u7247\u91cc",
+    "\u8fd9\u9053\u9898",
+    "\u8fd9\u9875\u7b14\u8bb0",
+    "\u9519\u9898\u56fe",
+    "\u9898\u56fe",
+    "\u7ee7\u7eed\u8bb2\u7b2c",
+    "\u6839\u636e\u8fd9\u5f20\u56fe",
+)
+
+
+def _message_references_image(message: str) -> bool:
+    text = str(message or "")
+    if re.search(r"继续讲第\s*[0-9一二两三四五六七八九十]+\s*题", text):
+        return True
+    return any(pattern in text for pattern in (
+        "这张图",
+        "这张图片",
+        "上面这张图",
+        "刚才那张图",
+        "图中",
+        "图片里",
+        "这道题",
+        "这页笔记",
+        "题图",
+        "错题图",
+    ))
+
+
 def _is_multimodal_request(message: str, payload: dict[str, Any] | None = None) -> bool:
     if any(pattern in str(message or "") for pattern in _MULTIMODAL_PATTERNS):
         return True
     payload = payload or {}
     return bool(payload.get("attachments") or payload.get("image_url") or payload.get("image_base64"))
+
+
+def _multimodal_image_input(payload: dict[str, Any]) -> dict[str, Any]:
+    attachments = payload.get("attachments") if isinstance(payload.get("attachments"), list) else []
+    return {
+        "attachments": attachments,
+        "image_url": str(payload.get("image_url") or ""),
+        "image_base64": str(payload.get("image_base64") or ""),
+    }
+
+
+def _has_image_input(image_input: dict[str, Any]) -> bool:
+    return bool(image_input.get("attachments") or image_input.get("image_url") or image_input.get("image_base64"))
+
+
+def _reused_frontend_attachment(image_input: dict[str, Any]) -> bool:
+    attachments = image_input.get("attachments")
+    return bool(
+        image_input.get("reused_from_last")
+        or (isinstance(attachments, list) and attachments and isinstance(attachments[0], dict) and attachments[0].get("reused_from_last"))
+    )
+
+
+def _selected_image_attachment_id(image_input: dict[str, Any], cached_context: dict[str, Any] | None = None) -> str:
+    attachments = image_input.get("attachments")
+    if isinstance(attachments, list) and attachments and isinstance(attachments[0], dict):
+        item = attachments[0]
+        selected = item.get("file_id") or item.get("image_url") or item.get("url") or item.get("local_path") or ""
+        if selected:
+            return str(selected)
+    selected = image_input.get("image_url") or ""
+    if selected:
+        return str(selected)
+    cached = cached_context or {}
+    uploaded = cached.get("last_uploaded_file")
+    if isinstance(uploaded, dict):
+        selected = uploaded.get("file_id") or uploaded.get("image_url") or uploaded.get("url") or uploaded.get("local_path") or ""
+        if selected:
+            return str(selected)
+    last_input = cached.get("last_image_input")
+    if isinstance(last_input, dict):
+        return _selected_image_attachment_id(last_input)
+    return ""
+
+
+def _image_context_source(image_input: dict[str, Any], cached_context: dict[str, Any]) -> str:
+    if _reused_frontend_attachment(image_input):
+        return "last_uploaded_image"
+    if _has_image_input(image_input):
+        return "current_attachment"
+    if cached_context.get("last_vision_result"):
+        return "last_vision_result"
+    if cached_context.get("last_image_input") or cached_context.get("last_uploaded_file"):
+        return "last_uploaded_image"
+    return "missing"
+
+
+def _vision_from_multimodal_result(result: dict[str, Any]) -> dict[str, Any]:
+    data = result.get("result") if isinstance(result.get("result"), dict) else {}
+    vision = data.get("vision_result") if isinstance(data.get("vision_result"), dict) else {}
+    if vision:
+        return vision
+    if any(data.get(key) for key in ("detected_text", "question_text", "summary", "possible_knowledge_points")):
+        return data
+    return {}
+
+
+_BAD_MULTIMODAL_TEXT = (
+    "see extracted_questions",
+    "per-question answers",
+    "extracted_questions",
+    "raw_structured_result",
+    "source_evidence",
+)
+
+
+def _bad_multimodal_text(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return bool(text) and any(marker in text for marker in _BAD_MULTIMODAL_TEXT)
+
+
+def _clean_multimodal_text(value: Any) -> str:
+    text = str(value or "").strip()
+    return "" if _bad_multimodal_text(text) else text
+
+
+def _questions_from_vision(vision: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = vision.get("extracted_questions") or vision.get("questions") or []
+    if isinstance(raw, dict):
+        raw = [raw]
+    questions: list[dict[str, Any]] = []
+    if isinstance(raw, list):
+        for idx, item in enumerate(raw, start=1):
+            item = item if isinstance(item, dict) else {"question_text": str(item)}
+            text = _clean_multimodal_text(
+                item.get("question_text")
+                or item.get("stem")
+                or item.get("question")
+                or item.get("text")
+                or item.get("content")
+                or item.get("title")
+                or ""
+            )
+            try:
+                question_index = int(item.get("index") or item.get("question_index") or idx)
+            except (TypeError, ValueError):
+                question_index = idx
+            if not text:
+                text = f"第 {question_index} 题题干识别不完整"
+            questions.append({**item, "index": question_index, "question_text": text})
+    fallback_question = _clean_multimodal_text(vision.get("question_text"))
+    if not questions and fallback_question:
+        questions.append({"index": 1, "question_text": fallback_question})
+    return questions
+
+
+def _cache_multimodal_context(session_id: str, image_input: dict[str, Any], result: dict[str, Any]) -> None:
+    if result.get("status") not in {"success", "partial_success", "needs_manual_review"}:
+        return
+    data = result.get("result") if isinstance(result.get("result"), dict) else {}
+    vision = _vision_from_multimodal_result(result)
+    if not vision:
+        return
+    questions = data.get("extracted_questions") if isinstance(data.get("extracted_questions"), list) else _questions_from_vision(vision)
+    attachments = image_input.get("attachments") if isinstance(image_input.get("attachments"), list) else []
+    context: dict[str, Any] = {
+        "last_vision_result": vision,
+        "last_extracted_questions": questions,
+        "last_multimodal_task_context": {
+            "task_type": result.get("task_type"),
+            "status": result.get("status"),
+            "provider": result.get("provider"),
+            "updated_at": int(time.time() * 1000),
+        },
+        "raw_structured_result": data,
+    }
+    if _has_image_input(image_input):
+        context["last_image_input"] = image_input
+    if attachments and isinstance(attachments[0], dict):
+        context["last_uploaded_file"] = attachments[0]
+    conversation_store.set_multimodal_context(session_id, context)
 
 
 def _multimodal_learning_path(session_id: str) -> Any:
@@ -788,12 +963,35 @@ def _multimodal_learning_path(session_id: str) -> Any:
     return stored
 
 
-def _multimodal_workflow_trace(result: dict[str, Any]) -> dict[str, Any]:
+def _with_image_context_trace(trace: dict[str, Any], *, reused: bool, source: str, task_type: str, selected_image_attachment_id: str = "") -> dict[str, Any]:
+    trace = dict(trace)
+    trace["reused_image_context"] = reused
+    trace["image_context_source"] = source
+    trace["task_type"] = task_type
+    if selected_image_attachment_id:
+        trace["selected_image_attachment_id"] = selected_image_attachment_id
+    return trace
+
+
+def _multimodal_workflow_trace(
+    result: dict[str, Any],
+    *,
+    reused_image_context: bool = False,
+    image_context_source: str = "missing",
+    selected_image_attachment_id: str = "",
+) -> dict[str, Any]:
+    task_type = str(result.get("task_type") or "")
     if isinstance(result.get("workflow_trace"), dict):
-        return result["workflow_trace"]
+        return _with_image_context_trace(
+            result["workflow_trace"],
+            reused=reused_image_context,
+            source=image_context_source,
+            task_type=task_type,
+            selected_image_attachment_id=selected_image_attachment_id,
+        )
     status = str(result.get("status") or "failed")
     workflow_status = "success" if status == "success" else ("partial" if status in {"needs_input", "provider_not_configured", "unsupported"} else "failed")
-    return {
+    return _with_image_context_trace({
         "workflow_name": "multimodal_generation",
         "workflow_status": workflow_status,
         "pipeline_executed": True,
@@ -807,21 +1005,37 @@ def _multimodal_workflow_trace(result: dict[str, Any]) -> dict[str, Any]:
                 "output_keys": ["multimodal_result"] if result.get("result") else [],
             }
         ],
-    }
+    }, reused=reused_image_context, source=image_context_source, task_type=task_type, selected_image_attachment_id=selected_image_attachment_id)
 
 
 def _multimodal_reply(result: dict[str, Any]) -> str:
     task_type = result.get("task_type")
     status = result.get("status")
-    if task_type == "image_understanding" and status in {"success", "partial_success"}:
+    data = result.get("result") if isinstance(result.get("result"), dict) else {}
+    for key in ("display_text", "teaching_text", "answer_text", "chat_text"):
+        text = _clean_multimodal_text(data.get(key))
+        if text:
+            return text
+    if task_type == "image_understanding" and status in {"success", "partial_success", "needs_manual_review"}:
         return "已完成图片理解，识别结果已整理成结构化信息。"
-    if task_type == "image_to_mindmap" and status == "success":
+    if task_type == "image_to_mindmap" and status in {"success", "needs_manual_review"}:
         return "已根据图片内容生成思维导图。"
-    if task_type in {"image_to_flashcards", "note_image_to_flashcards", "question_image_to_flashcards"} and status == "success":
+    if task_type in {"image_to_flashcards", "note_image_to_flashcards", "question_image_to_flashcards"} and status in {"success", "needs_manual_review"}:
         count = len(((result.get("result") or {}).get("cards")) or [])
         return f"已根据图片内容生成 {count} 张复习卡片。"
     if task_type in {"explain_image_question", "solve_image_question"} and status in {"success", "needs_manual_review"}:
         return "已读取题图并整理讲解信息；证据不足的部分已标记为需要人工确认。"
+    if task_type == "image_wrong_question_analysis" and status in {"success", "needs_manual_review"}:
+        return "已根据图片整理错题分析；证据不足的部分已标记为需要人工确认。"
+    if task_type == "image_note_summary" and status in {"success", "needs_manual_review"}:
+        return "已根据图片整理笔记总结。"
+    if task_type == "image_to_learning_plan" and status in {"success", "needs_manual_review"}:
+        return "已根据图片中的知识点整理学习计划。"
+    if task_type == "image_to_variant_questions" and status in {"success", "needs_manual_review"}:
+        count = len(((result.get("result") or {}).get("variants")) or [])
+        return f"已根据题图生成 {count} 道变式题；识别不确定处已标记。"
+    if task_type == "image_to_resource_bundle" and status in {"success", "needs_manual_review"}:
+        return "已整理图片学习资源包，并生成待确认的资源保存候选和知识候选。"
     if task_type in {"video_generation", "micro_lesson_video", "video_script_generation"} and status == "script_ready_provider_not_configured":
         return "视频模型尚未配置，但我已先生成微课脚本和分镜草稿，没有返回假视频链接。"
     if task_type in {"image_generation", "concept_card_generation", "teaching_diagram_generation"} and status == "success":
@@ -829,6 +1043,8 @@ def _multimodal_reply(result: dict[str, Any]) -> str:
     if task_type == "mindmap_generation" and status == "success":
         stage_count = ((result.get("result") or {}).get("stage_count")) or 0
         return f"已根据当前学习路径生成思维导图，共整理 {stage_count} 个阶段。"
+    if status == "needs_input" and (str(task_type or "").startswith("image_") or task_type in {"explain_image_question", "solve_image_question"}):
+        return "我还没有拿到可复用的图片。请先上传题图，或者在同一会话里接着上一张图继续提问。"
     if status == "needs_input":
         return "还缺少可执行这个多模态任务的输入。比如生成思维导图需要先有学习路径或知识内容。"
     if status == "provider_not_configured":
@@ -849,20 +1065,47 @@ def _multimodal_chat_payload(
         return None
 
     state = conversation_store.get(session_id)
+    image_input = _multimodal_image_input(payload)
+    ignore_image_context = bool(payload.get("ignore_image_context"))
+    references_image = _message_references_image(message)
+    cached_context = {} if ignore_image_context else conversation_store.get_multimodal_context(session_id)
+    original_has_image = _has_image_input(image_input) and not _reused_frontend_attachment(image_input)
+    if not _has_image_input(image_input) and references_image:
+        cached_input = cached_context.get("last_image_input") if isinstance(cached_context.get("last_image_input"), dict) else {}
+        if cached_input and not cached_context.get("last_vision_result"):
+            image_input = {
+                "attachments": cached_input.get("attachments") or [],
+                "image_url": cached_input.get("image_url") or "",
+                "image_base64": cached_input.get("image_base64") or "",
+                "reused_from_last": True,
+            }
+    image_context_source = _image_context_source(image_input if _has_image_input(image_input) else {}, cached_context)
+    reused_image_context = (not original_has_image) and image_context_source in {"last_uploaded_image", "last_vision_result"}
+    context_cache = cached_context if references_image or reused_image_context else {}
     context = {
         "session_id": session_id,
         "subject_id": subject_id,
         "user_message": message,
-        "attachments": payload.get("attachments") or [],
-        "image_url": payload.get("image_url") or "",
-        "image_base64": payload.get("image_base64") or "",
+        "attachments": image_input.get("attachments") or [],
+        "image_url": image_input.get("image_url") or "",
+        "image_base64": image_input.get("image_base64") or "",
+        "selected_image_attachment_id": _selected_image_attachment_id(image_input, cached_context),
         "learning_path": _multimodal_learning_path(session_id),
         "knowledge_context": (state.last_result or {}).get("knowledge_context", {}) if isinstance(state.last_result, dict) else {},
         "topic": state.facts.get("target_course") or subject_id,
         "subject_name": state.facts.get("target_course") or "",
+        **context_cache,
     }
     result = MultimodalAgent().run(context)
-    trace = _multimodal_workflow_trace(result)
+    trace = _multimodal_workflow_trace(
+        result,
+        reused_image_context=reused_image_context,
+        image_context_source=image_context_source,
+        selected_image_attachment_id=_selected_image_attachment_id(image_input, cached_context),
+    )
+    trace["ignore_image_context"] = ignore_image_context
+    trace["session_id"] = session_id
+    _cache_multimodal_context(session_id, image_input, result)
     cached = state.last_result if isinstance(state.last_result, dict) else {}
     state.last_result = {**cached, "multimodal_result": result, "workflow_trace": trace}
     reply = _multimodal_reply(result)
@@ -3591,58 +3834,59 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
         daily_stats[key] = {"questionCount": 0, "accuracySum": 0.0, "active": False}
 
     try:
-        db_events = SessionLocal()
-        from app.db.models import LearningEventModel
-        from sqlalchemy import and_
+        try:
+            db_events = SessionLocal()
+            from app.db.models import LearningEventModel
+            from sqlalchemy import and_
 
-        rows = (
-            db_events.query(LearningEventModel)
-            .filter(
-                and_(
-                    LearningEventModel.session_id == session_id,
-                    LearningEventModel.created_at >= thirty_days_ago,
-                    LearningEventModel.event_type.in_([
-                        "quiz_result", "quiz_submit", "practice_result",
-                        "resource_view", "resource_complete",
-                    ]),
+            rows = (
+                db_events.query(LearningEventModel)
+                .filter(
+                    and_(
+                        LearningEventModel.session_id == session_id,
+                        LearningEventModel.created_at >= thirty_days_ago,
+                        LearningEventModel.event_type.in_([
+                            "quiz_result", "quiz_submit", "practice_result",
+                            "resource_view", "resource_complete",
+                        ]),
+                    )
                 )
+                .order_by(LearningEventModel.created_at.asc())
+                .all()
             )
-            .order_by(LearningEventModel.created_at.asc())
-            .all()
-        )
-        db_events.close()
-
-        for row in rows:
-            if row.created_at:
-                day_key = row.created_at.strftime("%Y-%m-%d")
-                if day_key in daily_stats:
-                    daily_stats[day_key]["active"] = True
-                    meta = row.metadata_ or {}
-                    if row.event_type in ("quiz_result", "quiz_submit", "practice_result"):
-                        daily_stats[day_key]["questionCount"] += 1
-                        score = None
-                        if "accuracy" in meta:
-                            try:
-                                a = float(meta["accuracy"])
-                                score = round(a * 100) if a <= 1 else round(a)
-                            except (TypeError, ValueError):
-                                pass
-                        if score is None and "score" in meta:
-                            try:
-                                s = float(meta["score"])
-                                score = round(s * 100) if s <= 1 else round(s)
-                            except (TypeError, ValueError):
-                                pass
-                        if score is None and "correct" in meta and "total" in meta:
-                            try:
-                                c = int(meta["correct"])
-                                t = int(meta["total"])
-                                if t > 0:
-                                    score = round(c / t * 100)
-                            except (TypeError, ValueError):
-                                pass
-                        if score is not None:
-                            daily_stats[day_key]["accuracySum"] += score
+            for row in rows:
+                if row.created_at:
+                    day_key = row.created_at.strftime("%Y-%m-%d")
+                    if day_key in daily_stats:
+                        daily_stats[day_key]["active"] = True
+                        meta = row.metadata_ or {}
+                        if row.event_type in ("quiz_result", "quiz_submit", "practice_result"):
+                            daily_stats[day_key]["questionCount"] += 1
+                            score = None
+                            if "accuracy" in meta:
+                                try:
+                                    a = float(meta["accuracy"])
+                                    score = round(a * 100) if a <= 1 else round(a)
+                                except (TypeError, ValueError):
+                                    pass
+                            if score is None and "score" in meta:
+                                try:
+                                    s = float(meta["score"])
+                                    score = round(s * 100) if s <= 1 else round(s)
+                                except (TypeError, ValueError):
+                                    pass
+                            if score is None and "correct" in meta and "total" in meta:
+                                try:
+                                    c = int(meta["correct"])
+                                    t = int(meta["total"])
+                                    if t > 0:
+                                        score = round(c / t * 100)
+                                except (TypeError, ValueError):
+                                    pass
+                            if score is not None:
+                                daily_stats[day_key]["accuracySum"] += score
+        finally:
+            db_events.close()
     except Exception as e:
         logger.warning(f"Failed to query DB for daily stats: {e}")
 

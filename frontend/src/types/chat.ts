@@ -25,6 +25,8 @@ export interface ChatMessage {
     task_type?: string;
     provider?: string;
     warnings?: string[];
+    trace?: Record<string, unknown>;
+    workflow_trace?: Record<string, unknown>;
     result?: any;
   };
 }
@@ -34,9 +36,11 @@ export interface ChatAttachment {
   name?: string;
   url?: string;
   image_url?: string;
+  preview_url?: string;
   local_path?: string;
   mime_type?: string;
   size?: number;
+  reused_from_last?: boolean;
 }
 
 export type MessageType =

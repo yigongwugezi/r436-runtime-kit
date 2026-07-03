@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { useChatStore, detectOrphanedStreaming } from '../store/chatStore';
+import { imageAttachmentKey, useChatStore, detectOrphanedStreaming } from '../store/chatStore';
 import { useStreamChat } from '../hooks/useStreamChat';
-import { getSessionMessages, getQuickCommands, getAgents, recoverGeneration, uploadMultimodalImage } from '../api/chat';
+import { getSessionMessages, getQuickCommands, getAgents, recoverGeneration, uploadMultimodalImage, saveMultimodalResource, prepareKnowledgeCandidates } from '../api/chat';
 import type { AgentInfo } from '../api/chat';
 import { DEFAULT_QUICK_COMMANDS } from '../utils/constants';
 import { timeAgo } from '../utils/format';
@@ -28,6 +28,107 @@ const AGENT_LABELS: Record<string, string> = {
   grading_agent: '批改作答',
 };
 const EMPTY_PIPELINE: ProgressStep[] = [];
+const IMAGE_REFERENCE_RE = /(这张图|这张图片|上面这张图|刚才那张图|图中|图片里|这道题|这页笔记|题图|错题图|继续讲第\s*[0-9一二两三四五六七八九十]+\s*题)/;
+
+const attachmentUrl = (item: ChatAttachment | null | undefined) =>
+  item?.preview_url || item?.image_url || item?.url || (item?.file_id ? `/api/multimodal/file/${item.file_id}` : '');
+
+function MathText({ children }: { children: unknown }) {
+  return <Markdown content={String(children || '')} />;
+}
+
+const INTERNAL_TEXT_RE = /See extracted_questions|per-question answers|extracted_questions|raw_structured_result|source_evidence/i;
+
+const isUseful = (value: unknown) => {
+  const text = String(value ?? '').trim();
+  return Boolean(text) && !/^(null|undefined|\.{1,}|…+)$/i.test(text) && !INTERNAL_TEXT_RE.test(text);
+};
+
+const safeText = (value: unknown) => (isUseful(value) ? String(value).trim() : '');
+
+const questionText = (item: any) =>
+  safeText(item?.question_text || item?.stem || item?.question || item?.text || item?.content || item?.title);
+
+function QuestionDetail({ item, idx }: { item: any; idx: number }) {
+  const no = item?.index || item?.question_index || idx + 1;
+  const text = questionText(item);
+  const options = Array.isArray(item?.options) ? item.options.filter(isUseful) : [];
+  const points = Array.isArray(item?.knowledge_points || item?.possible_knowledge_points)
+    ? (item.knowledge_points || item.possible_knowledge_points).filter(isUseful)
+    : [];
+  return (
+    <li>
+      <div className="font-medium text-surface-700">第 {no} 题</div>
+      <div><MathText>{text || `第 ${no} 题题干识别不完整`}</MathText></div>
+      {options.length > 0 && <div>选项：<MathText>{options.join('；')}</MathText></div>}
+      {isUseful(item?.answer || item?.correct_answer) && <div>答案：<MathText>{item.answer || item.correct_answer}</MathText></div>}
+      {points.length > 0 && <div>知识点：{points.join('、')}</div>}
+      {item?.needs_manual_review && <div className="text-amber-700">这一题有识别不确定项</div>}
+    </li>
+  );
+}
+
+function humanizeReviewField(value: unknown) {
+  const text = String(value || '');
+  const cardMatch = text.match(/^cards\[(\d+)\]\.(front|back|answer)$/);
+  if (cardMatch) {
+    const idx = Number(cardMatch[1]) + 1;
+    return `第${idx}张卡片${cardMatch[2] === 'front' ? '问题' : '答案'}可能缺失或不完整`;
+  }
+  const labels: Record<string, string> = {
+    question_text: '题干',
+    answer: '答案',
+    formula_text: '公式',
+    detected_text: '识别文本',
+    options: '选项',
+    source_evidence: '证据来源',
+  };
+  return labels[text] || text;
+}
+
+function ImageAttachmentPreview({ item }: { item: ChatAttachment }) {
+  const [open, setOpen] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const url = attachmentUrl(item);
+  if (!url) return null;
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)} className="mt-2 block text-left">
+        {failed ? (
+          <span className="block rounded-xl border border-white/30 bg-white/10 px-3 py-2 text-xs">
+            图片预览加载失败，点击查看原始文件
+          </span>
+        ) : (
+          <span className="inline-flex flex-col gap-1">
+            {item.reused_from_last && <span className="text-[11px] opacity-80">引用当前图片</span>}
+            <img
+              src={url}
+              onError={() => setFailed(true)}
+              className="max-h-44 w-40 rounded-xl border border-white/30 object-cover"
+              loading="lazy"
+            />
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-6" onClick={() => setOpen(false)}>
+          <div className="relative max-h-full max-w-5xl" onClick={(e) => e.stopPropagation()}>
+            <button className="absolute -right-3 -top-3 rounded-full bg-white p-1 text-surface-600 shadow" onClick={() => setOpen(false)}>
+              <XCircle size={22} />
+            </button>
+            {failed ? (
+              <a href={url} target="_blank" rel="noreferrer" className="rounded-xl bg-white px-4 py-3 text-sm text-primary-600">
+                打开原始文件
+              </a>
+            ) : (
+              <img src={url} className="max-h-[82vh] max-w-[88vw] rounded-2xl bg-white object-contain" />
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
 
 function HistoryPopover({ sessions, currentSessionId, onSelect, onDelete, onRename, onNew, onClose }: {
   sessions: any[]; currentSessionId: string;
@@ -86,35 +187,238 @@ function HistoryPopover({ sessions, currentSessionId, onSelect, onDelete, onRena
 
 function MultimodalResultView({ result }: { result: ChatMessage['multimodalResult'] }) {
   const data = result?.result || {};
-  const vision = data.vision_result || (data.detected_text || data.summary ? data : null);
-  const diagram = data.mermaid || data.markdown;
+  const trace = result?.trace || result?.workflow_trace || {};
+  const sessionId = useChatStore((s) => s.currentSessionId);
+  const [saveState, setSaveState] = useState('');
+  const [candidateState, setCandidateState] = useState('');
+  const vision = data.vision_result || data.understanding || (data.detected_text || data.summary ? data : null);
+  const explanation = data.explanation || (data.explanation_steps ? data : null);
+  const wrong = data.wrong_question_analysis || (data.mistake_reason ? data : null);
+  const note = data.note_summary || (data.key_points ? data : null);
+  const mindmap = data.mindmap || data;
+  const diagram = mindmap?.markdown || mindmap?.mermaid || data.markdown || data.mermaid;
+  const rawFlashcards = data.flashcards || data.cards || [];
+  const flashcards = Array.isArray(rawFlashcards)
+    ? rawFlashcards.filter((card: any) => isUseful(card?.front) && isUseful(card?.back) && card.front !== card.back)
+    : [];
+  const path = data.recommended_path || [];
+  const variants = data.optional_variants || data.variants || [];
+  const candidates = data.knowledge_candidates || [];
+  const warnings = result?.warnings || [];
+  const extractedQuestions = Array.isArray(data.extracted_questions)
+    ? data.extracted_questions
+    : Array.isArray(vision?.extracted_questions)
+      ? vision.extracted_questions
+      : [];
+  const needsReview = data.needs_manual_review || result?.status === 'needs_manual_review';
+  const isExplanationTask = result?.task_type === 'explain_image_question' || result?.task_type === 'solve_image_question';
+  const isMindmapTask = result?.task_type === 'image_to_mindmap';
+  const isResourceBundleTask = result?.task_type === 'image_to_resource_bundle';
+  const reviewReasons = Array.isArray(data.review_reasons) ? data.review_reasons.filter(Boolean) : [];
+  const uncertainQuestionIndices = Array.isArray(data.uncertain_question_indices) ? data.uncertain_question_indices.filter(Boolean) : [];
+  const uncertainFields = Array.isArray(data.uncertain_fields) ? data.uncertain_fields.filter(Boolean) : [];
+  const uncertainSpans = Array.isArray(data.uncertain_spans) ? data.uncertain_spans.filter(Boolean) : [];
+  const [reviewDismissed, setReviewDismissed] = useState(false);
+  const imageSourceLabel = (() => {
+    const source = String(trace.image_context_source || data.image_context_source || '');
+    if (source === 'current_attachment') return '当前上传图片';
+    if (source === 'last_uploaded_image') return '当前选中图片';
+    if (source === 'last_vision_result') return '已缓存图片识别结果';
+    return '图片识别结果';
+  })();
+
+  const saveResource = async () => {
+    setSaveState('保存中...');
+    try {
+      const res = await saveMultimodalResource({ sessionId, task_type: result?.task_type, result: data });
+      setSaveState(res.saved ? '已保存为学习资源，待确认' : '保存失败');
+    } catch {
+      setSaveState('保存失败');
+    }
+  };
+
+  const prepareCandidates = async () => {
+    setCandidateState('生成中...');
+    try {
+      const res = await prepareKnowledgeCandidates({ result: data, knowledge_candidates: candidates });
+      setCandidateState(`已生成 ${res.candidates?.length || 0} 条知识候选，待确认`);
+    } catch {
+      setCandidateState('生成失败');
+    }
+  };
+
+  const list = (items: any[]) => items.filter(Boolean).map((item, idx) => <li key={idx}><MathText>{String(item)}</MathText></li>);
+  const ReviewNotice = () => {
+    if (reviewDismissed || (!needsReview && warnings.length === 0)) return null;
+    const body = (
+      <div className="space-y-1">
+        {reviewReasons.map((item: string, idx: number) => <div key={`reason-${idx}`}>{item}</div>)}
+        {uncertainQuestionIndices.length > 0 && <div>涉及题号：{uncertainQuestionIndices.join('、')}</div>}
+        {uncertainFields.length > 0 && <div>涉及字段：{uncertainFields.map(humanizeReviewField).join('、')}</div>}
+        {uncertainSpans.length > 0 && <div>可疑片段：{uncertainSpans.join('、')}</div>}
+        {warnings.map((item, idx) => <div key={`warning-${idx}`}>{String(item).replace(/cards\[(\d+)\]\.back/g, (_m, n) => `第${Number(n) + 1}张卡片答案`)}</div>)}
+        <div className="pt-1 text-amber-700">
+          {data.can_continue === false ? '建议重新上传更清晰图片后再继续。' : '这些地方可能识别不完整，但不影响继续学习。'}
+        </div>
+        <div className="flex gap-2 pt-1">
+          <button onClick={() => setReviewDismissed(true)} className="rounded-lg bg-white px-2 py-1 text-amber-700 border border-amber-200">我知道了</button>
+          {data.can_continue !== false && <button onClick={() => setReviewDismissed(true)} className="rounded-lg bg-amber-100 px-2 py-1 text-amber-800">继续使用当前识别结果</button>}
+        </div>
+      </div>
+    );
+    if (data.can_continue !== false) {
+      return (
+        <details className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+          <summary className="cursor-pointer font-semibold">以下内容可能需要你确认</summary>
+          <div className="mt-2">{body}</div>
+        </details>
+      );
+    }
+    return (
+      <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+        <div className="mb-1 font-semibold">以下内容需要你确认</div>
+        {body}
+      </div>
+    );
+  };
+
+  if (isExplanationTask) {
+    return (
+      <div className="mt-3 space-y-2">
+        <details className="rounded-xl border border-surface-200 bg-white/70 p-3 text-xs text-surface-600">
+          <summary className="cursor-pointer font-medium text-surface-700">查看识别详情</summary>
+          <div className="mt-2 space-y-1">
+            {isUseful(vision?.summary) && <div>摘要：{vision.summary}</div>}
+            {isUseful(vision?.question_text) && <div className="whitespace-pre-wrap">题目：{vision.question_text}</div>}
+            {isUseful(vision?.detected_text) && <div className="whitespace-pre-wrap">识别文本：{vision.detected_text}</div>}
+            {extractedQuestions.length > 0 && (
+              <ol className="list-decimal pl-4 space-y-1">
+                {extractedQuestions.map((item: any, idx: number) => <QuestionDetail key={idx} item={item} idx={idx} />)}
+              </ol>
+            )}
+          </div>
+        </details>
+        <ReviewNotice />
+      </div>
+    );
+  }
+
   return (
     <div className="mt-3 space-y-3">
-      {vision && (
+      {isResourceBundleTask && (
+        <div className="rounded-xl border border-primary-100 bg-primary-50 p-3 text-xs text-primary-800">
+          我已把这张图片整理成一份学习资源包。你可以先查看内容，也可以保存到资源库；其中提取出的知识点会作为“待确认知识候选”，不会直接写入正式知识库。
+        </div>
+      )}
+      {!isMindmapTask && vision && (
         <div className="rounded-xl border border-surface-200 bg-white p-3 text-xs text-surface-600 space-y-1">
           <div className="font-semibold text-surface-700">图片理解</div>
-          {vision.image_type && <div>类型：{vision.image_type}</div>}
-          {vision.subject && <div>学科：{vision.subject}</div>}
-          {vision.summary && <div>摘要：{vision.summary}</div>}
-          {vision.question_text && <div>题目：{vision.question_text}</div>}
-          {vision.detected_text && <div className="whitespace-pre-wrap">识别文本：{vision.detected_text}</div>}
+          {isUseful(vision.image_type) && vision.image_type !== 'unknown' && <div>类型：{vision.image_type}</div>}
+          {isUseful(vision.subject) && <div>学科：{vision.subject}</div>}
+          {isUseful(vision.summary) && <div>摘要：{vision.summary}</div>}
+          {isUseful(vision.question_text) && <div>题目：{vision.question_text}</div>}
+          {isUseful(vision.detected_text) && <div className="whitespace-pre-wrap">识别文本：{vision.detected_text}</div>}
           {Array.isArray(vision.possible_knowledge_points) && vision.possible_knowledge_points.length > 0 && (
             <div>知识点：{vision.possible_knowledge_points.join('、')}</div>
           )}
+          {typeof vision.confidence === 'number' && <div>置信度：{Math.round(vision.confidence * 100)}%</div>}
+        </div>
+      )}
+      {explanation && (
+        <div className="rounded-xl border border-surface-200 bg-white p-3 text-xs text-surface-600 space-y-2">
+          <div className="font-semibold text-surface-700">题目讲解</div>
+          {explanation.question_text && <div className="whitespace-pre-wrap">题目：{explanation.question_text}</div>}
+          {Array.isArray(explanation.knowledge_points) && <div>知识点：{explanation.knowledge_points.join('、')}</div>}
+          {Array.isArray(explanation.explanation_steps) && <ol className="list-decimal pl-4 space-y-1">{list(explanation.explanation_steps)}</ol>}
+          {explanation.answer && <div>答案：{explanation.answer}</div>}
+          {Array.isArray(explanation.common_mistakes) && explanation.common_mistakes.length > 0 && <div>常见错误：{explanation.common_mistakes.join('、')}</div>}
+        </div>
+      )}
+      {wrong && (
+        <div className="rounded-xl border border-surface-200 bg-white p-3 text-xs text-surface-600 space-y-1">
+          <div className="font-semibold text-surface-700">错题分析</div>
+          {wrong.mistake_type && <div>错误类型：{wrong.mistake_type}</div>}
+          {wrong.mistake_reason && <div>错因：{wrong.mistake_reason}</div>}
+          {Array.isArray(wrong.weak_knowledge_points) && <div>薄弱点：{wrong.weak_knowledge_points.join('、')}</div>}
+          {Array.isArray(wrong.remediation_plan) && <ul className="list-disc pl-4">{list(wrong.remediation_plan)}</ul>}
+          {Array.isArray(wrong.similar_practice_suggestions) && wrong.similar_practice_suggestions.length > 0 && <div>练习建议：{wrong.similar_practice_suggestions.join('、')}</div>}
+        </div>
+      )}
+      {note && (
+        <div className="rounded-xl border border-surface-200 bg-white p-3 text-xs text-surface-600 space-y-1">
+          <div className="font-semibold text-surface-700">笔记总结</div>
+          {note.title && <div className="font-medium">{note.title}</div>}
+          {note.summary && <div>{note.summary}</div>}
+          {Array.isArray(note.key_points) && note.key_points.length > 0 && <ul className="list-disc pl-4">{list(note.key_points)}</ul>}
+          {Array.isArray(note.formulas) && note.formulas.length > 0 && <div>公式：{note.formulas.join('、')}</div>}
+          {Array.isArray(note.definitions) && note.definitions.length > 0 && <div>定义：{note.definitions.join('、')}</div>}
+          {Array.isArray(note.pitfalls) && note.pitfalls.length > 0 && <div>易错点：{note.pitfalls.join('、')}</div>}
+          {Array.isArray(note.next_actions) && note.next_actions.length > 0 && <div>下一步：{note.next_actions.join('、')}</div>}
         </div>
       )}
       {diagram && (
         <div className="rounded-xl border border-surface-200 bg-white p-3 overflow-x-auto">
+          {isMindmapTask && (
+            <div className="mb-2 text-xs text-surface-500">
+              基于图片：{imageSourceLabel}
+              {trace.selected_image_attachment_id ? ` · ${String(trace.selected_image_attachment_id).slice(-24)}` : ''}
+            </div>
+          )}
           <MarkmapDiagram definition={diagram} />
+          <details className="mt-2 text-xs text-surface-500">
+            <summary>查看 Markdown</summary>
+            <pre className="mt-2 whitespace-pre-wrap">{diagram}</pre>
+          </details>
         </div>
       )}
-      {Array.isArray(data.cards) && data.cards.length > 0 && (
+      {Array.isArray(flashcards) && flashcards.length > 0 && (
         <div className="grid gap-2">
-          {data.cards.map((card: any, idx: number) => (
-            <div key={idx} className="rounded-xl border border-surface-200 bg-white p-3 text-xs">
-              <div className="font-semibold text-surface-700">{card.front}</div>
-              <div className="mt-1 text-surface-500">{card.back}</div>
+          {flashcards.slice(0, 6).map((card: any, idx: number) => (
+            <details key={idx} className="rounded-xl border border-surface-200 bg-white p-3 text-xs">
+              <summary className="cursor-pointer list-none">
+                <div className="font-semibold text-surface-700"><MathText>{card.front || `第 ${idx + 1} 张卡片`}</MathText></div>
+                <div className="mt-1 text-surface-400">{card.knowledge_point || '知识点待确认'} · {card.difficulty || 'medium'} · {card.card_type || 'review'}</div>
+              </summary>
+              <div className="mt-2 rounded-lg bg-surface-50 p-2 text-surface-600"><MathText>{card.back || '答案待补充'}</MathText></div>
+            </details>
+          ))}
+          {flashcards.length > 6 && (
+            <details className="rounded-xl border border-surface-200 bg-white p-3 text-xs">
+              <summary className="cursor-pointer text-surface-600">还有 {flashcards.length - 6} 张卡片，点击展开</summary>
+              <div className="mt-2 grid gap-2">
+                {flashcards.slice(6).map((card: any, idx: number) => (
+                  <div key={idx} className="rounded-lg bg-surface-50 p-2">
+                    <div className="font-medium text-surface-700"><MathText>{card.front}</MathText></div>
+                    <div className="mt-1 text-surface-500"><MathText>{card.back}</MathText></div>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+        </div>
+      )}
+      {Array.isArray(path) && path.length > 0 && (
+        <div className="rounded-xl border border-surface-200 bg-white p-3 text-xs text-surface-600 space-y-2">
+          <div className="font-semibold text-surface-700">学习计划</div>
+          {path.map((stage: any, idx: number) => (
+            <div key={idx} className="border-l-2 border-primary-200 pl-3">
+              <div className="font-medium text-surface-700">{stage.stage_title}</div>
+              {stage.objective && <div>{stage.objective}</div>}
+              {Array.isArray(stage.knowledge_points) && <div>知识点：{stage.knowledge_points.join('、')}</div>}
+              {stage.estimated_minutes && <div>{stage.estimated_minutes} 分钟</div>}
             </div>
+          ))}
+        </div>
+      )}
+      {Array.isArray(variants) && variants.length > 0 && (
+        <div className="rounded-xl border border-surface-200 bg-white p-3 text-xs text-surface-600 space-y-2">
+          <div className="font-semibold text-surface-700">变式题</div>
+          {variants.map((item: any, idx: number) => (
+            <details key={idx} className="rounded-lg bg-surface-50 p-2">
+              <summary className="cursor-pointer font-medium">{item.question}</summary>
+              <div className="mt-2">答案：{item.answer}</div>
+              <div className="mt-1">{item.explanation}</div>
+            </details>
           ))}
         </div>
       )}
@@ -126,6 +430,17 @@ function MultimodalResultView({ result }: { result: ChatMessage['multimodalResul
       {data.script && (
         <div className="rounded-xl border border-surface-200 bg-white p-3 text-xs whitespace-pre-wrap">{data.script}</div>
       )}
+      {(data.resource_save_candidate || candidates.length > 0) && (
+        <div className="rounded-xl border border-surface-200 bg-white p-3 text-xs text-surface-600 space-y-2">
+          <div className="font-semibold text-surface-700">资源与知识候选</div>
+          {data.resource_save_candidate && <button onClick={saveResource} className="px-3 py-1.5 rounded-lg bg-primary-600 text-white">保存为学习资源</button>}
+          {candidates.length > 0 && <button onClick={prepareCandidates} className="ml-2 px-3 py-1.5 rounded-lg border border-surface-200">生成知识候选</button>}
+          {saveState && <div>{saveState}</div>}
+          {candidateState && <div>{candidateState}</div>}
+          {candidates.length > 0 && <div>知识候选：{candidates.map((item: any) => item.knowledge_point).filter(Boolean).join('、')}（待确认）</div>}
+        </div>
+      )}
+      <ReviewNotice />
     </div>
   );
 }
@@ -140,10 +455,7 @@ function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onCla
           {isUser ? (
             <div>
               <p className="whitespace-pre-wrap text-sm leading-relaxed">{msg.content}</p>
-              {msg.attachments?.map((item: ChatAttachment) => {
-                const url = item.image_url || item.url;
-                return url ? <img key={item.file_id || url} src={url} className="mt-2 max-h-36 rounded-xl border border-white/30" /> : null;
-              })}
+              {msg.attachments?.map((item: ChatAttachment) => <ImageAttachmentPreview key={item.file_id || attachmentUrl(item)} item={item} />)}
             </div>
           ) : (
             <div className="text-sm leading-relaxed">
@@ -198,11 +510,23 @@ export default function ChatPage() {
     );
   }
   const initialMessage = (loc.state as any)?.initialMessage;
-  const { messages, isStreaming, agentProgress, currentSessionId, setLoading } = useChatStore() as any;
+  const {
+    messages,
+    isStreaming,
+    agentProgress,
+    currentSessionId,
+    setLoading,
+    lastImageAttachment,
+    imageAttachmentHistory,
+    selectedImageAttachmentId,
+    selectImageAttachment,
+  } = useChatStore() as any;
   const { send, abort } = useStreamChat();
   const [input, setInput] = useState(''); const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [messagesLoaded, setMessagesLoaded] = useState(false); const [menuOpen, setMenuOpen] = useState(false); const [historyOpen, setHistoryOpen] = useState(false);
   const [selectedImage, setSelectedImage] = useState<{ file: File; preview: string } | null>(null);
+  const [imageContextDisabled, setImageContextDisabled] = useState(false);
+  const [imagePickerOpen, setImagePickerOpen] = useState(false);
   const [quickCommands, setQuickCommands] = useState<QuickCommand[]>(DEFAULT_QUICK_COMMANDS);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null); const inputRef = useRef<HTMLTextAreaElement>(null); const bottomRef = useRef<HTMLDivElement>(null); const fileRef = useRef<HTMLInputElement>(null);
@@ -214,6 +538,13 @@ export default function ChatPage() {
     getAgents().then(res => { if (res.agents?.length) setAgents(res.agents); }).catch(() => {});
   }, []);
   useEffect(() => () => { if (selectedImage) URL.revokeObjectURL(selectedImage.preview); }, [selectedImage]);
+  const selectedReferenceAttachment = (imageAttachmentHistory || []).find((item: ChatAttachment) => imageAttachmentKey(item) === selectedImageAttachmentId) || lastImageAttachment;
+  const referencesLastImage = !selectedImage && Boolean(selectedReferenceAttachment) && IMAGE_REFERENCE_RE.test(input);
+  const willUseLastImage = referencesLastImage && !imageContextDisabled;
+  useEffect(() => {
+    if (!referencesLastImage) setImageContextDisabled(false);
+    if (!referencesLastImage) setImagePickerOpen(false);
+  }, [referencesLastImage]);
 
   const scrollToBottom = useCallback((force = false) => {
     if (force) userScrolledUpRef.current = false;
@@ -310,13 +641,15 @@ export default function ChatPage() {
     if (!file || !/^image\/(png|jpe?g|webp)$/.test(file.type)) return;
     if (selectedImage) URL.revokeObjectURL(selectedImage.preview);
     setSelectedImage({ file, preview: URL.createObjectURL(file) });
+    setImageContextDisabled(false);
   };
   const handleSend = async () => {
     if ((!input.trim() && !selectedImage) || isStreaming) return;
     const text = input.trim() || '识别这张图片';
     const attachments = selectedImage ? [await uploadMultimodalImage(selectedImage.file, currentSessionId)] : [];
-    send(text, attachments);
+    send(text, attachments, { ignoreImageContext: referencesLastImage && imageContextDisabled });
     setInput('');
+    setImageContextDisabled(false);
     if (selectedImage) URL.revokeObjectURL(selectedImage.preview);
     setSelectedImage(null);
     if (fileRef.current) fileRef.current.value = '';
@@ -402,6 +735,41 @@ export default function ChatPage() {
                 <button onClick={() => { URL.revokeObjectURL(selectedImage.preview); setSelectedImage(null); if (fileRef.current) fileRef.current.value = ''; }} className="p-2 rounded-lg text-surface-400 hover:bg-white hover:text-error-500">
                   <Trash2 size={16} />
                 </button>
+              </div>
+            )}
+            {referencesLastImage && (
+              <div className={`relative mb-3 flex items-center gap-3 rounded-2xl border-2 p-3 text-sm shadow-soft ${willUseLastImage ? 'border-primary-300 bg-primary-50 text-primary-800' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+                {attachmentUrl(selectedReferenceAttachment) && <img src={attachmentUrl(selectedReferenceAttachment)} className="h-14 w-14 rounded-xl object-cover border border-white" />}
+                <div className="flex-1">
+                  <div className="font-semibold">{willUseLastImage ? '正在引用图片' : '已取消引用图片'}</div>
+                  <div className="text-xs opacity-80">{willUseLastImage ? '本条消息将使用当前选中的图片上下文' : '本条消息不会带图，也不会复用旧图'}</div>
+                </div>
+                {willUseLastImage && (imageAttachmentHistory || []).length > 1 && (
+                  <button onClick={() => setImagePickerOpen(v => !v)} className="rounded-xl bg-white px-3 py-2 text-primary-600 border border-primary-100 font-medium">更换</button>
+                )}
+                {willUseLastImage ? (
+                  <button onClick={() => setImageContextDisabled(true)} className="rounded-xl bg-white px-3 py-2 text-error-600 border border-error-100 font-medium">取消引用</button>
+                ) : (
+                  <button onClick={() => setImageContextDisabled(false)} className="rounded-xl bg-white px-3 py-2 text-primary-600 border border-primary-100 font-medium">重新使用</button>
+                )}
+                {imagePickerOpen && (
+                  <div className="absolute bottom-full left-3 z-30 mb-2 grid max-w-[360px] grid-cols-4 gap-2 rounded-2xl border border-surface-200 bg-white p-3 shadow-elevated">
+                    {(imageAttachmentHistory || []).map((item: ChatAttachment) => {
+                      const id = imageAttachmentKey(item);
+                      const active = id === selectedImageAttachmentId;
+                      return (
+                        <button
+                          key={id}
+                          onClick={() => { selectImageAttachment(id); setImagePickerOpen(false); setImageContextDisabled(false); }}
+                          className={`rounded-xl border-2 p-1 ${active ? 'border-primary-500' : 'border-surface-100 hover:border-primary-200'}`}
+                          title="选择这张图片"
+                        >
+                          <img src={attachmentUrl(item)} className="h-14 w-14 rounded-lg object-cover" />
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
             <div className="flex items-end gap-3">

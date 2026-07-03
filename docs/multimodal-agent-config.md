@@ -1,95 +1,140 @@
 # Multimodal Agent Configuration
 
-This document lists the environment variables used by `MultimodalAgent`.
 Do not commit real API keys.
 
-## Qwen-VL
+## Provider Setup
 
-Used for image understanding, OCR-like extraction, image-to-mindmap, image-to-flashcards, and image-question explanation.
-
-Environment variables:
-
-- `DASHSCOPE_API_KEY`: preferred API key.
-- `QWEN_API_KEY`: fallback API key.
-- `QWEN_BASE_URL`: OpenAI-compatible base URL. Defaults to `https://dashscope.aliyuncs.com/compatible-mode/v1`.
-- `QWEN_VL_MODEL`: vision model name. Defaults to `qwen-vl-plus`.
-- `QWEN_TIMEOUT`: optional request timeout in seconds. Defaults to `60`.
-
-Example:
+Recommended Qwen-VL settings:
 
 ```env
-DASHSCOPE_API_KEY=replace-with-your-key
 QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-QWEN_VL_MODEL=qwen-vl-plus
-```
-
-When no key is configured, the provider returns `provider_not_configured`. It does not fabricate OCR text, question text, or image summaries.
-
-## Qwen-Image
-
-Used for image generation, concept cards, and teaching diagrams.
-
-Environment variables:
-
-- `DASHSCOPE_API_KEY`: preferred API key.
-- `QWEN_API_KEY`: fallback API key.
-- `QWEN_IMAGE_MODEL`: image generation model. Defaults to `qwen-image`.
-- `QWEN_IMAGE_ENDPOINT`: full image generation endpoint.
-- `QWEN_IMAGE_BASE_URL`: base URL used when `QWEN_IMAGE_ENDPOINT` is not set.
-- `QWEN_BASE_URL`: fallback base URL.
-- `QWEN_TIMEOUT`: optional request timeout in seconds. Defaults to `60`.
-
-Example:
-
-```env
-DASHSCOPE_API_KEY=replace-with-your-key
-QWEN_IMAGE_MODEL=qwen-image
+QWEN_VL_MODEL=qwen3-vl-plus
 QWEN_IMAGE_ENDPOINT=https://dashscope.aliyuncs.com/compatible-mode/v1/images/generations
 ```
 
-When unconfigured, the provider returns `provider_not_configured`. It does not return fake image URLs.
+Keys are read from `DASHSCOPE_API_KEY` or `QWEN_API_KEY`. Missing keys return `provider_not_configured`; the agent must not fake OCR, answers, images, videos, or knowledge-base writes.
 
-## Wan Video
+## Model Split
 
-Used for video generation and micro-lesson video tasks. The agent can still create a text script and storyboard without the Wan video API.
+Qwen-VL handles image work only:
 
-Environment variables:
+- image understanding
+- OCR-like text extraction
+- question, option, formula, and knowledge-point extraction
+- uncertainty metadata
 
-- `DASHSCOPE_API_KEY`: fallback API key.
-- `WAN_API_KEY`: preferred Wan-specific API key when available.
-- `WAN_VIDEO_MODEL`: video model name. Defaults to `wanx2.1-t2v-turbo`.
-- `WAN_VIDEO_ENDPOINT`: video task creation endpoint.
-- `WAN_TIMEOUT`: optional request timeout in seconds. Defaults to `60`.
+The project main LLM handles teaching text:
 
-Example:
+- question explanation
+- wrong-answer analysis wording
+- Markmap markdown
+- flashcards
+- variant questions
+- learning-plan/resource-bundle text organization
 
-```env
-WAN_API_KEY=replace-with-your-key
-WAN_VIDEO_MODEL=wanx2.1-t2v-turbo
-WAN_VIDEO_ENDPOINT=https://example.com/video/tasks
+User-facing teaching answers should come from the main LLM or a small evidence-based fallback. Raw Qwen-VL JSON stays in collapsed details.
+
+## Image Context
+
+The backend chat session keeps the latest successful image context:
+
+- `last_image_input`
+- `last_uploaded_file`
+- `last_vision_result`
+- `last_extracted_questions`
+- `last_multimodal_task_context`
+
+The frontend keeps a small image attachment history for the active chat session. It reuses the currently selected image only when the new message explicitly references the image, for example:
+
+- 这张图 / 这张图片 / 上面这张图 / 刚才那张图
+- 图中 / 图片里 / 这道题 / 这页笔记 / 题图 / 错题图
+- 继续讲第2题
+- 根据这张图生成思维导图
+- 根据这张图生成复习卡片
+- 根据这张图生成完整学习资源包
+
+Ordinary messages such as `你好`、`帮我生成几道练习题`、`今天学习计划怎么安排`、`解释一下导数` must not automatically attach the last image.
+
+When the frontend detects an explicit reference, it shows an image reference chip with a thumbnail. If the current session has multiple uploaded images, the user can choose which thumbnail is the active reference. The user can also cancel it; the request then carries `ignore_image_context=true`, and the backend must not reuse the cached image for that message.
+
+New chat sessions clear the frontend image reference history. Uploading a new image adds it to the history and selects it by default. Backend image context is isolated by `session_id`.
+
+## Local Image Preview
+
+In local development the backend runs on `http://127.0.0.1:8000`. Vite must proxy `/api` to that port. Uploaded image URLs are relative paths such as `/api/multimodal/file/<file_id>`; they should not hardcode `8001` or any absolute local host.
+
+The chat input chip lives directly above the textarea. It shows the selected image thumbnail, `正在引用图片`, optional `更换`, and a clear `取消引用` button. After cancellation the current request sends `ignore_image_context=true`.
+
+## Display Rules
+
+`explain_image_question` uses normal chat text as the main answer. Structured extraction stays behind `查看识别详情`.
+
+The stable main text fields are `display_text`, `teaching_text`, or `chat_text`; product chat returns those before any fallback status sentence.
+
+`查看识别详情` accepts question fields named `question_text`, `stem`, `question`, `text`, `content`, or `title`. If a question has no readable stem, show `题干识别不完整` and list it in review metadata instead of rendering an empty number.
+
+User image messages render a 120-200px thumbnail. The thumbnail opens a larger preview modal. If the image cannot load, the UI shows a clear fallback link instead of a broken icon.
+
+Mindmap tasks show Markmap first. OCR and image-understanding details stay collapsed. Markdown fallback remains available if Markmap rendering fails.
+
+Mindmap generation should use the full cached `last_vision_result`, including `detected_text`, extracted questions, answers, formulas, and knowledge points. If the main LLM returns a sparse map, the backend falls back to a local evidence-based map rather than showing two or three nodes.
+
+Image mindmaps must be knowledge-structure maps, not OCR trees and not a continuation of only the current follow-up question. The generation context is built from full vision evidence: `image_summary`, `detected_text`, `questions`, `answers`, `knowledge_points`, `possible_knowledge_points`, `formulas`, `common_mistakes`, `subject`, and `image_type`.
+
+The backend treats an LLM mindmap as too sparse when it has fewer than 6 first-level nodes, fewer than 20 total nodes, very long node labels, or only references one or two questions from a multi-question page. In that case it uses the local evidence-based fallback. For calculus/high-math question pages, the map should usually include short nodes such as function domain, odd/even functions, inverse functions, piecewise functions, sequence limits, infinitesimal comparison, common mistakes, and problem-solving strategy.
+
+When multiple images exist, the current selected image is passed as `selected_image_attachment_id` and exposed in `workflow_trace` with `image_context_source`, `reused_image_context`, and `mindmap_generation_context_source`. If the user cancels the image reference, the request carries `ignore_image_context=true`; the backend must not silently reuse the old image.
+
+Flashcards render as real cards: front first, back folded, math rendered where possible, and extra cards folded after the first six. Multi-question images should produce at least six useful study cards when enough evidence exists. Card fronts should be review questions, and backs should be explanatory answers rather than OCR fragments.
+
+Resource bundles start with a short explanation of what the bundle is, what saving does, and why knowledge candidates stay pending. Empty sections, empty arrays, dot-only placeholders, and pending-only shells without content are hidden. AI-generated resource and knowledge candidates remain pending until the user explicitly saves or confirms them.
+
+Do not show internal fields such as `type=unknown`, raw payloads, `fallback_rule`, or large JSON in the main chat bubble.
+
+## Math Rendering
+
+The frontend uses the existing Markdown + `remark-math` + `rehype-katex` pipeline. A small normalization pass wraps common bare LaTeX fragments such as `\frac{1}{x}`, `\sqrt{x}`, `\varphi`, and `\begin{cases}...\end{cases}` so they render more readably.
+
+KaTeX is configured not to throw on parse errors. If a formula cannot be normalized, the original text remains visible rather than crashing the page or showing a red error block.
+
+## Manual Review
+
+`needs_manual_review=true` is only for real uncertainty, such as missing OCR, truncated stems, incomplete options, unclear formulas, or low confidence.
+
+When true, return:
+
+- `review_reasons`
+- `uncertain_question_indices`
+- `uncertain_fields`
+- `uncertain_spans` when available
+- `review_level`: `low`, `medium`, or `high`
+- `can_continue`: whether the user can keep using the current result
+
+The frontend should say `以下内容可能需要你确认`, list concrete reasons, translate internal paths like `cards[11].back` into human text, and avoid fake confirmation flows.
+
+## Trace
+
+`workflow_trace` may expose:
+
+- `reused_image_context`
+- `image_context_source`
+- `vision_extract_by_qwen_vl`
+- `vision_context_reused`
+- `teaching_generation_by_main_llm`
+- `mindmap_generation_by_main_llm`
+- `flashcard_generation_by_main_llm`
+- `variant_generation_by_main_llm`
+
+Never include API keys in traces, logs, docs, or tests.
+
+## Smoke
+
+Mock acceptance smoke:
+
+```powershell
+cd C:\Users\20825\Documents\Codex\2026-06-07\seedance-ai-claude-code-ai-ai\backend
+$env:PYTHONIOENCODING="utf-8"
+.venv310\Scripts\python.exe scripts\smoke_multimodal_image_acceptance.py
 ```
 
-When unconfigured, the provider returns `script_ready_provider_not_configured` with a local micro-lesson script and storyboard. It does not return fake video URLs.
-
-## Supported Image Inputs
-
-`MultimodalAgent` accepts:
-
-- `image_url`
-- `image_base64`, including raw base64 or `data:image/...;base64,...`
-- uploaded images saved through `POST /api/multimodal/upload`
-
-Uploads are stored under `backend/uploads/multimodal/<session_id>/<uuid>.<ext>`.
-Allowed image types are PNG, JPG, JPEG, and WEBP. The current single-image limit is 10 MB.
-
-## Frontend
-
-The chat page can upload an image, preview it, send it with the message, and render structured multimodal results:
-
-- vision summary and recognized text
-- image-to-mindmap output through Markmap
-- flashcards
-- generated image URLs returned by the provider
-- video script and storyboard text
-
-Provider errors such as `provider_not_configured` and `needs_manual_review` are shown as explicit states instead of fake successful results.
+The script does not call real providers. It checks that preview URLs do not use `8001`, explanation has `display_text`, internal placeholders do not leak, details do not become empty question numbers, mindmap labels stay short, flashcards have at least six cards, resource bundles explain their purpose and drop empty sections, and manual review has actionable reasons.

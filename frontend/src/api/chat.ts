@@ -8,6 +8,7 @@ export interface SendMessageParams {
   attachments?: ChatAttachment[];
   image_url?: string;
   image_base64?: string;
+  ignore_image_context?: boolean;
 }
 
 export interface ChatResponse {
@@ -33,6 +34,23 @@ export async function uploadMultimodalImage(file: File, sessionId: string): Prom
     headers: { 'Content-Type': 'multipart/form-data' },
   });
   return { ...data, name: file.name };
+}
+
+export async function saveMultimodalResource(params: {
+  sessionId: string;
+  task_type?: string;
+  result: any;
+}): Promise<any> {
+  const { data } = await client.post('/api/multimodal/save-resource', params);
+  return data;
+}
+
+export async function prepareKnowledgeCandidates(params: {
+  result: any;
+  knowledge_candidates?: any[];
+}): Promise<any> {
+  const { data } = await client.post('/api/multimodal/knowledge-candidates', params);
+  return data;
 }
 
 /** 获取会话列表，可按科目过滤 */
