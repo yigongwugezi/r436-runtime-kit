@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Users, Plus, Copy, Trash2, ChevronRight, BookOpen, GraduationCap } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
-import { getMyClassSubjects, createClassSubject } from '../api/classSubjects';
+import { getMyClassSubjects, createClassSubject, deleteClassSubject } from '../api/classSubjects';
 import type { ClassSubject } from '../types/classSubject';
 
 function TeacherGuard({ children }: { children: React.ReactNode }) {
@@ -52,6 +52,14 @@ export default function TeacherHome() {
 
   const copyCode = (code: string) => {
     navigator.clipboard.writeText(code).catch(() => {});
+  };
+
+  const handleDeleteClass = async (cs: ClassSubject) => {
+    if (!confirm(`确定要删除班级「${cs.name}」吗？\n\n这将永久移除：\n· 所有 ${cs.student_count} 名学生\n· 所有推送的练习题\n· 所有相关数据\n\n此操作不可撤销！`)) return;
+    try {
+      await deleteClassSubject(cs.id);
+      await loadClasses();
+    } catch (e: any) { alert(e?.message || '删除失败'); }
   };
 
   return (
@@ -165,7 +173,16 @@ export default function TeacherHome() {
                         {cs.subject && <p className="text-xs text-surface-400">{cs.subject}</p>}
                       </div>
                     </div>
-                    <ChevronRight size={18} className="text-surface-300 group-hover:text-primary-500 transition-colors" />
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={e => { e.stopPropagation(); handleDeleteClass(cs); }}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-lg text-surface-300 hover:text-error-500 hover:bg-error-50"
+                        title="删除班级"
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                      <ChevronRight size={18} className="text-surface-300 group-hover:text-primary-500 transition-colors" />
+                    </div>
                   </div>
                   {cs.description && (
                     <p className="text-sm text-surface-500 mb-3 line-clamp-2">{cs.description}</p>

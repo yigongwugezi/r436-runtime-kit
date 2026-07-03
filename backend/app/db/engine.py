@@ -140,6 +140,12 @@ def init_db() -> None:
             "metadata": "JSON",
             "updated_at": "DATETIME",
         },
+        "student_questions": {
+            "needs_review": "BOOLEAN DEFAULT 0",
+            "review_reason": "VARCHAR(256)",
+            "review_status": "VARCHAR(32)",
+            "revision_note": "TEXT",
+        },
         "system_config": {
             "value": "TEXT",
             "description": "VARCHAR(256)",

@@ -715,6 +715,54 @@ def get_push_detail(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 10b. Unpush exercises (teacher only)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.delete("/class-subjects/{class_id}/pushes/{push_id}")
+def unpush_exercises(
+    class_id: str,
+    push_id: str,
+    auth: AuthContext = Depends(require_teacher),
+) -> dict:
+    """Delete a push and remove all associated student questions from the class."""
+    db = SessionLocal()
+    try:
+        cs = db.get(ClassSubjectModel, class_id)
+        if cs is None:
+            raise HTTPException(status_code=404, detail="班级不存在")
+        if cs.teacher_id != auth.learner_id and auth.role != "admin":
+            raise HTTPException(status_code=403, detail="无权管理该班级")
+
+        push = db.get(ClassPushModel, push_id)
+        if push is None or push.class_id != class_id:
+            raise HTTPException(status_code=404, detail="推送记录不存在")
+
+        # Delete associated StudentQuestionModel records
+        synthetic_session_id = f"class_{class_id}"
+        deleted_count = (
+            db.query(StudentQuestionModel)
+            .filter(
+                StudentQuestionModel.question_set_id == f"push_{push_id}",
+                StudentQuestionModel.session_id == synthetic_session_id,
+            )
+            .delete(synchronize_session="fetch")
+        )
+
+        # Delete the push record
+        db.delete(push)
+        db.commit()
+
+        return {
+            "status": "success",
+            "data": {"deletedQuestions": deleted_count},
+            "message": f"已撤销推送，移除了 {deleted_count} 道题目",
+        }
+    finally:
+        db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 11. Get class statistics (teacher only)
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -874,6 +922,64 @@ def get_pushed_questions(
         return {
             "status": "success",
             "data": {"pushes": list(pushes_map.values())},
+        }
+    finally:
+        db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 13. Delete class subject (teacher only)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.delete("/class-subjects/{class_id}")
+def delete_class_subject(
+    class_id: str,
+    auth: AuthContext = Depends(require_teacher),
+) -> dict:
+    """Permanently delete a class subject and all associated data."""
+    db = SessionLocal()
+    try:
+        cs = db.get(ClassSubjectModel, class_id)
+        if cs is None:
+            raise HTTPException(status_code=404, detail="班级不存在")
+        if cs.teacher_id != auth.learner_id and auth.role != "admin":
+            raise HTTPException(status_code=403, detail="无权删除该班级")
+
+        synthetic_session_id = f"class_{class_id}"
+
+        deleted_q = (
+            db.query(StudentQuestionModel)
+            .filter(
+                StudentQuestionModel.session_id == synthetic_session_id,
+                StudentQuestionModel.source == "teacher_pushed",
+            )
+            .delete(synchronize_session="fetch")
+        )
+
+        deleted_pushes = (
+            db.query(ClassPushModel)
+            .filter(ClassPushModel.class_id == class_id)
+            .delete(synchronize_session="fetch")
+        )
+
+        deleted_members = (
+            db.query(ClassSubjectMemberModel)
+            .filter(ClassSubjectMemberModel.class_id == class_id)
+            .delete(synchronize_session="fetch")
+        )
+
+        db.delete(cs)
+        db.commit()
+
+        return {
+            "status": "success",
+            "data": {
+                "deletedMembers": deleted_members,
+                "deletedPushes": deleted_pushes,
+                "deletedQuestions": deleted_q,
+            },
+            "message": f"已删除班级，移除了 {deleted_members} 名成员和 {deleted_pushes} 次推送",
         }
     finally:
         db.close()
