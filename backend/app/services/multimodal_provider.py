@@ -215,6 +215,7 @@ import mimetypes
 import uuid
 from pathlib import Path
 from urllib import error, request
+from urllib.parse import urljoin, urlparse
 
 from app.config import settings
 from app.utils.llm_json import parse_safe
@@ -252,6 +253,16 @@ def _json_post(url: str, payload: dict[str, Any], api_key: str, timeout: int = 6
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _qwen_chat_endpoint(base_url: str) -> str:
+    endpoint = _text(base_url)
+    if not endpoint.endswith("/chat/completions"):
+        endpoint = urljoin(endpoint.rstrip("/") + "/", "chat/completions")
+    parsed = urlparse(endpoint)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"invalid Qwen base URL: {base_url}")
+    return endpoint
+
+
 def _data_url_from_base64(value: str) -> str:
     value = _text(value)
     if value.startswith("data:image/"):
@@ -264,15 +275,15 @@ def _is_remote_or_data_image(value: str) -> bool:
     return lowered.startswith(("http://", "https://", "data:image/"))
 
 
-def _local_file_data_url(local_path: str) -> tuple[str, str]:
+def _local_file_data_url(local_path: str) -> tuple[str, str, str]:
     local_path = _text(local_path)
     if not local_path:
-        return "", "missing local image path"
+        return "", "missing local image path", "missing"
     local = _resolve_upload_path(local_path)
     if not local or not local.exists():
-        return "", f"local image file not found: {local_path}"
+        return "", f"local image file not found: {local_path}", "missing"
     mime = mimetypes.guess_type(local.name)[0] or "image/png"
-    return f"data:{mime};base64,{base64.b64encode(local.read_bytes()).decode('ascii')}", ""
+    return f"data:{mime};base64,{base64.b64encode(local.read_bytes()).decode('ascii')}", "", "local_file"
 
 
 def _resolve_upload_path(local_path: str) -> Path | None:
@@ -291,37 +302,39 @@ def _resolve_upload_path(local_path: str) -> Path | None:
     return None
 
 
-def image_input_from_context(context: dict[str, Any]) -> tuple[str, str]:
+def image_input_from_context(context: dict[str, Any]) -> tuple[str, str, str]:
     image_url = _text(context.get("image_url"))
     if image_url:
         if _is_remote_or_data_image(image_url):
-            return image_url, ""
+            return image_url, "", "data_url" if image_url.lower().startswith("data:image/") else "public_url"
         return _local_file_data_url(image_url)
 
     image_base64 = _text(context.get("image_base64"))
     if image_base64:
-        return _data_url_from_base64(image_base64), ""
+        return _data_url_from_base64(image_base64), "", "data_url" if image_base64.lower().startswith("data:image/") else "raw_base64"
 
     warning = ""
+    kind = "missing"
     for item in context.get("attachments") or []:
         if not isinstance(item, dict):
             continue
         if _text(item.get("image_base64")):
-            return _data_url_from_base64(_text(item.get("image_base64"))), ""
+            value = _text(item.get("image_base64"))
+            return _data_url_from_base64(value), "", "data_url" if value.lower().startswith("data:image/") else "raw_base64"
         if _text(item.get("local_path")):
-            data_url, warning = _local_file_data_url(_text(item.get("local_path")))
+            data_url, warning, kind = _local_file_data_url(_text(item.get("local_path")))
             if data_url:
-                return data_url, ""
+                return data_url, "", kind
         for key in ("image_url", "url"):
             url = _text(item.get(key))
             if not url:
                 continue
             if _is_remote_or_data_image(url):
-                return url, ""
-            data_url, warning = _local_file_data_url(url)
+                return url, "", "data_url" if url.lower().startswith("data:image/") else "public_url"
+            data_url, warning, kind = _local_file_data_url(url)
             if data_url:
-                return data_url, ""
-    return "", warning
+                return data_url, "", kind
+    return "", warning, kind
 
 
 def save_multimodal_upload(
@@ -440,11 +453,16 @@ class QwenVisionProvider:
         api_key = _env("DASHSCOPE_API_KEY", "QWEN_API_KEY")
         model = _env("QWEN_VL_MODEL", default="qwen-vl-plus")
         base_url = _env("QWEN_BASE_URL", default="https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
-        image, image_warning = image_input_from_context(context)
+        image, image_warning, image_kind = image_input_from_context(context)
+        endpoint = ""
+        try:
+            endpoint = _qwen_chat_endpoint(base_url)
+        except ValueError as exc:
+            return _response(status="failed", provider=self.provider, warnings=[str(exc)], trace={"model": model, "base_url": base_url, "endpoint": endpoint, "image_input_kind": image_kind, "payload_image_url_preview": image[:80], "exception_type": type(exc).__name__, "exception_message": str(exc)})
         if not api_key:
             return _response(status="provider_not_configured", provider=self.provider, warnings=["Qwen vision provider is not configured."], trace={"required_env": ["DASHSCOPE_API_KEY or QWEN_API_KEY"]})
         if not image:
-            return _response(status="needs_input", provider=self.provider, warnings=[image_warning or "missing image input"], trace={"input_keys": sorted(context.keys())})
+            return _response(status="needs_input", provider=self.provider, warnings=[image_warning or "missing image input"], trace={"input_keys": sorted(context.keys()), "model": model, "base_url": base_url, "endpoint": endpoint, "image_input_kind": image_kind})
 
         prompt = (
             "Analyze this learning image. Return JSON only with keys: "
@@ -462,8 +480,9 @@ class QwenVisionProvider:
             }],
             "temperature": 0.1,
         }
+        trace = {"model": model, "base_url": base_url, "endpoint": endpoint, "image_input_kind": image_kind, "payload_image_url_preview": image[:80]}
         try:
-            body = self.post_json(f"{base_url}/chat/completions", payload, api_key, int(os.getenv("QWEN_TIMEOUT", "60")))
+            body = self.post_json(endpoint, payload, api_key, int(os.getenv("QWEN_TIMEOUT", "60")))
             raw_text = _text(body.get("choices", [{}])[0].get("message", {}).get("content"))
             try:
                 parsed = parse_safe(raw_text)
@@ -475,10 +494,10 @@ class QwenVisionProvider:
                 status=status,
                 provider=self.provider,
                 result=_normalize_vision_result(parsed, raw_text),
-                trace={"model": model, "base_url": base_url},
+                trace=trace,
             ) | {"model": model, "raw_text": raw_text}
         except (error.URLError, TimeoutError, OSError, KeyError, json.JSONDecodeError, ValueError) as exc:
-            return _response(status="failed", provider=self.provider, warnings=[str(exc)], trace={"model": model, "base_url": base_url})
+            return _response(status="failed", provider=self.provider, warnings=[str(exc)], trace={**trace, "exception_type": type(exc).__name__, "exception_message": str(exc)})
 
 
 class QwenImageProvider:
