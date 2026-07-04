@@ -39,6 +39,42 @@ router = APIRouter(tags=["class-subjects"])
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _is_member_or_parent_of_member(
+    db, class_id: str, auth: AuthContext
+) -> bool:
+    """Return True if *auth* is a member of *class_id*, or is a parent of one."""
+    # Direct membership
+    if (
+        db.query(ClassSubjectMemberModel)
+        .filter(
+            ClassSubjectMemberModel.class_id == class_id,
+            ClassSubjectMemberModel.student_id == auth.learner_id,
+        )
+        .first()
+    ):
+        return True
+
+    # Parent of a member
+    if auth.is_parent:
+        children = (
+            db.query(LearnerModel)
+            .filter(LearnerModel.parent_id == auth.learner_id)
+            .all()
+        )
+        child_ids = [c.id for c in children]
+        if child_ids and (
+            db.query(ClassSubjectMemberModel)
+            .filter(
+                ClassSubjectMemberModel.class_id == class_id,
+                ClassSubjectMemberModel.student_id.in_(child_ids),
+            )
+            .first()
+        ):
+            return True
+
+    return False
+
+
 def require_teacher(auth: AuthContext = Depends(require_auth)) -> AuthContext:
     if auth.role not in ("admin", "teacher"):
         raise HTTPException(status_code=403, detail="需要教师权限")
@@ -210,12 +246,29 @@ def get_my_class_subjects(
 def get_joined_class_subjects(
     auth: AuthContext = Depends(require_auth),
 ) -> dict:
-    """List all class subjects the current user has joined."""
+    """List all class subjects the current user has joined.
+
+    When the caller is a parent, returns the joined classes of their bound
+    children instead (parents themselves are never class members).
+    """
     db = SessionLocal()
     try:
+        # Resolve which learner IDs to query
+        if auth.is_parent:
+            children = (
+                db.query(LearnerModel)
+                .filter(LearnerModel.parent_id == auth.learner_id)
+                .all()
+            )
+            learner_ids = [c.id for c in children]
+            if not learner_ids:
+                return {"status": "success", "data": {"classSubjects": []}}
+        else:
+            learner_ids = [auth.learner_id]
+
         memberships = (
             db.query(ClassSubjectMemberModel)
-            .filter(ClassSubjectMemberModel.student_id == auth.learner_id)
+            .filter(ClassSubjectMemberModel.student_id.in_(learner_ids))
             .all()
         )
         if not memberships:
@@ -256,19 +309,10 @@ def get_class_subject(
         if cs is None:
             raise HTTPException(status_code=404, detail="班级不存在")
 
-        # Access control: teacher (owner) or enrolled student
+        # Access control: teacher (owner), enrolled student, or parent of enrolled student
         is_teacher = auth.learner_id == cs.teacher_id or auth.role in ("admin",)
-        if not is_teacher:
-            is_member = (
-                db.query(ClassSubjectMemberModel)
-                .filter(
-                    ClassSubjectMemberModel.class_id == class_id,
-                    ClassSubjectMemberModel.student_id == auth.learner_id,
-                )
-                .first()
-            )
-            if not is_member:
-                raise HTTPException(status_code=403, detail="无权访问该班级")
+        if not is_teacher and not _is_member_or_parent_of_member(db, class_id, auth):
+            raise HTTPException(status_code=403, detail="无权访问该班级")
 
         _ = cs.teacher
         return {"status": "success", "data": {"classSubject": _class_subject_dict(cs)}}
@@ -848,17 +892,8 @@ def get_pushed_questions(
             raise HTTPException(status_code=404, detail="班级不存在")
 
         is_teacher = auth.learner_id == cs.teacher_id or auth.role in ("admin",)
-        if not is_teacher:
-            member = (
-                db.query(ClassSubjectMemberModel)
-                .filter(
-                    ClassSubjectMemberModel.class_id == class_id,
-                    ClassSubjectMemberModel.student_id == auth.learner_id,
-                )
-                .first()
-            )
-            if not member:
-                raise HTTPException(status_code=403, detail="你未加入该班级")
+        if not is_teacher and not _is_member_or_parent_of_member(db, class_id, auth):
+            raise HTTPException(status_code=403, detail="你未加入该班级")
 
         synthetic_session_id = f"class_{class_id}"
         questions = (

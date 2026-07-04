@@ -20,7 +20,7 @@ function Ring({ pct }: { pct: number }) {
 
 export default function LearningAnalyticsPage() {
   const nav = useNavigate();
-  const subjectId = useSubjectStore(s => s.activeSubject?.id);
+  const subjectId = useSubjectStore(s => s.activeSubject?.id ?? s.activeClassSubject?.subject);
   const { analytics, loading, error, refetch } = useLearningAnalytics();
   if (!subjectId) return <PageEmpty icon={<TrendingUp className="w-8 h-8" />} title="请先选择科目" description="在左侧边栏选择一个科目后查看学习分析" />;
   if (loading && !analytics) return <PageLoading text="正在分析学习数据…" />;

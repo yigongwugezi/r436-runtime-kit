@@ -5,7 +5,7 @@ import { useSubjectStore } from '../store/subjectStore';
 import type { Resource, ResourceFilter } from '../types/resource';
 
 export function useResources(initialFilter?: ResourceFilter) {
-  const subjectId = useSubjectStore((s) => s.activeSubject?.id);
+  const subjectId = useSubjectStore((s) => s.activeSubject?.id ?? s.activeClassSubject?.subject);
   const sessionId = useChatStore((state) => state.currentSessionId);
   const dataVersion = useChatStore((state) => state.dataVersion);
   const [resources, setResources] = useState<Resource[]>([]);

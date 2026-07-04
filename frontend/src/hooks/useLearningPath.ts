@@ -18,7 +18,7 @@ function statusToMastery(status: PathNodeStatus): number {
 
 export function useLearningPath() {
   const location = useLocation();
-  const subjectId = useSubjectStore((s) => s.activeSubject?.id);
+  const subjectId = useSubjectStore((s) => s.activeSubject?.id ?? s.activeClassSubject?.subject);
   const sessionId = useChatStore((state) => state.dataSessionId);
   const dataVersion = useChatStore((state) => state.dataVersion);
   const [path, setPath] = useState<LearningPath | null>(null);

@@ -13,7 +13,7 @@ export function useSessionContext() {
   const newSession = useChatStore((s) => s.newSession);
   const currentSession = sessions.find((s) => s.id === sessionId);
 
-  const subjectId = useSubjectStore((s) => s.activeSubject?.id);
+  const subjectId = useSubjectStore((s) => s.activeSubject?.id ?? s.activeClassSubject?.subject);
   const activeSubject = useSubjectStore((s) => s.activeSubject);
   const subjects = useSubjectStore((s) => s.subjects);
   const setActiveSubject = useSubjectStore((s) => s.setActive);
