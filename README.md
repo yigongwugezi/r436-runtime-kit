@@ -1,157 +1,101 @@
-# r436-runtime-kit
+# 🎓 EduAgent — 多智能体个性化学习资源生成系统
 
-A course workflow runtime kit for local demo and module integration.
+基于 **DeepTutor**（港大，Apache 2.0）多智能体主引擎 + **OpenMAIC**（清华，MIT）多模态课件引擎，底层大模型全面接入科大讯飞系列产品的个性化学习系统。
 
-## 当前技术路线
+## 🏗️ 多智能体架构（8 Agent + 1 引擎）
 
-前端技术栈已统一调整为：
+| Agent | 来源 | 角色 |
+|-------|------|------|
+| InvestigateAgent | DeepTutor 内置 | 意图分析专家 — 从对话中提取学习需求 |
+| NoteAgent | DeepTutor 内置 | 结构化记录专家 — 生成学习摘要和证据链 |
+| **Profiler Agent** | Socratic ES (MIT) | 学生画像专家 — 构建 6 维动态画像 |
+| PlanAgent | DeepTutor 内置 | 路径规划专家 — 分阶段学习路径 |
+| ManagerAgent | DeepTutor 内置 | 资源调度专家 — 按阶段调度生成引擎 |
+| CheckAgent | DeepTutor 内置 | 质量审核专家 — Agent 间互审 + 防幻觉 |
+| SolveAgent | DeepTutor 内置 | 智能辅导专家 — 即时答疑 + 苏格拉底追问 |
+| **Grading Agent** | GRADE (BEA 2025) | 批改评估专家 — 4 维评分 + 5 类错误归类 |
+| OpenMAIC 引擎 | OpenMAIC (MIT) | 多模态课件 — PPT + TTS + 动画分镜 |
 
-- React 19 + TypeScript + Vite
-- React Router
-- Zustand
-- Axios
-- Tailwind CSS
-- Mermaid
-- React Markdown
-- ECharts
-- lucide-react
+## 🚀 快速启动
 
-后端技术栈：
+### 前置条件
 
-- Python 3.13.x
-- FastAPI
-- Uvicorn
-- Pydantic
-- 自研轻量模块调度器
-- 统一 LLM Client，支持 `mock` 与 `deepseek`，后续可扩展星火、Qwen、本地模型
+- Docker & Docker Compose
+- 讯飞星火 API Key（[注册获取](https://xinghuo.xfyun.cn/)）
 
-## 当前功能
-
-- 对话式学习入口
-- 学生画像模块，已接入 DeepSeek，可从学生自然语言描述中抽取画像
-- 意图识别模块，采用轻量 Semantic Router 思路，可区分闲聊、画像询问、学习规划、答疑、资源请求和学习反馈
-- 调度骨架
-- 知识库检索、学习诊断、路径规划、资源生成、质量审核模块
-- 学习路径展示接口
-- 学习资源展示接口
-- 流式对话接口
-- 学习行为事件追踪接口
-- 学习分析接口雏形
-
-## 模块流程
-
-```text
-React 前端
-  -> FastAPI 接口
-  -> IntentAgent 意图识别
-  -> AgentOrchestrator
-  -> ProfileAgent
-  -> KnowledgeAgent
-  -> DiagnosisAgent
-  -> PlannerAgent
-  -> ResourceAgent
-  -> ReviewAgent
-  -> 返回画像、诊断、路径、资源、模块状态和审核结果
-```
-
-## 主要接口
-
-第一阶段保留底层主流程接口：
-
-```text
-POST /api/agents/run
-```
-
-React 前端正式使用产品化接口：
-
-```text
-POST /chat/stream
-POST /chat/send
-GET  /profile
-POST /profile/build
-GET  /learning-path
-GET  /resources
-POST /feedback/event
-GET  /learning-analytics
-```
-
-## 快速启动
-
-### 后端
+### 1. 配置环境
 
 ```bash
-cd backend
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn app.main:app --port 8001
+cp .env.example .env
+# 编辑 .env 填入讯飞 API Key
 ```
 
-健康检查：
-
-```text
-http://localhost:8001/api/health
-```
-
-### 前端
+### 2. 一键启动
 
 ```bash
-cd frontend
-npm install
-npm run dev
+docker-compose up -d
 ```
 
-访问：
+### 3. 上传课程知识库
 
-```text
-http://localhost:5173
+```bash
+curl -X POST http://localhost:8000/api/rag/upload \
+  -F "files=@knowledge_base/courses/ai_intro/chapters/*.md"
 ```
 
-本地前端 `.env` 可配置：
+### 4. 打开浏览器
 
-```env
-VITE_API_BASE_URL=http://localhost:8001
+```
+http://localhost:3000
 ```
 
-## 模型配置
+## 📂 项目结构
 
-后端 `.env` 示例：
-
-```env
-APP_NAME=r436-runtime-kit-backend
-APP_ENV=development
-FRONTEND_ORIGIN=http://localhost:5173
-LLM_PROVIDER=deepseek
-LLM_MODEL=deepseek-chat
-LLM_TEMPERATURE=0.2
-DEEPSEEK_API_KEY=你的key
-DEEPSEEK_BASE_URL=https://api.deepseek.com
+```
+EduAgent/
+├── config/
+│   ├── agents.yaml              # 8 个 Agent 注册配置
+│   ├── providers.yaml           # 讯飞 Spark/SeeDance/TTS/ASR/OCR
+│   └── mcp_servers.yaml         # MCP 外部工具注册
+├── external_agents/
+│   ├── socratic_profiler/       # 学生画像 Agent 服务（FastAPI :8001）
+│   └── grade_agent/             # 批改评估 Agent 服务（FastAPI :8002）
+├── integrations/                # 讯飞 SDK 集成层
+│   ├── spark_client.py          # 星火 LLM 客户端
+│   ├── seedance_client.py       # SeeDance 视频生成
+│   └── xunfei_platform.py       # TTS/ASR/OCR
+├── frontend-extension/          # Next.js 前端（:3000）
+│   ├── app/
+│   │   ├── page.tsx             # 对话页
+│   │   ├── profile/page.tsx     # 画像页
+│   │   ├── grading/page.tsx     # 批改页
+│   │   └── analytics/page.tsx   # 分析页
+│   ├── components/              # 组件（雷达图/错误标签/进度流/骨架屏）
+│   ├── hooks/                   # 数据 hooks
+│   └── types/                   # TypeScript 类型
+├── knowledge_base/              # 课程知识库（《人工智能导论》8 章）
+├── docker-compose.yml           # 4 服务编排
+├── .env.example                 # 环境变量模板
+└── outputs/                     # 方案文档
+    └── 最终技术方案.md
 ```
 
-不想调用真实模型时：
+## 🔗 开源协议标注
 
-```env
-LLM_PROVIDER=mock
-```
+| 项目 | 协议 | 用途 |
+|------|------|------|
+| DeepTutor (HKUDS) | Apache 2.0 | 多智能体主引擎、RAG、记忆系统 |
+| Socratic Education System | MIT | 学生画像构建智能体 |
+| GRADE (AIM-SCU) | 开源 | 自动批改智能体 |
+| OpenMAIC (THU-MAIC) | MIT | 多模态课件生成引擎 |
+| 讯飞星火 Spark | 科大讯飞 | 底层大语言模型 |
+| 讯飞 SeeDance | 科大讯飞 | 多模态视频生成 |
+| 讯飞开放平台 | 科大讯飞 | TTS/ASR/OCR |
 
-注意：真实 `.env` 不要提交到 GitHub。
+## 🛡️ 防幻觉机制（五层防线）
 
-## 团队协作规则
-
-- 当前前端路线统一为 React + TypeScript + Vite。
-- 后端继续使用 FastAPI + Python 3.13.x。
-- 禁止对 `main` 分支执行 force push。
-- 接口变更必须先同步到文档。
-- 前端不得自行删除后端、文档和知识库目录。
-- 后端不得随意改前端字段结构，涉及接口需同步前端。
-
-## 第一阶段验收目标
-
-输入学生学习情况后，系统能够展示：
-
-- 学生画像
-- 学习诊断
-- 学习路径
-- 至少 5 类学习资源
-- 模块运行过程
-- 学习行为追踪和基础学习分析
+1. **ManagerAgent 上下文限制** — 生成时传入知识库上下文，限制 LLM 边界
+2. **CheckAgent 逐条审核** — 跨 Agent 一致性检查 + 内容扎实性验证
+3. **Memory Graph 证据溯源** — 每条关键结论追溯到知识库来源
+4. **讯飞星火安全过滤** — API 层面拦截敏感违规内容
+5. **教育边界声明** — 明确只提供学习辅导，不代写作业/考试作弊

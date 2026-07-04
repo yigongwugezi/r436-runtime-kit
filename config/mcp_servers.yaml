@@ -1,0 +1,98 @@
+# ═══════════════════════════════════════════
+# MCP 外部工具服务器配置
+# 为 Agent 提供可扩展的外部能力
+# ═══════════════════════════════════════════
+
+mcp_servers:
+
+  # ── Socratic Profiler：学生画像 ──
+  socratic_profiler:
+    name: "Socratic Profiler"
+    url: "http://localhost:8001/mcp"
+    timeout: 30
+    tools:
+      - "analyze_profile"
+      - "get_profile"
+      - "analyze_conversation"
+
+  # ── GRADE Agent：自动批改 ──
+  grade_agent:
+    name: "GRADE Grading"
+    url: "http://localhost:8002/mcp"
+    timeout: 60
+    tools:
+      - "assess_answer"
+      - "get_student_stats"
+
+  # ── OpenMAIC：多模态课件 ──
+  openmaic:
+    name: "OpenMAIC Multimodal"
+    url: "http://localhost:8003/mcp"
+    timeout: 180
+    tools:
+      - "generate_slides"
+      - "generate_tts_lecture"
+      - "export_pptx"
+
+  # ── 讯飞 SeeDance 视频生成 ──
+  seedance:
+    name: "讯飞 SeeDance"
+    command: "python"
+    args: ["-m", "integrations.seedance_mcp"]
+    env:
+      SEEDANCE_API_KEY: "${SEEDANCE_API_KEY}"
+      SEEDANCE_API_SECRET: "${SEEDANCE_API_SECRET}"
+    timeout: 180
+    tools:
+      - "generate_educational_video"
+      - "generate_storyboard"
+      - "query_generation_status"
+
+  # ── 讯飞 TTS 语音合成 ──
+  xunfei_tts:
+    name: "讯飞 TTS"
+    command: "python"
+    args: ["-m", "integrations.xunfei_tts_mcp"]
+    env:
+      XUNFEI_TTS_APP_ID: "${XUNFEI_TTS_APP_ID}"
+      XUNFEI_TTS_API_KEY: "${XUNFEI_TTS_API_KEY}"
+      XUNFEI_TTS_API_SECRET: "${XUNFEI_TTS_API_SECRET}"
+    timeout: 60
+    tools:
+      - "text_to_speech"
+      - "generate_lecture_audio"
+
+  # ── 讯飞 ASR 语音识别 ──
+  xunfei_asr:
+    name: "讯飞 ASR"
+    command: "python"
+    args: ["-m", "integrations.xunfei_asr_mcp"]
+    env:
+      XUNFEI_ASR_APP_ID: "${XUNFEI_ASR_APP_ID}"
+      XUNFEI_ASR_API_KEY: "${XUNFEI_ASR_API_KEY}"
+    timeout: 30
+    tools:
+      - "speech_to_text"
+
+  # ── 讯飞 OCR 图片识别 ──
+  xunfei_ocr:
+    name: "讯飞 OCR"
+    command: "python"
+    args: ["-m", "integrations.xunfei_ocr_mcp"]
+    env:
+      XUNFEI_OCR_APP_ID: "${XUNFEI_OCR_APP_ID}"
+      XUNFEI_OCR_API_KEY: "${XUNFEI_OCR_API_KEY}"
+    timeout: 30
+    tools:
+      - "image_to_text"
+      - "extract_question_from_image"
+
+  # ── 网页搜索（拓展阅读材料）──
+  web_search:
+    name: "Web Search"
+    command: "python"
+    args: ["-m", "integrations.search_mcp"]
+    timeout: 30
+    tools:
+      - "web_search"
+      - "fetch_page_content"

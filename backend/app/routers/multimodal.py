@@ -12,7 +12,10 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
-from app.agents.multimodal_agent import MultimodalAgent
+# MultimodalAgent removed — OpenMAIC handles multimodal tasks externally
+class _MultimodalStub:
+    def run(self, context): return {"result": None, "error": "Multimodal service not configured"}
+MultimodalAgent = _MultimodalStub
 from app.db.engine import SessionLocal
 from app.db.repository import upsert_resource
 from app.services.multimodal_provider import UPLOAD_ROOT, save_multimodal_upload

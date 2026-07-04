@@ -22,10 +22,15 @@ export function useProfile() {
     setError(null);
     store.setLoading(subjectId, true);
     try {
+      // Socratic Profiler 为主数据源
+      try {
+        const socraticRes = await profileApi.getSocraticProfile(sessionId || 'demo');
+        if (socraticRes?.profile) { store.setProfile(subjectId, socraticRes.profile); return; }
+      } catch { /* ignore */ }
+      // DB 兜底
       const res = await profileApi.getProfile({ sessionId, subjectId });
-      if (res?.profile) {
-        store.setProfile(subjectId, res.profile);
-      } else {
+      if (res?.profile) { store.setProfile(subjectId, res.profile); }
+      else {
         store.setError(subjectId, '画像数据为空');
         setError('画像数据为空');
       }

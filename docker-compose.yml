@@ -1,0 +1,115 @@
+version: "3.8"
+
+services:
+  # ── DeepTutor 主引擎 ──
+  deeptutor:
+    build:
+      context: ./external_agents/deeptutor
+    container_name: deeptutor
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - OPENAI_API_KEY=${LLM_API_KEY}
+      - OPENAI_BASE_URL=${LLM_BASE_URL}
+      - DEFAULT_MODEL=${LLM_MODEL}
+      - DEEPTUTOR_HOME=/app/runtime_data
+    volumes:
+      - ./knowledge_base:/app/knowledge_base:ro
+      - ./runtime_data:/app/runtime_data
+      - deeptutor_data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # ── Socratic Profiler Agent ──
+  socratic-profiler:
+    build:
+      context: ./external_agents/socratic_profiler
+    container_name: socratic-profiler
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    volumes:
+      - profiler_data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # ── GRADE Grading Agent ──
+  grade-agent:
+    build:
+      context: ./external_agents/grade_agent
+    container_name: grade-agent
+    ports:
+      - "8002:8002"
+    env_file:
+      - .env
+    volumes:
+      - grade_data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # ── OpenMAIC 多模态课件引擎 ──
+  openmaic:
+    build:
+      context: ./external_agents/openmaic
+    container_name: openmaic
+    ports:
+      - "8003:8003"
+    env_file:
+      - .env
+    environment:
+      - TTS_PROVIDER=${TTS_PROVIDER:-xunfei}
+      - XUNFEI_TTS_APP_ID=${XUNFEI_TTS_APP_ID}
+      - XUNFEI_TTS_API_KEY=${XUNFEI_TTS_API_KEY}
+      - XUNFEI_TTS_API_SECRET=${XUNFEI_TTS_API_SECRET}
+      - OPENAI_API_KEY=${LLM_API_KEY}
+      - OPENAI_BASE_URL=${LLM_BASE_URL}
+    volumes:
+      - openmaic_data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/api/health"]
+      interval: 20s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  # ── 前端 ──
+  frontend:
+    build:
+      context: ./frontend-extension
+    container_name: eduagent-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_PROFILER_URL=http://localhost:8001
+      - NEXT_PUBLIC_GRADER_URL=http://localhost:8002
+      - NEXT_PUBLIC_OPENMAIC_URL=http://localhost:8003
+    depends_on:
+      - deeptutor
+      - socratic-profiler
+      - grade-agent
+      - openmaic
+    restart: unless-stopped
+
+volumes:
+  deeptutor_data:
+  profiler_data:
+  grade_data:
+  openmaic_data:

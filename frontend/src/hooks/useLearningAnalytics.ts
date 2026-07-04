@@ -33,7 +33,14 @@ export function useLearningAnalytics() {
     setError(null);
     setAnalytics(null);  // 切换科目时立即清空旧数据
     try {
-      const data = await getAnalytics({ sessionId, subjectId });
+      // GRADE Agent 为主数据源
+      let data: any = null;
+      try {
+        const r = await fetch(`http://localhost:8080/api/agent-data/analytics/${sessionId}`);
+        if (r.ok) { const gradeData = await r.json(); data = { eventCount: gradeData.total_questions || 0, averageScore: gradeData.average_score, weakTopics: (gradeData.weak_knowledge_points || []).map((k:any) => k.name) } as any; }
+      } catch {}
+      // DB 兜底
+      if (!data || data.eventCount === 0) { data = await getAnalytics({ sessionId, subjectId }); }
       setAnalytics(data);
     } catch (e) {
       setError(e instanceof Error ? e.message : '加载分析数据失败');

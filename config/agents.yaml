@@ -1,0 +1,160 @@
+# ═══════════════════════════════════════════
+# EduAgent 多智能体注册配置
+# 8 个角色化 Agent + 1 个多模态引擎
+# ═══════════════════════════════════════════
+
+agents:
+  # ── 内置 Agent（DeepTutor 原生）──
+
+  investigate:
+    agent_id: "investigate_agent"
+    agent_name: "意图分析 Agent"
+    role: "你是学习行为分析师。从学生的自然语言描述中提取关键信息：专业背景、已有基础、学习目标、时间约束、偏好方式。只提取，不推测，不补充。"
+    source: "builtin"
+    priority: 1
+    timeout: 15s
+    output_schema:
+      - background: "专业/年级/相关课程"
+      - knowledge_base: "已有知识掌握情况"
+      - learning_goal: "短期/长期学习目标"
+      - time_budget: "可用学习时间"
+      - cognitive_preference: "偏好的学习方式"
+
+  note:
+    agent_id: "note_agent"
+    agent_name: "结构化记录 Agent"
+    role: "你是学习档案管理员。将分析 Agent 的原始提取结果整理为结构化的学习摘要，建立证据链——每条结论必须标注来源于对话中的哪句话。"
+    source: "builtin"
+    priority: 2
+    timeout: 10s
+    depends_on: ["investigate"]
+
+  plan:
+    agent_id: "plan_agent"
+    agent_name: "路径规划 Agent"
+    role: "你是课程设计师。根据学生画像和诊断结果，规划分阶段个性化学习路径。每阶段必须包含：明确的阶段目标、学习任务清单、预估时长、推荐资源类型配比。阶段安排遵循知识依赖关系的拓扑排序。"
+    source: "builtin"
+    priority: 4
+    timeout: 30s
+    depends_on: ["profiler"]
+
+  manager:
+    agent_id: "manager_agent"
+    agent_name: "资源调度 Agent"
+    role: "你是教学资源管理师。根据学习路径各阶段的任务列表，调度对应的资源生成引擎。根据学生画像的认知风格，动态调整各类型资源的配比——视觉型学生优先图解和视频，实操型学生优先代码案例和练习。"
+    source: "builtin"
+    priority: 5
+    timeout: 120s
+    depends_on: ["plan"]
+
+  solve:
+    agent_id: "solve_agent"
+    agent_name: "智能辅导 Agent"
+    role: "你是一对一辅导老师。当学生遇到问题时，基于 RAG 知识库提供即时、准确的答疑。根据问题类型自动切换解答形式：概念问题→图解说明，计算问题→分步推导，学生持续表示'不懂'→切换为苏格拉底追问模式，引导自主思考而非直接给答案。"
+    source: "builtin"
+    priority: 7
+    timeout: 30s
+
+  check:
+    agent_id: "check_agent"
+    agent_name: "质量审核 Agent"
+    role: "你是学术审核员。验证所有生成资源的准确性、安全性和难度匹配。检查规则：①跨 Agent 一致性——PlanAgent 生成的路径是否覆盖了 Profiler 识别的薄弱点？②内容扎实性——每份讲义的每条关键结论是否可追溯到知识库来源？③安全红线——无作弊/代写/敏感违规内容。审核结论分三档：passed/warning/blocked。blocked 打回 ManagerAgent 重新调度。"
+    source: "builtin"
+    priority: 6
+    timeout: 30s
+    depends_on: ["manager"]
+
+  # ── 外部 Agent ──
+
+  profiler:
+    agent_id: "profiler_agent"
+    agent_name: "学生画像 Agent"
+    role: "你是教育心理学家。从对话记录和 NoteAgent 的结构化摘要中，构建包含 6 个维度的动态学生画像。每次 GRADE 批改结果返回后，自动更新易错点和知识基础字段，实现随学随新。"
+    source: "external"
+    endpoint: "http://socratic-profiler:8001/api/profile/analyze"
+    healthcheck: "http://socratic-profiler:8001/health"
+    priority: 3
+    timeout: 20s
+    depends_on: ["note"]
+    fallback: "rule_based_profile"
+    retry: 2
+    profile_dimensions:
+      - key: "major_background"
+        label: "专业背景"
+        description: "专业、年级、相关课程经历"
+      - key: "knowledge_base"
+        label: "知识基础"
+        description: "先修知识掌握程度"
+      - key: "learning_goal"
+        label: "学习目标"
+        description: "短期/长期学习目标"
+      - key: "cognitive_style"
+        label: "认知风格"
+        description: "偏好的学习方式（图解/代码/讲义/视频）"
+      - key: "error_patterns"
+        label: "易错点"
+        description: "常见错误类型和薄弱环节"
+      - key: "learning_progress"
+        label: "学习进度"
+        description: "当前课程学习位置"
+
+  grader:
+    agent_id: "grader_agent"
+    agent_name: "批改评估 Agent"
+    role: "你是试卷批改专家。对学生的练习作答进行 4 维评分（思路正确性 40%、步骤完整性 30%、计算准确性 20%、表达规范性 10%）和 5 类错误归类（概念错误、计算失误、审题偏差、方法不当、知识遗忘）。每种错误类型自动触发对应的学习建议和资源推送。"
+    source: "external"
+    endpoint: "http://grade-agent:8002/api/grade/assess"
+    healthcheck: "http://grade-agent:8002/health"
+    priority: 8
+    timeout: 30s
+    depends_on: ["solve"]
+    fallback: "rule_based_grading"
+    retry: 2
+    grading_dimensions:
+      - name: "reasoning"
+        label: "思路正确性"
+        weight: 0.4
+      - name: "completeness"
+        label: "步骤完整性"
+        weight: 0.3
+      - name: "calculation"
+        label: "计算准确性"
+        weight: 0.2
+      - name: "expression"
+        label: "表达规范性"
+        weight: 0.1
+    error_categories:
+      - "concept"
+      - "calculation"
+      - "misreading"
+      - "method"
+      - "forgetting"
+
+  # ── 多模态引擎 ──
+
+  openmaic:
+    name: "OpenMAIC 多模态课件引擎"
+    source: "external"
+    endpoint: "http://openmaic:8003/api/generate"
+    healthcheck: "http://openmaic:8003/api/health"
+    timeout: 180s
+    capabilities:
+      - "slides_generation"
+      - "tts_lecture"
+      - "animation_storyboard"
+      - "pptx_export"
+
+# ── 全局设置 ──
+
+pipeline:
+  max_retries: 2
+  agent_timeout_default: 60s
+  enable_parallel: true
+  enable_progress_streaming: true
+
+review:
+  enabled: true
+  cross_agent_consistency: true
+  content_grounding: true
+  safety_filter: true
+  difficulty_match: true

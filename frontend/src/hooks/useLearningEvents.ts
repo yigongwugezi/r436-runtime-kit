@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getLearningTimeline } from '../api/timeline';
+import { getLearningTimeline } from '../api/feedback';
 import type { TimelineEvent } from '../types/timeline';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';

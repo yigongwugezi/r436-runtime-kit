@@ -33,12 +33,15 @@ export function useLearningPath() {
     setError(null);
     setPath(null);  // 切换科目时立即清空旧路径
     try {
+      // DeepTutor Partner 为主数据源
+      try {
+        const r = await fetch(`http://localhost:8080/api/agent-data/learning-path/${sessionId}`);
+        if (r.ok) { const data = await r.json(); if (data.stages?.length) { setPath({ id: sessionId, stages: data.stages, overallProgress: 0 } as any); return; } }
+      } catch {}
+      // DB 兜底
       const res = await learningPathApi.getLearningPath({ sessionId, subjectId });
-      if (res?.path) {
-        setPath(res.path);
-      } else {
-        setPath(null);
-        setError('学习路径数据为空');
+      if (res?.path) { setPath(res.path); }
+      else { setPath(null); setError('学习路径数据为空');
       }
     } catch (e) {
       setPath(null);

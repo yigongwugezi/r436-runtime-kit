@@ -1,0 +1,118 @@
+# ═══════════════════════════════════════════
+# LLM Provider 配置
+# 每个 Agent 可独立选择模型
+# ═══════════════════════════════════════════
+
+providers:
+
+  # ── 讯飞星火 Spark 4.0（主力模型）──
+  spark:
+    name: "讯飞星火 Spark 4.0"
+    type: "openai_compatible"
+    base_url: "${SPARK_BASE_URL:-https://spark-api-open.xf-yun.com/v1}"
+    api_key: "${SPARK_API_KEY}"
+    api_secret: "${SPARK_API_SECRET}"
+    app_id: "${SPARK_APP_ID}"
+    default_model: "spark-4.0"
+    available_models:
+      - "spark-4.0"
+      - "spark-3.5"
+      - "spark-lite"
+    max_tokens_default: 4096
+    temperature_default: 0.3
+
+  # ── SeeDance 多模态视频 ──
+  seedance:
+    name: "讯飞 SeeDance"
+    type: "seedance"
+    api_key: "${SEEDANCE_API_KEY}"
+    api_secret: "${SEEDANCE_API_SECRET}"
+    capabilities:
+      - "text_to_video"
+      - "image_to_video"
+      - "storyboard_generation"
+
+  # ── 讯飞开放平台语音 ──
+  xunfei_tts:
+    name: "讯飞开放平台 TTS"
+    type: "xunfei_platform"
+    app_id: "${XUNFEI_TTS_APP_ID}"
+    api_key: "${XUNFEI_TTS_API_KEY}"
+    api_secret: "${XUNFEI_TTS_API_SECRET}"
+    voice: "xiaoyan"
+    speed: 50
+    format: "mp3"
+
+  xunfei_asr:
+    name: "讯飞开放平台 ASR"
+    type: "xunfei_platform"
+    app_id: "${XUNFEI_ASR_APP_ID}"
+    api_key: "${XUNFEI_ASR_API_KEY}"
+    language: "zh_cn"
+
+  xunfei_ocr:
+    name: "讯飞开放平台 OCR"
+    type: "xunfei_platform"
+    app_id: "${XUNFEI_OCR_APP_ID}"
+    api_key: "${XUNFEI_OCR_API_KEY}"
+
+  # ── 本地 Ollama（开发/离线用）──
+  ollama:
+    name: "Ollama Local"
+    type: "ollama"
+    base_url: "${OLLAMA_BASE_URL:-http://localhost:11434}"
+    default_model: "${OLLAMA_MODEL:-qwen2.5:32b}"
+
+# ── Agent 到 Provider 的路由 ──
+# 不同 Agent 可以用不同模型以平衡成本和质量
+routing:
+  default: "spark"
+
+  agents:
+    investigate:
+      provider: "spark"
+      model: "spark-lite"
+      max_tokens: 1024
+      temperature: 0.1
+
+    note:
+      provider: "spark"
+      model: "spark-lite"
+      max_tokens: 1536
+      temperature: 0.1
+
+    profiler:
+      provider: "spark"
+      model: "spark-4.0"
+      max_tokens: 2048
+      temperature: 0.2
+
+    plan:
+      provider: "spark"
+      model: "spark-4.0"
+      max_tokens: 4096
+      temperature: 0.3
+
+    manager:
+      provider: "spark"
+      model: "spark-4.0"
+      max_tokens: 2048
+      temperature: 0.2
+
+    check:
+      provider: "spark"
+      model: "spark-4.0"
+      max_tokens: 2048
+      temperature: 0.1
+
+    solve:
+      provider: "spark"
+      model: "spark-4.0"
+      max_tokens: 4096
+      temperature: 0.3
+
+    grader:
+      provider: "spark"
+      model: "spark-4.0"
+      max_tokens: 2048
+      temperature: 0.1

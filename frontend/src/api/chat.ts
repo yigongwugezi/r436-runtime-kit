@@ -115,10 +115,30 @@ export async function listQuestions(sessionId: string): Promise<any> {
   return data.data || data;
 }
 
-/** 提交作答并获取判卷结果 */
-export async function gradeAnswer(questionId: string, answer: string, sessionId: string): Promise<any> {
-  const { data } = await client.post(`/api/questions/${questionId}/grade`, { answer, sessionId });
-  return data.data || data;
+/** 提交作答并获取判卷结果 — GRADE Agent via OpenClaw */
+export async function gradeAnswer(params: {
+  questionId: string;
+  answer: string;
+  sessionId: string;
+  questionType?: string;
+  stem?: string;
+  options?: string[];
+  correct?: string;
+  explanation?: string;
+  knowledgePoints?: string[];
+}): Promise<any> {
+  const { data } = await client.post('/api/grade-proxy/assess', {
+    student_id: params.sessionId,
+    question_id: params.questionId,
+    student_answer: params.answer,
+    question_type: params.questionType || 'shortanswer',
+    stem: params.stem || '',
+    options: params.options || [],
+    correct: params.correct || '',
+    explanation: params.explanation || '',
+    knowledge_points: params.knowledgePoints || [],
+  });
+  return data;
 }
 
 /** 错题本 */

@@ -42,3 +42,22 @@ backend/data/*.db-wal
 # RAG / Vector DB (FAISS index + HuggingFace cache)
 backend/data/faiss/
 backend/data/huggingface_cache/
+
+# ── 新 EduAgent（DeepTutor 方案）──
+# 外部 clone 的项目（通过 scripts/setup.sh 拉取）
+external_agents/deeptutor/
+external_agents/openmaic/
+
+# 运行时数据
+runtime_data/
+
+# 前端构建产物
+frontend-extension/node_modules/
+frontend-extension/.next/
+frontend-extension/out/
+
+# Docker 卷
+deeptutor_data/
+profiler_data/
+grade_data/
+openmaic_data/

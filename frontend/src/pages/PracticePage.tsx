@@ -210,7 +210,14 @@ export default function PracticePage() {
     if (!currentQ || !answer || grading) return;
     setGrading(true);
     try {
-      const res: any = await gradeAnswer(currentQ.question_id, answer, sessionId);
+      const res: any = await gradeAnswer({
+        questionId: currentQ.question_id, answer, sessionId,
+        questionType: currentQ.type || currentQ.question_type,
+        stem: currentQ.stem, options: currentQ.options,
+        correct: currentQ.correct || currentQ.answer,
+        explanation: currentQ.explanation,
+        knowledgePoints: currentQ.knowledge_points,
+      });
       if (res?.gradingResult) setGrades(g => ({ ...g, [currentQ.question_id]: res.gradingResult }));
     } catch {}
     setGrading(false);

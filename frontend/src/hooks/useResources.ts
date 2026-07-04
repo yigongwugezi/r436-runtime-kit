@@ -37,13 +37,23 @@ export function useResources(initialFilter?: ResourceFilter) {
     try {
       const params: Record<string, any> = { ...f, sessionId };
       if (subjectId) params.subjectId = subjectId;
-      const res = await resourcesApi.getResources(params as any);
+      // DeepTutor Partner 为主数据源
+      let items: any[] = [];
+      try {
+        const r = await fetch(`http://localhost:8080/api/agent-data/resources/${sessionId}`);
+        if (r.ok) { const d = await r.json(); items = d.resources || []; }
+      } catch {}
+      // DB 兜底
+      if (!items.length) {
+        const res = await resourcesApi.getResources(params as any);
+        items = res?.resources || [];
+      }
       if (pendingFilterRef.current === undefined) {
-        setResources(res?.resources || []);
-        setTotal(res?.total || 0);
-        setCompletedCount(res?.completedCount ?? 0);
-        setIncompleteCount(res?.incompleteCount ?? 0);
-        setCompletionRate(res?.completionRate ?? 0);
+        setResources(items);
+        setTotal(items.length);
+        setCompletedCount(0);
+        setIncompleteCount(items.length);
+        setCompletionRate(items.length ? 0 : 0);
       }
     } catch (e) {
       if (pendingFilterRef.current === undefined) {

@@ -23,7 +23,7 @@ from app.db.repository import (
 )
 from app.services.conversation_state import conversation_store
 from app.services.course_catalog import course_catalog
-from app.services.orchestrator import AgentOrchestrator
+# AgentOrchestrator removed — OpenClaw handles all orchestration
 from app.utils.profile_normalizer import PROFILE_DIMENSION_LABELS, normalize_profile_dimensions
 
 
@@ -105,85 +105,36 @@ def run_agents(
     progress_callback: Callable | None = None,
     agents_filter: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Run the multi-agent pipeline, persist results, and return them.
+    """OpenClaw 统一编排——直接转发到 OpenClaw 引擎。"""
+    from app.services.openclaw_bridge import process_message
+    result = process_message(user_message, session_id)
+    results = result.get("results", {})
+    events = result.get("events", [])
 
-    Steps:
-    1. Build context from ConversationStore facts + conversation history.
-    2. Match the target course (or use the caller-supplied ``course_id``).
-    3. Call ``AgentOrchestrator.run()``.
-    4. Save results via ``ConversationStore.set_result()`` (DB + in-memory).
-    5. Return the orchestrator result dict.
+    output = {
+        "session_id": session_id,
+        "course_id": course_id or "",
+        "agent_steps": events,
+        "agents_run": [e.get("agent", "") for e in events if e.get("status") == "done"],
+        "pipeline_executed": True,
+    }
+    # 画像/路径/资源从 OpenClaw 结果提取
+    for key in ("profile", "plan_reply", "resources", "grading", "questions"):
+        if key in results:
+            output[key] = results[key]
 
-    Args:
-        session_id: Current session identifier.
-        user_message: The latest user message (raw, not wrapped).
-        course_id: Optional explicit course ID.  If *None*, matched from facts.
-        progress_callback: Optional callback forwarded to Orchestrator.
-        agents_filter: 指定只运行哪些 Agent。None 表示全部。
+    # 持久化
+    _persist_raw(session_id, results)
 
-    Returns:
-        The orchestrator result dict (see ``OrchestratorResult`` schema).
+    return output
 
-    Raises:
-        RuntimeError: If the orchestrator returns no result at all.
-    """
-    state = conversation_store.get(session_id)
 
-    # Build enriched prompt from conversation state
-    agent_message = conversation_store.profile_prompt(state, latest_message=user_message)
-
-    # Build conversation context (full dialogue history for LLM agents)
-    conversation_context = "\n".join(
-        f"{'学生' if m['role'] == 'user' else '助手'}: {m['content']}"
-        for m in state.messages[-20:]
-    )
-
-    # Match course — only if caller hasn't already supplied one
-    selected_course = None
-    if course_id and course_id.startswith("custom_"):
-        resolved_course_id = course_id
-    elif course_id:
-        selected_course = course_catalog.get_course(course_id)
-        resolved_course_id = course_id
-    else:
-        selected_course = course_catalog.match_course(
-            state.facts.get("target_course") or user_message,
-        )
-        resolved_course_id = course_id or str(
-            (selected_course or {}).get("course_id") or f"custom_{abs(hash(str(state.facts.get('target_course') or user_message))) % 10000:04d}"
-        )
-
-    # Run orchestrator
-    orchestrator = AgentOrchestrator()
-    facts = dict(state.facts)
-    facts["_raw_user_message"] = user_message
-    facts["_conversation_context"] = conversation_context
-    result = orchestrator.run(
-        session_id=session_id,
-        course_id=resolved_course_id,
-        user_message=user_message,
-        profile_facts=facts,
-        progress_callback=progress_callback,
-        agents_filter=agents_filter,
-    )
-
-    # Attach course metadata
-    if selected_course:
-        result["course"] = {
-            "course_id": selected_course.get("course_id"),
-            "course_name": selected_course.get("course_name"),
-            "description": selected_course.get("description", ""),
-            "chapter_count": selected_course.get(
-                "chapter_count", len(selected_course.get("chapters", []))
-            ),
-        }
-
-    _apply_state_facts_to_result(result, state.facts, selected_course)
-
-    # Persist to DB + in-memory cache
-    conversation_store.set_result(session_id, result)
-
-    return result
+def _persist_raw(session_id: str, results: dict) -> None:
+    import json as _json
+    try:
+        conversation_store.set_result(session_id, {"openclaw_raw": _json.dumps(results, ensure_ascii=False)})
+    except Exception:
+        pass
 
 
 # ── Read: get latest profile from DB ──────────────────────────────────

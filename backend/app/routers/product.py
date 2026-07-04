@@ -26,9 +26,8 @@ from fastapi.responses import StreamingResponse
 
 from app.middleware.auth import AuthContext, reject_parent
 
-from app.agents.multimodal_agent import MultimodalAgent
-from app.agents.diagnosis_agent import DiagnosisAgent
-from app.agents.conversation_agent import ConversationAgent
+# Agent layer removed — using external services directly
+# DeepTutor Partner API (:8000), Socratic Profiler (:8001), GRADE Agent (:8002)
 from app.config import settings
 from app.db.engine import SessionLocal
 from app.db.models import DailyTaskModel, LearnerModel, SessionModel
@@ -260,26 +259,73 @@ def _intent_context(session_id: str | None = None) -> dict[str, Any]:
     }
 
 
+def _summarize_results(raw_reply: str, results: dict) -> str:
+    """从结构化 JSON 结果生成自然语言总结"""
+    import json as _json
+    parts = []
+    # 提取画像要点
+    profile = results.get("profile", {})
+    if isinstance(profile, dict):
+        dims = profile.get("dimensions", {})
+        if isinstance(dims, dict) and dims:
+            parts.append("学习画像已构建")
+    # 提取路径
+    plan = results.get("plan_reply", {})
+    if isinstance(plan, dict):
+        plan_json = _try_parse(plan)
+        stages = plan_json.get("stages", []) if plan_json else []
+        if stages:
+            titles = [s.get("title", "") for s in stages[:5]]
+            parts.append(f"学习路径：{' → '.join(titles)} 共{len(stages)}个阶段")
+    # 提取资源
+    plan_json = plan_json or {}
+    resources = plan_json.get("resources", [])
+    if not resources:
+        res_val = results.get("resources", {})
+        if isinstance(res_val, dict):
+            resources = res_val.get("resources", [])
+    if resources:
+        types = list(set(r.get("type", "") for r in resources[:10]))
+        parts.append(f"已生成{len(resources)}份资源（{'/'.join(types)}）")
+    # 如果不是结构化数据，返回原文
+    if not parts:
+        return raw_reply[:500] if raw_reply else "处理完成"
+    return "✅ " + "。".join(parts) + "。可在对应页面查看详情。"
+
+def _try_parse(val) -> dict:
+    import json as _json
+    if isinstance(val, str):
+        try:
+            s = val.find("{"); e = val.rfind("}") + 1
+            if s >= 0 and e > s: return _json.loads(val[s:e])
+        except: pass
+    return val if isinstance(val, dict) else {}
+
+def _persist_openclaw_results(session_id: str, results: dict) -> None:
+    """OpenClaw 结果原样存入 SQLite，不做任何解析/映射/转换。"""
+    import json as _json
+    try:
+        conversation_store.set_result(session_id, {"openclaw_raw": _json.dumps(results, ensure_ascii=False)})
+    except Exception as e:
+        import logging; logging.getLogger(__name__).warning("Failed to persist OpenClaw results: %s", e)
+
+
 def _classify_intent(message: str, session_id: str | None = None) -> dict[str, Any]:
-    """用 ConversationAgent 进行对话理解，返回包含 reply 和 action 的结果。"""
-    agent = ConversationAgent(mock_data={}, llm_client=_llm_client())
-    context = _intent_context(session_id)
-    context["user_message"] = message
-    if "profile_facts" not in context:
-        context["profile_facts"] = {}
-    context["profile_facts"]["_raw_user_message"] = message
+    """快速意图分类 — 不调 Agent，秒回。OpenClaw 编排由流式路径单独执行。"""
+    import re as _re
+    text = _re.sub(r"\s+", "", message.lower())
+    action = "none"
+    reply = "好的，我来帮你处理～"
 
-    # 加载对话历史 + last_proposal
-    if session_id:
-        state = conversation_store.get(session_id)
-        history = [
-            {"role": m["role"], "content": m["content"]}
-            for m in state.messages[-20:]
-        ]
-        context["conversation_history"] = history
-        context["last_proposal"] = state.last_proposal
+    if any(w in text for w in ["规划路径","生成路径","帮我规划","帮我安排","制定计划","全套方案","完整方案","开始吧"]): action = "plan"
+    elif any(w in text for w in ["出题","做题","练习","题","测验","刷题"]): action = "generate_questions"
+    elif any(w in text for w in ["多生成一点","再来点资源","更多资源","补充资源","换一批"]): action = "resources"
+    elif any(w in text for w in ["画像","诊断","薄弱","哪里差"]): action = "diagnose"
+    elif any(w in text for w in ["批改","判分","对不对"]): action = "grade_answer"
+    else:
+        reply = "你好！我是 EduAgent，有什么可以帮你的？"
 
-    return agent.run(context)
+    return {"reply": reply, "action": action, "intent": action}
 
 
 def _public_intent_result(intent: dict[str, Any] | None) -> dict[str, Any]:
@@ -1446,8 +1492,22 @@ def _diagnosis_context(message: str, session_id: str) -> dict[str, Any]:
 
 
 def _run_diagnosis(message: str, session_id: str) -> dict[str, Any]:
-    result = DiagnosisAgent(mock_data={}).run(_diagnosis_context(message, session_id))
-    diagnosis = result["diagnosis"]
+    """诊断 -> Socratic Profiler + GRADE stats"""
+    import httpx
+    diagnosis = {"weak_knowledge_points": [], "weak_topics": [], "diagnosis_summary": "暂无诊断数据"}
+    try:
+        with httpx.Client(timeout=30) as c:
+            r = c.post("http://localhost:8001/api/profile/analyze", json={"student_id": session_id, "background": message})
+            if r.status_code == 200:
+                profile = r.json()
+            r = c.get(f"http://localhost:8002/api/grade/stats/{session_id}")
+            if r.status_code == 200:
+                stats = r.json()
+                weak = stats.get("weak_knowledge_points", []) or []
+                diagnosis["weak_knowledge_points"] = weak
+                diagnosis["weak_topics"] = weak
+                diagnosis["diagnosis_summary"] = f"发现{len(weak)}个薄弱知识点" if weak else "暂无足够答题数据"
+    except: pass
     conversation_store.set_diagnosis(session_id, diagnosis)
     return diagnosis
 
@@ -1600,31 +1660,33 @@ def _reply_for_intent(
 
 
 def _agents_for_action(action: str, session_id: str = "") -> list[str] | None:
-    """每个 action 只跑最少必需的 Agent。"""
-    if action == "full_workflow":
-        return None  # 全部，但已有数据跳过
-    if action == "plan":
-        return ["planner_agent"]
-    if action == "resources":
-        return ["resource_agent"]
-    if action == "generate_questions":
-        return ["question_agent"]
-    if action == "diagnose":
-        return ["diagnosis_agent"]
-    if action == "grade_answer":
-        return ["grading_agent"]
-    if action == "profile":
-        return ["profile_agent"]
-    return None
+    """按意图动态调度：每个 action 跑必需的 Agent + 前置依赖。"""
+    # profile 是几乎所有下游 Agent 的依赖
+    # knowledge 是资源/试题生成的前置
+    base = ["profile_agent", "knowledge_agent"]
+
+    # planner_agent 和 resource_agent 由 DeepTutor Partner API 内部处理
+    mapping: dict[str, list[str]] = {
+        "full_workflow": ["profile_agent", "knowledge_agent", "diagnosis_agent"],
+        "plan":     ["profile_agent", "knowledge_agent", "diagnosis_agent"],
+        "resources": ["profile_agent", "knowledge_agent", "diagnosis_agent"],
+        "generate_questions": ["knowledge_agent", "diagnosis_agent"],
+        "diagnose": ["profile_agent", "diagnosis_agent"],
+        "grade_answer": ["grading_agent"],
+        "profile":  ["profile_agent"],
+        "knowledge": ["knowledge_agent"],
+    }
+    agents = mapping.get(action, ["profile_agent"])
+    if not agents:  # empty = full_workflow → run all
+        return None
+    return agents
 
 
 def _generate_final_reply(message: str, session_id: str, result: dict[str, Any]) -> str:
-    """调用 ConversationAgent final_reply 模式，根据真实执行结果生成最终回复。"""
-    from app.agents.conversation_agent import ConversationAgent
+    """根据 OpenClaw 执行结果生成最终回复。"""
     import logging as _logging
     _log = _logging.getLogger(__name__)
 
-    agent = ConversationAgent(mock_data={}, llm_client=_llm_client())
     state = conversation_store.get(session_id)
     stages = result.get("learning_path", [])
     resources = result.get("resources", [])
@@ -1658,15 +1720,7 @@ def _generate_final_reply(message: str, session_id: str, result: dict[str, Any])
         },
     }
 
-    try:
-        final_result = agent.run(context)
-        reply = final_result.get("reply", "")
-        if reply:
-            return reply
-    except Exception as exc:
-        _log.warning("ConversationAgent final_reply failed: %s", exc)
-
-    # LLM 失败 → 极简事实兜底（包含阶段标题以提供足够信息）
+    # OpenClaw 已生成回复，直接用结果中的内容拼兜底
     parts = []
     if stages:
         titles = [str(s.get("title", "")) for s in stages[:5] if isinstance(s, dict) and s.get("title")]
@@ -1812,12 +1866,31 @@ def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(reject_pare
                             "progress": pct,
                             "detail": detail,
                         }
-                    reply, ran = _reply_for_intent(
-                        message, intent, session_id,
-                        progress_callback=on_progress,
-                    )
+                    from app.services.openclaw_bridge import process_message_stream as _ocl_stream
+                    _ocl_reply = ""
+                    _ocl_results = {}
+                    for _evt in _ocl_stream(message, session_id):
+                        _lbl = _evt.get("label", _evt.get("agent", ""))
+                        _st = _evt.get("status", "")
+                        on_progress(_lbl, _lbl, 50 if _st == "done" else 25)
+                        if _st == "complete":
+                            _ocl_results = _evt.get("results", {})
+                        elif _st == "done" and _evt.get("result"):
+                            _r = _evt["result"]
+                            if isinstance(_r, dict) and _r.get("content"): _ocl_reply = _r["content"]
+                    _intent = _classify_intent(message, session_id)
+                    # 从结构化结果生成自然语言总结
+                    if _ocl_reply and _ocl_reply not in ("好的，我来帮你处理～", "你好！我是 EduAgent，有什么可以帮你的？"):
+                        # 尝试解析 JSON，如果是结构化数据就生成总结
+                        reply = _summarize_results(_ocl_reply, _ocl_results)
+                    else:
+                        reply = _intent.get("reply", "") or "处理完成"
+                    ran = True
+                    if _ocl_results:
+                        _persist_openclaw_results(session_id, _ocl_results)
                     result_box["reply"] = reply
                     result_box["ran"] = ran
+                    result_box["_ocl"] = True
                     # Persist reply immediately in worker thread so it survives
                     # client disconnect (main generator may never reach line 1346).
                     conversation_store.append_message(session_id, "assistant", reply)
@@ -4360,14 +4433,27 @@ def grade_answer(question_id: str, payload: dict[str, Any], auth: AuthContext = 
     finally:
         db.close()
 
-    from app.agents.grading_agent import GradingAgent
-    agent = GradingAgent(mock_data={}, llm_client=_llm_client())
-    grading_result = agent.run({
-        "session_id": session_id, "question": question,
-        "student_answer": student_answer,
-        "profile_facts": {"_raw_user_message": student_answer},
-    })
-    result_data = grading_result.get("grading_result", {})
+    # GRADE Agent 直调
+    import httpx as _httpx
+    result_data = {}
+    try:
+        with _httpx.Client(timeout=60) as _c:
+            _r = _c.post("http://localhost:8002/api/grade/assess", json={
+                "student_id": session_id,
+                "question_id": question.get("id", ""),
+                "question_type": question.get("type", "shortanswer"),
+                "stem": question.get("stem", ""),
+                "options": question.get("options", []) or [],
+                "correct": question.get("correct", "") or question.get("answer", ""),
+                "reference_answer": question.get("reference_answer", ""),
+                "explanation": question.get("explanation", ""),
+                "knowledge_points": question.get("knowledge_points", []) or [],
+                "student_answer": student_answer,
+            })
+            if _r.status_code == 200:
+                result_data = _r.json()
+    except Exception as _e:
+        logger.warning("GRADE call failed: %s", _e)
 
     # 持久化作答记录
     if isinstance(result_data, dict):
