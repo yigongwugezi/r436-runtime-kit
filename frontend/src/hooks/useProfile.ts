@@ -7,7 +7,7 @@ import type { StudentProfile } from '../types/profile';
 
 export function useProfile() {
   const store = useProfileStore();
-  const subjectId = useSubjectStore((s) => s.activeSubject?.id);
+  const subjectId = useSubjectStore((s) => s.activeSubject?.id ?? s.activeClassSubject?.subject);
   const sessionId = useChatStore((state) => state.dataSessionId);
   const dataVersion = useChatStore((state) => state.dataVersion);
   const [loading, setLoading] = useState(true);

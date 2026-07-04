@@ -303,7 +303,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
    *  家长账户：从后端解析孩子的 session，确保数据查询使用正确的 scope。 */
   reloadSession: async () => {
     const learner = getCurrentLearner();
-    const subjectId = useSubjectStore.getState().activeSubject?.id;
+    const store = useSubjectStore.getState();
+    const subjectId = store.activeSubject?.id ?? store.activeClassSubject?.subject;
 
     // Parent: resolve child's session from backend (localStorage has parent's
     // own session which points to empty data).
@@ -346,10 +347,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 // 自动监听科目切换 → 刷新会话
 // ================================================================
 let prevSubjectId: string | undefined;
+let prevClassSubjectId: string | undefined;
 useSubjectStore.subscribe((state) => {
-  const newId = state.activeSubject?.id;
-  if (newId && newId !== prevSubjectId) {
-    prevSubjectId = newId;
+  const newId = state.activeSubject?.id ?? state.activeClassSubject?.id;
+  if (newId && newId !== prevSubjectId && newId !== prevClassSubjectId) {
+    prevSubjectId = state.activeSubject?.id;
+    prevClassSubjectId = state.activeClassSubject?.id;
     // 同步刷新，确保 React 同一次渲染中 subjectId 和 sessionId 一致
     useChatStore.getState().reloadSession();
   }

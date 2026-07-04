@@ -243,7 +243,7 @@ export default function Home() {
                         </div>
                       ))}
                       {classSubjects.map((cs, idx) => (
-                        <div key={cs.id} className="space-y-2 cursor-pointer group relative" onClick={() => { setActiveClassSubject(cs); nav(`/chat?classSubjectId=${cs.id}`); }}>
+                        <div key={cs.id} className="space-y-2 cursor-pointer group relative" onClick={() => { setActiveClassSubject(cs); nav(isParent ? '/analytics' : `/chat?classSubjectId=${cs.id}`); }}>
                           <div className="flex items-center justify-between text-sm">
                             <div className="flex items-center gap-2 min-w-0">
                               <span className="text-surface-700 font-medium truncate">{cs.name}</span>

@@ -15,7 +15,7 @@ import { useSubjectStore } from '../store/subjectStore';
  */
 export function useLearningEvents(limit = 100, type?: string, range?: number) {
   const sessionId = useChatStore((s) => s.dataSessionId);
-  const subjectId = useSubjectStore((s) => s.activeSubject?.id);
+  const subjectId = useSubjectStore((s) => s.activeSubject?.id ?? s.activeClassSubject?.subject);
   const [events, setEvents] = useState<TimelineEvent[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
