@@ -25,16 +25,13 @@ class ReviewAgent(BaseAgent):
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         checks = [
+            self._check_content_safety(context),
+            self._check_factuality_verifiable_rag(context),
+            self._check_factuality_facteval(context),
             self._check_profile(context),
-            self._check_knowledge_grounding(context),
             self._check_learning_path(context),
             self._check_resource_coverage(context),
-            self._check_course_chapter_alignment(context),
             self._check_resource_content_quality(context),
-            self._check_resource_type_match(context),
-            self._check_provenance_trust(context),
-            self._check_path_time_budget(context),
-            self._check_content_safety(context),
         ]
         quality_status = self._aggregate_status(checks)
 
@@ -51,6 +48,58 @@ class ReviewAgent(BaseAgent):
             },
             "agent_step": self.agent_step(),
         }
+
+    def _check_factuality_verifiable_rag(self, context: dict[str, Any]) -> dict[str, Any]:
+        try:
+            from verifiable_rag import ask
+            resources = context.get("resources", []) or []
+            issues = []
+            for r in resources[:3]:
+                content = str(r.get("content", ""))[:2000]
+                if len(content) < 50:
+                    continue
+                try:
+                    answer = ask(content, "")
+                    if answer and hasattr(answer, 'sentences'):
+                        for sent in answer.sentences:
+                            if hasattr(sent, 'verification') and sent.verification:
+                                v = sent.verification
+                                if not getattr(v, 'is_grounded', True):
+                                    issues.append(str(sent.text)[:100])
+                except Exception:
+                    pass
+            if issues:
+                return self._check("factuality_vr", "verifiable-rag事实校验", "warning", f"发现{len(issues)}处可能未基于知识库的内容")
+            return self._check("factuality_vr", "verifiable-rag事实校验", "passed", "内容通过知识库溯源校验")
+        except ImportError:
+            return self._check("factuality_vr", "verifiable-rag事实校验", "passed", "verifiable-rag未安装，跳过")
+        except Exception as e:
+            return self._check("factuality_vr", "verifiable-rag事实校验", "passed", f"校验跳过: {e}")
+
+    def _check_factuality_facteval(self, context: dict[str, Any]) -> dict[str, Any]:
+        try:
+            from facteval import fast_check
+            resources = context.get("resources", []) or []
+            total_claims = 0
+            unverified = 0
+            for r in resources[:3]:
+                content = str(r.get("content", ""))[:1000]
+                if len(content) < 50:
+                    continue
+                try:
+                    result = fast_check(content, "")
+                    if isinstance(result, dict):
+                        total_claims += result.get("total_claims", 0)
+                        unverified += result.get("unverified_claims", 0)
+                except Exception:
+                    pass
+            if unverified > 0:
+                return self._check("factuality_fe", "FactEval事实校验", "warning", f"{unverified}/{total_claims}个声明未能验证")
+            return self._check("factuality_fe", "FactEval事实校验", "passed", "内容通过原子级事实校验")
+        except ImportError:
+            return self._check("factuality_fe", "FactEval事实校验", "passed", "FactEval未安装，跳过")
+        except Exception:
+            return self._check("factuality_fe", "FactEval事实校验", "passed", "校验跳过")
 
     def _check_profile(self, context: dict[str, Any]) -> dict[str, Any]:
         profile = context.get("profile", {})

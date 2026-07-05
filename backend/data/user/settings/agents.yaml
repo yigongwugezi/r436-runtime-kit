@@ -1,0 +1,23 @@
+visualize:
+  analysis_agent:
+    temperature: 0.3
+    max_tokens: 2000
+  code_generator_agent:
+    temperature: 0.2
+    max_tokens: 3000
+  review_agent:
+    temperature: 0.3
+    max_tokens: 2000
+question:
+  temperature: 0.5
+  max_tokens: 3000
+chat:
+  temperature: 0.7
+  max_tokens: 2000
+deep_question:
+  temperature: 0.5
+  max_tokens: 3000
+deep_research:
+  temperature: 0.3
+  max_tokens: 4000
+

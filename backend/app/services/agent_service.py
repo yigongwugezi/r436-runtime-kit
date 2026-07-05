@@ -23,7 +23,6 @@ from app.db.repository import (
 )
 from app.services.conversation_state import conversation_store
 from app.services.course_catalog import course_catalog
-from app.services.orchestrator import AgentOrchestrator
 from app.utils.profile_normalizer import PROFILE_DIMENSION_LABELS, normalize_profile_dimensions
 
 
@@ -153,17 +152,16 @@ def run_agents(
             (selected_course or {}).get("course_id") or f"custom_{abs(hash(str(state.facts.get('target_course') or user_message))) % 10000:04d}"
         )
 
-    # Run orchestrator
-    orchestrator = AgentOrchestrator()
+    # Run LangGraph orchestrator with feedback loop
+    from app.services.langgraph_orchestrator import run_pipeline
     facts = dict(state.facts)
     facts["_raw_user_message"] = user_message
     facts["_conversation_context"] = conversation_context
-    result = orchestrator.run(
+    result = run_pipeline(
         session_id=session_id,
         course_id=resolved_course_id,
         user_message=user_message,
         profile_facts=facts,
-        progress_callback=progress_callback,
         agents_filter=agents_filter,
     )
 

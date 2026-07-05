@@ -6,9 +6,12 @@
 v4: ConversationAgent 作为外层总控，Orchestrator 只做执行。
 """
 
+import asyncio
 import json
 import logging
+import os
 import re
+import threading
 import time
 from typing import Any
 
@@ -143,30 +146,50 @@ class ConversationAgent(BaseAgent):
                     break
                 time.sleep(0.3)
 
-        # LLM 没判出来 → 规则引擎兜底
-        if action == "none":
-            rule_result = self._rule_fallback(user_message, context)
-            action = rule_result.get("action", "none")
-            needs_clarification = rule_result.get("needs_clarification", False)
+        # 规则引擎判断，LLM 结果如果与规则冲突，规则优先
+        rule_result = self._rule_fallback(user_message, context)
+        rule_action = rule_result.get("action", "none")
+        needs_clarification = rule_result.get("needs_clarification", False)
+        if rule_action != "none":
+            action = rule_action  # 规则有明确判断，覆盖 LLM
+        elif action == "none":
+            action = rule_action  # 都是 none
         llm_reply = ""
         facts = {}
         llm_retry_count = 0
-        try:
-            for attempt in range(3):
-                try:
-                    messages = self._build_reply_messages(user_message, context, action)
-                    raw_response = self._call_llm(messages)
-                    llm_reply, facts, exec_action, proposal = self._extract_reply_and_facts(raw_response)
-                    if proposal:
-                        context["_llm_proposal"] = proposal
-                    if llm_reply:
-                        break
-                except LLMClientError:
-                    llm_retry_count = attempt + 1
-                    if attempt < 2:
-                        time.sleep(0.3 * (attempt + 1))
-        except Exception:
-            llm_reply = ""
+
+        # Auto-detect pending adjustment from grading
+        pending_adj = context.get("profile_facts", {}).get("_pending_adjustment", "")
+        if pending_adj and action == "none":
+            et_labels = {"concept":"概念错误","calculation":"计算失误","misreading":"审题偏差","method":"方法不当","forgetting":"知识遗忘"}
+            suggestion = f"上次练习中发现了{et_labels.get(pending_adj, pending_adj)}，建议调整学习计划重点强化这部分。要我现在帮你重新规划吗？"
+            result = self._make_result(reply=suggestion, action="none", facts={})
+            result["needs_clarification"] = False
+            context["profile_facts"]["_pending_adjustment"] = ""
+            return result
+
+        if action in ("none", "tutoring", ""):
+            dt = self._try_deeptutor_reply(user_message, self._history)
+            if dt and len(dt) > 5:
+                llm_reply = re.sub(r'<[^>]+>', '', dt).strip()
+
+        if not llm_reply:
+            try:
+                for attempt in range(3):
+                    try:
+                        messages = self._build_reply_messages(user_message, context, action)
+                        raw_response = self._call_llm(messages)
+                        llm_reply, facts, exec_action, proposal = self._extract_reply_and_facts(raw_response)
+                        if proposal:
+                            context["_llm_proposal"] = proposal
+                        if llm_reply:
+                            break
+                    except LLMClientError:
+                        llm_retry_count = attempt + 1
+                        if attempt < 2:
+                            time.sleep(0.3 * (attempt + 1))
+            except Exception:
+                llm_reply = ""
 
         # ── 第3步：LLM 失败时用极简兜底 ──
         if not llm_reply:
@@ -204,11 +227,19 @@ class ConversationAgent(BaseAgent):
         # ── 构建 final_reply 上下文 ──
         pipeline_text = self._format_pipeline_result(pipeline_result)
 
-        # ── LLM 调用（最多 3 次重试）──
-        MAX_RETRIES = 3
+        # ── DeepTutor / LLM 生成最终回复 ──
         llm_retry_count = 0
+        facts = {}
 
-        for attempt in range(MAX_RETRIES):
+        # Try DeepTutor first for natural summary
+        dt_reply = self._try_deeptutor_reply(
+            f"学生最后说：{user_message}\n\n后端生成了以下结果，请用自然对话语气告诉学生：\n{pipeline_text}",
+            self._history
+        )
+        if dt_reply and len(dt_reply) > 10:
+            reply = re.sub(r'<[^>]+>', '', dt_reply).strip()
+        else:
+            # Fall back to LLM
             try:
                 messages = [
                     {"role": "system", "content": self.SYSTEM_PROMPT + self.FINAL_REPLY_PROMPT},
@@ -225,20 +256,12 @@ class ConversationAgent(BaseAgent):
                 })
                 raw_response = self._call_llm(messages)
                 reply, _, facts = self._parse_response(raw_response)
-                # 剥掉 final_reply 里残留的标签
                 reply = re.sub(r'<proposal>.*?</proposal>', '', reply, flags=re.DOTALL)
                 reply = re.sub(r'<execute>.*?</execute>', '', reply, flags=re.DOTALL)
-                if reply:
-                    break
-            except (LLMClientError, json.JSONDecodeError):
-                llm_retry_count = attempt + 1
-                if attempt < MAX_RETRIES - 1:
-                    time.sleep(0.3 * (attempt + 1))
-                    continue
-        else:
-            # LLM 失败 → 极简事实兜底
-            reply = self._minimal_fact_reply(pipeline_result)
-            facts = {}
+                if not reply:
+                    reply = self._minimal_fact_reply(pipeline_result)
+            except Exception:
+                reply = self._minimal_fact_reply(pipeline_result)
 
         self._save_history(user_message, reply, context)
 
@@ -358,17 +381,14 @@ class ConversationAgent(BaseAgent):
 
         prompt = f"""判断学生意图，只输出一个词。
 
-可选：full_workflow（要完整方案含路径+资源+题）、plan（要学习路径）、resources（要资源）、generate_questions（要题）、diagnose（要诊断）、grade_answer（要批改）、none（闲聊/提供信息/追问）
+可选：full_workflow（明确要求完整方案含路径+资源）、plan（明确要求学习路径）、resources（明确要求资源/资料）、generate_questions（明确要求出题/做题）、diagnose（明确要求诊断薄弱点）、grade_answer（明确要求批改）、none（闲聊/提供信息/表达学习意愿/追问）
 
-规则：
-- 消息里没有"生成/帮我/给我/开始/来一套/出/做"等请求动词 → 一律 none
-- "来一套""全套""都要""整一个"= full_workflow
-- "路径""规划""怎么学""路线"= plan
-- "资源""资料""讲义"= resources
-- "出题""做题""练习""题目""题"= generate_questions
-- "诊断""薄弱""不会""摸底"= diagnose
-- "批改""判卷""对不对"= grade_answer
-- "可以""好的""行""生成吧"= 看上下文{proposal_hint}
+关键规则：
+- "我想学X""我要学X""我对X感兴趣"等表达学习意愿 → none（先聊天收集信息，不急着生成）
+- 必须有明确的"帮我生成""给我做""开始吧""生成方案"等生成请求 → 才是 plan/resources/full_workflow
+- "可以""好的""行" → 看上下文是否系统刚问过"要生成吗"{proposal_hint}
+- "思维导图""脑图""知识图谱""生成XX图" → resources
+- "出题""做题""练习"等明确出题请求 → generate_questions
 
 对话：
 {history_text}
@@ -481,6 +501,30 @@ action："""
                 flat[key] = str(item)
         return flat
 
+    def _try_deeptutor_reply(self, user_message: str, history: list) -> str:
+        from app.services.deeptutor_client import deeptutor_call, generate_visual_explanation, generate_video_script, generate_manim_video
+
+        # Detect diagram/visualization requests
+        vis_keywords = ["图解", "画图", "图示", "示意图", "流程图", "思维导图", "可视化",
+                        "画个", "画一张", "用图", "图表", "图示说明", "图解释", "结构图"]
+        if any(kw in user_message for kw in vis_keywords):
+            return generate_visual_explanation(user_message)
+
+        # Detect video/animation requests — render real mp4
+        vid_keywords = ["生成.*动画", "做个.*动画", "动画演示", "演示动画", "教学动画"]
+        if any(kw in user_message for kw in vid_keywords):
+            result = generate_manim_video(user_message)
+            if result:
+                return f"已生成教学动画，文件路径：{result['path']}\n标题：{result['title']}\n你可以在资源库中查看。"
+
+        # Detect video script requests
+        vid_script_kw = ["视频", "微课", "短片", "演示视频", "教学视频", "做个小视频",
+                         "录个视频", "生成视频", "讲解视频", "可视化演示"]
+        if any(kw in user_message for kw in vid_script_kw):
+            return generate_video_script(user_message)
+
+        return deeptutor_call("chat", user_message, history or [])
+
     def _call_llm(self, messages):
         if not self.llm_client:
             raise LLMClientError("No LLM client configured")
@@ -521,6 +565,10 @@ action："""
         text = message.strip().lower()
         compact = re.sub(r"\s+", "", text)
         confirm_words = {"可以", "好的", "行", "嗯", "好", "ok", "yes", "对", "是的", "嗯嗯", "没错", "就这样", "按这个来"}
+        # Mindmap check before explicit_generation
+        if any(w in text for w in ["思维导图", "脑图"]):
+            return self._fallback_result("resources", "mindmap_request")
+
         explicit_generation = (
             any(phrase in compact for phrase in (
                 "开始生成学习方案", "帮我生成学习方案", "帮我制定学习计划",
@@ -553,10 +601,8 @@ action："""
         if text in EXACT_CASUAL or len(compact) <= 2:
             return self._fallback_result("none", "short_or_casual_message")
 
-        learn_match = re.search(r'(?:学|学习|入门|复习|想学|要学)\s*([\u4e00-\u9fffA-Za-z+#]{2,12})', text)
-        if learn_match:
-            return self._fallback_result("none", "learning_intent_collect_profile")
 
+            return self._fallback_result("resources", "mindmap_request")
         if any(w in text for w in ["出题", "做题", "测验", "考题", "题目", "题", "练习"]):
             return self._fallback_result("generate_questions", "question_generation_request")
 

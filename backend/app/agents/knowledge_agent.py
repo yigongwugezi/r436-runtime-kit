@@ -1,7 +1,8 @@
+"""Knowledge retrieval agent — RAG-first, course catalog fallback."""
+
 from typing import Any
 
 from app.agents.base import BaseAgent
-from app.services.course_catalog import course_catalog
 
 
 class KnowledgeAgent(BaseAgent):
@@ -9,111 +10,73 @@ class KnowledgeAgent(BaseAgent):
     agent_name = "知识库检索智能体"
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
-        course_id = str(context.get("course_id") or self.mock_data.get("course_id") or "ai_intro")
-        # Only fall back to ai_intro if the course_id itself isn't already a catalog course;
-        # for custom/unknown courses we build the virtual context below
-        course = course_catalog.get_course(course_id)
-        if course is None and not course_id.startswith("custom_"):
-            course = course_catalog.get_course("ai_intro") or {}
-        if course is None:
-            course = {}
-
         message = str(context.get("user_message", ""))
-        profile = context.get("profile", {})
-        query = " ".join(
-            [
-                message,
-                str(profile.get("knowledge_base", {}).get("value", "")),
-                str(profile.get("weak_points", {}).get("value", "")),
-                str(profile.get("learning_goal", {}).get("value", "")),
-                str(profile.get("interests", {}).get("value", "")),
-            ]
-        ).lower()
+        profile = context.get("profile", {}) or {}
+        course_id = str(context.get("course_id", "") or "")
 
-        chapters = list(course.get("chapters", []))
+        # Build query from context
+        query_parts = [message]
+        if isinstance(profile, dict):
+            for key in ("knowledge_base", "learning_goal", "interest_direction"):
+                v = profile.get(key, {})
+                val = str(v.get("value", "") if isinstance(v, dict) else v).strip()
+                if val:
+                    query_parts.append(val)
+        query = " ".join(query_parts).strip()
 
-        # If no chapters (virtual/custom course), generate a generic knowledge point from the course name
-        if not chapters:
-            # Extract the actual topic name from profile or user message
-            course_name = (
-                course.get("course_name")
-                or profile.get("interests", {}).get("value", "")
-                or profile.get("learning_goal", {}).get("value", "")
-                or course_id
-            )
-            retrieved_points = [
-                {
+        # ── RAG retrieval (primary) ──
+        retrieved_points = []
+        source = "course_knowledge_base"
+        try:
+            from app.langgraph.tools.rag_tool import rag_retrieve
+            rag_results = rag_retrieve(query, top_k=5)
+            if rag_results:
+                for i, r in enumerate(rag_results):
+                    retrieved_points.append({
+                        "point_id": f"rag_{i}",
+                        "chapter_id": f"rag_{i:02d}",
+                        "name": str(r.get("source", f"知识点{i+1}"))[:60],
+                        "priority": "high" if i < 2 else "medium",
+                        "difficulty": "medium",
+                        "content_excerpt": str(r.get("content", ""))[:300],
+                    })
+                source = "rag_retrieval"
+        except Exception:
+            pass
+
+        # ── Course catalog fallback ──
+        if not retrieved_points:
+            from app.services.course_catalog import course_catalog
+            course = course_catalog.get_course(course_id) or {}
+            chapters = list(course.get("chapters", []))
+            course_name = course.get("course_name", course_id)
+            if chapters:
+                for i, ch in enumerate(chapters[:4]):
+                    retrieved_points.append({
+                        "point_id": f"{course_id}_{i:02d}",
+                        "chapter_id": str(ch.get("chapter_id", i)).zfill(2),
+                        "name": ch.get("title", f"第{i+1}章"),
+                        "priority": "high" if i < 2 else "medium",
+                        "difficulty": ch.get("difficulty", "medium"),
+                        "content_excerpt": str(ch.get("content", ""))[:300],
+                    })
+            else:
+                retrieved_points.append({
                     "point_id": f"{course_id}_topic_1",
                     "chapter_id": "01",
-                    "name": str(course_name).strip(),
+                    "name": course_name or "目标课程",
                     "priority": "high",
                     "difficulty": "medium",
-                    "prerequisites": [],
-                    "content_excerpt": f"用户自选学习主题：{course_name}",
-                }
-            ]
-            return {
-                "knowledge_context": {
-                    "course_id": course_id,
-                    "course_name": course_name,
-                    "retrieved_points": retrieved_points,
-                    "source": "user_provided_topic",
-                },
-                "agent_step": self.agent_step(),
-            }
-
-        # Normal flow: score and select chapters from the course catalog
-        scored = sorted(
-            ((self._score_chapter(query, chapter), chapter) for chapter in chapters),
-            key=lambda item: item[0],
-            reverse=True,
-        )
-        selected = [chapter for score, chapter in scored if score > 0][:4] or chapters[:4]
-
-        retrieved_points = []
-        for index, chapter in enumerate(selected, start=1):
-            chapter_id = str(chapter.get("chapter_id", index)).zfill(2)
-            detail = course_catalog.load_chapter(str(course.get("course_id", course_id)), chapter_id) or chapter
-            retrieved_points.append(
-                {
-                    "point_id": f"{course.get('course_id', course_id)}_{chapter_id}",
-                    "chapter_id": chapter_id,
-                    "name": chapter.get("title", f"第 {index} 章"),
-                    "priority": "high" if index <= 2 else "medium",
-                    "difficulty": chapter.get("difficulty", "medium"),
-                    "prerequisites": chapter.get("prerequisites", []),
-                    "content_excerpt": self._excerpt(str(detail.get("content", ""))),
-                }
-            )
+                    "content_excerpt": f"学习主题：{course_name or course_id}",
+                })
+            source = "course_knowledge_base"
 
         return {
             "knowledge_context": {
-                "course_id": course.get("course_id", course_id),
-                "course_name": course.get("course_name", course_id),
+                "course_id": course_id,
+                "course_name": str(course.get("course_name", course_id)) if 'course' in dir() else "",
                 "retrieved_points": retrieved_points,
-                "source": "course_knowledge_base",
+                "source": source,
             },
             "agent_step": self.agent_step(),
         }
-
-    def _score_chapter(self, query: str, chapter: dict[str, Any]) -> int:
-        title = str(chapter.get("title", "")).lower()
-        prerequisites = " ".join(str(item).lower() for item in chapter.get("prerequisites", []))
-        text = f"{title} {prerequisites}"
-        score = 0
-
-        for token in query.replace("，", " ").replace("。", " ").split():
-            if len(token) >= 2 and token in text:
-                score += 3
-
-        if any(word in query for word in ["零基础", "不会", "入门"]) and chapter.get("difficulty") == "easy":
-            score += 3
-        if any(word in query for word in ["考试", "复习"]) and chapter.get("difficulty") in {"easy", "medium"}:
-            score += 2
-        if any(word in query for word in ["代码", "实验", "实操"]) and chapter.get("difficulty") == "medium":
-            score += 1
-        return score
-
-    def _excerpt(self, content: str, limit: int = 220) -> str:
-        compact = " ".join(line.strip() for line in content.splitlines() if line.strip())
-        return compact[:limit]

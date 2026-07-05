@@ -29,21 +29,69 @@ class ResourceAgent(BaseAgent):
     _partial_resources: list[dict] = []
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
-        """主入口"""
+        """主入口 — DeepTutor first, LLM fallback, rule last resort."""
         stages = self._stages(context)
         course = self._course_context(context)
         knowledge_points = self._knowledge_points(context, course, stages)
         profile = context.get("profile", {})
 
-        # ── 无阶段/知识点信息时：生成通用推荐，不硬拒绝（§10.1, 补充3）──
+        course_name = (course.get("course_name") or
+                       context.get("profile_facts", {}).get("target_course") or
+                       context.get("course_id", "目标课程"))
+        course_name = str(course_name).strip()
+
+        # ── DeepTutor: lecture + mindmap + reading (always try first) ──
+        dt_resources = []
+        try:
+            from app.services.deeptutor_client import generate_lecture, generate_mindmap, generate_research
+            import uuid as _uuid
+
+            lecture = generate_lecture(course_name)
+            if lecture and len(lecture) > 500:
+                dt_resources.append({
+                    "resource_id": _uuid.uuid4().hex[:12], "type": "lecture",
+                    "title": f"{course_name} - 完整讲义", "content": lecture,
+                    "related_stage_id": stages[0].get("stage_id", "") if stages else "",
+                    "source": "deeptutor", "format": "markdown",
+                    "difficulty": "medium", "quality_status": "passed",
+                })
+
+            mm = generate_mindmap(course_name)
+            if mm and len(mm) > 50:
+                dt_resources.append({
+                    "resource_id": _uuid.uuid4().hex[:12], "type": "mindmap",
+                    "title": f"{course_name} - 思维导图", "content": mm,
+                    "related_stage_id": stages[0].get("stage_id", "") if stages else "",
+                    "source": "deeptutor", "format": "mermaid",
+                    "difficulty": "medium", "quality_status": "passed",
+                })
+
+            rm = generate_research(course_name)
+            if rm and len(rm) > 50:
+                dt_resources.append({
+                    "resource_id": _uuid.uuid4().hex[:12], "type": "reading",
+                    "title": f"{course_name} - 拓展阅读", "content": rm,
+                    "related_stage_id": stages[0].get("stage_id", "") if stages else "",
+                    "source": "deeptutor", "format": "markdown",
+                    "difficulty": "medium", "quality_status": "passed",
+                })
+        except Exception as e:
+            logger.debug("DeepTutor resource skip: %s", e)
+
+        if dt_resources:
+            return {"resources": dt_resources, "agent_step": self.agent_step()}
+
+        # No DeepTutor and no stages → try LLM with minimal context
         if not stages or not knowledge_points:
-            course_name = (
-                course.get("course_name")
-                or context.get("profile_facts", {}).get("target_course")
-                or context.get("course_id", "目标课程")
-            )
-            resources = self._build_generic_resources(str(course_name).strip(), context)
-            return {"resources": resources, "agent_step": self.agent_step()}
+            try:
+                if self.llm_client:
+                    lecture = self._generate_single_lecture(course_name, context)
+                    if lecture:
+                        return {"resources": [lecture], "agent_step": self.agent_step()}
+            except Exception:
+                pass
+            # Absolute last resort: empty
+            return {"resources": [], "agent_step": self.agent_step()}
 
         # RAG 检索
         rag_evidence = self._rag_retrieve(context, stages, knowledge_points, profile)
@@ -91,6 +139,31 @@ class ResourceAgent(BaseAgent):
         all_resources = self._scope_resource_ids(all_resources, str(context.get("session_id") or ""))
         logger.info("ResourceAgent returning %d resources", len(all_resources))
         return {"resources": all_resources, "agent_step": self.agent_step()}
+
+    def _generate_single_lecture(self, course_name: str, context: dict) -> dict | None:
+        """Generate a single lecture resource via LLM — no templates."""
+        try:
+            import uuid
+            prompt = (
+                f"为'{course_name}'生成一份专业课程讲解文档。包含：\n"
+                "1. 课程概述与学习目标\n2. 核心知识体系（3-5个模块）\n"
+                "3. 每个模块的关键概念和典型应用\n4. 推荐学习顺序\n"
+                "输出Markdown格式，至少500字。"
+            )
+            content = self.llm_client.chat(
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.5, max_tokens=2000,
+            )
+            if content and len(content) > 100:
+                return {
+                    "resource_id": uuid.uuid4().hex[:12], "type": "lecture",
+                    "title": f"{course_name} - 课程讲义", "content": content,
+                    "related_stage_id": "", "source": "llm_generated",
+                    "format": "markdown", "difficulty": "medium", "quality_status": "passed",
+                }
+        except Exception:
+            pass
+        return None
 
     def get_fallback(self, context: dict[str, Any] | None = None) -> dict[str, Any]:
         ctx = context or {}
@@ -890,7 +963,8 @@ class ResourceAgent(BaseAgent):
     def _mindmap_for_task(self, course, binding, task, stage_id, task_id=""):
         label = task or stage_id
         res_id = f"res_mindmap_{task_id}" if task_id else f"res_mindmap_{stage_id}"
-        content = f"mindmap\n  root(({self._safe_mermaid(label)}))\n    核心概念\n    关键算法\n    应用场景\n    常见误区"
+        safe_label = str(label).replace("(", "").replace(")", "").replace("[", "").replace("]", "")
+        content = f"mindmap\n  root(({safe_label}))\n    核心概念\n    关键算法\n    应用场景\n    常见误区"
         return self._resource(
             res_id, "mindmap",
             f"{label}知识图谱", f"学习任务「{label}」的知识结构图。",
@@ -1056,86 +1130,5 @@ class ResourceAgent(BaseAgent):
             )
         return f"## 实操任务：{point}\n\n用一个最小样例写出输入、处理过程、输出和检查标准。"
 
-    def _safe_mermaid(self, text):
-        cleaned = re.sub(r"[\r\n\t]+", " ", text).strip()
-        return cleaned.replace("(", "（").replace(")", "）").replace(":", "：")[:60] or "resource"
-
     # ── 通用推荐模式（§10.1, 补充3）──
 
-    def _build_generic_resources(
-        self,
-        course_name: str,
-        context: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        """在缺少学习路径和阶段信息时，生成通用推荐资源。
-        必须明确标记为通用推荐，不能伪装成阶段化推荐（补充3）。
-        """
-        if not course_name or len(course_name) < 2:
-            course_name = "目标课程"
-
-        profile = context.get("profile", {})
-        session_id = str(context.get("session_id") or "")
-
-        resources: list[dict[str, Any]] = []
-
-        # 通用讲义
-        resources.append({
-            "resource_id": f"generic_lecture_{course_name}",
-            "type": "lecture",
-            "title": f"{course_name}入门讲义",
-            "description": f"{course_name}核心概念和学习路线概述。此为通用推荐资源，待学习路径确定后可替换为阶段化资源。",
-            "content_format": "markdown",
-            "content": (
-                f"## {course_name} 学习概览\n\n"
-                f"### 课程简介\n{course_name}是重要的学习方向。以下为通用入门路线：\n\n"
-                "### 建议学习路径\n"
-                "1. 先了解核心概念和术语体系\n"
-                "2. 掌握基础方法和典型应用场景\n"
-                "3. 通过练习巩固并逐步深入\n\n"
-                "### 学习建议\n"
-                "建议先完成一次基础摸底测试，确认当前水平和薄弱点后，再制定精确的个性化学习计划。"
-            ),
-            "related_stage_id": "generic",
-            "related_chapter": course_name,
-            "related_knowledge_points": [course_name],
-            "knowledge_points": [course_name],
-            "source": "agent_generated",
-            "source_type": "agent_generated",
-            "generation_mode": "generic_fallback",
-            "quality_status": "warning",
-            "reason": f"主 Agent 要求为 {course_name} 生成通用推荐资源（当前缺少学习路径阶段信息）。",
-            "generation_reason": f"通用推荐：{course_name} 入门学习。",
-            "difficulty": "easy",
-            "fallback_reason": "缺少学习路径和阶段信息，以下为通用推荐资源，未绑定到具体学习阶段。后续补充画像信息后可生成阶段化资源。",
-            "task_id": "",
-        })
-
-        # 通用思维导图概览
-        resources.append({
-            "resource_id": f"generic_mindmap_{course_name}",
-            "type": "mindmap",
-            "title": f"{course_name}知识结构概览",
-            "description": f"{course_name}核心知识领域全景图。此为通用推荐资源。",
-            "content_format": "mermaid",
-            "content": (
-                f"mindmap\n  root(({self._safe_mermaid(course_name)}))\n"
-                "    核心概念\n      定义与术语\n      基本原理\n"
-                "    关键方法\n      常见技术\n      典型应用\n"
-                "    学习资源\n      推荐教材\n      在线课程\n      练习平台"
-            ),
-            "related_stage_id": "generic",
-            "related_chapter": course_name,
-            "related_knowledge_points": [course_name],
-            "knowledge_points": [course_name],
-            "source": "agent_generated",
-            "source_type": "agent_generated",
-            "generation_mode": "generic_fallback",
-            "quality_status": "warning",
-            "reason": f"为 {course_name} 提供通用知识结构概览。",
-            "generation_reason": f"通用推荐：{course_name} 知识结构。",
-            "difficulty": "easy",
-            "fallback_reason": "缺少学习路径和阶段信息，未绑定阶段。",
-            "task_id": "",
-        })
-
-        return self._scope_resource_ids(resources, session_id)

@@ -25,15 +25,53 @@ class QuestionAgent(BaseAgent):
     agent_name = "试题生成智能体"
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
-        """主入口"""
+        """主入口 — DeepTutor deep_question capability with full pipeline."""
+        user_message = str(context.get("user_message", "")).strip()
+        course = str(context.get("course_id", "") or user_message[:30])
+        diagnosis = context.get("diagnosis", {}) if isinstance(context.get("diagnosis"), dict) else {}
+        weak_names = [w.get("name", "") for w in diagnosis.get("weak_knowledge_points", [])[:5] if w.get("name")]
+        profile = context.get("profile", {}) or {}
+        difficulty = "medium"
+        if isinstance(profile, dict):
+            kb = profile.get("knowledge_base", {})
+            kb_val = str(kb.get("value", "") if isinstance(kb, dict) else "")
+            if any(w in kb_val for w in ["弱", "不会", "没学过", "入门"]):
+                difficulty = "easy"
+
+        # Build smart prompt from context
+        prompt_parts = [f"为'{course}'生成10道练习题"]
+        if weak_names:
+            prompt_parts.append(f"重点关注这些薄弱知识点：{'、'.join(weak_names)}")
+        prompt_parts.append(f"难度：{difficulty}")
+        prompt_parts.append("题型混合选择题、填空题、判断题、简答题")
+        prompt_parts.append("每道题包含：question_id, type, stem, options(选择题需要), correct, explanation, difficulty, knowledge_point")
+        prompt_parts.append("输出JSON格式：{\"questions\": [...]}")
+        prompt = "。".join(prompt_parts) + "。"
+
+        # ── DeepTutor deep_question capability ──
+        try:
+            from app.services.deeptutor_client import deeptutor_call
+            import uuid as _uuid
+            dt_result = deeptutor_call("chat", prompt)
+            if dt_result and len(dt_result) > 50:
+                questions = self._parse_deeptutor_output(dt_result)
+                if questions:
+                    for q in questions:
+                        q.setdefault("question_id", f"dt_{_uuid.uuid4().hex[:8]}")
+                        q.setdefault("source", "deeptutor")
+                        q.setdefault("difficulty", difficulty)
+                    return {"questions": questions, "question_set_id": _uuid.uuid4().hex[:8],
+                            "agent_step": self.agent_step()}
+        except Exception as e:
+            logger.debug("DeepTutor skip: %s", e)
+
+        # ── Existing LLM path ──
         diagnosis = context.get("diagnosis", {}) if isinstance(context.get("diagnosis"), dict) else {}
         profile = context.get("profile", {})
-        profile_facts = context.get("profile_facts", {}) if isinstance(context.get("profile_facts"), dict) else {}
         knowledge_points = self._extract_knowledge_points(context, diagnosis)
-        user_message = str(profile_facts.get("_raw_user_message", context.get("user_message", ""))).strip()
 
         if not knowledge_points:
-            return {"questions": [], "limitations": ["未找到可用于出题的知识点。请先完成诊断或指定课程。"],
+            return {"questions": [], "limitations": ["未找到可用于出题的知识点。"],
                     "agent_step": self.agent_step()}
 
         # 从用户消息解析出题参数
@@ -69,6 +107,36 @@ class QuestionAgent(BaseAgent):
 
         return {"questions": all_questions, "question_set_id": self._make_set_id(context),
                 "agent_step": self.agent_step()}
+
+    def _parse_deeptutor_output(self, raw: str) -> list[dict]:
+        """Normalize DeepTutor output to standard question format."""
+        questions = []
+        try:
+            # Try JSON first
+            s, e = raw.find("{"), raw.rfind("}") + 1
+            if s >= 0 and e > s:
+                parsed = json.loads(raw[s:e])
+                qs = parsed.get("questions", []) if isinstance(parsed, dict) else []
+                for q in qs:
+                    if not isinstance(q, dict):
+                        continue
+                    normalized = {
+                        "question_id": str(q.get("question_id", q.get("id", ""))),
+                        "type": str(q.get("type", "choice")),
+                        "stem": str(q.get("stem", q.get("question", q.get("title", "")))),
+                        "correct": str(q.get("correct", q.get("answer", ""))),
+                        "explanation": str(q.get("explanation", q.get("analysis", ""))),
+                        "difficulty": str(q.get("difficulty", "medium")),
+                        "knowledge_point": str(q.get("knowledge_point", q.get("topic", ""))),
+                    }
+                    opts = q.get("options", [])
+                    if isinstance(opts, list) and opts:
+                        normalized["options"] = [str(o) for o in opts]
+                    questions.append(normalized)
+        except Exception:
+            # Raw text: wrap as single question
+            questions = [{"type": "mixed", "stem": raw[:500], "correct": "", "explanation": ""}]
+        return questions
 
     def get_fallback(self, context: dict[str, Any] | None = None) -> dict[str, Any]:
         return {"questions": [], "question_set_id": "",

@@ -10,6 +10,7 @@ Provides:
 from __future__ import annotations
 
 import json
+import os
 import time
 from abc import ABC, abstractmethod
 from typing import Any
@@ -277,22 +278,26 @@ class DeepSeekLLMClient(BaseLLMClient):
 def get_llm_client(provider: str = "mock") -> BaseLLMClient:
     """Return an LLM client instance for the given provider.
 
+    Env vars LLM_API_KEY / LLM_BASE_URL / LLM_MODEL override settings,
+    so you can switch between Spark / Qwen / DeepSeek without code changes.
+
     Args:
         provider: ``"mock"`` or ``"deepseek"``.
 
     Returns:
         A BaseLLMClient subclass instance.
-
-    Raises:
-        ValueError: If the provider name is unrecognised.
     """
     if provider == "mock":
         return MockLLMClient()
-    if provider == "deepseek":
-        return DeepSeekLLMClient(
-            api_key=settings.deepseek_api_key,
-            base_url=settings.deepseek_base_url,
-            model=settings.llm_model,
-            temperature=settings.llm_temperature,
-        )
-    raise ValueError(f"Unsupported LLM provider: {provider}")
+
+    api_key = os.environ.get("LLM_API_KEY") or settings.deepseek_api_key
+    base_url = os.environ.get("LLM_BASE_URL") or settings.deepseek_base_url
+    model = os.environ.get("LLM_MODEL") or settings.llm_model
+
+    if not api_key:
+        return MockLLMClient()
+
+    return DeepSeekLLMClient(
+        api_key=api_key, base_url=base_url, model=model,
+        temperature=settings.llm_temperature,
+    )

@@ -1590,6 +1590,18 @@ def _reply_for_intent(
 
         # 调用 ConversationAgent final_reply 模式生成最终回复
         final_reply = _generate_final_reply(message, session_id, result)
+
+        # ── 主动推送：grading发现错误 → 建议重规划 + 存储待调整标记 ──
+        grading = result.get("grading_result", {}) or {}
+        if grading.get("error_type") and grading["error_type"] != "null":
+            et = grading.get("error_type", "")
+            et_label = {"concept":"概念错误","calculation":"计算失误","misreading":"审题偏差","method":"方法不当","forgetting":"知识遗忘"}.get(et, et)
+            final_reply += f"\n\n💡 检测到你在这道题上是**{et_label}**，可能需要调整学习计划重点强化这部分内容。要我现在帮你重新规划学习路径吗？"
+            # 存储待调整标记，下次对话自动检测
+            state = conversation_store.get(session_id)
+            state.facts["_pending_adjustment"] = et
+            state.facts["weak_points"] = state.facts.get("weak_points", "") + f"、{et_label}"
+
         # 行动已完成，清除上次提议，检测是否提出了下一步
         conversation_store.set_proposal(session_id, None)
         _detect_and_set_proposal({"reply": final_reply}, session_id)
