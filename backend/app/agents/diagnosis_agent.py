@@ -15,6 +15,17 @@ from app.services.llm_client import LLMClientError
 logger = logging.getLogger(__name__)
 
 
+def _spaced_repetition_interval(score: float) -> int:
+    """Ebbinghaus-based spaced repetition scheduler. Returns days until next review."""
+    if score < 30:   return 1
+    if score < 50:   return 2
+    if score < 65:   return 4
+    if score < 80:   return 7
+    if score < 90:   return 15
+    if score < 95:   return 30
+    return 60  # mastered — review in 2 months
+
+
 class DiagnosisAgent(BaseAgent):
     agent_id = "diagnosis_agent"
     agent_name = "学习诊断智能体"
@@ -102,6 +113,31 @@ class DiagnosisAgent(BaseAgent):
         declining_count = sum(1 for m in mastery if m.get("trend") == "declining")
         improving_count = sum(1 for m in mastery if m.get("trend") == "improving")
 
+        # ── DeepTutor-style knowledge type classification ──
+        knowledge_types = {"记忆型": "memory", "概念型": "concept", "程序型": "procedure", "设计型": "design"}
+        error_type_map = {"知识结构性": "structural", "理解偏差型": "deviation", "应用错误": "application", "元认知型": "metacognitive"}
+        for m in mastery:
+            name = str(m.get("name", "")).lower()
+            if any(w in name for w in ["定义", "概念", "原理", "是什么"]):
+                m["knowledge_type"] = "concept"
+            elif any(w in name for w in ["算法", "步骤", "流程", "方法", "计算"]):
+                m["knowledge_type"] = "procedure"
+            elif any(w in name for w in ["设计", "架构", "模式", "项目"]):
+                m["knowledge_type"] = "design"
+            else:
+                m["knowledge_type"] = "memory"
+            m.setdefault("error_type", "structural" if m.get("score", 50) < 40 else "deviation" if m.get("score", 50) < 60 else "")
+            # ── 7-stage mastery loop ──
+            score = m.get("score", 50)
+            if score < 30:     m["stage"] = "diagnostic"
+            elif score < 50:   m["stage"] = "explain"
+            elif score < 65:   m["stage"] = "feynman_check"
+            elif score < 80:   m["stage"] = "practice"
+            elif score < 90:   m["stage"] = "error_diagnosis"
+            elif score < 95:   m["stage"] = "review"
+            else:              m["stage"] = "completed"
+            m.setdefault("review_interval_days", _spaced_repetition_interval(score))
+
         diagnosis = {
             "diagnosis_summary": self._adaptive_summary(mastery, weak_kps, len(step1_questions), len(step2_questions)),
             "summary": self._adaptive_summary(mastery, weak_kps, len(step1_questions), len(step2_questions)),
@@ -120,7 +156,7 @@ class DiagnosisAgent(BaseAgent):
             "limitations": [] if previous_grades else ["当前为初步诊断，置信度较低。完成全部题目后精度提升。"],
             "risk_flags": (["initial_diagnosis"] if not previous_grades else []) +
                           (["declining_trend"] if declining_count > improving_count else []),
-            "mastery_levels": mastery,  # 掌握度向量（含 confidence, trend, last_updated）
+            "mastery_levels": mastery,  # 掌握度矩阵（含 knowledge_type, error_type, review_interval_days）
             "diagnostic_questions": step1_questions + step2_questions,
             "diagnostic_question_count": len(step1_questions) + len(step2_questions),
             "diagnostic_phase": "step1" if not previous_grades else "step2",
@@ -131,6 +167,26 @@ class DiagnosisAgent(BaseAgent):
         return {"diagnosis": diagnosis, "agent_step": self.agent_step()}
 
     def _collect_knowledge_points(self, context: dict) -> list[dict]:
+        """Collect knowledge points from file, context, and diagnosis data."""
+        points = []
+        # 1. Load from generated knowledge graph
+        try:
+            import json, os
+            kp_file = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'knowledge_points.json')
+            if os.path.exists(kp_file):
+                with open(kp_file, 'r', encoding='utf-8') as f:
+                    for kp in json.load(f):
+                        points.append({'name': kp['name'], 'type': kp.get('type', 'concept'),
+                                       'module': kp.get('module', '')})
+        except Exception:
+            pass
+        # 2. From context
+        old = self._collect_knowledge_points_legacy(context)
+        if old:
+            points.extend(old)
+        return points[:20]
+
+    def _collect_knowledge_points_legacy(self, context: dict) -> list[dict]:
         """收集课程知识点作为诊断范围。"""
         points = []
         course = context.get("course", {}) if isinstance(context.get("course"), dict) else {}

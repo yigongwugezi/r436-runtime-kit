@@ -28,6 +28,8 @@ def _setup_config():
         )
         set_scoped_llm_config(cfg)
         os.environ["OPENAI_API_KEY"] = os.environ["LLM_API_KEY"]
+        # Qwen fix: don't stringify tool args (Qwen expects JSON objects)
+        os.environ["OPENAI_STRINGIFY_TOOL_ARGS"] = "false"
         os.environ["OPENAI_BASE_URL"] = os.environ.get("LLM_BASE_URL", "")
         return True
     except Exception as e:
@@ -43,7 +45,10 @@ def deeptutor_call(capability: str, message: str, history: list | None = None) -
         from deeptutor.runtime import ChatOrchestrator
         from deeptutor.core.context import UnifiedContext
         from deeptutor.core.stream import StreamEventType
-        ctx = UnifiedContext(user_message=message, conversation_history=history or [], language="zh")
+        ctx = UnifiedContext(
+            user_message=message, conversation_history=history or [], language="zh",
+            enabled_tools=["reason", "brainstorm", "read_memory", "write_memory", "ask_user", "exec"],
+        )
         if capability and capability != "chat":
             ctx.active_capability = capability
         parts = []

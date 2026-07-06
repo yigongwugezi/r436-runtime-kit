@@ -40,41 +40,42 @@ class ResourceAgent(BaseAgent):
                        context.get("course_id", "目标课程"))
         course_name = str(course_name).strip()
 
-        # ── DeepTutor: lecture + mindmap + reading (always try first) ──
+        # ── DeepTutor: lecture + mindmap + reading (parallel for speed) ──
         dt_resources = []
         try:
             from app.services.deeptutor_client import generate_lecture, generate_mindmap, generate_research
+            from concurrent.futures import ThreadPoolExecutor, as_completed
             import uuid as _uuid
 
-            lecture = generate_lecture(course_name)
-            if lecture and len(lecture) > 500:
-                dt_resources.append({
-                    "resource_id": _uuid.uuid4().hex[:12], "type": "lecture",
-                    "title": f"{course_name} - 完整讲义", "content": lecture,
-                    "related_stage_id": stages[0].get("stage_id", "") if stages else "",
-                    "source": "deeptutor", "format": "markdown",
-                    "difficulty": "medium", "quality_status": "passed",
-                })
+            tasks = {
+                'lecture': lambda: generate_lecture(course_name),
+                'mindmap': lambda: generate_mindmap(course_name),
+                'reading': lambda: generate_research(course_name),
+            }
+            results = {}
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                futures = {pool.submit(fn): name for name, fn in tasks.items()}
+                for f in as_completed(futures, timeout=180):
+                    try:
+                        results[futures[f]] = f.result() or ''
+                    except Exception:
+                        pass
 
-            mm = generate_mindmap(course_name)
-            if mm and len(mm) > 50:
-                dt_resources.append({
-                    "resource_id": _uuid.uuid4().hex[:12], "type": "mindmap",
-                    "title": f"{course_name} - 思维导图", "content": mm,
+            if results.get('lecture') and len(results['lecture']) > 500:
+                dt_resources.append({"resource_id": _uuid.uuid4().hex[:12], "type": "lecture",
+                    "title": f"{course_name} - 完整讲义", "content": results['lecture'],
                     "related_stage_id": stages[0].get("stage_id", "") if stages else "",
-                    "source": "deeptutor", "format": "mermaid",
-                    "difficulty": "medium", "quality_status": "passed",
-                })
-
-            rm = generate_research(course_name)
-            if rm and len(rm) > 50:
-                dt_resources.append({
-                    "resource_id": _uuid.uuid4().hex[:12], "type": "reading",
-                    "title": f"{course_name} - 拓展阅读", "content": rm,
+                    "source": "deeptutor", "format": "markdown", "difficulty": "medium", "quality_status": "passed"})
+            if results.get('mindmap') and len(results['mindmap']) > 50:
+                dt_resources.append({"resource_id": _uuid.uuid4().hex[:12], "type": "mindmap",
+                    "title": f"{course_name} - 思维导图", "content": results['mindmap'],
                     "related_stage_id": stages[0].get("stage_id", "") if stages else "",
-                    "source": "deeptutor", "format": "markdown",
-                    "difficulty": "medium", "quality_status": "passed",
-                })
+                    "source": "deeptutor", "format": "mermaid", "difficulty": "medium", "quality_status": "passed"})
+            if results.get('reading') and len(results['reading']) > 50:
+                dt_resources.append({"resource_id": _uuid.uuid4().hex[:12], "type": "reading",
+                    "title": f"{course_name} - 拓展阅读", "content": results['reading'],
+                    "related_stage_id": stages[0].get("stage_id", "") if stages else "",
+                    "source": "deeptutor", "format": "markdown", "difficulty": "medium", "quality_status": "passed"})
         except Exception as e:
             logger.debug("DeepTutor resource skip: %s", e)
 

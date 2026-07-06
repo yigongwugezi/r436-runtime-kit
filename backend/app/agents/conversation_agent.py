@@ -582,7 +582,7 @@ action："""
         )
 
         if explicit_generation:
-            return self._fallback_result("plan,resources,generate_questions", "explicit_generation_request")
+            return self._fallback_result("plan", "explicit_generation_request")
 
         if any(cw in compact for cw in confirm_words):
             last_proposal = context.get("last_proposal")

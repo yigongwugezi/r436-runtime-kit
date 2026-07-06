@@ -26,8 +26,6 @@ from fastapi.responses import StreamingResponse
 
 from app.middleware.auth import AuthContext, reject_parent
 
-from app.agents.multimodal_agent import MultimodalAgent
-from app.agents.diagnosis_agent import DiagnosisAgent
 from app.agents.conversation_agent import ConversationAgent
 from app.config import settings
 from app.db.engine import SessionLocal
@@ -1733,8 +1731,9 @@ GEN_STAGES = [
 ]
 
 
-@router.post("/chat/stream")
-def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> StreamingResponse:
+# DEPRECATED: replaced by chat_router.py unified LangGraph handler
+# @router.post("/chat/stream")
+def _deprecated_stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> StreamingResponse:
     message = str(payload.get("message", "我想学习人工智能导论"))
     session_id = _payload_session_id(payload)
     subject_id = _payload_subject_id(payload)
@@ -1977,8 +1976,9 @@ def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(reject_pare
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
-@router.post("/chat/send")
-def send_chat(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
+# DEPRECATED: replaced by chat_router.py
+# @router.post("/chat/send")
+def _deprecated_send_chat(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     message = str(payload.get("message", "我想学习人工智能导论"))
     session_id = _payload_session_id(payload)
     subject_id = _payload_subject_id(payload)

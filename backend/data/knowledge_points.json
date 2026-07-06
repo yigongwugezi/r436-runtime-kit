@@ -1,0 +1,278 @@
+[
+  {
+    "name": "人工智能概述与发展历史",
+    "module": "人工智能导论",
+    "type": "concept",
+    "source": "catalog"
+  },
+  {
+    "name": "搜索算法与问题求解",
+    "module": "人工智能导论",
+    "type": "procedure",
+    "source": "catalog"
+  },
+  {
+    "name": "机器学习基础",
+    "module": "人工智能导论",
+    "type": "concept",
+    "source": "catalog"
+  },
+  {
+    "name": "神经网络基础",
+    "module": "人工智能导论",
+    "type": "concept",
+    "source": "catalog"
+  },
+  {
+    "name": "自然语言处理入门",
+    "module": "人工智能导论",
+    "type": "concept",
+    "source": "catalog"
+  },
+  {
+    "name": "计算机视觉入门",
+    "module": "人工智能导论",
+    "type": "concept",
+    "source": "catalog"
+  },
+  {
+    "name": "强化学习基础",
+    "module": "人工智能导论",
+    "type": "concept",
+    "source": "catalog"
+  },
+  {
+    "name": "人工智能伦理与安全",
+    "module": "人工智能导论",
+    "type": "concept",
+    "source": "catalog"
+  },
+  {
+    "name": "人工知能",
+    "module": "",
+    "type": "memory",
+    "source": "faiss"
+  },
+  {
+    "name": "智能机器人",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  },
+  {
+    "name": "智能计算机系统",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  },
+  {
+    "name": "Artificial intelligence",
+    "module": "",
+    "type": "memory",
+    "source": "faiss"
+  },
+  {
+    "name": "学徒学习",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  },
+  {
+    "name": "特徵 (机器学习)",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  },
+  {
+    "name": "量化价值投资",
+    "module": "",
+    "type": "design",
+    "source": "faiss"
+  },
+  {
+    "name": "机器人学未来",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  },
+  {
+    "name": "Caffe",
+    "module": "",
+    "type": "procedure",
+    "source": "faiss"
+  },
+  {
+    "name": "深圳大学师范学院 (教育学部)",
+    "module": "",
+    "type": "memory",
+    "source": "faiss"
+  },
+  {
+    "name": "碩士學分班",
+    "module": "",
+    "type": "memory",
+    "source": "faiss"
+  },
+  {
+    "name": "Keras",
+    "module": "",
+    "type": "procedure",
+    "source": "faiss"
+  },
+  {
+    "name": "高級研究碩士",
+    "module": "",
+    "type": "memory",
+    "source": "faiss"
+  },
+  {
+    "name": "数据结构列表",
+    "module": "",
+    "type": "memory",
+    "source": "faiss"
+  },
+  {
+    "name": "树状结构图",
+    "module": "",
+    "type": "memory",
+    "source": "faiss"
+  },
+  {
+    "name": "樹 (資料結構)",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  },
+  {
+    "name": "叶节点",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  },
+  {
+    "name": "数据路径",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  },
+  {
+    "name": "算符 (物理學)",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  },
+  {
+    "name": "視覺信號保真度",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  },
+  {
+    "name": "从头计算",
+    "module": "",
+    "type": "procedure",
+    "source": "faiss"
+  },
+  {
+    "name": "Ab initio計算",
+    "module": "",
+    "type": "procedure",
+    "source": "faiss"
+  },
+  {
+    "name": "量子化学从头计算",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  },
+  {
+    "name": "ChinaOS",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  },
+  {
+    "name": "China Operating System",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  },
+  {
+    "name": "作业系统历史",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  },
+  {
+    "name": "Guix",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  },
+  {
+    "name": "Deepin深度操作系統",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  },
+  {
+    "name": "李光濤",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  },
+  {
+    "name": "网络计算",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  },
+  {
+    "name": "高剑刚",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  },
+  {
+    "name": "黎映日",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  },
+  {
+    "name": "動態路由",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  },
+  {
+    "name": "神经网络技术",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  },
+  {
+    "name": "神经网络",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  },
+  {
+    "name": "神经微分方程",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  },
+  {
+    "name": "Nervous system",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  },
+  {
+    "name": "神经器官",
+    "module": "",
+    "type": "concept",
+    "source": "faiss"
+  }
+]

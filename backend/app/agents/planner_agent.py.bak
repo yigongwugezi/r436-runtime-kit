@@ -25,138 +25,36 @@ class PlannerAgent(BaseAgent):
         diagnosis = context.get("diagnosis") if isinstance(context.get("diagnosis"), dict) else {}
         profile = context.get("profile", {})
         mode = str(context.get("mode", "plan"))
-        existing = context.get("existing_path")
 
-        if mode == "adjust" and existing:
+        # ── 动态调整模式：基于诊断结果调整已有路径 ──
+        if mode == "adjust" and context.get("existing_path"):
             return self._run_adjustment(context, diagnosis, profile)
 
+        # ── 全新规划模式 ──
         weak_points = self._extract_weak_points(diagnosis)
         planning_points = self._get_planning_points(context, weak_points)
+
         time_text = self._collect_time_text(context)
         total_days = self._infer_days(time_text, profile)
+
         diag_meta = self._build_diagnosis_meta(diagnosis, weak_points, total_days, profile, time_text)
 
         if diag_meta["needs_more_diagnosis"] and not weak_points and not planning_points:
             planning_points = [self._make_probe_point(diagnosis)]
 
-        # Stage 1: Architect
-        architect_plan = self._stage_architect(context, profile, planning_points, total_days, diag_meta)
-        if not architect_plan:
-            return self._fallback_path(context, planning_points, total_days, profile, diag_meta)
+        llm_path = self._try_generate_with_llm(context, profile, planning_points, total_days, diag_meta)
+        if llm_path:
+            result = self._make_result(llm_path, total_days, diag_meta)
+            result["review_tasks"] = self._generate_review_tasks(llm_path)
+            return result
 
-        # Stage 2: Creator
-        detailed_stages = self._stage_creator(context, profile, architect_plan, total_days)
-        if not detailed_stages:
-            return self._fallback_path(context, planning_points, total_days, profile, diag_meta)
-
-        # Stage 3-4: Review-Refine loop with backtracking (max 2 rounds)
-        revision_count = 0
-        for round_num in range(2):
-            review = self._stage_reviewer(detailed_stages, profile, total_days)
-            if not review.get("needs_revision"):
-                break
-            revision_count += 1
-            detailed_stages = self._stage_refine(detailed_stages, review, profile, total_days)
-            # If still failing after refine, backtrack to architect
-            if round_num == 1 and review.get("needs_revision"):
-                logger.info("Backtracking to architect after failed reviews")
-                architect_plan = self._stage_architect(context, profile, planning_points, total_days, diag_meta)
-                if architect_plan:
-                    detailed_stages = self._stage_creator(context, profile, architect_plan, total_days) or detailed_stages
-
-        result = self._make_result(detailed_stages, total_days, diag_meta)
-        result["review_tasks"] = self._generate_review_tasks(detailed_stages)
-        result["planner_metadata"] = {
-            "stages": len(detailed_stages),
-            "reviewed": True,
-            "revisions": revision_count,
-            "backtracked": revision_count >= 2,
-            "revision_notes": review.get("notes", ""),
-        }
-        return result
-
-
-    # ── 动态调整（M5）──
-
-
-
-    # ── Stage 1: Architect ──
-    def _stage_architect(self, context, profile, planning_points, total_days, diag_meta):
-        if not self.llm_client:
-            return None
-        try:
-            course = str(context.get("course_id", "") or "")
-            weak_names = [p.get("name", "") for p in planning_points[:5]]
-            prompt = f"""你是课程架构师。为「{course}」设计学习路径。
-学生：{total_days}天，薄弱点：{chr(44).join(weak_names) if weak_names else chr(39)+chr(39)}。
-要求：3-6阶段难度递增，优先薄弱点，每阶段2-4类资源。
-输出JSON：{{"stages":[{{"stage_id":"s1","title":"","duration":"","goal":"","tasks":[],"resource_types":[],"estimated_days":N}}],"rationale":""}}"""
-            raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.3, max_tokens=2000)
-            s, e = raw.find("{"), raw.rfind("}") + 1
-            return json.loads(raw[s:e]) if s >= 0 and e > s else None
-        except Exception as e:
-            logger.warning("Architect: %s", e)
-            return None
-
-    # ── Stage 2: Creator ──
-    def _stage_creator(self, context, profile, architect_plan, total_days):
-        if not self.llm_client:
-            return None
-        try:
-            stages_json = json.dumps(architect_plan.get("stages", []), ensure_ascii=False)
-            prompt = f"""细化学习阶段：{stages_json}
-每个阶段：细化tasks为2-4个可执行任务，明确resource_types，total_days匹配{total_days}天。
-输出JSON：{{"stages":[...]}}"""
-            raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.3, max_tokens=2500)
-            s, e = raw.find("{"), raw.rfind("}") + 1
-            return json.loads(raw[s:e]).get("stages", []) if s >= 0 and e > s else None
-        except Exception as e:
-            logger.warning("Creator: %s", e)
-            return None
-
-    # ── Stage 3: Reviewer ──
-    def _stage_reviewer(self, stages, profile, total_days):
-        if not self.llm_client:
-            return {"needs_revision": False}
-        try:
-            stages_json = json.dumps(stages, ensure_ascii=False)
-            prompt = f"""审查学习路径：{stages_json}
-检查：难度递增？时间合理({total_days}天)？任务可执行？逻辑衔接？
-输出JSON：{{"passed":true/false,"issues":[],"suggestions":[],"notes":""}}"""
-            raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.2, max_tokens=1000)
-            s, e = raw.find("{"), raw.rfind("}") + 1
-            if s >= 0 and e > s:
-                r = json.loads(raw[s:e])
-                return {"needs_revision": not r.get("passed", True), "issues": r.get("issues",[]), "suggestions": r.get("suggestions",[]), "notes": r.get("notes","")}
-        except Exception as e:
-            logger.warning("Reviewer: %s", e)
-        return {"needs_revision": False}
-
-    # ── Stage 4: Refine ──
-    def _stage_refine(self, stages, review, profile, total_days):
-        if not self.llm_client:
-            return stages
-        try:
-            stages_json = json.dumps(stages, ensure_ascii=False)
-            issues_text = chr(59).join(review.get("issues", []))
-            suggestions_text = chr(59).join(review.get("suggestions", []))
-            prompt = f"""修改学习路径：{stages_json}
-问题：{issues_text}
-建议：{suggestions_text}
-输出JSON：{{"stages":[...]}}"""
-            raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.3, max_tokens=2500)
-            s, e = raw.find("{"), raw.rfind("}") + 1
-            return json.loads(raw[s:e]).get("stages", stages) if s >= 0 and e > s else stages
-        except Exception as e:
-            logger.warning("Refine: %s", e)
-            return stages
-
-    def _fallback_path(self, context, planning_points, total_days, profile, diag_meta):
+        logger.info("LLM unavailable or failed, using rule-based path")
         rule_path = self._build_rule_path(planning_points, profile, total_days, diag_meta)
         result = self._make_result(rule_path, total_days, diag_meta)
         result["review_tasks"] = self._generate_review_tasks(rule_path)
-        result["planner_metadata"] = {"stages": len(rule_path), "reviewed": False, "revisions": 0, "backtracked": False, "revision_notes": "LLM不可用，使用规则生成"}
         return result
+
+    # ── 动态调整（M5）──
 
     def _run_adjustment(self, context: dict, diagnosis: dict, profile: dict) -> dict:
         """基于诊断结果动态调整已有学习路径。"""
@@ -772,6 +670,86 @@ class PlannerAgent(BaseAgent):
 
     # ── LLM 生成 ──
 
+    def _try_generate_with_llm(self, context, profile, planning_points,
+                                 total_days, diag_meta) -> list[dict] | None:
+        if not self.llm_client:
+            return None
+
+        course_id = str(context.get("course_id") or "")
+        course = course_catalog.get_course(course_id) or {}
+        profile_facts = context.get("profile_facts", {}) if isinstance(context.get("profile_facts"), dict) else {}
+
+        user_message = profile_facts.get("_raw_user_message", str(context.get("user_message", "")))
+        conversation_context = profile_facts.get("_conversation_context", "")
+
+        course_name = (
+            course.get("course_name")
+            or context.get("knowledge_context", {}).get("course_name")
+            or profile_facts.get("target_course")
+            or ""
+        )
+
+        payload = {
+            "course_name": course_name,
+            "estimated_days": total_days,
+            "student_profile": self._compact_profile(profile),
+            "diagnosis_meta": diag_meta,
+            "planning_points": [
+                {
+                    "name": p.get("name"),
+                    "difficulty": p.get("difficulty", "medium"),
+                    "prerequisites": p.get("prerequisites", []),
+                }
+                for p in planning_points
+            ] if planning_points else [],
+        }
+
+        prompt = f"""根据以下信息，生成一个 {total_days} 天的学习路径。
+
+用户最新要求：{user_message}
+
+对话上下文：
+{conversation_context}
+
+课程与画像数据：
+{json.dumps(payload, ensure_ascii=False, indent=2)}
+
+要求：
+1. 生成4-5个阶段，总天数必须正好{total_days}天
+2. 每个阶段包含字段：
+   - stage_id: 字符串格式 "stage_N"（N为阶段序号，如"stage_1"、"stage_2"）
+   - title: 必须以具体学习内容命名，严禁模板化标题
+   - duration: 字符串格式 "第X-Y天"（单天用"第X天"），如"第1-3天"
+   - goal, tasks, daily_tasks, resource_types, reason 同上
+3. title必须以具体的学习内容命名（如"极限与连续"、"导数与微分"），绝对不要用"第一阶段"、"补齐基础"这种模板化标题
+4-7. 同上
+8. daily_tasks 格式：\n   [{{"day": 1, "tasks": ["任务1", "任务2"]}}, ...]\n   长度等于该阶段天数
+9. 只输出JSON，格式：{{"learning_path": [...]}}
+10. 对于微积分/高等数学，参考同济版章节结构，至少包含：极限与连续、导数与微分、导数应用、不定积分、定积分与综合复习"""
+
+        try:
+            raw = self.llm_client.chat(
+                messages=[
+                    {"role": "system", "content": "你是学习路径规划专家，擅长根据学生情况设计个性化学习阶段。只输出JSON。"},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.3,
+                max_tokens=4000,
+            )
+            logger.info(f"LLM raw response (first 800 chars): {raw[:800]}")
+            parsed = self._parse_json(raw)
+            path = parsed.get("learning_path") if isinstance(parsed, dict) else None
+            if isinstance(path, list) and len(path) >= 1:
+                return self._normalize_path(path, planning_points, total_days)
+        except Exception as e:
+            logger.warning(f"LLM path generation failed: {e}")
+            logger.exception("Full traceback:")
+
+        return None
+
+    def _parse_json(self, text: str) -> dict:
+        from app.utils.llm_json import parse_safe
+
         def llm_fix(broken: str) -> str:
             return self.llm_client.chat(
                 messages=[
@@ -785,6 +763,136 @@ class PlannerAgent(BaseAgent):
         return parse_safe(text, llm_fix_fn=llm_fix if self.llm_client else None)
 
     # _repair_truncated_json 已迁移到 app.utils.llm_json.repair_truncated
+
+    def _normalize_path(self, path: list, planning_points: list, total_days: int) -> list[dict]:
+        """标准化 LLM 生成的学习路径。
+        只做基本清洗：过滤模板化标题、补全缺失字段。不再用不完整课程目录做关键词过滤。
+        """
+        result = []
+        for i, item in enumerate(path[:5], 1):
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title", f"第{i}阶段")).strip()
+            # 只过滤明显的模板化标题
+            if self._is_goal_like_title(title):
+                continue
+            tasks = [str(t).strip() for t in item.get("tasks", []) if str(t).strip()]
+
+            result.append({
+                "stage_id": str(item.get("stage_id", f"stage_{i}")),
+                "title": title,
+                "duration": str(item.get("duration", f"第{i}阶段")),
+                "goal": str(item.get("goal", "完成本阶段核心知识学习。")),
+                "tasks": tasks or ["学习课程讲义", "完成配套练习"],
+                "daily_tasks": self._normalize_daily_tasks(
+                    item.get("daily_tasks", []),
+                    str(item.get("duration", f"第{i}阶段")),
+                    tasks,
+                ),
+                "resource_types": self._clean_types(item.get("resource_types", [])),
+                "reason": str(item.get("reason", "根据学生画像和课程结构自动规划。")),
+                "source": "llm_generated",
+            })
+
+        logger.info(f"Normalized path count: {len(result)}")
+        return result if len(result) >= 1 else []
+
+    def _clean_types(self, types: Any) -> list[str]:
+        aliases = {"case_study": "practice", "code": "practice", "video": "multimodal",
+                    "diagram": "mindmap", "text": "lecture", "exercise": "quiz"}
+        allowed = {"lecture", "mindmap", "quiz", "reading", "practice", "multimodal"}
+        if not isinstance(types, list):
+            return ["lecture", "quiz"]
+        result = []
+        for t in types:
+            norm = aliases.get(str(t).strip(), str(t).strip())
+            if norm in allowed and norm not in result:
+                result.append(norm)
+        return result or ["lecture", "quiz"]
+
+    def _normalize_daily_tasks(
+        self,
+        daily_tasks_raw: Any,
+        duration: str,
+        stage_tasks: list[str],
+    ) -> list[dict]:
+        """Normalize daily_tasks from LLM output or derive from stage tasks.
+
+        If the LLM provided a valid per-day breakdown, validate and use it.
+        Otherwise, distribute stage_tasks round-robin across the stage's day range.
+        """
+        if isinstance(daily_tasks_raw, list) and daily_tasks_raw:
+            result = []
+            for entry in daily_tasks_raw:
+                if isinstance(entry, dict):
+                    day = int(entry.get("day", 1))
+                    day_tasks = entry.get("tasks", [])
+                    if isinstance(day_tasks, list):
+                        cleaned = [str(t).strip() for t in day_tasks if str(t).strip()]
+                        if cleaned:
+                            result.append({"day": day, "tasks": cleaned})
+            if result:
+                return result
+
+        # Derive from duration + stage_tasks
+        day_nums = re.findall(r"\d+", duration)
+        if len(day_nums) >= 2:
+            start_day, end_day = int(day_nums[0]), int(day_nums[1])
+        elif len(day_nums) == 1:
+            start_day = end_day = int(day_nums[0])
+        else:
+            start_day = end_day = 1
+
+        num_days = max(1, end_day - start_day + 1)
+        if not stage_tasks:
+            stage_tasks = ["学习课程讲义", "完成配套练习"]
+
+        daily: dict[int, list[str]] = {d: [] for d in range(start_day, end_day + 1)}
+        for idx, task in enumerate(stage_tasks):
+            day = start_day + (idx % num_days)
+            daily[day].append(task)
+
+        return [
+            {"day": day, "tasks": day_tasks}
+            for day, day_tasks in sorted(daily.items())
+            if day_tasks
+        ]
+
+    def _derive_daily_tasks_from_fallback(
+        self,
+        tasks: list[str],
+        duration: str,
+        stage_idx: int,
+        n_stages: int,
+        total_days: int,
+    ) -> list[dict]:
+        """Derive daily tasks for the rule-based fallback path."""
+        day_nums = re.findall(r"\d+", duration)
+        if len(day_nums) >= 2:
+            start_day, end_day = int(day_nums[0]), int(day_nums[1])
+        elif len(day_nums) == 1:
+            start_day = end_day = int(day_nums[0])
+        else:
+            dps = max(1, ceil(total_days / n_stages))
+            start_day = min(total_days, (stage_idx - 1) * dps + 1)
+            end_day = min(total_days, max(start_day, stage_idx * dps))
+
+        num_days = max(1, end_day - start_day + 1)
+        if not tasks:
+            tasks = ["学习课程讲义", "完成配套练习"]
+
+        daily: dict[int, list[str]] = {d: [] for d in range(start_day, end_day + 1)}
+        for idx, task in enumerate(tasks):
+            day = start_day + (idx % num_days)
+            daily[day].append(task)
+
+        return [
+            {"day": day, "tasks": day_tasks}
+            for day, day_tasks in sorted(daily.items())
+            if day_tasks
+        ]
+
+    # ── 规则兜底 ──
 
     def _build_rule_path(self, points, profile, total_days, diag_meta) -> list[dict]:
         n_stages = min(5, max(3, len(points))) if points else 3

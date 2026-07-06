@@ -156,13 +156,11 @@ def run_agents(
     from app.services.langgraph_orchestrator import run_pipeline
     facts = dict(state.facts)
     facts["_raw_user_message"] = user_message
-    facts["_conversation_context"] = conversation_context
     result = run_pipeline(
         session_id=session_id,
         course_id=resolved_course_id,
         user_message=user_message,
         profile_facts=facts,
-        agents_filter=agents_filter,
     )
 
     # Attach course metadata
