@@ -258,6 +258,16 @@ def run_pipeline(**kwargs) -> dict[str, Any]:
         result = _run_agent(node, state)
         result["pipeline_executed"] = True
         result["overall_status"] = "completed"
+        # Generate reply for single-agent results
+        path = result.get("learning_path", [])
+        resources = result.get("resources", [])
+        questions = result.get("questions", [])
+        summary_parts = []
+        if path: summary_parts.append(f"已生成{len(path)}个学习阶段")
+        if resources: summary_parts.append(f"配套{len(resources)}个学习资源")
+        if questions: summary_parts.append(f"生成{len(questions)}道练习题")
+        if summary_parts:
+            result["final_reply"] = "、".join(summary_parts) + "。你可以到对应页面查看详细内容。"
         return dict(result)
 
     # Full pipeline for full_workflow

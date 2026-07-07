@@ -38,6 +38,10 @@ class PlannerAgent(BaseAgent):
             logger.debug("mastery_path skip: %s", e)
 
         # Fallback to 4-stage planner
+        diagnosis = context.get("diagnosis") if isinstance(context.get("diagnosis"), dict) else {}
+        profile = context.get("profile", {})
+        mode = str(context.get("mode", "plan"))
+        existing = context.get("existing_path")
 
         if mode == "adjust" and existing:
             return self._run_adjustment(context, diagnosis, profile)
