@@ -206,13 +206,6 @@ def build_unified_graph() -> StateGraph:
     g.add_edge("conversation", END)
     g.add_edge("reply", END)
 
-    # Single-agent paths (direct to reply after execution)
-    g.add_edge("planner", "reply")
-    g.add_edge("resource", "reply")
-    g.add_edge("question", "reply")
-    g.add_edge("diagnosis", "reply")
-    g.add_edge("grading", "reply")
-
     # Pipeline path: profile → knowledge → diagnosis → planner → resource ⇄ review → reply
     g.add_edge("profile", "knowledge")
     g.add_edge("knowledge", "diagnosis")
@@ -229,6 +222,45 @@ def build_unified_graph() -> StateGraph:
 
 def run_pipeline(**kwargs) -> dict[str, Any]:
     state = dict(**kwargs, _retry_count=0)
+
+    # Classify intent first (needed for both modes)
+    intent = state.get("intent", "")
+    if not intent:
+        from app.agents.conversation_agent import ConversationAgent
+        ca = ConversationAgent(mock_data={}, llm_client=get_llm_client(settings.llm_provider))
+        try:
+            result = ca.run({"user_message": state.get("user_message", ""), "profile_facts": state.get("profile_facts", {}), "conversation_history": state.get("messages", [])})
+            intent = result.get("action", "none")
+            state["intent"] = intent
+            state["_conversation_reply"] = result.get("reply", "")
+        except Exception:
+            intent = "none"
+            state["intent"] = "none"
+
+    # Single-agent mode: intent routed directly, no pipeline
+    single_map = {"plan": "planner", "resources": "resource",
+                  "generate_questions": "question", "diagnose": "diagnosis",
+                  "grade_answer": "grading", "none": None, "tutoring": None}
+    # Conversation: return DeepTutor reply directly
+    if intent in ("none", "tutoring", ""):
+        reply = state.get("_conversation_reply", "")
+        if not reply:
+            from app.services.deeptutor_client import deeptutor_call
+            reply = deeptutor_call("chat", state.get("user_message", ""),
+                                   state.get("messages", [])) or "你好！我是EduAgent，有什么可以帮你的？"
+        state["final_reply"] = reply
+        state["pipeline_executed"] = True
+        state["overall_status"] = "completed"
+        return dict(state)
+
+    node = single_map.get(intent)
+    if node:
+        result = _run_agent(node, state)
+        result["pipeline_executed"] = True
+        result["overall_status"] = "completed"
+        return dict(result)
+
+    # Full pipeline for full_workflow
     graph = build_unified_graph().compile()
     result = graph.invoke(state, {"recursion_limit": 50})
     result["pipeline_executed"] = True

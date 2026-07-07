@@ -569,6 +569,12 @@ action："""
         if any(w in text for w in ["思维导图", "脑图"]):
             return self._fallback_result("resources", "mindmap_request")
 
+        # Full workflow triggers
+        if any(phrase in compact for phrase in ("完整方案","全套方案","全部方案","整套方案")):
+            return self._fallback_result("plan", "full_workflow_request")
+        if "全套" in text and "方案" in text:
+            return self._fallback_result("plan", "full_workflow_request")
+
         explicit_generation = (
             any(phrase in compact for phrase in (
                 "开始生成学习方案", "帮我生成学习方案", "帮我制定学习计划",

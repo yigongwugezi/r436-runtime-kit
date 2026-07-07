@@ -22,10 +22,22 @@ class PlannerAgent(BaseAgent):
     # ── 公共接口 ──
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
-        diagnosis = context.get("diagnosis") if isinstance(context.get("diagnosis"), dict) else {}
-        profile = context.get("profile", {})
-        mode = str(context.get("mode", "plan"))
-        existing = context.get("existing_path")
+        # ── Try DeepTutor mastery_path capability (true agent with mastery tracking) ──
+        try:
+            from app.services.deeptutor_client import deeptutor_call
+            course = str(context.get("course_id", "") or "")
+            message = str(context.get("user_message", "") or "")
+            prompt = f"为学生规划学习路径。课程：{course}。需求：{message}"
+            dt_result = deeptutor_call("mastery_path", prompt)
+            if dt_result and len(dt_result) > 50:
+                stages = self._parse_mastery_path(dt_result)
+                if stages:
+                    result = self._make_result(stages, self._infer_days(self._collect_time_text(context), context.get("profile", {})), {})
+                    return result
+        except Exception as e:
+            logger.debug("mastery_path skip: %s", e)
+
+        # Fallback to 4-stage planner
 
         if mode == "adjust" and existing:
             return self._run_adjustment(context, diagnosis, profile)
@@ -150,6 +162,18 @@ class PlannerAgent(BaseAgent):
         except Exception as e:
             logger.warning("Refine: %s", e)
             return stages
+
+    def _parse_mastery_path(self, raw: str) -> list[dict]:
+        """Parse DeepTutor mastery_path output into stage list."""
+        import json
+        try:
+            s, e = raw.find("{"), raw.rfind("}") + 1
+            if s >= 0 and e > s:
+                parsed = json.loads(raw[s:e])
+                return parsed.get("stages", parsed.get("learning_path", []))
+        except Exception:
+            pass
+        return []
 
     def _fallback_path(self, context, planning_points, total_days, profile, diag_meta):
         rule_path = self._build_rule_path(planning_points, profile, total_days, diag_meta)
