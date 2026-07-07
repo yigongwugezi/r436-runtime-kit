@@ -1,0 +1,212 @@
+{
+  "book_id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989",
+  "diagnostic": null,
+  "modules": [
+    {
+      "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m0",
+      "name": "模块一：ML 基础认知",
+      "order": 0,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m0_kp0",
+          "name": "什么是机器学习？——定义与三大类型",
+          "type": "concept",
+          "module_id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m0"
+        },
+        {
+          "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m0_kp1",
+          "name": "监督学习 vs 无监督学习 vs 强化学习",
+          "type": "memory",
+          "module_id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m0"
+        },
+        {
+          "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m0_kp2",
+          "name": "机器学习的一般流程（数据→训练→评估→预测）",
+          "type": "procedure",
+          "module_id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m0"
+        },
+        {
+          "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m0_kp3",
+          "name": "训练集 / 验证集 / 测试集的划分",
+          "type": "concept",
+          "module_id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m0"
+        }
+      ]
+    },
+    {
+      "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m1",
+      "name": "模块二：回归——预测连续值",
+      "order": 1,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m1_kp0",
+          "name": "线性回归的数学原理（最小二乘法）",
+          "type": "concept",
+          "module_id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m1"
+        },
+        {
+          "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m1_kp1",
+          "name": "用 Python 手写线性回归（不调库）",
+          "type": "procedure",
+          "module_id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m1"
+        },
+        {
+          "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m1_kp2",
+          "name": "使用 scikit-learn 实现线性回归",
+          "type": "procedure",
+          "module_id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m1"
+        },
+        {
+          "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m1_kp3",
+          "name": "评估指标：MSE、RMSE、R²",
+          "type": "memory",
+          "module_id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m1"
+        },
+        {
+          "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m1_kp4",
+          "name": "过拟合与欠拟合——偏差-方差权衡",
+          "type": "concept",
+          "module_id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m1"
+        }
+      ]
+    },
+    {
+      "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m2",
+      "name": "模块三：分类——预测离散标签",
+      "order": 2,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m2_kp0",
+          "name": "逻辑回归——从线性到分类",
+          "type": "concept",
+          "module_id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m2"
+        },
+        {
+          "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m2_kp1",
+          "name": "K 近邻（KNN）算法",
+          "type": "procedure",
+          "module_id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m2"
+        },
+        {
+          "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m2_kp2",
+          "name": "分类评估指标：准确率、精确率、召回率、F1、混淆矩阵",
+          "type": "memory",
+          "module_id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m2"
+        },
+        {
+          "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m2_kp3",
+          "name": "决策树与直观分类边界",
+          "type": "concept",
+          "module_id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m2"
+        },
+        {
+          "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m2_kp4",
+          "name": "用项目实战：手写数字识别（KNN / 逻辑回归）",
+          "type": "design",
+          "module_id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m2"
+        }
+      ]
+    },
+    {
+      "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m3",
+      "name": "模块四：无监督学习——发现隐藏结构",
+      "order": 3,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m3_kp0",
+          "name": "K-Means 聚类算法",
+          "type": "procedure",
+          "module_id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m3"
+        },
+        {
+          "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m3_kp1",
+          "name": "聚类评估：肘部法则与轮廓系数",
+          "type": "concept",
+          "module_id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m3"
+        },
+        {
+          "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m3_kp2",
+          "name": "主成分分析（PCA）降维",
+          "type": "concept",
+          "module_id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m3"
+        },
+        {
+          "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m3_kp3",
+          "name": "用项目实战：客户分群 / 图像压缩",
+          "type": "design",
+          "module_id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m3"
+        }
+      ]
+    },
+    {
+      "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m4",
+      "name": "模块五：进阶与实战",
+      "order": 4,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m4_kp0",
+          "name": "特征工程：标准化、编码、特征选择",
+          "type": "procedure",
+          "module_id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m4"
+        },
+        {
+          "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m4_kp1",
+          "name": "集成学习：随机森林与梯度提升（XGBoost 简介）",
+          "type": "concept",
+          "module_id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m4"
+        },
+        {
+          "id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m4_kp2",
+          "name": "完整 ML 项目实战：从数据清洗到模型部署思维",
+          "type": "design",
+          "module_id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m4"
+        }
+      ]
+    }
+  ],
+  "current_module_id": "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m0",
+  "current_stage": "diagnostic",
+  "current_kp_index": 0,
+  "mastery_levels": {},
+  "qualitative_mastery": {},
+  "knowledge_types": {
+    "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m0_kp0": "concept",
+    "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m0_kp1": "memory",
+    "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m0_kp2": "procedure",
+    "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m0_kp3": "concept",
+    "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m1_kp0": "concept",
+    "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m1_kp1": "procedure",
+    "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m1_kp2": "procedure",
+    "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m1_kp3": "memory",
+    "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m1_kp4": "concept",
+    "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m2_kp0": "concept",
+    "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m2_kp1": "procedure",
+    "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m2_kp2": "memory",
+    "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m2_kp3": "concept",
+    "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m2_kp4": "design",
+    "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m3_kp0": "procedure",
+    "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m3_kp1": "concept",
+    "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m3_kp2": "concept",
+    "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m3_kp3": "design",
+    "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m4_kp0": "procedure",
+    "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m4_kp1": "concept",
+    "aacf6d46-80ab-4cb6-a988-0d6d396bb989_m4_kp2": "design"
+  },
+  "quiz_attempts": [],
+  "error_records": [],
+  "repetition_states": {},
+  "review_queue": [],
+  "pending_question": null,
+  "feynman_retries": {},
+  "feynman_explanations": {},
+  "stage_failure_counts": {},
+  "stage_failure_notes": {},
+  "version": 2,
+  "created_at": 1783444189.0904663,
+  "updated_at": 1783444207.920314
+}

@@ -574,6 +574,8 @@ action："""
             return self._fallback_result("full_workflow", "full_workflow_request")
         if "全套" in text and "方案" in text:
             return self._fallback_result("full_workflow", "full_workflow_request")
+        if "完整" in text and "方案" in text:
+            return self._fallback_result("full_workflow", "full_workflow_request")
 
         explicit_generation = (
             any(phrase in compact for phrase in (

@@ -50,6 +50,10 @@ def _run_agent(agent_id: str, state: dict) -> dict:
 
 def _intent_node(state: dict) -> dict:
     """Classify intent via ConversationAgent rules + LLM."""
+    # Skip if intent already determined (e.g., full_workflow from pre-graph routing)
+    if state.get("intent") in ("full_workflow",):
+        state.setdefault("agent_steps", []).append({"node": "intent_router", "intent": state["intent"]})
+        return state
     from app.agents.conversation_agent import ConversationAgent
     ca = ConversationAgent(mock_data={}, llm_client=get_llm_client(settings.llm_provider))
     context = {
