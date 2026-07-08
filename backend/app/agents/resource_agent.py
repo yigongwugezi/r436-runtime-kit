@@ -40,40 +40,33 @@ class ResourceAgent(BaseAgent):
                        context.get("course_id", "目标课程"))
         course_name = str(course_name).strip()
 
-        # ── DeepTutor: lecture + mindmap + reading (parallel for speed) ──
+        # ── DeepTutor: lecture + mindmap + reading ──
         dt_resources = []
         try:
-            from app.services.deeptutor_client import generate_lecture, generate_mindmap, generate_research
-            from concurrent.futures import ThreadPoolExecutor, as_completed
+            from app.services.deeptutor_client import deeptutor_call, generate_mindmap, generate_research
             import uuid as _uuid
 
-            tasks = {
-                'lecture': lambda: generate_lecture(course_name),
-                'mindmap': lambda: generate_mindmap(course_name),
-                'reading': lambda: generate_research(course_name),
-            }
-            results = {}
-            with ThreadPoolExecutor(max_workers=3) as pool:
-                futures = {pool.submit(fn): name for name, fn in tasks.items()}
-                for f in as_completed(futures, timeout=180):
-                    try:
-                        results[futures[f]] = f.result() or ''
-                    except Exception:
-                        pass
-
-            if results.get('lecture') and len(results['lecture']) > 500:
+            # Lecture via DeepTutor
+            lecture_prompt = f"为「{course_name}」生成一份图文并茂的完整讲义。Markdown格式，含课程概述、学习目标、核心知识体系、Mermaid图表、课后思考题。1500字以上。"
+            lecture = deeptutor_call("chat", lecture_prompt)
+            if lecture and len(lecture) > 300:
+                has_mermaid = "mermaid" in lecture.lower()
                 dt_resources.append({"resource_id": _uuid.uuid4().hex[:12], "type": "lecture",
-                    "title": f"{course_name} - 完整讲义", "content": results['lecture'],
+                    "title": f"{course_name} - 完整讲义", "content": lecture,
                     "related_stage_id": stages[0].get("stage_id", "") if stages else "",
                     "source": "deeptutor", "format": "markdown", "difficulty": "medium", "quality_status": "passed"})
-            if results.get('mindmap') and len(results['mindmap']) > 50:
+
+            mm = generate_mindmap(course_name)
+            if mm and len(mm) > 50:
                 dt_resources.append({"resource_id": _uuid.uuid4().hex[:12], "type": "mindmap",
-                    "title": f"{course_name} - 思维导图", "content": results['mindmap'],
+                    "title": f"{course_name} - 思维导图", "content": mm,
                     "related_stage_id": stages[0].get("stage_id", "") if stages else "",
                     "source": "deeptutor", "format": "mermaid", "difficulty": "medium", "quality_status": "passed"})
-            if results.get('reading') and len(results['reading']) > 50:
+
+            rm = generate_research(course_name)
+            if rm and len(rm) > 50:
                 dt_resources.append({"resource_id": _uuid.uuid4().hex[:12], "type": "reading",
-                    "title": f"{course_name} - 拓展阅读", "content": results['reading'],
+                    "title": f"{course_name} - 拓展阅读", "content": rm,
                     "related_stage_id": stages[0].get("stage_id", "") if stages else "",
                     "source": "deeptutor", "format": "markdown", "difficulty": "medium", "quality_status": "passed"})
         except Exception as e:
@@ -82,7 +75,7 @@ class ResourceAgent(BaseAgent):
         if dt_resources:
             return {"resources": dt_resources, "agent_step": self.agent_step()}
 
-        # No DeepTutor and no stages → try LLM with minimal context
+        # No DeepTutor → try LLM with minimal context
         if not stages or not knowledge_points:
             try:
                 if self.llm_client:
@@ -91,7 +84,6 @@ class ResourceAgent(BaseAgent):
                         return {"resources": [lecture], "agent_step": self.agent_step()}
             except Exception:
                 pass
-            # Absolute last resort: empty
             return {"resources": [], "agent_step": self.agent_step()}
 
         # RAG 检索

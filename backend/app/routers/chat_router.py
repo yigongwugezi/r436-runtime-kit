@@ -48,7 +48,7 @@ async def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
                 profile_facts=dict(state_obj.facts),
             )
 
-            result = run_pipeline(**state)
+            result = await run_pipeline(**state)
 
             reply = result.get("final_reply", "") or result.get("_conversation_reply", "") or "处理完成"
             for chunk in reply.splitlines(keepends=True):

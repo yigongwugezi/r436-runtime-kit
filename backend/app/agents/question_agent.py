@@ -48,7 +48,7 @@ class QuestionAgent(BaseAgent):
         prompt_parts.append("输出JSON格式：{\"questions\": [...]}")
         prompt = "。".join(prompt_parts) + "。"
 
-        # ── DeepTutor deep_question capability ──
+        # ── DeepTutor chat with deep_question-quality prompt ──
         try:
             from app.services.deeptutor_client import deeptutor_call
             import uuid as _uuid

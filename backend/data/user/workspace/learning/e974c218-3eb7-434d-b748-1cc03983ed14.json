@@ -1,0 +1,23 @@
+{
+  "book_id": "e974c218-3eb7-434d-b748-1cc03983ed14",
+  "diagnostic": null,
+  "modules": [],
+  "current_module_id": "",
+  "current_stage": "diagnostic",
+  "current_kp_index": 0,
+  "mastery_levels": {},
+  "qualitative_mastery": {},
+  "knowledge_types": {},
+  "quiz_attempts": [],
+  "error_records": [],
+  "repetition_states": {},
+  "review_queue": [],
+  "pending_question": null,
+  "feynman_retries": {},
+  "feynman_explanations": {},
+  "stage_failure_counts": {},
+  "stage_failure_notes": {},
+  "version": 1,
+  "created_at": 1783487157.305674,
+  "updated_at": 1783487157.305689
+}

@@ -1,34 +1,28 @@
-"""Shared DeepTutor client — sync interface for LangGraph nodes."""
+"""Shared DeepTutor client — proper async (no nest_asyncio)."""
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from typing import Any
 
-import nest_asyncio
-
 logger = logging.getLogger(__name__)
-
-nest_asyncio.apply()
 
 
 def _setup_config():
-    if not os.environ.get("LLM_API_KEY"):
+    from app.config import settings
+    api_key = os.environ.get("LLM_API_KEY") or settings.deepseek_api_key
+    if not api_key:
         return False
+    base_url = os.environ.get("LLM_BASE_URL") or settings.deepseek_base_url
+    model = os.environ.get("LLM_MODEL") or settings.llm_model
     try:
         from deeptutor.services.llm.config import LLMConfig, set_scoped_llm_config
-        cfg = LLMConfig(
-            model=os.environ.get("LLM_MODEL", "deepseek-chat"),
-            api_key=os.environ["LLM_API_KEY"],
-            base_url=os.environ.get("LLM_BASE_URL", ""),
-            effective_url=os.environ.get("LLM_BASE_URL", ""),
-            binding="openai", provider_name="openai_compatible", provider_mode="cloud",
-        )
+        cfg = LLMConfig(model=model, api_key=api_key, base_url=base_url, effective_url=base_url,
+                        binding="openai", provider_name="openai_compatible", provider_mode="cloud")
         set_scoped_llm_config(cfg)
-        os.environ["OPENAI_API_KEY"] = os.environ["LLM_API_KEY"]
-        os.environ["OPENAI_BASE_URL"] = os.environ.get("LLM_BASE_URL", "")
+        os.environ["OPENAI_API_KEY"] = api_key
+        os.environ["OPENAI_BASE_URL"] = base_url
         os.environ.setdefault("OPENAI_TIMEOUT", "120")
         return True
     except Exception as e:
@@ -36,18 +30,17 @@ def _setup_config():
         return False
 
 
-def deeptutor_call(capability: str, message: str, history: list | None = None) -> str:
+async def deeptutor_call_async(capability: str, message: str, history: list | None = None) -> str:
+    """Proper async DeepTutor call — no nest_asyncio, no asyncio.run."""
     if not _setup_config():
         return ""
-
-    async def _go():
+    try:
         from deeptutor.runtime import ChatOrchestrator
         from deeptutor.core.context import UnifiedContext
         from deeptutor.core.stream import StreamEventType
-        os.environ.setdefault("OPENAI_TIMEOUT", "180")
         ctx = UnifiedContext(
             user_message=message, conversation_history=history or [], language="zh",
-            enabled_tools=["reason", "brainstorm", "read_memory", "write_memory", "ask_user", "exec"],
+            enabled_tools=["reason","brainstorm","read_memory","write_memory","ask_user","exec"] if capability == "chat" else [],
         )
         if capability and capability != "chat":
             ctx.active_capability = capability
@@ -56,84 +49,40 @@ def deeptutor_call(capability: str, message: str, history: list | None = None) -
             if event.type == StreamEventType.CONTENT:
                 parts.append(str(event.content or ""))
         return "".join(parts)
-
-    try:
-        return asyncio.run(_go())
     except Exception as e:
         logger.warning("DeepTutor %s failed: %s", capability, e)
         return ""
 
 
-def generate_quiz(topic: str, knowledge_points: str = "", count: int = 5) -> str:
-    prompt = f"生成{count}道关于'{topic}'的练习题。知识点：{knowledge_points}。题型混合选择/填空/判断/简答，含答案和解析。"
-    return deeptutor_call("chat", prompt)
-
-
-def generate_research(topic: str) -> str:
-    return deeptutor_call("chat", f"对'{topic}'进行深度研究，提供结构化拓展阅读材料，包含背景、核心概念、应用案例。2000字以上。")
+# Synchronous wrappers for sync agent use
+def deeptutor_call(capability: str, message: str, history: list | None = None) -> str:
+    import asyncio, concurrent.futures
+    async def _call(): return await deeptutor_call_async(capability, message, history)
+    try:
+        loop = asyncio.get_running_loop()
+        # Already in async context — run in thread
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(asyncio.run, _call()).result(timeout=120)
+    except RuntimeError:
+        return asyncio.run(_call())
 
 
 def generate_mindmap(topic: str) -> str:
     return deeptutor_call("chat", f"为'{topic}'生成一个Mermaid格式的思维导图，覆盖关键知识点和层级关系。只输出mermaid代码块。")
 
 
-def generate_lecture(topic: str) -> str:
-    prompt = (
-        f"为「{topic}」生成一份图文并茂的完整讲义。Markdown格式，含课程概述、学习目标、"
-        "核心知识体系（3-5个模块）、每个模块配Mermaid流程图、关键概念解释含示例、常见误区、课后3道思考题。"
-        "1500字以上，嵌入至少2个Mermaid图表。"
-    )
-    return deeptutor_call("chat", prompt)
+def generate_research(topic: str) -> str:
+    return deeptutor_call("chat", f"对'{topic}'进行深度研究，提供结构化拓展阅读材料，包含背景、核心概念、应用案例。2000字以上。")
 
 
 def generate_visual_explanation(topic: str) -> str:
-    prompt = f"用图解方式解释'{topic}'。生成一个Mermaid图表（流程图、时序图或类图），配合简洁的文字说明。输出Mermaid代码块加简短文字。"
-    return deeptutor_call("chat", prompt)
+    return deeptutor_call("chat", f"用图解方式解释'{topic}'。生成一个Mermaid图表，配合简洁的文字说明。输出Mermaid代码块加简短文字。")
 
 
 def generate_video_script(topic: str, duration_minutes: int = 3) -> str:
-    body_minutes = duration_minutes - 1
-    prompt = (
-        f"为'{topic}'生成一个{duration_minutes}分钟的教学微课视频脚本。\n"
-        f"包含以下结构：\n"
-        f"1. 片头（30秒）：标题、学习目标\n"
-        f"2. 核心讲解（{body_minutes}分钟）：分3-5个场景，每场景标注时长、画面描述、配音文字\n"
-        f"3. 片尾（30秒）：小结、思考题\n"
-        f"输出格式化为场景列表，标注时间轴。"
-    )
-    return deeptutor_call("chat", prompt)
+    body = duration_minutes - 1
+    return deeptutor_call("chat", f"为'{topic}'生成一个{duration_minutes}分钟的教学微课视频脚本。片头30秒标题+学习目标。核心讲解{body}分钟分3-5场景标注时长画面配音。片尾30秒小结思考题。")
 
 
-def generate_manim_video(topic: str) -> dict | None:
-    import tempfile, uuid, subprocess, sys
-    script = deeptutor_call("chat",
-        f"为'{topic}'写Manim动画代码。只用Text和Write，3-5个关键概念依次显示。"
-        f"class名为TopicScene，继承Scene。只输出Python代码，不要解释。"
-    )
-    if not script or len(script) < 20:
-        return None
-    code = script
-    for marker in ['```python', '```']:
-        if marker in code:
-            parts = code.split(marker)
-            for p in parts:
-                if 'class' in p and 'Scene' in p:
-                    code = p; break
-    code = code.strip()
-    if 'from manim' not in code[:200]:
-        code = 'from manim import *\n\n' + code
-    tmpdir = tempfile.mkdtemp()
-    script_path = os.path.join(tmpdir, 'scene.py')
-    with open(script_path, 'w', encoding='utf-8') as f:
-        f.write(code)
-    try:
-        subprocess.run([sys.executable, '-m', 'manim', '-ql', '--format', 'mp4',
-            script_path, 'TopicScene', '-o', f'{uuid.uuid4().hex[:8]}.mp4'],
-            capture_output=True, text=True, timeout=120, cwd=tmpdir)
-        for root, dirs, files in os.walk(tmpdir):
-            for f in files:
-                if f.endswith('.mp4') and 'partial' not in root:
-                    return {'path': os.path.join(root, f), 'title': f'{topic} - 教学动画'}
-    except Exception as e:
-        logger.warning("Manim render failed: %s", e)
-    return None
+def generate_quiz(topic: str, knowledge_points: str = "", count: int = 5) -> str:
+    return deeptutor_call("chat", f"生成{count}道关于'{topic}'的练习题。知识点：{knowledge_points}。题型混合，含答案和解析。")
