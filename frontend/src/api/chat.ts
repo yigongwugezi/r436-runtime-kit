@@ -14,6 +14,12 @@ export interface SendMessageParams {
 export interface ChatResponse {
   sessionId: string;
   reply: ChatMessage;
+  done?: boolean;
+  pipeline_executed?: boolean;
+  learning_path_created?: boolean;
+  resources_created?: boolean;
+  questions_created?: boolean;
+  error?: string;
 }
 
 export interface SessionListResponse {
@@ -22,7 +28,7 @@ export interface SessionListResponse {
 
 /** 发送消息（非流式） */
 export async function sendMessage(params: SendMessageParams): Promise<ChatResponse> {
-  const { data } = await client.post('/api/chat/stream', params);
+  const { data } = await client.post('/api/chat/send', params);
   return data;
 }
 

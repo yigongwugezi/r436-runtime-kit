@@ -136,9 +136,15 @@ class ConversationAgent(BaseAgent):
 
         needs_clarification = False
 
-        # ── LLM 优先分类（智能理解），规则引擎兜底 ──
-        action = "none"
-        if self.llm_client:
+        # ── 规则先定确定性 action；只有兜不住时再让 LLM 猜。 ──
+        rule_result = self._rule_fallback(user_message, context)
+        rule_action = rule_result.get("action", "none")
+        rule_reason = rule_result.get("reason", "")
+        needs_clarification = rule_result.get("needs_clarification", False)
+        action = rule_action
+        deterministic_none = rule_action == "none" and rule_reason != "unclassified_fallback"
+
+        if action == "none" and not deterministic_none and self.llm_client:
             for attempt in range(2):
                 llm_action = self._llm_classify_action(user_message, context)
                 if llm_action and llm_action != "full_workflow":
@@ -146,14 +152,6 @@ class ConversationAgent(BaseAgent):
                     break
                 time.sleep(0.3)
 
-        # 规则引擎判断，LLM 结果如果与规则冲突，规则优先
-        rule_result = self._rule_fallback(user_message, context)
-        rule_action = rule_result.get("action", "none")
-        needs_clarification = rule_result.get("needs_clarification", False)
-        if rule_action != "none":
-            action = rule_action  # 规则有明确判断，覆盖 LLM
-        elif action == "none":
-            action = rule_action  # 都是 none
         llm_reply = ""
         facts = {}
         llm_retry_count = 0
@@ -168,12 +166,12 @@ class ConversationAgent(BaseAgent):
             context["profile_facts"]["_pending_adjustment"] = ""
             return result
 
-        if action in ("none", "tutoring", ""):
+        if action in ("none", "tutoring", "") and not deterministic_none:
             dt = self._try_deeptutor_reply(user_message, self._history)
             if dt and len(dt) > 5:
                 llm_reply = re.sub(r'<[^>]+>', '', dt).strip()
 
-        if not llm_reply:
+        if not llm_reply and not deterministic_none:
             try:
                 for attempt in range(3):
                     try:
@@ -502,7 +500,11 @@ action："""
         return flat
 
     def _try_deeptutor_reply(self, user_message: str, history: list) -> str:
-        from app.services.deeptutor_client import deeptutor_call, generate_visual_explanation, generate_video_script, generate_manim_video
+        from app.services.deeptutor_client import deeptutor_call, generate_visual_explanation, generate_video_script
+        try:
+            from app.services.deeptutor_client import generate_manim_video
+        except ImportError:
+            generate_manim_video = None
 
         # Detect diagram/visualization requests
         vis_keywords = ["图解", "画图", "图示", "示意图", "流程图", "思维导图", "可视化",
@@ -512,7 +514,7 @@ action："""
 
         # Detect video/animation requests — render real mp4
         vid_keywords = ["生成.*动画", "做个.*动画", "动画演示", "演示动画", "教学动画"]
-        if any(kw in user_message for kw in vid_keywords):
+        if generate_manim_video and any(kw in user_message for kw in vid_keywords):
             result = generate_manim_video(user_message)
             if result:
                 return f"已生成教学动画，文件路径：{result['path']}\n标题：{result['title']}\n你可以在资源库中查看。"
@@ -565,6 +567,9 @@ action："""
         text = message.strip().lower()
         compact = re.sub(r"\s+", "", text)
         confirm_words = {"可以", "好的", "行", "嗯", "好", "ok", "yes", "对", "是的", "嗯嗯", "没错", "就这样", "按这个来"}
+        if text in EXACT_CASUAL or len(compact) <= 2:
+            return self._fallback_result("none", "short_or_casual_message")
+
         # Mindmap check before explicit_generation
         if any(w in text for w in ["思维导图", "脑图"]):
             return self._fallback_result("resources", "mindmap_request")
@@ -576,6 +581,12 @@ action："""
             return self._fallback_result("full_workflow", "full_workflow_request")
         if "完整" in text and "方案" in text:
             return self._fallback_result("full_workflow", "full_workflow_request")
+
+        wants_profile = any(w in compact for w in ("学习画像", "画像", "评估基础", "分析基础"))
+        wants_plan = any(w in compact for w in ("学习路径", "路径", "学习计划", "计划", "规划"))
+        wants_resources = any(w in compact for w in ("学习资源", "资源", "资料", "练习"))
+        if wants_profile and wants_plan and wants_resources:
+            return self._fallback_result("full_workflow", "profile_plan_resource_request")
 
         explicit_generation = (
             any(phrase in compact for phrase in (
@@ -620,7 +631,7 @@ action："""
         if any(w in text for w in ["资源", "资料", "推荐"]):
             return self._fallback_result("resources", "resource_request")
 
-        if any(w in text for w in ["路径", "规划", "计划", "安排", "怎么学"]):
+        if any(w in text for w in ["路径", "规划", "计划", "安排", "怎么学", "该干什么", "下一步", "接下来"]):
             return self._fallback_result("plan", "planning_request")
 
         if any(w in text for w in ["薄弱", "诊断", "不会", "不懂", "哪里差"]):
@@ -710,13 +721,13 @@ action："""
     def _action_to_intent(self, action):
         return {
             "diagnose": "diagnosis", "plan": "learning_plan", "resources": "resource_request",
-            "profile": "profile_update", "knowledge": "learning_plan", 
+            "profile": "profile_update", "knowledge": "learning_plan", "full_workflow": "full_workflow",
             "unsafe": "unsafe", "none": "casual_chat",
         }.get(action, "unknown")
 
     def _action_to_primary_intent(self, action):
         return {
             "diagnose": "diagnosis", "plan": "learning_plan", "resources": "resource_request",
-            "profile": "profile_update", "knowledge": "learning_plan", 
+            "profile": "profile_update", "knowledge": "learning_plan", "full_workflow": "full_workflow",
             "unsafe": "unsafe", "none": "general_chat",
         }.get(action, "unknown")

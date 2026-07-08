@@ -82,7 +82,7 @@ interface ChatStore {
   imageAttachmentHistory: import('../types/chat').ChatAttachment[];
   selectedImageAttachmentId: string | null;
   /** SSE done 事件中的 debug 字段，仅开发模式展示 */
-  lastDebugInfo: Record<string, unknown> | null;
+  lastDebugInfo: Record<string, any> | null;
   /** 动态进度条步骤（根据实际运行的 Agent 构建，替代硬编码 GEN_PIPELINE） */
   progressPipelineSteps: import('../types/chat').ProgressStep[];
   dataVersion: number;
@@ -96,7 +96,7 @@ interface ChatStore {
   setLastImageAttachment: (attachment: import('../types/chat').ChatAttachment | null) => void;
   addImageAttachment: (attachment: import('../types/chat').ChatAttachment) => void;
   selectImageAttachment: (id: string | null) => void;
-  setLastDebugInfo: (info: Record<string, unknown> | null) => void;
+  setLastDebugInfo: (info: Record<string, any> | null) => void;
   setProgressPipelineSteps: (steps: import('../types/chat').ProgressStep[]) => void;
   addProgressPipelineStep: (step: import('../types/chat').ProgressStep) => void;
   setSessions: (sessions: ChatSession[]) => void;

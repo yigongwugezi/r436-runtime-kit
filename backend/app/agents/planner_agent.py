@@ -877,6 +877,22 @@ class PlannerAgent(BaseAgent):
 
         return path
 
+    def _derive_daily_tasks_from_fallback(self, tasks, duration, stage_index, n_stages, total_days):
+        days = max(1, self._parse_duration_days(str(duration)))
+        clean_tasks = [str(task).strip() for task in (tasks or []) if str(task).strip()]
+        if not clean_tasks:
+            clean_tasks = [f"完成第{stage_index}阶段学习任务"]
+
+        daily = []
+        for day in range(1, days + 1):
+            first = clean_tasks[(day - 1) % len(clean_tasks)]
+            second = clean_tasks[day % len(clean_tasks)] if len(clean_tasks) > 1 else None
+            day_tasks = [first]
+            if second and second != first:
+                day_tasks.append(second)
+            daily.append({"day": day, "tasks": day_tasks})
+        return daily
+
     def _group_points(self, points, n_stages):
         groups = []
         for i in range(n_stages):

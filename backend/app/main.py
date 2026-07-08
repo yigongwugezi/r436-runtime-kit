@@ -39,9 +39,12 @@ async def lifespan(app: FastAPI):
 
     # ── RAG background init (non-blocking) ──────────────────────────
     if settings.rag_enabled:
-        from app.rag.query_engine import rag_query_engine
+        try:
+            from app.rag.query_engine import rag_query_engine
 
-        rag_query_engine.start_background_init()
+            rag_query_engine.start_background_init()
+        except ModuleNotFoundError as exc:
+            logger.warning("RAG disabled because optional dependency is missing: %s", exc)
 
     yield
 
@@ -169,7 +172,10 @@ app.include_router(subjects.router, prefix="/api")
 
 # ── RAG router (guarded by settings.rag_enabled) ─────────────────────
 if settings.rag_enabled:
-    from app.routers.rag import router as rag_router
+    try:
+        from app.routers.rag import router as rag_router
 
-    app.include_router(rag_router, prefix="/api")
-    logger.info("RAG router registered at /api/rag/*")
+        app.include_router(rag_router, prefix="/api")
+        logger.info("RAG router registered at /api/rag/*")
+    except ModuleNotFoundError as exc:
+        logger.warning("RAG router skipped because optional dependency is missing: %s", exc)

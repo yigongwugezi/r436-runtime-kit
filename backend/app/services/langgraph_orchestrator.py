@@ -151,12 +151,7 @@ def _route_by_intent(state: dict) -> str:
 
 
 def _after_review(state: dict) -> str:
-    retries = state.get("_retry_count", 0)
-    review_data = state.get("review", {})
-    passed = review_data.get("quality_status") == "passed" if isinstance(review_data, dict) else False
-    if passed or retries >= MAX_RETRIES: return "reply"
-    state["_retry_count"] = retries + 1
-    return "resource"
+    return "reply"
 
 
 def build_unified_graph() -> StateGraph:
@@ -175,6 +170,36 @@ def build_unified_graph() -> StateGraph:
     g.add_edge("resource","review")
     g.add_conditional_edges("review", _after_review, {"reply":"reply","resource":"resource"})
     return g
+
+
+def _stringify_items(items: Any, limit: int = 3) -> list[str]:
+    if not isinstance(items, list):
+        return []
+    values: list[str] = []
+    for item in items[:limit]:
+        if isinstance(item, dict):
+            value = item.get("topic") or item.get("knowledge_point") or item.get("name") or item.get("title") or item.get("label")
+        else:
+            value = item
+        value = str(value or "").strip()
+        if value:
+            values.append(value)
+    return values
+
+
+def _diagnosis_reply(diagnosis: Any) -> str:
+    if not isinstance(diagnosis, dict):
+        return ""
+    summary = str(diagnosis.get("diagnosis_summary") or diagnosis.get("summary") or "").strip()
+    weak_points = _stringify_items(diagnosis.get("weak_knowledge_points") or diagnosis.get("weak_topics"))
+    next_actions = _stringify_items(diagnosis.get("recommended_next_actions") or diagnosis.get("next_actions"), limit=2)
+
+    parts = [summary or "\u5df2\u5b8c\u6210\u8584\u5f31\u70b9\u8bca\u65ad\u3002"]
+    if weak_points:
+        parts.append("\u91cd\u70b9\u5173\u6ce8\uff1a" + "\u3001".join(weak_points) + "\u3002")
+    if next_actions:
+        parts.append("\u4e0b\u4e00\u6b65\u5efa\u8bae\uff1a" + "\uff1b".join(next_actions) + "\u3002")
+    return "".join(parts)
 
 
 async def run_pipeline(**kwargs) -> dict[str, Any]:
@@ -212,7 +237,11 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
         if path: summary_parts.append(f"已生成{len(path)}个学习阶段")
         if resources: summary_parts.append(f"配套{len(resources)}个学习资源")
         if questions: summary_parts.append(f"生成{len(questions)}道练习题")
-        if summary_parts: result["final_reply"] = "、".join(summary_parts) + "。"
+        diagnosis_reply = _diagnosis_reply(result.get("diagnosis")) if node == "diagnosis" else ""
+        if diagnosis_reply:
+            result["final_reply"] = diagnosis_reply
+        elif summary_parts:
+            result["final_reply"] = "\u3001".join(summary_parts) + "\u3002"
         return dict(result)
 
     graph = build_unified_graph().compile()

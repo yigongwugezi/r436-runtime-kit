@@ -12,6 +12,21 @@ const log = createLogger('StreamChat');
 
 const IMAGE_REFERENCE_RE = /(这张图|这张图片|上面这张图|刚才那张图|图中|图片里|这道题|这页笔记|题图|错题图|继续讲第\s*[0-9一二两三四五六七八九十]+\s*题)/;
 
+const DEBUG_FIELDS = ['action', 'confidence', 'should_run_pipeline', 'skip_pipeline',
+  'skip_reason', 'agents_run', 'final_reply_owner', 'reply_source', 'fallback_used',
+  'llm_retry_count', 'pipeline_executed', 'learning_path_created', 'resources_created',
+  'questions_created'];
+
+function setDebugInfoFromPayload(payload: Record<string, unknown>) {
+  const debugInfo: Record<string, unknown> = {};
+  for (const key of DEBUG_FIELDS) {
+    if (key in payload) debugInfo[key] = payload[key];
+  }
+  if (Object.keys(debugInfo).length > 0) {
+    useChatStore.getState().setLastDebugInfo(debugInfo);
+  }
+}
+
 export function useStreamChat() {
   const {
     addMessage,
@@ -126,16 +141,7 @@ export function useStreamChat() {
                 }
                 if (payload.done) {
                   // Store debug info from final event (dev-only, §13.2)
-                  const debugFields = ['action', 'confidence', 'should_run_pipeline', 'skip_pipeline',
-                    'skip_reason', 'agents_run', 'final_reply_owner', 'reply_source', 'fallback_used',
-                    'llm_retry_count', 'pipeline_executed', 'learning_path_created', 'resources_created'];
-                  const debugInfo: Record<string, unknown> = {};
-                  for (const key of debugFields) {
-                    if (key in payload) debugInfo[key] = payload[key];
-                  }
-                  if (Object.keys(debugInfo).length > 0) {
-                    useChatStore.getState().setLastDebugInfo(debugInfo);
-                  }
+                  setDebugInfoFromPayload(payload);
 
                   // Clear pending marker — generation ended
                   writeStorageItem(runtimeStorageKeys.pendingGeneration, '');
@@ -200,6 +206,10 @@ export function useStreamChat() {
             ignore_image_context: ignoreImageContext,
           });
           log.info('非流式回退成功');
+          setDebugInfoFromPayload(fallback as unknown as Record<string, unknown>);
+          writeStorageItem(runtimeStorageKeys.pendingGeneration, '');
+          const cur = useChatStore.getState().agentProgress;
+          if (cur && !cur.done) setAgentProgress({ ...cur, done: true, progress: 100 });
           updateLastAssistant((m) => ({
             ...m,
             content: fallback.reply.content,
