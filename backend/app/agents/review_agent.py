@@ -72,9 +72,9 @@ class ReviewAgent(BaseAgent):
                 return self._check("factuality_vr", "verifiable-rag事实校验", "warning", f"发现{len(issues)}处可能未基于知识库的内容")
             return self._check("factuality_vr", "verifiable-rag事实校验", "passed", "内容通过知识库溯源校验")
         except ImportError:
-            return self._check("factuality_vr", "verifiable-rag事实校验", "passed", "verifiable-rag未安装，跳过")
+            return self._check("factuality_vr", "verifiable-rag事实校验", "warning", "verifiable-rag未安装")
         except Exception as e:
-            return self._check("factuality_vr", "verifiable-rag事实校验", "passed", f"校验跳过: {e}")
+            return self._check("factuality_vr", "verifiable-rag事实校验", "warning", f"校验异常: {str(e)[:60]}")
 
     def _check_factuality_facteval(self, context: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -97,9 +97,9 @@ class ReviewAgent(BaseAgent):
                 return self._check("factuality_fe", "FactEval事实校验", "warning", f"{unverified}/{total_claims}个声明未能验证")
             return self._check("factuality_fe", "FactEval事实校验", "passed", "内容通过原子级事实校验")
         except ImportError:
-            return self._check("factuality_fe", "FactEval事实校验", "passed", "FactEval未安装，跳过")
+            return self._check("factuality_fe", "FactEval事实校验", "warning", "FactEval未安装")
         except Exception:
-            return self._check("factuality_fe", "FactEval事实校验", "passed", "校验跳过")
+            return self._check("factuality_fe", "FactEval事实校验", "warning", "校验异常")
 
     def _check_profile(self, context: dict[str, Any]) -> dict[str, Any]:
         profile = context.get("profile", {})
