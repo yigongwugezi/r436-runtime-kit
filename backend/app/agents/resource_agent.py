@@ -72,18 +72,23 @@ class ResourceAgent(BaseAgent):
         except Exception as e:
             logger.debug("DeepTutor resource skip: %s", e)
 
-        if dt_resources:
-            return {"resources": dt_resources, "agent_step": self.agent_step()}
+        # DeepTutor 结果作为增强补充，不替代 LLM 完整生成
+        # 继续走 LLM 路径以生成完整的 5-6 类资源
 
-        # No DeepTutor → try LLM with minimal context
+        # No stages/knowledge_points → try LLM minimal lecture
         if not stages or not knowledge_points:
             try:
                 if self.llm_client:
                     lecture = self._generate_single_lecture(course_name, context)
                     if lecture:
-                        return {"resources": [lecture], "agent_step": self.agent_step()}
+                        resources = [lecture]
+                        if dt_resources:
+                            resources = dt_resources + resources
+                        return {"resources": resources, "agent_step": self.agent_step()}
             except Exception:
                 pass
+            if dt_resources:
+                return {"resources": dt_resources, "agent_step": self.agent_step()}
             return {"resources": [], "agent_step": self.agent_step()}
 
         # RAG 检索
@@ -130,6 +135,9 @@ class ResourceAgent(BaseAgent):
             if isinstance(_r, dict):
                 _r["resource_id"] = _uuid.uuid4().hex[:12]
         all_resources = self._scope_resource_ids(all_resources, str(context.get("session_id") or ""))
+        # ── 合并 DeepTutor 结果作为增强补充 ──
+        if dt_resources:
+            all_resources = dt_resources + all_resources
         logger.info("ResourceAgent returning %d resources", len(all_resources))
         return {"resources": all_resources, "agent_step": self.agent_step()}
 

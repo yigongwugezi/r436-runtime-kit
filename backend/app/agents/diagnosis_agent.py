@@ -209,7 +209,7 @@ class DiagnosisAgent(BaseAgent):
 
     def _generate_diagnostic_questions(self, knowledge_points: list[dict], count: int,
                                         difficulty: str, step_label: str) -> list[dict]:
-        """内部调用 QuestionAgent 生成诊断题。"""
+        """内部调用 QuestionAgent 生成诊断题（通过依赖注入支持复用）。"""
         try:
             from app.agents.question_agent import QuestionAgent
             qa = QuestionAgent(mock_data={}, llm_client=self.llm_client)
@@ -221,7 +221,10 @@ class DiagnosisAgent(BaseAgent):
             }
             result = qa.run(q_context)
             questions = result.get("questions", [])
+            # 标记为诊断题以便 pipeline 追踪
             for q in questions:
+                q["diagnostic"] = True
+                q["source"] = "diagnosis_agent"
                 q["diagnostic_step"] = step_label
                 q["diagnostic"] = True
             return questions

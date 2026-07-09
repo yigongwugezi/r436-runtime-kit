@@ -33,6 +33,16 @@ class ReviewAgent(BaseAgent):
             self._check_resource_coverage(context),
             self._check_resource_content_quality(context),
         ]
+
+        # ── LLM 驱动的深度语义质量审核 ──
+        if self.llm_client:
+            try:
+                llm_check = self._llm_semantic_quality_check(context)
+                if llm_check:
+                    checks.append(llm_check)
+            except Exception:
+                pass
+
         quality_status = self._aggregate_status(checks)
 
         return {
@@ -509,6 +519,46 @@ class ReviewAgent(BaseAgent):
         if not isinstance(value, list):
             return []
         return [item for item in value if isinstance(item, dict)]
+
+    def _llm_semantic_quality_check(self, context: dict[str, Any]) -> dict[str, Any] | None:
+        """LLM-driven semantic quality assessment of generated resources."""
+        resources = self._dict_items(context.get("resources"))
+        if not resources or not self.llm_client:
+            return None
+
+        issues = []
+        for res in resources[:5]:
+            content = str(res.get("content", "") or "")
+            if len(content) < 30:
+                continue
+            try:
+                title = res.get("title", "")
+                rtype = res.get("type", "")
+                prompt = (
+                    "评估以下学习资源的质量，只输出一个词：passed/warning/failed。\n\n"
+                    f"标题：{title}\n类型：{rtype}\n\n"
+                    f"内容摘录（前500字）：\n{content[:500]}"
+                )
+                result = self.llm_client.chat(
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0,
+                )
+                result = str(result).strip().lower()
+                label = f"{title or rtype}"[:40]
+                if result == "failed":
+                    issues.append(f"{label} 内容质量不合格")
+                elif result == "warning":
+                    issues.append(f"{label} 内容质量需改进")
+            except Exception:
+                continue
+
+        if issues:
+            return self._check(
+                "semantic_quality", "LLM语义质量检查",
+                "warning" if len(issues) <= 2 else "blocked",
+                "; ".join(issues),
+            )
+        return self._check("semantic_quality", "LLM语义质量检查", "passed", "LLM评估内容语义质量合格")
 
     def _check(self, check_id: str, name: str, status: str, message: str) -> dict[str, str]:
         return {"check_id": check_id, "name": name, "status": status, "message": message}

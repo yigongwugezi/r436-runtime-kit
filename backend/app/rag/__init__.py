@@ -11,4 +11,21 @@ and ``routers/rag.py`` serve queries from the persisted vector database.
 from app.rag.config import RAGConfig, rag_config
 from app.rag.errors import RAGServiceError
 
-__all__ = ["RAGConfig", "rag_config", "RAGServiceError"]
+# Lazy import for optional llama_index dependency
+try:
+    from app.rag.query_engine import RagQueryEngine, SearchResponse, SearchResult, rag_query_engine
+except ImportError:
+    RagQueryEngine = None  # type: ignore[assignment]
+    SearchResponse = None  # type: ignore[assignment]
+    SearchResult = None  # type: ignore[assignment]
+    rag_query_engine = None  # type: ignore[assignment]
+
+__all__ = [
+    "RAGConfig",
+    "rag_config",
+    "RAGServiceError",
+    "RagQueryEngine",
+    "SearchResponse",
+    "SearchResult",
+    "rag_query_engine",
+]
