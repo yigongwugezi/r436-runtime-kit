@@ -15,6 +15,7 @@ import { getCurrentLearner, useAuthStore } from '../store/authStore';
 import { useSubjectStore } from '../store/subjectStore';
 import { readStorageJson, writeStorageJson, runtimeStorageKeys } from '../utils/storageKeys';
 import { safeClearCache, exportAllData, importAllData, getCacheSize, formatBytes } from '../utils/cache';
+import { getPreferences, savePreferences } from '../api/auth';
 
 /* ===================================================================
  * 导航分区定义
@@ -136,6 +137,23 @@ function savePrefs(prefs: LearningPrefs) {
   writeStorageJson(runtimeStorageKeys.learningPrefs, prefs);
 }
 
+/** Sync all user preferences (learning prefs + theme + font size) to backend. */
+function syncAllPrefsToServer(prefs: LearningPrefs, darkMode: boolean, fontSize: number) {
+  if (!getCurrentLearner()?.id) return;
+  savePreferences({
+    defaultDuration: prefs.defaultDuration,
+    difficulty: prefs.difficulty,
+    learningStyle: prefs.learningStyle,
+    aiStyle: prefs.aiStyle,
+    autoDiagnose: prefs.autoDiagnose,
+    diagnoseDepth: prefs.diagnoseDepth,
+    learningTracking: prefs.learningTracking,
+    ebbinghausReminder: prefs.ebbinghausReminder,
+    theme: darkMode ? 'dark' : 'light',
+    fontSize,
+  }).catch(() => { /* offline — localStorage is authoritative */ });
+}
+
 /* ===================================================================
  * 深色模式工具
  * =================================================================== */
@@ -221,6 +239,42 @@ export default function SettingsPage() {
   useEffect(() => {
     applyTheme(darkMode ? 'dark' : 'light');
   }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── 从后端拉取偏好（新浏览器登录时恢复设置） ──
+  useEffect(() => {
+    if (!learner?.id) return;
+    getPreferences()
+      .then((serverPrefs) => {
+        if (!serverPrefs || Object.keys(serverPrefs).length === 0) return;
+        // Merge: server values override defaults, merge into current state
+        const merged = { ...DEFAULT_PREFS, ...serverPrefs };
+        setPrefs((prev) => ({ ...prev, ...serverPrefs }));
+        savePrefs(merged); // persist to localStorage
+        // Apply theme and font size from server
+        if (serverPrefs.theme) {
+          const isDark = serverPrefs.theme === 'dark';
+          setDarkMode(isDark);
+          applyTheme(isDark ? 'dark' : 'light');
+        }
+        if (typeof serverPrefs.fontSize === 'number') {
+          setFontSize(serverPrefs.fontSize);
+          applyFontSize(serverPrefs.fontSize);
+        }
+      })
+      .catch(() => { /* server unavailable, use localStorage */ });
+  }, [learner?.id]);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── 偏好变更后同步到后端 ──
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => {
+    if (!learner?.id) return;
+    // Debounce: wait 1s after last change before syncing
+    clearTimeout(syncTimerRef.current);
+    syncTimerRef.current = setTimeout(() => {
+      syncAllPrefsToServer(prefs, darkMode, fontSize);
+    }, 1000);
+    return () => clearTimeout(syncTimerRef.current);
+  }, [prefs, darkMode, fontSize, learner?.id]);
 
   const updatePrefs = useCallback((updates: Partial<LearningPrefs>) => {
     const next = { ...prefs, ...updates };

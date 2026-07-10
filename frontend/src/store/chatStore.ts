@@ -4,6 +4,7 @@ import { getCurrentLearner } from './authStore';
 import { useSubjectStore } from './subjectStore';
 import { readStorageItem, readStorageJson, writeStorageItem, writeStorageJson, runtimeStorageKeys } from '../utils/storageKeys';
 import { getSubjectSession } from '../api/subjects';
+import { getSessions, getSessionMessages } from '../api/chat';
 import { createLogger } from '../utils/logger';
 
 const log = createLogger('ChatStore');
@@ -329,7 +330,22 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       try {
         const childSessionId = await getSubjectSession(subjectId);
         if (childSessionId) {
-          set({ currentSessionId: childSessionId, dataSessionId: childSessionId, sessions: [], messages: [] });
+          // Hydrate sessions and messages from backend for the child
+          let parentSessions: ChatSession[] = [];
+          let parentMessages: ChatMessage[] = [];
+          try {
+            const backendRes = await getSessions(subjectId);
+            if (backendRes?.sessions?.length) {
+              parentSessions = backendRes.sessions.map((s: any) => ({
+                id: s.id, title: s.title || '未命名会话', messages: s.messages || [],
+                createdAt: s.created_at ? new Date(s.created_at).getTime() : Date.now(),
+                updatedAt: s.updated_at ? new Date(s.updated_at).getTime() : Date.now(),
+              }));
+            }
+            const msgRes = await getSessionMessages(childSessionId);
+            if (msgRes?.messages?.length) parentMessages = msgRes.messages;
+          } catch { /* best-effort hydration */ }
+          set({ currentSessionId: childSessionId, dataSessionId: childSessionId, sessions: parentSessions, messages: parentMessages });
           return;
         }
       } catch (err) {
@@ -356,7 +372,53 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       } catch { /* fall back to localStorage id */ }
     }
 
-    set({ currentSessionId: id, dataSessionId: id, sessions, messages: cachedMessages, lastImageAttachment: null, imageAttachmentHistory: [], selectedImageAttachmentId: null });
+    // ── Hydrate sessions & messages from backend ──
+    // On a new browser (empty localStorage), fetch chat history from the
+    // server so the user sees their existing sessions and messages.
+    let effectiveSessions = sessions;
+    let effectiveMessages = cachedMessages;
+    if (sessions.length === 0 && subjectId) {
+      try {
+        const backendRes = await getSessions(subjectId);
+        if (backendRes?.sessions?.length) {
+          effectiveSessions = backendRes.sessions.map((s: any) => ({
+            id: s.id,
+            title: s.title || '未命名会话',
+            messages: s.messages || [],
+            createdAt: s.created_at ? new Date(s.created_at).getTime() : Date.now(),
+            updatedAt: s.updated_at ? new Date(s.updated_at).getTime() : Date.now(),
+          }));
+          persistSessions(effectiveSessions);
+          log.info(`Hydrated ${effectiveSessions.length} sessions from backend`);
+          // Also load messages for the active data session
+          try {
+            const msgRes = await getSessionMessages(dataId);
+            if (msgRes?.messages?.length) {
+              effectiveMessages = msgRes.messages;
+              // Cache messages in the hydrated session
+              const activeIdx = effectiveSessions.findIndex((s: ChatSession) => s.id === dataId);
+              if (activeIdx >= 0) {
+                effectiveSessions[activeIdx] = { ...effectiveSessions[activeIdx], messages: effectiveMessages };
+              }
+              persistSessions(effectiveSessions);
+              log.info(`Hydrated ${effectiveMessages.length} messages for session ${dataId}`);
+            }
+          } catch { /* messages fetch best-effort */ }
+        }
+      } catch (err) {
+        log.warn('Failed to hydrate sessions from backend', err);
+      }
+    }
+
+    // When the server resolves a different session than localStorage
+    // (e.g. logging in from a new browser), adopt the server-resolved
+    // session for both chat and data queries so the user sees all their
+    // existing learning data.
+    const effectiveId = dataId !== id ? dataId : id;
+    if (dataId !== id) {
+      persistSessionId(effectiveId);
+    }
+    set({ currentSessionId: effectiveId, dataSessionId: effectiveId, sessions: effectiveSessions, messages: effectiveMessages, lastImageAttachment: null, imageAttachmentHistory: [], selectedImageAttachmentId: null });
   },
 }));
 

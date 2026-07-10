@@ -576,3 +576,28 @@ class PersonalSubjectModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     learner: Mapped["LearnerModel"] = relationship("LearnerModel")
+
+
+# ── User Preferences ────────────────────────────────────────────────────────
+
+
+class UserPreferencesModel(Base):
+    """Per-learner UI and learning preferences, synced across browsers.
+
+    Separated from ProfileSnapshotModel (AI-derived dimensions) because
+    these are user-controlled settings: theme, font size, difficulty
+    preference, learning style, and other knobs the user sets explicitly.
+    """
+
+    __tablename__ = "user_preferences"
+
+    learner_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("learners.id", ondelete="CASCADE"), primary_key=True
+    )
+    # JSON blob storing:
+    #   defaultDuration, difficulty, learningStyle, aiStyle,
+    #   autoDiagnose, diagnoseDepth, learningTracking,
+    #   ebbinghausReminder, theme, fontSize
+    preferences: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)

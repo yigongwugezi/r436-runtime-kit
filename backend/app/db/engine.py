@@ -153,6 +153,9 @@ def init_db() -> None:
             "updated_by": "VARCHAR(64)",
             "updated_at": "DATETIME",
         },
+        "user_preferences": {
+            "preferences": "JSON",
+        },
     }
     for table, columns in migrations.items():
         for column, definition in columns.items():

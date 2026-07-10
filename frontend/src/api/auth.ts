@@ -73,3 +73,14 @@ export async function getMetaOptions(): Promise<{ grades: string[]; exams: strin
   const { data } = await client.get('/api/learner/meta/options');
   return data as { grades: string[]; exams: string[] };
 }
+
+// ── Preferences (cross-browser sync) ─────────────────────────────────
+
+export async function getPreferences(): Promise<Record<string, any>> {
+  const { data } = await client.get('/api/learner/me/preferences');
+  return (data as any)?.preferences ?? {};
+}
+
+export async function savePreferences(preferences: Record<string, any>): Promise<void> {
+  await client.put('/api/learner/me/preferences', { preferences });
+}

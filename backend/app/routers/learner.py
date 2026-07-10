@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.db.engine import SessionLocal
 from app.db.models import LearnerModel, SessionModel
+from app.db.repository import get_user_preferences, save_user_preferences
 from app.middleware.auth import AuthContext, get_auth, require_auth
 
 logger = logging.getLogger(__name__)
@@ -254,6 +255,42 @@ def get_meta_options() -> dict[str, list[str]]:
         "grades": GRADE_OPTIONS,
         "exams": EXAM_OPTIONS,
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Routes — user preferences (cross-browser sync)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class SavePreferencesRequest(BaseModel):
+    preferences: dict = Field(default_factory=dict)
+
+
+@router.get("/learner/me/preferences")
+def get_my_preferences(
+    auth: AuthContext = Depends(require_auth),
+) -> dict[str, Any]:
+    """Get the current learner's UI and learning preferences."""
+    db = SessionLocal()
+    try:
+        prefs = get_user_preferences(db, auth.learner_id)
+        return {"preferences": prefs}
+    finally:
+        db.close()
+
+
+@router.put("/learner/me/preferences")
+def save_my_preferences(
+    body: SavePreferencesRequest,
+    auth: AuthContext = Depends(require_auth),
+) -> dict[str, Any]:
+    """Save the current learner's preferences (full replace)."""
+    db = SessionLocal()
+    try:
+        saved = save_user_preferences(db, auth.learner_id, body.preferences)
+        return {"preferences": saved}
+    finally:
+        db.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════

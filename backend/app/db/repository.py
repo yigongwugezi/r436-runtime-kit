@@ -170,6 +170,37 @@ def get_learner_aggregated_profile(db: Session, learner_id: str) -> dict[str, An
     }
 
 
+# ── User Preferences ─────────────────────────────────────────────────────
+
+
+def get_user_preferences(db: Session, learner_id: str) -> dict[str, Any]:
+    """Get the preferences JSON blob for a learner, or empty dict."""
+    from app.db.models import UserPreferencesModel
+
+    prefs = db.get(UserPreferencesModel, learner_id)
+    return prefs.preferences if prefs else {}
+
+
+def save_user_preferences(
+    db: Session, learner_id: str, preferences: dict[str, Any]
+) -> dict[str, Any]:
+    """Upsert preferences for a learner. Returns the saved preferences dict."""
+    from app.db.models import UserPreferencesModel
+
+    prefs = db.get(UserPreferencesModel, learner_id)
+    if prefs is None:
+        prefs = UserPreferencesModel(
+            learner_id=learner_id,
+            preferences=preferences,
+        )
+        db.add(prefs)
+    else:
+        prefs.preferences = preferences
+    db.commit()
+    db.refresh(prefs)
+    return prefs.preferences
+
+
 # ── Messages ─────────────────────────────────────────────────────────────
 
 def save_message(
