@@ -4761,6 +4761,51 @@ def tutor_video(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         return _product_response(None, session_id=session_id, status="error", message=f"视频生成失败: {e}", source="agent")
 
 
+@router.post("/sections/{section_id}/resources/recommendations")
+def recommend_section_resources(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Return real external links for a section without archiving them as resources."""
+    session_id = _payload_session_id(payload)
+    section_title = str(payload.get("sectionTitle") or "").strip()
+    knowledge_points = payload.get("knowledgePoints") or []
+    if not section_title:
+        try:
+            from app.services.agent_service import get_learning_path
+            for stage in (get_learning_path(session_id) or {}).get("stages", []):
+                for chapter in stage.get("chapters", []):
+                    for section in chapter.get("sections", []):
+                        if str(section.get("section_id") or section.get("id") or "") == section_id:
+                            section_title = str(section.get("title") or "").strip()
+                            knowledge_points = section.get("knowledge_points") or section.get("knowledgePoints") or []
+                            break
+        except Exception:
+            pass
+    if not section_title:
+        return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
+
+    profile: dict[str, Any] | None = None
+    weak_points: list[Any] = []
+    try:
+        from app.services.agent_service import get_analytics, get_profile
+        profile = get_profile(session_id)
+        analytics = get_analytics(session_id) or {}
+        weak_points = analytics.get("weakTopics") or []
+    except Exception:
+        pass
+
+    from app.services.section_resource_recommendations import SectionResourceRecommendationService
+    result = SectionResourceRecommendationService().recommend(
+        session_id=session_id,
+        section_id=section_id,
+        section_title=section_title,
+        knowledge_points=knowledge_points if isinstance(knowledge_points, list) else [],
+        language=str(payload.get("language") or "zh-CN"),
+        resource_types=payload.get("resourceTypes") if isinstance(payload.get("resourceTypes"), list) else [],
+        profile=profile,
+        weak_points=weak_points,
+    )
+    return _product_response({"recommendations": result}, session_id=session_id, source="duckduckgo")
+
+
 # 画像推荐
 @router.get("/profile/recommendations")
 def get_profile_recommendations(sessionId: str = "") -> dict[str, Any]:
