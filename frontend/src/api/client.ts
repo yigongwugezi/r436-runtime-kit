@@ -12,6 +12,43 @@ function getToken(): string {
   catch { return ''; }
 }
 
+function getRefreshToken(): string {
+  try { return localStorage.getItem(runtimeStorageKeys.refreshToken.primary) || ''; }
+  catch { return ''; }
+}
+
+function saveToken(token: string, refreshToken?: string) {
+  try {
+    localStorage.setItem(runtimeStorageKeys.authToken.primary, token);
+    if (refreshToken) localStorage.setItem(runtimeStorageKeys.refreshToken.primary, refreshToken);
+  } catch { /* noop */ }
+}
+
+let refreshPromise: Promise<string | null> | null = null;
+
+async function refreshAccessToken(): Promise<string | null> {
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) return null;
+
+  if (!refreshPromise) {
+    refreshPromise = fetch(`${BASE_URL}/api/auth/refresh`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${refreshToken}` },
+    })
+      .then(async (response) => {
+        if (!response.ok) return null;
+        const body = await response.json();
+        const data = body?.data ?? body;
+        if (!data?.access_token) return null;
+        saveToken(data.access_token, data.refresh_token);
+        return data.access_token as string;
+      })
+      .catch(() => null)
+      .finally(() => { refreshPromise = null; });
+  }
+  return refreshPromise;
+}
+
 const client: AxiosInstance = axios.create({
   baseURL: BASE_URL,
   timeout: 120_000,
@@ -22,7 +59,9 @@ const client: AxiosInstance = axios.create({
 // 1. 自动注入 token
 // 2. 自动注入 sessionId（可从外部覆盖）
 client.interceptors.request.use((config) => {
-  const token = getToken();
+  const token = String(config.url || '').includes('/api/auth/refresh')
+    ? getRefreshToken()
+    : getToken();
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -123,7 +162,17 @@ client.interceptors.response.use(
     log.debug(`→ ${res.config.method?.toUpperCase()} ${res.config.url} ${res.status}`);
     return res;
   },
-  (err) => {
+  async (err) => {
+    const request = err.config as (typeof err.config & { _retry?: boolean }) | undefined;
+    if (err.response?.status === 401 && request && !request._retry && !String(request.url || '').includes('/api/auth/refresh')) {
+      request._retry = true;
+      const token = await refreshAccessToken();
+      if (token) {
+        request.headers = request.headers || {};
+        request.headers.Authorization = `Bearer ${token}`;
+        return client(request);
+      }
+    }
     const apiError = extractApiError(err);
     return Promise.reject(new Error(apiError.message));
   },

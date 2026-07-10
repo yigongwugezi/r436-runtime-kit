@@ -87,6 +87,10 @@ export const runtimeStorageKeys = {
     primary: 'edu_token',
     legacy: [],
   },
+  refreshToken: {
+    primary: 'r436_refresh_token',
+    legacy: [],
+  },
   /** 待处理中生成标记 — 用于跨页面导航恢复中断的生成 */
   pendingGeneration: {
     primary: 'r436_pending_generation',

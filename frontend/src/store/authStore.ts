@@ -32,14 +32,14 @@ interface AuthStore {
 function persist(token: string, refreshToken: string) {
   try {
     writeStorageItem(runtimeStorageKeys.authToken, token);
-    writeStorageItem({ primary: 'r436_refresh_token', legacy: [] }, refreshToken);
+    writeStorageItem(runtimeStorageKeys.refreshToken, refreshToken);
   } catch { /* noop */ }
 }
 
 function clearStorage() {
   try {
     writeStorageItem(runtimeStorageKeys.authToken, '');
-    writeStorageItem({ primary: 'r436_refresh_token', legacy: [] }, '');
+    writeStorageItem(runtimeStorageKeys.refreshToken, '');
   } catch { /* noop */ }
 }
 
@@ -110,6 +110,20 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
           set({ loading: false });
           return;
         }
+      }
+
+      const refreshToken = readStorageItem(runtimeStorageKeys.refreshToken);
+      if (refreshToken) {
+        const refreshed = await authApi.refreshToken();
+        persist(refreshed.access_token, refreshed.refresh_token);
+        set({
+          learner: refreshed.learner,
+          token: refreshed.access_token,
+          refreshToken: refreshed.refresh_token,
+          isAuthenticated: true,
+          loading: false,
+        });
+        return;
       }
     } catch { /* token invalid */ }
 

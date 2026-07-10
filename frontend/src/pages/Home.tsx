@@ -13,7 +13,7 @@ import type { ClassSubject } from '../types/classSubject';
 
 export default function Home() {
   const nav = useNavigate();
-  const { subjects, activeSubject, activeClassSubject, create, setActive, setActiveClassSubject, remove } = useSubjectStore();
+  const { subjects, activeSubject, activeClassSubject, create, setActive, setActiveClassSubject, remove, error: subjectError } = useSubjectStore();
   const { analytics } = useLearningAnalytics();
   const { profile } = useProfile();
   const { completedCount: taskCompleted, totalCount: taskTotal } = useDailyTasks();
@@ -214,6 +214,11 @@ export default function Home() {
                   </div>
                   )}
                 </div>
+                {subjectError && (
+                  <div className="mb-4 rounded-xl border border-error-200 bg-error-50 px-4 py-3 text-sm text-error-600">
+                    {subjectError}
+                  </div>
+                )}
                 {showCreate && (
                   <div className="flex items-center gap-2 mb-4 animate-fade-in">
                     <input value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => e.key==='Enter'&&submitCreate()} placeholder="科目名称" autoFocus maxLength={30} className="flex-1 px-4 py-2.5 bg-surface-50 border border-surface-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 transition-all" />

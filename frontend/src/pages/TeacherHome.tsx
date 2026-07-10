@@ -22,12 +22,16 @@ export default function TeacherHome() {
   const [newDesc, setNewDesc] = useState('');
   const [creating, setCreating] = useState(false);
   const [createdClass, setCreatedClass] = useState<ClassSubject | null>(null);
+  const [error, setError] = useState('');
 
   const loadClasses = async () => {
+    setError('');
     try {
       const list = await getMyClassSubjects();
       setClasses(list);
-    } catch {}
+    } catch (err: any) {
+      setError(err?.message || 'Request failed');
+    }
     setLoading(false);
   };
 
@@ -36,6 +40,7 @@ export default function TeacherHome() {
   const handleCreate = async () => {
     if (!newName.trim()) return;
     setCreating(true);
+    setError('');
     try {
       const cs = await createClassSubject({
         name: newName.trim(),
@@ -46,7 +51,9 @@ export default function TeacherHome() {
       setNewName('');
       setNewDesc('');
       await loadClasses();
-    } catch {}
+    } catch (err: any) {
+      setError(err?.message || 'Request failed');
+    }
     setCreating(false);
   };
 
@@ -65,6 +72,11 @@ export default function TeacherHome() {
   return (
     <TeacherGuard>
       <div className="space-y-6 animate-fade-in">
+        {error && (
+          <div className="rounded-xl border border-error-200 bg-error-50 px-4 py-3 text-sm text-error-600">
+            {error}
+          </div>
+        )}
         <div className="flex items-center justify-between">
           <div>
             <h2 className="font-display text-2xl font-bold text-surface-800">班级管理</h2>
