@@ -24,12 +24,12 @@ def _make_agents():
     llm = get_llm_client(settings.llm_provider)
     return {
         "profile": ProfileAgent(mock_data={}, llm_client=llm),
-        "knowledge": KnowledgeAgent(mock_data={}),
+        "knowledge": KnowledgeAgent(mock_data={}, llm_client=llm),
         "diagnosis": DiagnosisAgent(mock_data={}, llm_client=llm),
         "planner": PlannerAgent(mock_data={}, llm_client=llm),
         "resource": ResourceAgent(mock_data={}, llm_client=llm),
         "question": QuestionAgent(mock_data={}, llm_client=llm),
-        "review": ReviewAgent(mock_data={}),
+        "review": ReviewAgent(mock_data={}, llm_client=llm),
         "grading": GradingAgent(mock_data={}, llm_client=llm),
     }
 
@@ -102,41 +102,12 @@ async def _profile_node(state: dict) -> dict: return await _run_agent("profile",
 async def _knowledge_node(state: dict) -> dict: return await _run_agent("knowledge", state)
 async def _diagnosis_node(state: dict) -> dict: return await _run_agent("diagnosis", state)
 async def _plan_node(state: dict) -> dict: return await _run_agent("planner", state)
-async def _resource_node(state: dict) -> dict: return await _run_agent("resource", state)
 async def _question_node(state: dict) -> dict:
-    """Question node — try DeepTutor deep_question capability first."""
-    try:
-        from app.services.deeptutor_client import deeptutor_call_async
-        course = state.get("course_id","") or "当前课程"
-        msg = state.get("user_message","")
-        r = await deeptutor_call_async("deep_question", f"为'{course}'生成练习题。需求：{msg}")
-        if r and len(r) > 50:
-            import uuid, json
-            try:
-                s, e = r.find("{"), r.rfind("}")+1
-                qs = json.loads(r[s:e]).get("questions",[]) if s>=0 and e>s else []
-            except: qs = [{"question_id":f"dt_{uuid.uuid4().hex[:8]}","type":"mixed","stem":r[:500],"source":"deeptutor_deep_question"}]
-            if qs:
-                state["questions"] = qs
-                state.setdefault("agent_steps",[]).append({"agent_id":"question_agent","status":"completed"})
-                return state
-    except Exception: pass
+    """Question node — delegate entirely to QuestionAgent (handles DeepTutor internally)."""
     return await _run_agent("question", state)
 
 async def _resource_node(state: dict) -> dict:
-    """Resource node — try DeepTutor visualize capability first."""
-    try:
-        from app.services.deeptutor_client import deeptutor_call_async
-        course = state.get("course_id","") or "当前课程"
-        # Try visualize for mindmap
-        r = await deeptutor_call_async("visualize", f"为'{course}'生成思维导图，用Mermaid格式")
-        if r and len(r) > 50 and 'mermaid' in r.lower():
-            import uuid
-            state.setdefault("resources",[])
-            state["resources"].append({"resource_id":uuid.uuid4().hex[:12],"type":"mindmap","title":f"{course}思维导图","content":r,"source":"deeptutor_visualize","format":"mermaid","quality_status":"passed"})
-            state.setdefault("agent_steps",[]).append({"agent_id":"resource_agent","status":"completed"})
-            return state
-    except Exception: pass
+    """Resource node — delegate entirely to ResourceAgent (handles DeepTutor internally)."""
     return await _run_agent("resource", state)
 
 async def _review_node(state: dict) -> dict: return await _run_agent("review", state)
@@ -151,6 +122,30 @@ def _route_by_intent(state: dict) -> str:
 
 
 def _after_review(state: dict) -> str:
+    """Route based on review results: loop back to resource if quality fails and retries remain."""
+    review = state.get("review", {})
+    quality_status = review.get("quality_status", "passed")
+
+    if quality_status in ("blocked", "failed"):
+        checks = review.get("checks", [])
+        resource_issues = any(
+            c.get("check_id") in (
+                "resource_content_quality", "resource_coverage",
+                "resource_type_match", "semantic_quality",
+            )
+            and c.get("status") in ("blocked", "warning")
+            for c in checks
+        )
+        if resource_issues:
+            retries = state.get("_retry_count", 0)
+            if retries < MAX_RETRIES:
+                state["_retry_count"] = retries + 1
+                logger.info(
+                    "Review flagged resource issues (retry %d/%d), looping back",
+                    state["_retry_count"], MAX_RETRIES,
+                )
+                return "resource"
+
     return "reply"
 
 

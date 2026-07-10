@@ -48,24 +48,25 @@ class QuestionAgent(BaseAgent):
         prompt_parts.append("输出JSON格式：{\"questions\": [...]}")
         prompt = "。".join(prompt_parts) + "。"
 
-        # ── DeepTutor chat with deep_question-quality prompt ──
+        # ── DeepTutor: 生成增强题目（不替代 LLM 完整路径）──
+        dt_questions = []
+        dt_set_id = ""
         try:
             from app.services.deeptutor_client import deeptutor_call
             import uuid as _uuid
             dt_result = deeptutor_call("chat", prompt)
             if dt_result and len(dt_result) > 50:
-                questions = self._parse_deeptutor_output(dt_result)
-                if questions:
-                    for q in questions:
+                dt_questions = self._parse_deeptutor_output(dt_result) or []
+                if dt_questions:
+                    dt_set_id = _uuid.uuid4().hex[:8]
+                    for q in dt_questions:
                         q.setdefault("question_id", f"dt_{_uuid.uuid4().hex[:8]}")
                         q.setdefault("source", "deeptutor")
                         q.setdefault("difficulty", difficulty)
-                    return {"questions": questions, "question_set_id": _uuid.uuid4().hex[:8],
-                            "agent_step": self.agent_step()}
         except Exception as e:
             logger.debug("DeepTutor skip: %s", e)
 
-        # ── Existing LLM path ──
+        # ── LLM path ──
         diagnosis = context.get("diagnosis", {}) if isinstance(context.get("diagnosis"), dict) else {}
         profile = context.get("profile", {})
         knowledge_points = self._extract_knowledge_points(context, diagnosis)
@@ -105,7 +106,10 @@ class QuestionAgent(BaseAgent):
             questions = self._build_rule_questions(params, profile)
             all_questions.extend(questions)
 
-        return {"questions": all_questions, "question_set_id": self._make_set_id(context),
+        # ── 合并 DeepTutor 结果作为增强补充 ──
+        if dt_questions:
+            all_questions = dt_questions + all_questions
+        return {"questions": all_questions, "question_set_id": self._make_set_id(context) or dt_set_id,
                 "agent_step": self.agent_step()}
 
     def _parse_deeptutor_output(self, raw: str) -> list[dict]:

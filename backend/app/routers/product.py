@@ -1531,6 +1531,21 @@ def _reply_for_intent(
             "learning_goal": "learning_goal",
             "time_budget": "time_budget",
             "preference": "preference",
+            # ── 补充映射 ──
+            "daily_time": "time_budget",
+            "exam_goal": "learning_goal",
+            "study_period": "time_budget",
+            "coding_level": "knowledge_base",
+            "major": "background",
+            "identity": "background",
+            "academic_background": "background",
+            "current_level": "knowledge_base",
+            "cognitive_style": "preference",
+            "learning_preference": "preference",
+            "learning_rhythm": "time_budget",
+            "interest_direction": "target_course",
+            "weakness": "weak_points",
+            "strengths": "knowledge_base",
         }
         for llm_key, fact_key in fact_mapping.items():
             value = str(llm_facts.get(llm_key, "")).strip()
@@ -1538,6 +1553,18 @@ def _reply_for_intent(
                 invalid = {"的是什么", "的是什么诶", "什么", "啥", "这个", "那个", "它", "他", "她", "未知", "未提及", "无", "none"}
                 if value not in invalid:
                     state.facts[fact_key] = value
+        # ── 未映射字段兜底存储 ──
+        import json as _json
+        extra_facts = {}
+        for llm_key, value in llm_facts.items():
+            if llm_key not in fact_mapping:
+                val = str(value).strip()
+                if val and len(val) >= 2:
+                    invalid = {"的是什么", "什么", "啥", "未知", "未提及", "无", "none"}
+                    if val not in invalid:
+                        extra_facts[llm_key] = val
+        if extra_facts:
+            state.facts["_extra"] = _json.dumps(extra_facts, ensure_ascii=False)
 
     llm_reply = intent.get("reply", "")
     action = intent.get("action", "none")
@@ -1674,8 +1701,26 @@ def _generate_final_reply(message: str, session_id: str, result: dict[str, Any])
                 for s in stages[:8]
                 if isinstance(s, dict) and s.get("title")
             ],
+            # ── 新增：阶段描述摘要（含目标和时长）──
+            "stage_summaries": [
+                {
+                    "title": s.get("title", ""),
+                    "goal": s.get("goal", ""),
+                    "duration": s.get("duration", ""),
+                }
+                for s in stages[:5] if isinstance(s, dict)
+            ],
             "resources_created": bool(resources),
             "resource_count": len(resources),
+            # ── 新增：资源类型分布 ──
+            "resource_types": list(set(
+                r.get("type", "") for r in resources[:20]
+                if isinstance(r, dict) and r.get("type")
+            )),
+            # ── 新增：诊断关键发现 ──
+            "diagnosis_key_finding": str(
+                diagnosis.get("diagnosis_summary", "")
+            )[:100] if isinstance(diagnosis, dict) else "",
             "diagnosis_created": bool(diagnosis and diagnosis.get("weak_knowledge_points")),
             "estimated_days": result.get("estimatedDays"),
             "planner_metadata": result.get("planner_metadata"),
@@ -1747,294 +1792,7 @@ GEN_STAGES = [
 ]
 
 
-# DEPRECATED: replaced by chat_router.py unified LangGraph handler
-# @router.post("/chat/stream")
-def _deprecated_stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> StreamingResponse:
-    message = str(payload.get("message", "我想学习人工智能导论"))
-    session_id = _payload_session_id(payload)
-    subject_id = _payload_subject_id(payload)
-    _validate_message(message)
 
-    # Link session to subject/learner for proper data isolation
-    _ensure_session_linked(session_id, subject_id=subject_id, learner_id=auth.learner_id)
-
-    conversation_store.append_message(session_id, "user", message)
-    intent = _classify_intent(message, session_id)
-    conversation_store.set_intent(session_id, intent)
-    multimodal_payload = _multimodal_chat_payload(message, session_id, subject_id, payload, intent)
-    if multimodal_payload:
-        reply = multimodal_payload["reply"]["content"]
-        conversation_store.append_message(session_id, "assistant", reply)
-
-        def multimodal_stream():
-            yield f"data: {json.dumps({'stage': '正在执行多模态任务', 'agentName': 'multimodal', 'progress': 80, 'done': False}, ensure_ascii=False)}\n\n"
-            for chunk in reply.splitlines(keepends=True):
-                yield f"data: {json.dumps({'content': chunk, 'done': False}, ensure_ascii=False)}\n\n"
-            final_event = {
-                "event": "done",
-                "done": True,
-                "sessionId": session_id,
-                "pipeline_executed": True,
-                "agents_run": ["multimodal_agent"],
-                "learning_path_created": False,
-                "resources_created": False,
-                "planner_metadata": {},
-                "action": "multimodal",
-                "workflow_trace": multimodal_payload["workflow_trace"],
-                "multimodal_result": multimodal_payload["multimodal_result"],
-                "final_reply_owner": "conversation_agent",
-                "reply_source": "multimodal_agent",
-                "fallback_used": False,
-            }
-            yield f"data: {json.dumps(final_event, ensure_ascii=False)}\n\n"
-
-        return StreamingResponse(multimodal_stream(), media_type="text/event-stream")
-    run_agents = _will_run_agents(intent, session_id)
-
-    def _to_event(stage: str, agent: str, pct: int, **kw) -> str:
-        data = {"stage": stage, "agentName": agent, "progress": pct, "done": False, **kw}
-        return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-    def event_stream():
-        nonlocal run_agents
-        if run_agents:
-            # ── 先发「正在理解需求」，让用户立刻感知响应 ──
-            s0_label, s0_key, s0_pct = "正在理解需求", "understanding", 5
-            yield _to_event(s0_label, s0_key, s0_pct)
-
-            # Mark generation as in-progress for recovery
-            state = conversation_store.get(session_id)
-            state.generating = True
-
-            # ── 在线程中执行智能体，通过队列实时回传进度 ──
-            progress_q: Queue = Queue()
-            result_box: dict[str, Any] = {}
-
-            def _agent_worker():
-                try:
-                    # 后端细粒度阶段 → 前端 5 阶段映射
-                    _STAGE_MAP = {
-                        "profiling":   ("profiling", "正在生成画像"),
-                        "knowledge":   ("profiling", "正在生成画像"),
-                        "diagnosis":   ("profiling", "正在生成画像"),
-                        "planning":    ("planning", "正在规划路径"),
-                        "generating":  ("generating", "正在生成资源"),
-                        "reviewing":   ("generating", "正在生成资源"),
-                    }
-                    def on_progress(
-                        stage_key: str, stage_label: str, pct: int,
-                        detail: str | None = None,
-                    ):
-                        mapped_key, mapped_label = _STAGE_MAP.get(
-                            stage_key, (stage_key, stage_label)
-                        )
-                        progress_q.put(
-                            ("progress", mapped_key, mapped_label, pct, detail)
-                        )
-                        # Persist live progress so recovery endpoint can replay it
-                        st = conversation_store.get(session_id)
-                        st.current_progress = {
-                            "stage": mapped_label,
-                            "agentName": mapped_key,
-                            "progress": pct,
-                            "detail": detail,
-                        }
-                    reply, ran = _reply_for_intent(
-                        message, intent, session_id,
-                        progress_callback=on_progress,
-                    )
-                    result_box["reply"] = reply
-                    result_box["ran"] = ran
-                    # Persist reply immediately in worker thread so it survives
-                    # client disconnect (main generator may never reach line 1346).
-                    conversation_store.append_message(session_id, "assistant", reply)
-                    # Clear generation state for recovery endpoint
-                    state = conversation_store.get(session_id)
-                    state.generating = False
-                    state.current_progress = None
-                    progress_q.put(("done",))
-                except Exception as exc:
-                    result_box["error"] = exc
-                    # Persist error so recovery endpoint can surface it
-                    conversation_store.append_message(session_id, "assistant", f"[生成失败] {exc}")
-                    # Clear generation state on error too
-                    state = conversation_store.get(session_id)
-                    state.generating = False
-                    state.current_progress = None
-                    progress_q.put(("error",))
-
-            t = threading.Thread(target=_agent_worker, daemon=True)
-            t.start()
-
-            # ── 从队列读取实时进度事件 ──
-            last_keepalive = time.monotonic()
-            while t.is_alive() or not progress_q.empty():
-                try:
-                    msg = progress_q.get(timeout=0.5)
-                    kind = msg[0]
-                    if kind == "progress":
-                        _, stage_key, stage_label, pct, detail = msg
-                        extra: dict[str, Any] = {}
-                        if detail:
-                            extra["detail"] = detail
-                        yield _to_event(stage_label, stage_key, pct, **extra)
-                    elif kind == "done":
-                        break
-                    elif kind == "error":
-                        err = result_box.get("error", Exception("未知错误"))
-                        yield _to_event("生成失败", "failed", 0, error=str(err), done=True)
-                        yield 'data: {"done":true}\n\n'
-                        return
-                except Empty:
-                    # ponytail: low-rate keepalive prevents long resource generation from looking stuck at 80%.
-                    if time.monotonic() - last_keepalive >= 10:
-                        st = conversation_store.get(session_id)
-                        progress = st.current_progress or {
-                            "stage": "正在生成资源",
-                            "agentName": "generating",
-                            "progress": 80,
-                        }
-                        yield _to_event(
-                            progress.get("stage", "正在生成资源"),
-                            progress.get("agentName", "generating"),
-                            int(progress.get("progress", 80) or 80),
-                            keepalive=True,
-                            detail=progress.get("detail"),
-                        )
-                        last_keepalive = time.monotonic()
-                    # 仍在等待中 — 可发心跳保持连接活跃
-                    continue
-
-            # ── 处理结果 ──
-            if "error" in result_box:
-                yield _to_event("生成失败", "failed", 0, error=str(result_box["error"]), done=True)
-                yield 'data: {"done":true}\n\n'
-                return
-
-            reply = result_box.get("reply", "")
-            ran = result_box.get("ran", False)
-            if not ran:
-                run_agents = False
-
-            # ── 推进到「保存结果」(reply already saved in worker thread) ──
-            yield _to_event("正在保存结果", "saving", 95)
-            yield _to_event("正在保存结果", "saving", 100)
-
-            # ── 流式输出回复内容 ──
-            for chunk in reply.splitlines(keepends=True):
-                yield f"data: {json.dumps({'content': chunk, 'done': False}, ensure_ascii=False)}\n\n"
-        else:
-            # ── action=none，直接返回 LLM 回复，不执行 Agent ──
-            llm_reply = intent.get("reply", "")
-            if llm_reply:
-                reply = llm_reply
-                ran_agents = False
-            else:
-                reply, ran_agents = _reply_for_intent(message, intent, session_id)
-            
-            conversation_store.append_message(session_id, "assistant", reply)
-            
-            if ran_agents:
-                # 触发了 Agent — 显示完成阶段
-                for stage_key, stage_label, pct in GEN_STAGES:
-                    yield f"data: {json.dumps({'stage': stage_label, 'agentName': stage_key, 'progress': pct, 'done': False}, ensure_ascii=False)}\n\n"
-            
-            for chunk in reply.splitlines(keepends=True):
-                yield f"data: {json.dumps({'content': chunk, 'done': False}, ensure_ascii=False)}\n\n"
-
-        result = conversation_store.get(session_id).last_result or {}
-        stages = result.get("learning_path", []) if isinstance(result, dict) else []
-        resources = result.get("resources", []) if isinstance(result, dict) else []
-        final_event: dict[str, Any] = {
-            "event": "done",
-            "done": True,
-            "sessionId": session_id,
-            # ── 执行状态 ──
-            "pipeline_executed": bool(result.get("pipeline_executed")) if isinstance(result, dict) else False,
-            "agents_run": result.get("agents_run", []) if isinstance(result, dict) else [],
-            "learning_path_created": bool(stages),
-            "stage_count": len(stages),
-            "resources_created": bool(resources),
-            "resource_count": len(resources),
-            "planner_metadata": result.get("planner_metadata", {}) if isinstance(result, dict) else {},
-            "adjustments": result.get("adjustments", []) if isinstance(result, dict) else [],
-            "review_tasks": result.get("review_tasks", []) if isinstance(result, dict) else [],
-            # ── debug 字段（§12.1）──
-            "action": intent.get("action", "none"),
-            "confidence": intent.get("confidence", 0),
-            "should_run_pipeline": not result.get("skip_pipeline", True),
-            "skip_pipeline": result.get("skip_pipeline", False),
-            "skip_reason": result.get("skip_reason", ""),
-            "final_reply_owner": "conversation_agent",
-            "reply_source": result.get("source", ""),
-            "fallback_used": result.get("fallback_used", False),
-            "llm_retry_count": intent.get("llm_retry_count", 0),
-        }
-        if intent.get("action") in ("diagnose", "generate_questions"):
-            diag = result.get("diagnosis", {})
-            final_event["diagnosis"] = {
-                "diagnosis_summary": diag.get("diagnosis_summary", ""),
-                "weak_knowledge_points": diag.get("weak_knowledge_points", []),
-                "mastery_levels": diag.get("mastery_levels", []),
-                "diagnostic_phase": diag.get("diagnostic_phase", ""),
-                "diagnostic_question_count": diag.get("diagnostic_question_count", 0),
-                "needs_more_evidence": diag.get("needs_more_evidence", True),
-            } if isinstance(diag, dict) else {}
-        if intent.get("action") == "generate_questions":
-            questions = result.get("questions", []) if isinstance(result, dict) else []
-            final_event["questions_created"] = bool(questions)
-            final_event["question_count"] = len(questions)
-            final_event["question_set_id"] = result.get("question_set_id", "") if isinstance(result, dict) else ""
-        if intent.get("action") == "grade_answer":
-            final_event["grading_result"] = result.get("grading_result", {}) if isinstance(result, dict) else {}
-        yield f"data: {json.dumps(final_event, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
-
-
-# DEPRECATED: replaced by chat_router.py
-# @router.post("/chat/send")
-def _deprecated_send_chat(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
-    message = str(payload.get("message", "我想学习人工智能导论"))
-    session_id = _payload_session_id(payload)
-    subject_id = _payload_subject_id(payload)
-    _validate_message(message)
-
-    # Link session to subject/learner for proper data isolation
-    _ensure_session_linked(session_id, subject_id=subject_id, learner_id=auth.learner_id)
-
-    conversation_store.append_message(session_id, "user", message)
-    intent = _classify_intent(message, session_id)
-    conversation_store.set_intent(session_id, intent)
-    multimodal_payload = _multimodal_chat_payload(message, session_id, subject_id, payload, intent)
-    if multimodal_payload:
-        conversation_store.append_message(session_id, "assistant", multimodal_payload["reply"]["content"])
-        return _product_response(
-            multimodal_payload,
-            session_id=session_id, source="agent",
-        )
-    reply, _ = _reply_for_intent(message, intent, session_id)
-    conversation_store.append_message(session_id, "assistant", reply)
-    response = {
-        "sessionId": session_id,
-        "reply": {
-            "id": "assistant_msg_001",
-            "role": "assistant",
-            "content": reply,
-            "timestamp": int(time.time() * 1000),
-        },
-        "intent_result": _public_intent_result(intent),
-    }
-    result = conversation_store.get(session_id).last_result or {}
-    diagnosis = result.get("diagnosis", {}) if isinstance(result, dict) else {}
-    if intent.get("action") == "diagnose" or intent.get("intent") == "diagnosis" or (
-        isinstance(diagnosis, dict) and diagnosis and _looks_like_diagnosis_reply(reply)
-    ):
-        response["diagnosis"] = diagnosis
-    return _product_response(
-        response,
-        session_id=session_id, source="agent",
-    )
 
 
 @router.get("/chat/sessions")
@@ -4411,5 +4169,4 @@ def grade_answer(question_id: str, payload: dict[str, Any], auth: AuthContext = 
             db.close()
 
     return _product_response({"gradingResult": result_data}, session_id=session_id, source="agent")
-
 

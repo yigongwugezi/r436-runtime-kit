@@ -1,4 +1,4 @@
-"""Knowledge retrieval agent — RAG-first, course catalog fallback."""
+"""Knowledge retrieval agent — RAG-first, course catalog fallback, with optional LLM query expansion."""
 
 from typing import Any
 
@@ -8,6 +8,26 @@ from app.agents.base import BaseAgent
 class KnowledgeAgent(BaseAgent):
     agent_id = "knowledge_agent"
     agent_name = "知识库检索智能体"
+
+    def _expand_query(self, query: str) -> str:
+        """Use LLM to expand short or ambiguous queries for better RAG retrieval."""
+        if not self.llm_client or len(query) > 80:
+            return query
+        try:
+            expanded = self.llm_client.chat(
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f"将以下学习相关的查询扩展为2-3个更具体的搜索关键词，"
+                        f"用空格分隔，只输出关键词：{query}"
+                    ),
+                }],
+                temperature=0,
+            )
+            expanded = str(expanded).strip()
+            return expanded if expanded and len(expanded) > len(query) else query
+        except Exception:
+            return query
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         message = str(context.get("user_message", ""))
@@ -28,19 +48,22 @@ class KnowledgeAgent(BaseAgent):
         retrieved_points = []
         source = "course_knowledge_base"
         try:
-            from app.langgraph.tools.rag_tool import rag_retrieve
-            rag_results = rag_retrieve(query, top_k=5)
-            if rag_results:
-                for i, r in enumerate(rag_results):
-                    retrieved_points.append({
-                        "point_id": f"rag_{i}",
-                        "chapter_id": f"rag_{i:02d}",
-                        "name": str(r.get("source", f"知识点{i+1}"))[:60],
-                        "priority": "high" if i < 2 else "medium",
-                        "difficulty": "medium",
-                        "content_excerpt": str(r.get("content", ""))[:300],
-                    })
-                source = "rag_retrieval"
+            from app.rag.query_engine import rag_query_engine
+
+            if rag_query_engine.is_ready():
+                expanded_query = self._expand_query(query)
+                response = rag_query_engine.search(expanded_query or query, top_k=5)
+                if response and response.results:
+                    for i, r in enumerate(response.results):
+                        retrieved_points.append({
+                            "point_id": f"rag_{i}",
+                            "chapter_id": f"rag_{i:02d}",
+                            "name": str(r.title or r.id or f"知识点{i+1}")[:60],
+                            "priority": "high" if i < 2 else "medium",
+                            "difficulty": "medium",
+                            "content_excerpt": str(r.text)[:300],
+                        })
+                    source = "rag_retrieval"
         except Exception:
             pass
 

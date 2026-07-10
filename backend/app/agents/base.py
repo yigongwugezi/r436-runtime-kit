@@ -71,6 +71,17 @@ class BaseAgent(ABC):
         The base implementation is a no-op.
         """
 
+    def validate_context(self, context: dict[str, Any]) -> None:
+        """Validate the agent's input context before ``run()``.
+
+        Override in subclasses to enforce structured input contracts
+        using Pydantic models from ``app.schemas.agent_context``.
+        Raise ``AgentValidationError`` if the context is missing required keys.
+
+        The base implementation is a no-op — agents are NOT required
+        to use typed contexts.
+        """
+
     # ── Fallback ───────────────────────────────────────────────────────
 
     def get_fallback(self, context: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -99,6 +99,28 @@ class ConversationAgent(BaseAgent):
         super().__init__(mock_data=mock_data, llm_client=llm_client)
         self._history: list[dict[str, str]] = []
 
+    @classmethod
+    def from_context(
+        cls,
+        context: dict[str, Any],
+        llm_client: Any = None,
+    ) -> "ConversationAgent":
+        """Get or create a ConversationAgent, reusing if cached in context.
+
+        This avoids redundant instantiation when multiple orchestrator nodes
+        need the ConversationAgent within a single request.
+        """
+        existing = context.get("_conversation_agent_instance")
+        if existing is not None:
+            return existing
+        from app.services.llm_client import get_llm_client
+        from app.config import settings
+        client = llm_client or get_llm_client(settings.llm_provider)
+        agent = cls(mock_data={}, llm_client=client)
+        agent._load_history(context)
+        context["_conversation_agent_instance"] = agent
+        return agent
+
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         """主入口。支持两种模式：
         - mode="intent"（默认）：判断意图，返回 action + 自然语言回复
@@ -188,6 +210,20 @@ class ConversationAgent(BaseAgent):
                             time.sleep(0.3 * (attempt + 1))
             except Exception:
                 llm_reply = ""
+
+        # ── execute 标签覆盖规则 action ──
+        # LLM 可通过 <execute>resources</execute> 直接触发 Agent 执行。
+        # 仅在 exec_action 是有效 action 且当前规则 action 为 none/tutoring 时生效；
+        # 若 exec_action 与规则 action 不同且规则 action 已生效，则降级为 proposal。
+        VALID_EXECUTE_ACTIONS = {
+            "plan", "resources", "generate_questions", "diagnose",
+            "grade_answer", "profile", "full_workflow",
+        }
+        if exec_action and exec_action in VALID_EXECUTE_ACTIONS:
+            if action in ("none", "tutoring", ""):
+                action = exec_action
+            elif action != exec_action and not context.get("_llm_proposal"):
+                context["_llm_proposal"] = exec_action
 
         # ── 第3步：LLM 失败时用极简兜底 ──
         if not llm_reply:
@@ -283,6 +319,16 @@ class ConversationAgent(BaseAgent):
         if pr.get("estimated_days"):
             lines.append(f"预估学习天数: {pr['estimated_days']}")
         lines.append(f"诊断已执行: {'是' if pr.get('diagnosis_created') else '否'}")
+        if pr.get("stage_summaries"):
+            for s in pr["stage_summaries"][:3]:
+                goal_text = str(s.get("goal", ""))
+                dur_text = str(s.get("duration", ""))
+                detail = f"：{goal_text}（{dur_text}）" if goal_text else ""
+                lines.append(f"  阶段「{s.get('title', '')}」{detail}")
+        if pr.get("resource_types"):
+            lines.append(f"  资源类型: {'、'.join(str(t) for t in pr['resource_types'])}")
+        if pr.get("diagnosis_key_finding"):
+            lines.append(f"  诊断发现: {pr['diagnosis_key_finding']}")
         if pr.get("planner_metadata"):
             meta = pr["planner_metadata"]
             if isinstance(meta, dict):
