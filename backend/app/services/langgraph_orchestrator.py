@@ -271,6 +271,7 @@ def build_unified_graph() -> StateGraph:
     edge_targets = {
         "conversation": "conversation",
         "profile": "profile",
+        "knowledge": "knowledge",
         "planner": "planner",
         "resource": "resource",
         "question": "question",
@@ -284,6 +285,12 @@ def build_unified_graph() -> StateGraph:
     g.add_edge("conversation", END)
     g.add_edge("reply", END)
 
+    # NOTE: "question" and "grading" nodes are intentionally NOT in the full-workflow
+    # pipeline edges below. They are reached only via the single-agent shortcut path
+    # (intent_router → run_pipeline single-agent branch). This is by design:
+    # question generation and grading are on-demand actions triggered by explicit
+    # user intent, not automatic pipeline stages.
+    #
     # Pipeline edges (fixed order for full_workflow)
     g.add_edge("profile", "knowledge")
     g.add_edge("knowledge", "diagnosis")
@@ -367,7 +374,10 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
         return dict(state)
 
     # ── Single-agent shortcut ──
-    agent_ids = get_agent_ids(intent)
+    # If agents_filter is explicitly provided (from product.py multi-action dispatch),
+    # use it directly; otherwise derive agent_ids from intent.
+    agents_filter = state.pop("agents_filter", None)
+    agent_ids = agents_filter if (agents_filter is not None and len(agents_filter) > 0) else get_agent_ids(intent)
     if agent_ids is not None and len(agent_ids) > 0:
         # Map agent_id → short node key (e.g. "planner_agent" → "planner")
         for full_id in agent_ids:

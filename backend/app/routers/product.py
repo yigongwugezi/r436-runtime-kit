@@ -27,6 +27,7 @@ from fastapi.responses import StreamingResponse
 from app.middleware.auth import AuthContext, reject_parent
 
 from app.agents.conversation_agent import ConversationAgent
+from app.agents.diagnosis_agent import DiagnosisAgent
 from app.agents.multimodal_agent import MultimodalAgent
 from app.config import settings
 from app.db.engine import SessionLocal
@@ -57,6 +58,7 @@ from app.services.agent_service import (
 from app.services.intent_router import get_agent_ids, should_run_agents, chat_only_intents
 from app.schemas.feedback import FeedbackSignal
 from app.utils.errors import InvalidEventTypeError, MissingSessionIdError, NotFoundError
+from app.utils.profile_facts import apply_state_facts_to_result, profile_item
 from app.utils.profile_normalizer import PROFILE_DIMENSION_LABELS, normalize_profile_dimensions
 from app.services.conversation_state import conversation_store
 from app.services.course_catalog import course_catalog
@@ -70,27 +72,6 @@ router = APIRouter(tags=["product"])
 # ═══════════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════
-
-
-def _profile_item(
-    key: str,
-    value: str,
-    source: str = "user_input",
-    confidence: float = 1.0,
-    explanation: str | None = None,
-    evidence: str | None = None,
-    score: int = 70,
-) -> dict[str, Any]:
-    return {
-        "key": key,
-        "label": PROFILE_DIMENSION_LABELS.get(key, key),
-        "value": value,
-        "score": score,
-        "confidence": confidence,
-        "source": source,
-        "explanation": explanation or value,
-        "evidence": evidence or value,
-    }
 
 
 def _product_response(
@@ -147,53 +128,6 @@ def _validate_subject_id(subject_id: str | None) -> None:
         raise ValidationError(
             "subjectId 不能为空",
             code="MISSING_SUBJECT_ID",
-        )
-
-
-def _apply_state_facts_to_result(result: dict[str, Any], state, course: dict[str, Any] | None = None) -> None:
-    profile = result.setdefault("profile", {})
-    course_name = str((course or {}).get("course_name") or state.facts.get("target_course") or "").strip()
-    overrides = {
-        "major_background": state.facts.get("background", ""),
-        "knowledge_base": state.facts.get("knowledge_base", ""),
-        "learning_goal": state.facts.get("learning_goal", ""),
-        "cognitive_style": state.facts.get("preference", ""),
-        "error_patterns": state.facts.get("weak_points", ""),
-        "interest_direction": state.facts.get("target_course", ""),
-        "learning_rhythm": state.facts.get("time_budget", ""),
-    }
-    for key, value in overrides.items():
-        if value:
-            profile[key] = _profile_item(
-                key,
-                str(value),
-                source="user_input",
-                confidence=1.0,
-                explanation=f"该维度直接来自用户描述：{value}",
-                evidence=str(value),
-            )
-
-    if course_name:
-        profile["interest_direction"] = _profile_item(
-            "interest_direction",
-            course_name,
-            source="user_input",
-            confidence=0.9,
-            explanation=f"目标课程已识别为：{course_name}",
-            evidence=course_name,
-            score=82,
-        )
-        profile.setdefault(
-            "learning_progress",
-            _profile_item(
-                "learning_progress",
-                f"正在推进{course_name}学习",
-                source="inferred",
-                confidence=0.8,
-                explanation="根据目标课程和当前对话推断学习进度仍处于推进阶段。",
-                evidence=course_name,
-                score=60,
-            ),
         )
 
 
@@ -359,7 +293,7 @@ def _run_agents(
             "description": selected_course.get("description", ""),
             "chapter_count": selected_course.get("chapter_count", len(selected_course.get("chapters", []))),
         }
-    _apply_state_facts_to_result(result, state, selected_course)
+    apply_state_facts_to_result(result, state.facts, selected_course)
     return result
 
 

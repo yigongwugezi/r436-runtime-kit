@@ -1,4 +1,8 @@
-"""Compatibility stubs for old product.py endpoints the frontend still calls."""
+"""Compatibility stubs for old product.py endpoints the frontend still calls.
+
+DEPRECATED (MAF-Refactor Phase 2): This router is no longer registered in main.py.
+Endpoint definitions have been merged into ``product.py``. Kept for reference only.
+"""
 
 from fastapi import APIRouter
 

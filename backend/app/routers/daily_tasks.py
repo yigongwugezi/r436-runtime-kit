@@ -1,4 +1,8 @@
-"""Daily tasks router — stub endpoint for frontend compatibility."""
+"""Daily tasks router — stub endpoint for frontend compatibility.
+
+DEPRECATED (MAF-Refactor Phase 2): This router is no longer registered in main.py.
+Its functionality has been migrated to ``product.py``. Kept for reference only.
+"""
 
 from fastapi import APIRouter
 

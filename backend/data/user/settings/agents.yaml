@@ -1,10 +1,10 @@
+# Agent-specific LLM settings.
+# NOTE: Only includes agents that exist in the codebase.
+# Removed (non-existent): analysis_agent, code_generator_agent, deep_question, deep_research.
+#
+# The "visualize" group was kept as reference for future multimodal/provider-based agents;
+# the agents listed under it may be implemented later via the ToolRegistry pattern.
 visualize:
-  analysis_agent:
-    temperature: 0.3
-    max_tokens: 2000
-  code_generator_agent:
-    temperature: 0.2
-    max_tokens: 3000
   review_agent:
     temperature: 0.3
     max_tokens: 2000
@@ -14,10 +14,3 @@ question:
 chat:
   temperature: 0.7
   max_tokens: 2000
-deep_question:
-  temperature: 0.5
-  max_tokens: 3000
-deep_research:
-  temperature: 0.3
-  max_tokens: 4000
-
