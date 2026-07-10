@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useChatPanel } from '../components/layout/AppLayout';
+function focusChatInput() { document.querySelector<HTMLTextAreaElement>('[data-chat-input]')?.focus(); }
 import { useLearningPath } from '../hooks/useLearningPath';
 import { PlayCircle, BookOpen, Code2, FileCheck, Lock, CheckCircle2, Circle, Loader2, ChevronRight, Zap, Target, ArrowLeft, FileText, Brain, Calendar, ExternalLink, Clock } from 'lucide-react';
 import { PageLoading, PageEmpty, PageError } from '../components/common/PageState';
@@ -50,7 +50,7 @@ const NODE_BOX_HEIGHT = 56;
 
 export default function LearningPathPage() {
   const nav = useNavigate();
-  const chat = useChatPanel();
+  // Chat panel always visible in 3-col layout (§2.5)
   const { path, loading, error, fetchPath } = useLearningPath();
 
   const stages = path?.stages || [];
@@ -173,7 +173,7 @@ export default function LearningPathPage() {
           icon={<Target size={40} className="text-surface-300" />}
           title="尚未生成学习路径"
           description={<span>在聊天中告诉 AI 你的学习目标，例如：<br /><span className="text-primary-600 font-medium">"我想用两周时间入门深度学习"</span></span>}
-          action={<button onClick={() => chat.setOpen(true)} className="mt-4 px-5 py-2.5 bg-primary-600 text-white rounded-xl font-medium hover:bg-primary-700 transition-colors">去对话生成</button>}
+          action={<button onClick={() => focusChatInput()} className="mt-4 px-5 py-2.5 bg-primary-600 text-white rounded-xl font-medium hover:bg-primary-700 transition-colors">去对话生成</button>}
         />
       </div>
     );
@@ -195,7 +195,7 @@ export default function LearningPathPage() {
             <span className="text-sm font-medium text-surface-600">进度: {progress}%</span>
           </div>
           {!isParent && (
-          <button onClick={() => chat.setOpen(true)} className="flex items-center gap-2 px-5 py-2.5 bg-primary-600 text-white rounded-xl font-medium hover:bg-primary-700 transition-colors">
+          <button onClick={() => focusChatInput()} className="flex items-center gap-2 px-5 py-2.5 bg-primary-600 text-white rounded-xl font-medium hover:bg-primary-700 transition-colors">
             <Zap size={18} />完善路径
           </button>
           )}

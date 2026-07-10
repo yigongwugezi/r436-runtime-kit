@@ -23,13 +23,12 @@ class PlannerAgent(BaseAgent):
     # ── 公共接口 ──
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
-        # ── Try DeepTutor mastery_path capability (true agent with mastery tracking) ──
+        # ── Try DeepTutor mastery_path capability ──
         try:
-            from app.services.deeptutor_client import deeptutor_call
+            from app.services.deeptutor_facade import deeptutor
             course = str(context.get("course_id", "") or "")
             message = str(context.get("user_message", "") or "")
-            prompt = f"为学生规划学习路径。课程：{course}。需求：{message}"
-            dt_result = deeptutor_call("mastery_path", prompt)
+            dt_result = deeptutor.mastery_path(course, message)
             if dt_result and len(dt_result) > 50:
                 stages = self._parse_mastery_path(dt_result)
                 if stages:

@@ -1,91 +1,151 @@
+import { useEffect, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { LayoutDashboard, User, Route, FolderOpen, MessageCircle, Settings, Sparkles, Bot, GraduationCap, History, Edit3, Users, BarChart3, Shield } from 'lucide-react';
+import { LayoutDashboard, User, Stethoscope, Route, FileText, Settings, Sparkles, Upload, GraduationCap } from 'lucide-react';
 import { getCurrentLearner } from '../../store/authStore';
+import client from '../../api/client';
 
-const STUDENT_NAV = [
-  { id: 'dashboard', path: '/', label: '学习中心', icon: <LayoutDashboard size={20} /> },
-  { id: 'profile', path: '/profile', label: '学习画像', icon: <User size={20} /> },
-  { id: 'path', path: '/path', label: '学习路径', icon: <Route size={20} /> },
-  { id: 'resources', path: '/resources', label: '资源库', icon: <FolderOpen size={20} /> },
-  { id: 'chat', path: '/chat', label: '智能对话', icon: <MessageCircle size={20} /> },
-  { id: 'generate', path: '/generate', label: '资源生成', icon: <Sparkles size={20} /> },
-  { id: 'practice', path: '/practice', label: '练习中心', icon: <Edit3 size={20} /> },
-  { id: 'analytics', path: '/analytics', label: '学习分析', icon: <BarChart3 size={20} /> },
-  { id: 'settings', path: '/settings', label: '系统设置', icon: <Settings size={20} /> },
-];
-
-const TEACHER_NAV = [
-  { id: 'dashboard', path: '/', label: '学习中心', icon: <LayoutDashboard size={20} /> },
-  { id: 'class-home', path: '/teacher', label: '班级管理', icon: <Users size={20} /> },
-  { id: 'admin', path: '/admin', label: '后台管理', icon: <Settings size={20} /> },
-  { id: 'review-queue', path: '/review-queue', label: '题目审核', icon: <Shield size={20} /> },
-  { id: 'settings', path: '/settings', label: '系统设置', icon: <Settings size={20} /> },
-];
-
-const PARENT_NAV = [
-  { id: 'dashboard', path: '/', label: '学习中心', icon: <LayoutDashboard size={20} /> },
-  { id: 'analytics', path: '/analytics', label: '学习分析', icon: <BarChart3 size={20} /> },
-  { id: 'timeline', path: '/timeline', label: '学习时间线', icon: <History size={20} /> },
-  { id: 'profile', path: '/profile', label: '学习画像', icon: <User size={20} /> },
-  { id: 'resources', path: '/resources', label: '资源库', icon: <FolderOpen size={20} /> },
-  { id: 'path', path: '/path', label: '学习路径', icon: <Route size={20} /> },
-  { id: 'settings', path: '/settings', label: '系统设置', icon: <Settings size={20} /> },
-];
+interface NavBadges {
+  profile_filled: number;
+  profile_total: number;
+  diagnosis_weak_count: number;
+  diagnosis_high_count: number;
+  path_has_new: boolean;
+  path_has_adjustment: boolean;
+  review_warning_count: number;
+  review_blocked_count: number;
+}
 
 export default function ConsoleSidebar() {
   const nav = useNavigate();
   const loc = useLocation();
   const user = getCurrentLearner();
-  const isTeacher = user?.role === 'teacher' || user?.role === 'admin';
-  const isParent = user?.role === 'parent';
-  const NAV = isTeacher ? TEACHER_NAV : (isParent ? PARENT_NAV : STUDENT_NAV);
-  const roleLabel = isTeacher ? (user?.role === 'admin' ? '管理员' : '教师') : (isParent ? '家长' : '学习平台用户');
-  const isActive = (p: string) => loc.pathname === p || (p === '/resources' && loc.pathname.startsWith('/resources')) || (p === '/teacher' && loc.pathname.startsWith('/teacher'));
+  const [badges, setBadges] = useState<NavBadges | null>(null);
+
+  // §2.4.2 fetch nav badges on mount
+  useEffect(() => {
+    const fetchBadges = async () => {
+      try {
+        const sid = loc.pathname.includes('session') ? new URLSearchParams(loc.search).get('sessionId') : '';
+        const { data } = await client.get('/api/nav-state', { params: { sessionId: sid || undefined } });
+        if (data?.badges) setBadges(data.badges);
+      } catch { /* nav badges are best-effort */ }
+    };
+    fetchBadges();
+    const interval = setInterval(fetchBadges, 15000); // poll every 15s
+    return () => clearInterval(interval);
+  }, [loc.pathname, loc.search]);
+
+  const profilePct = badges ? Math.round((badges.profile_filled / badges.profile_total) * 100) : 0;
+
+  // §2.4.2 ring color
+  const ringColor = profilePct <= 20 ? '#475569'
+    : profilePct <= 60 ? '#06B6D4'
+    : profilePct <= 90 ? '#6366F1'
+    : '#F59E0B';
+  const circumference = 2 * Math.PI * 26; // r=26
+  const dashLength = profilePct > 0 ? (profilePct / 100) * circumference : circumference * 0.05;
+  const isDashed = profilePct <= 20;
+
+  const isActive = (p: string) => loc.pathname === p || (p === '/resources' && loc.pathname.startsWith('/resources'));
+
+  const navItems = [
+    { id: 'home', path: '/', label: '学习主页', icon: <LayoutDashboard size={18} /> },
+    {
+      id: 'diagnosis', path: '/diagnosis', label: '学习诊断', icon: <Stethoscope size={18} />,
+      badge: badges ? (badges.diagnosis_high_count > 0 ? { text: `${badges.diagnosis_high_count}`, color: 'bg-red-500' } : badges.diagnosis_weak_count > 0 ? { text: `${badges.diagnosis_weak_count}`, color: 'bg-amber-500' } : null) : null,
+    },
+    {
+      id: 'path', path: '/path', label: '学习路径', icon: <Route size={18} />,
+      badge: badges?.path_has_adjustment ? { text: '', color: 'bg-amber-400 w-2 h-2' } : badges?.path_has_new ? { text: '', color: 'bg-red-500 w-2 h-2' } : null,
+    },
+    {
+      id: 'report', path: '/report', label: '学习报告', icon: <FileText size={18} />,
+      badge: badges ? (badges.review_blocked_count > 0 ? { text: `${badges.review_blocked_count}`, color: 'bg-red-500' } : badges.review_warning_count > 0 ? { text: `${badges.review_warning_count}`, color: 'bg-amber-500' } : null) : null,
+    },
+    { id: 'profile', path: '/profile', label: '我的画像', icon: <User size={18} /> },
+    { id: 'settings', path: '/settings', label: '系统设置', icon: <Settings size={18} /> },
+  ];
 
   return (
-    <div className="h-full bg-white dark:bg-surface-800 border-r border-surface-200 dark:border-surface-700 flex flex-col shadow-soft">
-      <div className="p-5 border-b border-surface-100 dark:border-surface-700">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-accent-500 flex items-center justify-center">
-            <GraduationCap className="w-6 h-6 text-white" />
-          </div>
-          <div>
-            <h1 className="font-display font-bold text-lg text-surface-800 dark:text-gray-100">EduAgent</h1>
-            <p className="text-xs text-surface-400 dark:text-gray-500">个性化学习平台</p>
-          </div>
+    <div className="h-full bg-[#0F0F1A] text-[#E2E8F0] flex flex-col border-r border-white/5">
+      {/* §2.4.1 Logo — icon only on tablet, full on desktop */}
+      <div className="h-16 flex items-center justify-center lg:justify-start lg:px-5 border-b border-white/5">
+        <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-brand-500 to-accent-500 flex items-center justify-center lg:mr-2.5">
+          <GraduationCap className="w-4 h-4 text-white" />
         </div>
+        <span className="hidden lg:inline text-[17px] font-bold text-[#F1F5F9] tracking-wide">EduAgent</span>
       </div>
 
-      <div className="p-4 mx-3 mt-4 bg-gradient-to-r from-primary-50 to-accent-50 dark:from-primary-500/10 dark:to-accent-500/10 rounded-xl">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary-400 to-accent-400 flex items-center justify-center text-white font-semibold">
+      {/* §2.4.2 User area — icon only on tablet */}
+      <div className="h-16 lg:h-20 flex items-center justify-center lg:justify-start gap-0 lg:gap-3 px-2 lg:px-4 hover:bg-white/[0.03] cursor-pointer transition-colors" onClick={() => nav('/profile')}>
+        <div className="relative flex-shrink-0">
+          <div className="w-9 h-9 lg:w-12 lg:h-12 rounded-full bg-[#1E293B] flex items-center justify-center text-sm lg:text-lg font-semibold text-white">
             {user?.name?.charAt(0) || '?'}
           </div>
-          <div className="flex-1 min-w-0">
-            <p className="font-medium text-surface-800 dark:text-gray-200 truncate">{user?.name || '学习者'}</p>
-            <p className="text-xs text-surface-500 dark:text-gray-400 truncate">{roleLabel}</p>
-          </div>
+          <svg className="absolute inset-0 w-9 h-9 lg:w-12 lg:h-12 -rotate-90" viewBox="0 0 56 56">
+            <circle cx="28" cy="28" r="26" fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="3" />
+            <circle cx="28" cy="28" r="26" fill="none" stroke={ringColor} strokeWidth="3"
+              strokeLinecap="round"
+              strokeDasharray={`${dashLength} ${circumference - dashLength}`}
+              style={{ transition: 'stroke-dasharray 500ms ease, stroke 300ms ease' }}
+              strokeDashoffset={isDashed ? 5 : 0}
+            />
+          </svg>
+        </div>
+        <div className="hidden lg:block">
+          <p className="text-sm font-medium">{user?.name || '学习者'}</p>
+          <p className="text-[11px] text-[#94A3B8]">{badges ? `${badges.profile_filled}/${badges.profile_total}维 · ${profilePct}%` : '加载中…'}</p>
         </div>
       </div>
 
-      <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
-        {NAV.map(item => {
+      {/* §2.4.3 Navigation — icons only on tablet */}
+      <nav className="flex-1 px-1.5 lg:px-2 py-2 space-y-0.5 overflow-y-auto">
+        {navItems.map(item => {
           const active = isActive(item.path);
           return (
             <button key={item.id} onClick={() => nav(item.path)}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 group ${active ? 'bg-primary-50 dark:bg-primary-500/10 text-primary-600 dark:text-primary-400' : 'text-surface-600 dark:text-gray-400 hover:bg-surface-50 dark:hover:bg-surface-700 hover:text-surface-800 dark:hover:text-gray-200'}`}>
-              <span className={`transition-transform duration-200 ${active ? 'scale-110' : 'group-hover:scale-105'}`}>{item.icon}</span>
-              <span className="font-medium text-sm">{item.label}</span>
-              {active && <div className="ml-auto w-1.5 h-1.5 rounded-full bg-primary-500" />}
+              title={item.label}
+              className={`w-full flex items-center gap-2.5 h-11 px-2 lg:px-3 rounded-lg text-sm transition-all duration-150 ${
+                active
+                  ? 'bg-brand-500/15 text-brand-400 border-l-[3px] border-brand-500'
+                  : 'text-[#94A3B8] hover:bg-white/[0.04] border-l-[3px] border-transparent'
+              }`}
+            >
+              <span className="flex-shrink-0">{item.icon}</span>
+              <span className="hidden lg:inline font-normal truncate">{item.label}</span>
+              {item.badge && (
+                <span className={`ml-auto flex-shrink-0 hidden lg:flex ${item.badge.color} ${item.badge.text ? 'min-w-[18px] h-[18px] rounded-full items-center justify-center text-[10px] text-white font-medium px-1' : 'rounded-full'}`}>
+                  {item.badge.text}
+                </span>
+              )}
             </button>
           );
         })}
       </nav>
 
-      <div className="p-4 mx-3 mb-4 bg-surface-50 dark:bg-surface-700 rounded-xl">
-        <div className="flex items-center gap-2 mb-3"><Bot size={16} className="text-primary-500 dark:text-primary-400" /><span className="text-sm font-medium text-surface-700 dark:text-gray-300">智能体状态</span></div>
-        <div className="flex gap-2">{['🧠', '🎬', '🗂️', '💻', '📝'].map((icon, idx) => <div key={idx} className={`w-8 h-8 rounded-lg bg-white dark:bg-surface-600 flex items-center justify-center text-sm shadow-card ${idx === 0 ? 'ring-2 ring-primary-300' : ''}`}>{icon}</div>)}</div>
-        <p className="text-xs text-surface-400 dark:text-gray-500 mt-2">5个智能体在线待命</p>
+      {/* §2.4.4 Quick actions — icon only on tablet */}
+      <div className="px-2 lg:px-4 py-3 space-y-2">
+        <button onClick={() => { document.querySelector<HTMLTextAreaElement>('[data-chat-input]')?.focus(); }}
+          title="开始新学习"
+          className="w-full h-10 rounded-lg text-[13px] font-medium bg-brand-500/12 text-brand-300 hover:bg-brand-500/20 active:bg-brand-500/28 transition-colors flex items-center justify-center lg:justify-start lg:px-3"
+        >
+          <span className="lg:hidden">✨</span>
+          <span className="hidden lg:inline">✨ 开始新学习</span>
+        </button>
+        <button title="上传资料"
+          className="w-full h-10 rounded-lg text-[13px] border border-dashed border-brand-500/40 text-[#94A3B8] hover:border-brand-500 hover:text-brand-300 hover:bg-brand-500/5 transition-colors flex items-center justify-center lg:justify-start lg:px-3"
+        >
+          <span className="lg:hidden">📎</span>
+          <span className="hidden lg:inline">📎 上传资料</span>
+        </button>
+      </div>
+
+      {/* §2.4.5 Footer */}
+      <div className="py-3 text-center">
+        <button onClick={() => nav('/settings')} className="w-5 h-5 text-[#64748B] hover:text-[#E2E8F0] transition-colors mx-auto block">
+          <Settings size={16} />
+        </button>
+        <p className="hidden lg:block text-[10px] text-[#475569] mt-1">v4.0</p>
       </div>
     </div>
   );

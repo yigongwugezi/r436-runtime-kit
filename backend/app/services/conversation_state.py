@@ -128,7 +128,8 @@ class ConversationState:
     last_extracted_questions: list[dict[str, Any]] = field(default_factory=list)
     last_multimodal_task_context: dict[str, Any] = field(default_factory=dict)
     last_proposal: str | None = None  # 上一轮向用户确认了什么：plan/resources/questions/full/None
-    feedback_signal: Any | None = None  # FeedbackSignal from grading → next request (replaces _pending_adjustment)
+    feedback_signal: Any | None = None  # FeedbackSignal from grading → next request
+    preview_state: dict[str, Any] | None = None  # Full-workflow Phase 1 snapshot, consumed by POST /api/chat/confirm
     generating: bool = False
     current_progress: dict[str, Any] | None = None
     updated_at: float = field(default_factory=time.time)
@@ -254,12 +255,16 @@ class ConversationStore:
                 db.close()
         return self._sessions[sid]
 
-    def append_message(self, session_id: str | None, role: str, content: str) -> ConversationState:
+    def append_message(self, session_id: str | None, role: str, content: str,
+                       cards: list[dict[str, Any]] | None = None) -> ConversationState:
         state = self.get(session_id)
-        state.messages.append({
+        msg: dict[str, Any] = {
             "role": role, "content": content,
             "timestamp": int(time.time() * 1000),
-        })
+        }
+        if cards:
+            msg["cards"] = cards
+        state.messages.append(msg)
         state.updated_at = time.time()
         if role == "user":
             self.extract_facts_with_llm(state, content)

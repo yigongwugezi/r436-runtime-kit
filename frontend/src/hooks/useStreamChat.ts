@@ -76,6 +76,7 @@ export function useStreamChat() {
       setStreaming(true);
       setAgentProgress(null);
       useChatStore.getState().setProgressPipelineSteps([]);
+      useChatStore.getState().clearAgentSteps();
 
       // 写入 pending marker，用于跨页面导航恢复
       writeStorageJson(runtimeStorageKeys.pendingGeneration, {
@@ -114,11 +115,58 @@ export function useStreamChat() {
             if (line.startsWith('data: ')) {
               try {
                 const payload = JSON.parse(line.slice(6));
-                if (payload.stage || payload.agentName) {
-                  // 标记是否真正进入智能体阶段（非初始"理解需求"和"保存结果"）
+                // §2.5.2 / §3.2 SSE event: agent_progress
+                if (payload.type === 'agent_progress') {
+                  hasRealAgentProgress = true;
+                  const status = payload.status || 'started';
+                  const cardData = payload.card;
+                  // §3.2 Track step in store
+                  useChatStore.getState().upsertAgentStep({
+                    node: payload.node || '',
+                    agent_name: payload.agent_name || '',
+                    label: payload.label || '',
+                    status,
+                    summary: payload.summary || '',
+                    card: cardData,
+                    duration_ms: payload.duration_ms,
+                    retry: payload.retry,
+                    max_retries: payload.max_retries,
+                    reason: payload.reason,
+                  });
+                  // Store card data on the AI message for structured rendering
+                  if (cardData?.card_type && status === 'completed') {
+                    const msgs = useChatStore.getState().messages;
+                    const lastAi = [...msgs].reverse().find(m => m.role === 'assistant');
+                    if (lastAi) {
+                      const existingCards = (lastAi as any).cards || [];
+                      useChatStore.getState().updateLastAssistant((m) => ({
+                        ...m, cards: [...existingCards, { card_type: cardData.card_type, summary: cardData.summary, node: payload.node }],
+                      }));
+                    }
+                  }
+                  setAgentProgress({
+                    stage: `${payload.agent_name || ''}: ${payload.label || ''}`,
+                    progress: status === 'completed' ? 100 : status === 'started' ? 10 : 50,
+                    agentName: payload.node,
+                    detail: payload.summary || '',
+                    error: status === 'failed' ? payload.summary : undefined,
+                    done: false,
+                    ...(payload.retry ? { retry: payload.retry, maxRetries: payload.maxRetries, reason: payload.reason } : {}),
+                  });
+                }
+                // §2.7.1 Preview ready
+                else if (payload.type === 'preview_ready') {
+                  (useChatStore.getState() as any)._previewState = payload;
+                  setAgentProgress({ stage: '等待确认方案', progress: 95, agentName: 'awaiting_confirmation', done: false });
+                }
+                // §2.7.1 Awaiting confirmation
+                else if (payload.type === 'awaiting_confirmation') {
+                  // Keep preview state active, don't clear progress yet
+                }
+                // Old format compat
+                else if (payload.stage || payload.agentName) {
                   if (payload.agentName && !['understanding', 'saving'].includes(payload.agentName)) {
                     hasRealAgentProgress = true;
-                    // 动态构建进度条步骤
                     useChatStore.getState().addProgressPipelineStep({
                       key: payload.agentName,
                       label: payload.stage || payload.agentName,

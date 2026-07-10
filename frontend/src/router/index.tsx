@@ -1,7 +1,7 @@
 import { createBrowserRouter, Navigate } from 'react-router-dom';
 import AppLayout from '../components/layout/AppLayout';
 import Home from '../pages/Home';
-import ChatPage from '../pages/ChatPage';
+// ChatPage removed — chat is now always visible in the 3-column ChatPanel (§2.5)
 import ResourceLibrary from '../pages/ResourceLibrary';
 import LearningPathPage from '../pages/LearningPathPage';
 import ProfilePage from '../pages/ProfilePage';
@@ -65,9 +65,11 @@ const router = createBrowserRouter([
     ),
     children: [
       { index: true, element: <Home /> },
-      { path: 'chat', element: <RequireStudent><ChatPage /></RequireStudent> },
+      { path: 'chat', element: <RequireStudent><Home /></RequireStudent> },
       { path: 'resources', element: <RequireStudent><ResourceLibrary /></RequireStudent> },
       { path: 'resources/:id', element: <RequireStudent><ResourceLibrary /></RequireStudent> },
+      { path: 'diagnosis', element: <RequireStudent><LearningAnalyticsPage /></RequireStudent> },
+      { path: 'report', element: <RequireStudent><LearningAnalyticsPage /></RequireStudent> },
       { path: 'path', element: <RequireStudent><LearningPathPage /></RequireStudent> },
       { path: 'profile', element: <RequireStudent><ProfilePage /></RequireStudent> },
       { path: 'analytics', element: <RequireStudent><LearningAnalyticsPage /></RequireStudent> },
