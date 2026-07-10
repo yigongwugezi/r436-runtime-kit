@@ -156,3 +156,61 @@ export async function startExamSetAttempt(
   );
   return data as { status: string; data: { attempt: Attempt } };
 }
+
+/** Create an attempt directly (standalone endpoint). */
+export async function createAttempt(body: {
+  sessionId: string;
+  quizId?: string;
+  examSetId?: string;
+  maxScore?: number;
+}) {
+  const { data } = await client.post('/api/attempts', body);
+  return data as { status: string; data: { attempt: Attempt } };
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// Section Quiz Generation & Submission (Part 2)
+// ═════════════════════════════════════════════════════════════════════
+
+import type {
+  QuizResult,
+  QuizSubmitResponse,
+  LinkedQuestion,
+  SectionQuizGenerateRequest,
+  QuizSubmitRequest,
+} from '../types/assessment';
+
+/** Generate a quiz from section context via LLM. */
+export async function generateSectionQuiz(
+  sectionId: string,
+  body: SectionQuizGenerateRequest
+) {
+  const { data } = await client.post(
+    `/api/sections/${sectionId}/quiz/generate`,
+    body
+  );
+  return data as {
+    status: string;
+    data: { quiz: Quiz; questions: LinkedQuestion[] };
+  };
+}
+
+/** Submit all answers for a quiz — grade and return results. */
+export async function submitQuizAttempt(
+  quizId: string,
+  body: QuizSubmitRequest
+) {
+  const { data } = await client.post(`/api/quizzes/${quizId}/submit`, body);
+  return data as { status: string; data: QuizSubmitResponse };
+}
+
+/** Get quiz results with answers and grading after submission. */
+export async function getQuizResults(
+  quizId: string,
+  attemptId?: string
+) {
+  const params: Record<string, string> = {};
+  if (attemptId) params.attemptId = attemptId;
+  const { data } = await client.get(`/api/quizzes/${quizId}/results`, { params });
+  return data as { status: string; data: { quiz: Quiz & { attempt?: Attempt; gradingResults?: QuizResult[] } } };
+}

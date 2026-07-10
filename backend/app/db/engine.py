@@ -170,6 +170,11 @@ def init_db() -> None:
     # in the sessions table, so the FK must be removed.
     _migrate_student_questions_session_fk()
 
+    # ── Fix stale FK on answer_records.session_id ─────────────────────
+    # Same issue — quiz attempts and practice answers use synthetic
+    # session IDs that may not exist in the sessions table.
+    _migrate_answer_records_session_fk()
+
 
 def _migrate_student_questions_session_fk() -> None:
     """Drop the stale FK on student_questions.session_id if it exists."""
@@ -235,6 +240,69 @@ def _migrate_student_questions_session_fk() -> None:
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_student_questions_question_id ON student_questions(question_id)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_student_questions_question_set_id ON student_questions(question_set_id)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_student_questions_session_id ON student_questions(session_id)"))
+            conn.execute(text("COMMIT"))
+        except Exception:
+            conn.execute(text("ROLLBACK"))
+            raise
+
+
+def _migrate_answer_records_session_fk() -> None:
+    """Drop the stale FK on answer_records.session_id if it exists.
+
+    Quiz attempts and practice answers use synthetic session IDs that
+    may not exist in the sessions table (e.g. ``lecture_xxx``).
+    """
+    with engine.connect() as conn:
+        tables = {row[0] for row in conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='answer_records'")
+        ).fetchall()}
+        if "answer_records" not in tables:
+            return
+
+        fks = conn.execute(
+            text("PRAGMA foreign_key_list(answer_records)")
+        ).fetchall()
+        has_session_fk = any(row[3] == "session_id" for row in fks)
+
+        if not has_session_fk:
+            return
+
+        conn.execute(text("BEGIN TRANSACTION"))
+        try:
+            conn.execute(text("""
+                CREATE TABLE answer_records_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id VARCHAR(64) NOT NULL,
+                    question_id VARCHAR(32) NOT NULL,
+                    attempt_id VARCHAR(64),
+                    student_answer TEXT NOT NULL,
+                    total_score INTEGER,
+                    dimension_scores JSON,
+                    dimension_feedback JSON,
+                    error_type VARCHAR(16),
+                    error_label VARCHAR(16),
+                    error_explanation TEXT,
+                    error_action TEXT,
+                    suggestions JSON,
+                    strengths JSON,
+                    source VARCHAR(32) DEFAULT 'llm_generated',
+                    created_at DATETIME
+                )
+            """))
+            conn.execute(text("""
+                INSERT INTO answer_records_new SELECT
+                    id, session_id, question_id, attempt_id,
+                    student_answer, total_score, dimension_scores,
+                    dimension_feedback, error_type, error_label,
+                    error_explanation, error_action, suggestions,
+                    strengths, source, created_at
+                FROM answer_records
+            """))
+            conn.execute(text("DROP TABLE answer_records"))
+            conn.execute(text("ALTER TABLE answer_records_new RENAME TO answer_records"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_answer_records_session_id ON answer_records(session_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_answer_records_question_id ON answer_records(question_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_answer_records_attempt_id ON answer_records(attempt_id)"))
             conn.execute(text("COMMIT"))
         except Exception:
             conn.execute(text("ROLLBACK"))

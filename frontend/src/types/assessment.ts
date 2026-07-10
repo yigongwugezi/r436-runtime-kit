@@ -100,3 +100,46 @@ export interface Attempt {
   submittedAt: string | null;
   createdAt: string | null;
 }
+
+/** Per-question grading result after quiz submission. */
+export interface QuizResult {
+  questionId: string;
+  studentAnswer: string;
+  isCorrect: boolean;
+  score: number;
+  maxScore: number;
+  correctAnswer?: string;
+  explanation?: string;
+  feedback?: string;
+  errorType?: string | null;
+  errorLabel?: string | null;
+  knowledgePoint?: string;
+}
+
+/** Request body for section quiz generation. */
+export interface SectionQuizGenerateRequest {
+  sessionId: string;
+  title: string;
+  knowledgePoints: string[];
+  lectureSummary?: string;
+  difficulty?: string;
+  pathId?: string;
+  stageId?: string;
+  chapterId?: string;
+  sectionId?: string;
+}
+
+/** Request body for quiz submission. */
+export interface QuizSubmitRequest {
+  sessionId: string;
+  answers: { questionId: string; answer: string }[];
+}
+
+/** Response from quiz submission. */
+export interface QuizSubmitResponse {
+  attempt: Attempt;
+  results: QuizResult[];
+  totalScore: number;
+  maxScore: number;
+  sectionStatusSuggestion: 'mastered' | 'in_progress' | 'needs_review';
+}

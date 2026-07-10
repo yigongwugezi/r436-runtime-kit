@@ -509,7 +509,7 @@ class QuizModel(Base):
     # ── Content snapshot ─────────────────────────────────────────
     difficulty: Mapped[str] = mapped_column(String(16), default="medium")
     question_count: Mapped[int] = mapped_column(Integer, default=0)
-    questions: Mapped[dict | None] = mapped_column(
+    questions: Mapped[list | None] = mapped_column(
         JSON, nullable=True, default=None
     )  # [{question_id, type, stem_abbr}, …]
 
@@ -550,7 +550,7 @@ class ExamSetModel(Base):
         JSON, nullable=True, default=None
     )  # {"easy": 3, "medium": 5, "hard": 2}
     question_count: Mapped[int] = mapped_column(Integer, default=0)
-    questions: Mapped[dict | None] = mapped_column(
+    questions: Mapped[list | None] = mapped_column(
         JSON, nullable=True, default=None
     )  # [{question_id, type, difficulty, score}, …]
 
@@ -591,7 +591,7 @@ class AttemptModel(Base):
     )
 
     # ── Answers snapshot ──────────────────────────────────────
-    answers: Mapped[dict | None] = mapped_column(
+    answers: Mapped[list | None] = mapped_column(
         JSON, nullable=True, default=None
     )  # [{question_id, student_answer, score}, …]
     total_score: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
