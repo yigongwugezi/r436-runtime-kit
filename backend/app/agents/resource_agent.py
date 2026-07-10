@@ -61,8 +61,9 @@ class ResourceAgent(BaseAgent):
 
             mm = generate_mindmap(course_name)
             if mm and len(mm) > 50:
+                mm_clean = '\n'.join(l.strip() for l in mm.strip().split('\n'))
                 dt_resources.append({"resource_id": _uuid.uuid4().hex[:12], "type": "mindmap",
-                    "title": f"{course_name} - 思维导图", "content": mm,
+                    "title": f"{course_name} - 思维导图", "content": mm_clean, "content_format": "mermaid",
                     "related_stage_id": stages[0].get("stage_id", "") if stages else "",
                     "source": "deeptutor", "format": "mermaid", "difficulty": "medium", "quality_status": "passed"})
 

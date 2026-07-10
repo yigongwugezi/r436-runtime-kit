@@ -204,7 +204,39 @@ async def _conversation_node(state: dict) -> dict:
 
     if not reply:
         try:
-            reply = await deeptutor.chat(msg, state.get("messages", []) or [])
+            # ── Profile-building: always ask more when profile incomplete ──
+            profile_facts = state.get("profile_facts", {}) or {}
+            filled = sum(1 for v in profile_facts.values() if v and str(v).strip())
+            # Dimensions that matter: background, target_course, knowledge_base, weak_points, learning_goal, time_budget, preference
+            missing = []
+            if not profile_facts.get("background"): missing.append("专业/年级")
+            if not profile_facts.get("knowledge_base"): missing.append("当前基础")
+            if not profile_facts.get("learning_goal"): missing.append("学习目标")
+            if not profile_facts.get("time_budget"): missing.append("时间安排")
+            if not profile_facts.get("preference"): missing.append("学习偏好")
+            if not profile_facts.get("weak_points"): missing.append("薄弱点")
+            if not profile_facts.get("target_course"): missing.append("目标课程")
+
+            if missing and not any(kw in msg for kw in ["生成","出题","规划","资源","批改","诊断","思维导图","视频"]):
+                # Build natural conversational hints based on what's missing
+                hints = {
+                    "专业/年级": "可以问问学生的专业和年级，了解背景",
+                    "当前基础": "可以问问学生之前学过什么，掌握到什么程度",
+                    "学习目标": "可以问问学生想达到什么效果，考试、项目还是入门",
+                    "时间安排": "可以问问学生每天能花多少时间学习",
+                    "学习偏好": "可以问问学生喜欢看视频、读书还是动手练习",
+                    "薄弱点": "可以问问学生觉得哪里最难、最容易错",
+                    "目标课程": "可以问问学生具体想学哪门课或哪个方向",
+                }
+                missing_hints = "；".join(hints.get(m,"") for m in missing[:3] if hints.get(m))
+                profile_hint = (
+                    f"你是EduAgent学习助手。学生的画像还需要了解：{', '.join(missing[:4])}。"
+                    f"请在回复中自然地追问其中1个方向（{missing_hints}），"
+                    "像朋友聊天一样自然，不要列问题清单，不要用模板话术。一次只问一个方面。"
+                )
+                reply = await deeptutor.chat(msg, state.get("messages", []) or [], system_prompt=profile_hint)
+            else:
+                reply = await deeptutor.chat(msg, state.get("messages", []) or [])
         except Exception:
             reply = ""
     state["final_reply"] = reply or "你好！我是EduAgent学习助手，有什么可以帮你的？"
@@ -412,6 +444,11 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
     agents_filter = state.pop("agents_filter", None)
     agent_ids = agents_filter if (agents_filter is not None and len(agents_filter) > 0) else get_agent_ids(intent)
     if agent_ids is not None and len(agent_ids) > 0:
+        # Snapshot old results so we only report what's newly generated
+        old_path = len(state.get("learning_path") or [])
+        old_res = len(state.get("resources") or [])
+        old_qs = len(state.get("questions") or [])
+
         # Map agent_id → short node key (e.g. "planner_agent" → "planner")
         for full_id in agent_ids:
             short_key = full_id.replace("_agent", "")
@@ -421,10 +458,10 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
         state["pipeline_executed"] = True
         state["overall_status"] = "completed"
 
-        # Build a reasonable final_reply for single-agent runs
-        path = state.get("learning_path", [])
-        resources = state.get("resources", [])
-        questions = state.get("questions", [])
+        # Only report newly generated data (not stale from previous requests)
+        path = (state.get("learning_path") or [])[old_path:] if old_path > 0 else state.get("learning_path") or []
+        resources = (state.get("resources") or [])[old_res:] if old_res > 0 else state.get("resources") or []
+        questions = (state.get("questions") or [])[old_qs:] if old_qs > 0 else state.get("questions") or []
         summary_parts = []
         if path:
             summary_parts.append(f"已生成{len(path)}个学习阶段")

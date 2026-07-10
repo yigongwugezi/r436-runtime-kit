@@ -341,7 +341,7 @@ class ConversationStore:
                     for item in result.get("resources", []):
                         raw_resource_id = str(item.get("resource_id", f"res_{time.time()}"))
                         resource_id = raw_resource_id if raw_resource_id.startswith(f"{state.session_id}_") else f"{state.session_id}_{raw_resource_id}"
-                        content_fmt = item.get("content_format", "markdown")
+                        content_fmt = item.get("content_format") or item.get("format", "markdown")
                         difficulty = item.get("difficulty", "easy")
                         content_text = item.get("content", "")
                         estimated = max(10, len(content_text) // 200 * 5) if content_text else 20

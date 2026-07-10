@@ -23,6 +23,14 @@ class PlannerAgent(BaseAgent):
     # ── 公共接口 ──
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
+        # ── Try chapter-based planning first ──
+        try:
+            chapters = self._generate_chapters(context, profile, planning_points, total_days, diag_meta)
+            if chapters:
+                return self._make_chapter_result(chapters, total_days, diag_meta)
+        except Exception:
+            pass
+
         # ── Try DeepTutor mastery_path capability (true agent with mastery tracking) ──
         try:
             from app.services.deeptutor_client import deeptutor_call
@@ -179,6 +187,35 @@ class PlannerAgent(BaseAgent):
         except Exception:
             pass
         return []
+
+    def _generate_chapters(self, context, profile, planning_points, total_days, diag_meta):
+        course = str(context.get('course_id', '') or '')
+        weak = [p.get('name','') for p in planning_points[:5]]
+        prompt = f"""你是课程设计师。为「{course}」设计教科书式章节结构。
+学时：{total_days}天。薄弱点：{','.join(weak) if weak else '待诊断'}。
+要求：3-6章，每章2-4节。必须包含sections数组。每节有section_id、title、goal、estimated_minutes。
+严格按此JSON格式输出：
+{{"chapters":[{{"chapter_id":"ch1","title":"第一章 标题","order":1,"sections":[{{"section_id":"ch1_s1","title":"1.1 节标题","goal":"学习目标","estimated_minutes":60}},{{"section_id":"ch1_s2","title":"1.2 节标题","goal":"学习目标","estimated_minutes":45}}]}},{{"chapter_id":"ch2","title":"第二章 标题","order":2,"sections":[...]}}]}}"""
+        if self.llm_client:
+            try:
+                raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.3, max_tokens=2000)
+                s, e = raw.find("{"), raw.rfind("}") + 1
+                if s >= 0 and e > s: return json.loads(raw[s:e]).get("chapters", [])
+            except: pass
+        return None
+
+    def _make_chapter_result(self, chapters, total_days, diag_meta):
+        total_sections = sum(len(c.get("sections",[])) for c in chapters)
+        return {
+            "learning_path": chapters, "stages": chapters,
+            "chapters": chapters, "estimatedDays": total_days,
+            "section_count": total_sections,
+            "plan_summary": f"{len(chapters)}章{total_sections}节",
+            "summary": f"{len(chapters)}章{total_sections}节",
+            "diagnosis_used": diag_meta.get("diagnosis_used", False),
+            "needs_more_diagnosis": diag_meta.get("needs_more_diagnosis", False),
+            "agent_step": {"agent_id": self.agent_id, "agent_name": self.agent_name, "status": "completed"},
+        }
 
     def _fallback_path(self, context, planning_points, total_days, profile, diag_meta):
         rule_path = self._build_rule_path(planning_points, profile, total_days, diag_meta)

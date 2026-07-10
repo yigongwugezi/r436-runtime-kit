@@ -503,7 +503,7 @@ def _to_resource(
         "difficulty": item.get("difficulty", "easy"),
         "estimatedMinutes": item.get("estimatedMinutes", 20),
         "format": "diagram" if content_fmt == "mermaid" else ("code" if item.get("type") == "practice" else "text"),
-        "mermaidDef": content if content_fmt == "mermaid" else None,
+        "mermaidDef": content if (content_fmt == "mermaid" or item.get("type") == "mindmap") else None,
         "codeBlocks": item.get("code_blocks"),
         "questions": item.get("items"),
         "pptOutline": item.get("ppt_outline"),

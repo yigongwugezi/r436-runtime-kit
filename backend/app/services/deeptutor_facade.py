@@ -37,10 +37,15 @@ def _raw_call(capability: str, message: str, history: list | None = None, timeou
     return deeptutor_call(capability, message, history)
 
 
-async def _raw_call_async(capability: str, message: str, history: list | None = None) -> str:
+async def _raw_call_async(capability: str, message: str, history: list | None = None, system_prompt: str | None = None) -> str:
     """Thin async wrapper — kept private."""
     from app.services.deeptutor_client import deeptutor_call_async
 
+    if system_prompt:
+        # Prepend system prompt as a system message
+        h = list(history or [])
+        h.insert(0, {"role": "system", "content": system_prompt})
+        return await deeptutor_call_async(capability, message, h)
     return await deeptutor_call_async(capability, message, history)
 
 
@@ -57,10 +62,10 @@ class DeepTutorFacade:
 
     # ── Chat / general ──────────────────────────────────────────────────
 
-    async def chat(self, message: str, history: list | None = None) -> str:
+    async def chat(self, message: str, history: list | None = None, system_prompt: str | None = None) -> str:
         """General-purpose chat via DeepTutor.  Returns empty string on failure."""
         try:
-            return await _raw_call_async("chat", message, history)
+            return await _raw_call_async("chat", message, history, system_prompt=system_prompt)
         except Exception as e:
             logger.warning("DeepTutor chat failed: %s", e)
             return ""
