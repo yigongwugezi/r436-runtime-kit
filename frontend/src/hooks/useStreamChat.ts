@@ -215,6 +215,7 @@ export function useStreamChat() {
             content: fallback.reply.content,
             timestamp: fallback.reply.timestamp,
             streaming: false,
+            multimodalResult: fallback.multimodal_result || m.multimodalResult,
             error: undefined,
           }));
           bumpDataVersion();

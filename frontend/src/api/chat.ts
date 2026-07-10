@@ -14,6 +14,10 @@ export interface SendMessageParams {
 export interface ChatResponse {
   sessionId: string;
   reply: ChatMessage;
+  multimodal_result?: ChatMessage['multimodalResult'];
+  workflow_trace?: Record<string, unknown>;
+  action?: string;
+  agents_run?: string[];
   done?: boolean;
   pipeline_executed?: boolean;
   learning_path_created?: boolean;
