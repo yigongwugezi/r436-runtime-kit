@@ -4451,7 +4451,7 @@ mindmap
     try:
         raw = client.chat(
             messages=[{"role": "user", "content": prompt + kb_context}],
-            temperature=0.3, max_tokens=16384,
+            temperature=0.3, max_tokens=settings.lecture_max_tokens,
         )
     except Exception as e:
         logger.warning("Lecture generation failed for section %s: %s", section_id, e)
@@ -4590,4 +4590,27 @@ def tutor_video(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     except Exception as e:
         logger.warning("Tutor video failed for section %s: %s", section_id, e)
         return _product_response(None, session_id=session_id, status="error", message=f"视频生成失败: {e}", source="agent")
+
+
+# 画像推荐
+@router.get("/profile/recommendations")
+def get_profile_recommendations(sessionId: str = "") -> dict[str, Any]:
+    session_id = _require_session_id(sessionId)
+    try:
+        db = SessionLocal()
+        from app.services.agent_service import get_profile as ag_profile
+        from app.db.repository import get_resources as repo_resources, get_latest_learning_path, get_event_analytics
+        profile = ag_profile(session_id)
+        resources = repo_resources(db, session_id)
+        path = get_latest_learning_path(db, session_id)
+        analytics = get_event_analytics(db, session_id)
+        weak_topics = analytics.get("weakTopics", []) if analytics else []
+        from app.services.recommendation_engine import generate_recommendations
+        recs = generate_recommendations(
+            session_id=session_id, weak_topics=weak_topics,
+            resources=resources, learning_path=path, profile=profile, db=db,
+        )
+        return _product_response({"recommendations": recs}, session_id=session_id, source="db")
+    finally:
+        db.close()
 

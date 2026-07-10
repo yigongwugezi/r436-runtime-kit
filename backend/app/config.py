@@ -43,6 +43,11 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite:///./data/r436_runtime.db"
 
+    # ── 路径规划细粒度控制 ──
+    path_max_tokens: int = 12000      # 路径生成 LLM 最大输出 token 数，越大越详细
+    path_sections_per_day: float = 3.0  # 每天生成的小节数，越大越细
+    lecture_max_tokens: int = 16384   # 讲义生成 LLM 最大输出 token 数
+
     # Agent orchestration settings
     agent_timeout: int = 3600  # 1 hour, effectively no timeout for batch generation
     agent_run_timeout: int = 300  # seconds for full orchestrator run

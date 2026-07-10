@@ -113,52 +113,61 @@ export function useLearningPath() {
     });
   }, [sessionId, subjectId]);
 
+  /** 级联：向上传播 mastered 状态 */
+  const cascadeStatus = useCallback((path: LearningPath): LearningPath => {
+    return {
+      ...path,
+      stages: path.stages.map(stage => {
+        const updatedChapters = stage.chapters.map(ch => {
+          const allSectionsMastered = ch.sections.length > 0 && ch.sections.every(s => s.status === 'mastered');
+          const updatedSections = ch.sections.map(sec => {
+            const allKpsMastered = sec.knowledgePoints.length > 0 && sec.knowledgePoints.every(k => k.status === 'mastered');
+            return allKpsMastered && sec.status !== 'mastered' ? { ...sec, status: 'mastered' as ContentStatus } : sec;
+          });
+          return allSectionsMastered && ch.status !== 'mastered'
+            ? { ...ch, status: 'mastered' as ContentStatus, sections: updatedSections }
+            : { ...ch, sections: updatedSections };
+        });
+        const allChaptersMastered = updatedChapters.length > 0 && updatedChapters.every(c => c.status === 'mastered');
+        return { ...stage, chapters: updatedChapters };
+      }),
+    };
+  }, []);
+
   const updateKnowledgePoint = useCallback(async (kpId: string, updates: { mastery?: number; status?: ContentStatus }) => {
     if (updates.status) {
       try { await learningPathApi.updateNodeProgress(kpId, updates.mastery ?? contentStatusToProgress(updates.status), { sessionId, subjectId, status: updates.status }); } catch {}
     }
     setPath((current) => {
       if (!current) return current;
-      const next = mapPathHierarchy(
-        current,
-        (ch) => ch,
-        (sec) => sec,
-        (kp) => kp.id === kpId ? { ...kp, ...updates } : kp,
-      );
+      let next = mapPathHierarchy(current, (ch) => ch, (sec) => sec, (kp) => kp.id === kpId ? { ...kp, ...updates } : kp);
+      if (updates.status === 'mastered') next = cascadeStatus(next);
       next.overallProgress = computeOverallProgress(next);
       return next;
     });
-  }, [sessionId, subjectId]);
+  }, [sessionId, subjectId, cascadeStatus]);
 
   const updateChapterStatus = useCallback(async (chapterId: string, newStatus: ContentStatus) => {
     try { await learningPathApi.updateNodeProgress(chapterId, contentStatusToProgress(newStatus), { sessionId, subjectId, status: newStatus }); } catch {}
     setPath((current) => {
       if (!current) return current;
-      const next = mapPathHierarchy(
-        current,
-        (ch) => ch.id === chapterId ? { ...ch, status: newStatus } : ch,
-        (sec) => sec,
-        (kp) => kp,
-      );
+      let next = mapPathHierarchy(current, (ch) => ch.id === chapterId ? { ...ch, status: newStatus } : ch, (sec) => sec, (kp) => kp);
+      if (newStatus === 'mastered') next = cascadeStatus(next);
       next.overallProgress = computeOverallProgress(next);
       return next;
     });
-  }, [sessionId, subjectId]);
+  }, [sessionId, subjectId, cascadeStatus]);
 
   const updateSectionStatus = useCallback(async (sectionId: string, newStatus: ContentStatus) => {
     try { await learningPathApi.updateNodeProgress(sectionId, contentStatusToProgress(newStatus), { sessionId, subjectId, status: newStatus }); } catch {}
     setPath((current) => {
       if (!current) return current;
-      const next = mapPathHierarchy(
-        current,
-        (ch) => ch,
-        (sec) => sec.id === sectionId ? { ...sec, status: newStatus } : sec,
-        (kp) => kp,
-      );
+      let next = mapPathHierarchy(current, (ch) => ch, (sec) => sec.id === sectionId ? { ...sec, status: newStatus } : sec, (kp) => kp);
+      if (newStatus === 'mastered') next = cascadeStatus(next);
       next.overallProgress = computeOverallProgress(next);
       return next;
     });
-  }, [sessionId, subjectId]);
+  }, [sessionId, subjectId, cascadeStatus]);
 
   useEffect(() => { fetchPath(); const onVisible = () => { if (document.visibilityState === 'visible') fetchPath(); }; document.addEventListener('visibilitychange', onVisible); return () => document.removeEventListener('visibilitychange', onVisible); }, [sessionId, subjectId, location.key, fetchPath]);
   useEffect(() => { if (dataVersion <= 0 || dataVersion === lastVersionRef.current) return; lastVersionRef.current = dataVersion; fetchPath(); }, [dataVersion, fetchPath]);

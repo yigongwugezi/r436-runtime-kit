@@ -39,41 +39,25 @@ def generate_recommendations(
     weak_topics: list[dict[str, Any]],
     resources: list[ResourceModel] | None = None,
     learning_path: LearningPathModel | None = None,
+    profile: dict[str, Any] | None = None,
     db: Session | None = None,
 ) -> list[dict[str, Any]]:
-    """Generate structured recommendations from all available data sources.
-
-    Args:
-        session_id: Current session identifier (for logging/scoping).
-        weak_topics: Pre-computed weak topic list from analytics.
-        resources: Session-scoped ResourceModel list (DB path), or empty/None (in-memory).
-        learning_path: Latest LearningPathModel (DB path), or None (in-memory).
-        db: Active DB session (for additional lookups if needed).
-
-    Returns:
-        List of recommendation dicts matching RecommendationItem schema,
-        deduplicated and ranked by priority → confidence. Empty list when
-        no actionable data exists.
-    """
+    """Generate structured recommendations from all available data sources."""
     if resources is None:
         resources = []
 
     all_recs: list[dict[str, Any]] = []
 
-    # Source 1: incomplete resources
+    # Source 1-5: existing sources
     all_recs.extend(_source_incomplete_resources(resources))
-
-    # Source 2: low accuracy topics → match to resources
     all_recs.extend(_source_low_accuracy_topics(weak_topics, resources))
-
-    # Source 3: incomplete practice resources
     all_recs.extend(_source_incomplete_practice(resources))
-
-    # Source 4: current stage incomplete
     all_recs.extend(_source_stage_incomplete(learning_path, resources))
-
-    # Source 5: high-frequency weak topics
     all_recs.extend(_source_frequent_weak_topics(weak_topics, resources))
+
+    # Source 6: profile-based personalized recommendations (NEW)
+    if profile:
+        all_recs.extend(_source_profile_based(profile, resources, weak_topics))
 
     return _deduplicate_and_rank(all_recs)
 
@@ -269,6 +253,97 @@ def _source_frequent_weak_topics(
             ),
             "quality_status": "passed",
         })
+    return recs
+
+
+# ── Source 6: Profile-based personalized recommendations ────────────────────
+
+
+def _source_profile_based(
+    profile: dict[str, Any],
+    resources: list[ResourceModel],
+    weak_topics: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Generate recommendations based on student profile: weaknesses, preferences, learning style."""
+    recs: list[dict[str, Any]] = []
+    weaknesses = profile.get("weaknesses") or []
+    preferences = profile.get("preferences") or {}
+    dimensions = profile.get("dimensions") or []
+
+    # 偏好资源类型
+    preferred_formats = preferences.get("preferredFormats", [])
+    preferred_types: set[str] = set()
+    if isinstance(preferred_formats, list):
+        for f in preferred_formats:
+            f_lower = str(f).lower()
+            if "diagram" in f_lower or "图解" in f_lower:
+                preferred_types.update(["mindmap", "video"])
+            elif "code" in f_lower or "代码" in f_lower:
+                preferred_types.update(["case_study", "practice"])
+            elif "text" in f_lower or "文字" in f_lower:
+                preferred_types.add("lecture")
+            elif "quiz" in f_lower or "练习" in f_lower:
+                preferred_types.add("quiz")
+
+    # 难度映射
+    diff_pref = str(preferences.get("difficulty", "")).lower()
+    diff_order = {"beginner": ["easy"], "intermediate": ["medium"], "advanced": ["hard", "medium"]}
+    preferred_diff = diff_order.get(diff_pref, [])
+
+    # 1. 偏好类型匹配：推荐未完成的偏好类型资源
+    for res in resources:
+        if res.study_status == "completed":
+            continue
+        rtype = (res.type or "").lower()
+        if rtype in preferred_types:
+            recs.append({
+                "recommendation_type": "incomplete_resource",
+                "title": f"推荐：{res.title}",
+                "reason": f"根据你的学习偏好（{diff_pref or '综合'}·{rtype}），该资源适合你",
+                "target_resource_id": res.id,
+                "priority": "high",
+                "source": "profile",
+                "confidence": 0.8,
+                "evidence": f"Profile prefers {rtype}; resource matches",
+                "quality_status": "passed",
+            })
+
+    # 2. 薄弱点匹配：画像里的薄弱概念 → 匹配资源
+    for w in weaknesses[:3]:
+        topic = str(w.get("topic") or w.get("name") or "")
+        if not topic:
+            continue
+        matched = _find_resource_for_topic(topic, resources)
+        recs.append({
+            "recommendation_type": "low_accuracy_topic",
+            "title": f"补强：{topic}",
+            "reason": f"画像显示「{topic}」是你的薄弱环节，建议专项学习",
+            "target_resource_id": matched.id if matched else None,
+            "priority": "high" if w.get("priority") == "high" else "medium",
+            "source": "profile",
+            "confidence": 0.85,
+            "evidence": f"Profile weakness: {topic}",
+            "quality_status": "passed",
+        })
+
+    # 3. 难度匹配：推荐匹配难度级别的未完成资源
+    if preferred_diff:
+        for res in resources:
+            if res.study_status == "completed":
+                continue
+            if (res.difficulty or "").lower() in preferred_diff:
+                recs.append({
+                    "recommendation_type": "incomplete_resource",
+                    "title": f"适合你的难度：{res.title}",
+                    "reason": f"该资源难度（{res.difficulty}）匹配你的学习水平",
+                    "target_resource_id": res.id,
+                    "priority": "medium",
+                    "source": "profile",
+                    "confidence": 0.7,
+                    "evidence": f"Difficulty match: {res.difficulty} in {preferred_diff}",
+                    "quality_status": "passed",
+                })
+
     return recs
 
 

@@ -200,17 +200,19 @@ class PlannerAgent(BaseAgent):
     def _generate_chapters(self, context, profile, planning_points, total_days, diag_meta):
         course = str(context.get('course_id', '') or '')
         weak = [p.get('name','') for p in planning_points[:10]]
-        prompt = f"""你是课程设计师。为「{course}」设计学习路径。
+        from app.config import settings
+        max_tokens = settings.path_max_tokens
+        prompt = f"""你是课程设计师。为「{course}」设计一份内容全面、粒度合理的教科书级学习路径。
 总学时：{total_days}天。薄弱知识点：{','.join(weak) if weak else '待诊断'}。
 
-请按照阶段(stages)→章节(chapters)→小节(sections)→知识点(knowledge_points)的层级输出。
-阶段和章节数量根据内容自行决定。
+小节划分原则：根据内容自然拆分，不要强行合并不相关的概念。比如"数组和广义表"一章可以拆成数组定义、数组实现、矩阵压缩存储、广义表定义、广义表存储、广义表递归算法等——具体情况具体分析。不能太概括，但也不必纠结数量。
 知识点type取：concept|procedure|memory。
-严格按此JSON格式：
-{{"stages":[{{"stage_id":"s0","title":"第一阶段标题","order":0,"chapters":[{{"chapter_id":"ch0","title":"第一章标题","order":0,"sections":[{{"section_id":"sec0","title":"1.1 节标题","goal":"学习目标","estimated_minutes":60,"knowledge_points":[{{"name":"知识点","type":"concept"}}]}}]}}]}}]}}"""
+
+按 stages→chapters→sections→knowledge_points 层级输出JSON：
+{{"stages":[{{"stage_id":"s0","title":"阶段标题","order":0,"chapters":[{{"chapter_id":"ch0","title":"章节标题","order":0,"sections":[{{"section_id":"sec0","title":"1.1 节标题","goal":"学习目标","estimated_minutes":45,"knowledge_points":[{{"name":"知识点","type":"concept"}},{{"name":"知识点","type":"procedure"}}]}}]}}]}}]}}"""
         if self.llm_client:
             try:
-                raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.3, max_tokens=4000)
+                raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.3, max_tokens=max_tokens)
                 s, e = raw.find("{"), raw.rfind("}") + 1
                 if s >= 0 and e > s:
                     data = json.loads(raw[s:e])
