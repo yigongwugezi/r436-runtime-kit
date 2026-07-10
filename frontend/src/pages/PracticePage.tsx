@@ -4,8 +4,8 @@ import { useChatStore } from '../store/chatStore';
 import { Target, BookOpen, AlertCircle, BarChart3, Play, Loader2, ChevronLeft, ChevronRight, Check, X, RefreshCw, Edit3, Users, GraduationCap, ClipboardList } from 'lucide-react';
 import Markdown from '../utils/markdown';
 import { listQuestions, gradeAnswer, getWeakQuestions, getAnswerHistory, getQuestionSets } from '../api/chat';
-import { listExamSets } from '../api/assessment';
-import type { ExamSet } from '../types/assessment';
+import { listExamSets, getExamSetResults, startExamSetAttempt, submitExamSet, listExamSetAttempts, updateAttempt } from '../api/assessment';
+import type { ExamSet, Attempt, QuizResult } from '../types/assessment';
 import { getPushedQuestions } from '../api/classSubjects';
 import type { PushedQuestionGroup } from '../types/classSubject';
 import { getCurrentLearner } from '../store/authStore';
@@ -37,7 +37,7 @@ export default function PracticePage() {
     );
   }
   const sessionId = useChatStore((s) => s.currentSessionId);
-  const [view, setView] = useState<'home' | 'quiz' | 'weak' | 'history'>('home');
+  const [view, setView] = useState<'home' | 'quiz' | 'weak' | 'history' | 'examSet'>('home');
   const [sets, setSets] = useState<QuestionSet[]>([]);
   const [examSets, setExamSets] = useState<ExamSet[]>([]);
   const [activeSetId, setActiveSetId] = useState<string>('');
@@ -90,6 +90,100 @@ export default function PracticePage() {
       }
     }).catch(() => {});
     setView('quiz');
+  };
+
+  // ── Exam set state ──
+  const [activeExamSet, setActiveExamSet] = useState<ExamSet | null>(null);
+  const [examSetAttempts, setExamSetAttempts] = useState<Attempt[]>([]);
+  const [examSetQuestions, setExamSetQuestions] = useState<any[]>([]);
+  const [examSetResults, setExamSetResults] = useState<QuizResult[]>([]);
+  const [examSetAttemptId, setExamSetAttemptId] = useState('');
+  const [examSetSubmitted, setExamSetSubmitted] = useState(false);
+  const [examSetTotalScore, setExamSetTotalScore] = useState<number | null>(null);
+  const [examSetWeakPoints, setExamSetWeakPoints] = useState<any[]>([]);
+
+  // ── URL param: examSetId ──
+  useEffect(() => {
+    const eid = searchParams.get('examSetId');
+    if (eid && examSets.length > 0) {
+      const es = examSets.find(e => e.id === eid);
+      if (es) openExamSet(es);
+    }
+  }, [searchParams, examSets]);
+
+  // ── Exam set helpers ──
+  const openExamSet = async (es: ExamSet) => {
+    setActiveExamSet(es);
+    setView('examSet');
+    setExamSetSubmitted(false);
+    setExamSetResults([]);
+    setExamSetTotalScore(null);
+    try {
+      const res: any = await listExamSetAttempts(es.id);
+      setExamSetAttempts(res?.data?.attempts || res?.attempts || []);
+    } catch { setExamSetAttempts([]); }
+  };
+
+  const startExamSet = async () => {
+    if (!activeExamSet) return;
+    try {
+      const res: any = await startExamSetAttempt(activeExamSet.id, { sessionId });
+      const data = res?.data || res;
+      setExamSetAttemptId(data?.attempt?.attemptId || '');
+      const qRes: any = await getExamSetResults(activeExamSet.id);
+      const qData = qRes?.data || qRes;
+      const linked = qData?.examSet?.linkedQuestions || [];
+      const mapped = linked.map((q: any) => ({
+        question_id: q.questionId, type: q.type, stem: q.stem,
+        options: q.options, difficulty: q.difficulty, knowledge_points: q.knowledgePoints || [],
+      }));
+      setExamSetQuestions(mapped); setQuestions(mapped); setAllQuestions(mapped);
+      setCurrentIdx(0); setAnswers({}); setGrades({});
+      setExamSetSubmitted(false); setView('quiz');
+    } catch (e: any) { alert('开始作答失败: ' + (e?.message || '请重试')); }
+  };
+
+  const continueExamSet = async () => {
+    if (!activeExamSet) return;
+    const inProgress = examSetAttempts.find(a => a.status === 'in_progress');
+    if (!inProgress) { startExamSet(); return; }
+    setExamSetAttemptId(inProgress.attemptId);
+    try {
+      const qRes: any = await getExamSetResults(activeExamSet.id);
+      const qData = qRes?.data || qRes;
+      const linked = qData?.examSet?.linkedQuestions || [];
+      const mapped = linked.map((q: any) => ({
+        question_id: q.questionId, type: q.type, stem: q.stem,
+        options: q.options, difficulty: q.difficulty, knowledge_points: q.knowledgePoints || [],
+      }));
+      setExamSetQuestions(mapped); setQuestions(mapped); setAllQuestions(mapped);
+      setCurrentIdx(0);
+      if (inProgress.answers) {
+        const saved: Record<string, string> = {};
+        (inProgress.answers as any[]).forEach((a: any) => { saved[a.questionId] = a.answer || a.studentAnswer || ''; });
+        setAnswers(saved);
+      } else { setAnswers({}); }
+      setGrades({}); setExamSetSubmitted(false); setView('quiz');
+    } catch (e: any) { alert('继续作答失败: ' + (e?.message || '请重试')); }
+  };
+
+  const submitExamSetAnswers = async () => {
+    if (!activeExamSet || !examSetAttemptId) return;
+    setGrading(true);
+    try {
+      const answerList = examSetQuestions.map(q => ({ questionId: q.question_id, answer: answers[q.question_id] || '' }));
+      const res: any = await submitExamSet(activeExamSet.id, { sessionId, answers: answerList });
+      const data = res?.data || res;
+      setExamSetResults(data?.results || []);
+      setExamSetTotalScore(data?.totalScore ?? null);
+      setExamSetWeakPoints(data?.weakPoints || []);
+      setExamSetSubmitted(true); setView('examSet');
+      const esRes: any = await getExamSetResults(activeExamSet.id);
+      if (esRes?.data?.examSet || esRes?.examSet) setActiveExamSet(esRes?.data?.examSet || esRes?.examSet);
+      const attRes: any = await listExamSetAttempts(activeExamSet.id);
+      setExamSetAttempts(attRes?.data?.attempts || attRes?.attempts || []);
+    } catch (e: any) { alert('提交失败: ' + (e?.message || '请重试')); }
+    setGrading(false);
   };
 
   const startDiagnostic = () => nav(`/chat?prompt=帮我诊断薄弱点`);
@@ -153,7 +247,7 @@ export default function PracticePage() {
                 </h3>
                 <div className="space-y-2">
                   {examSets.map(es => (
-                    <button key={es.id}
+                    <button key={es.id} onClick={() => openExamSet(es)}
                       className="w-full flex items-center gap-4 p-4 bg-white rounded-xl border border-accent-200 hover:border-accent-400 hover:shadow-soft transition-all text-left border-l-4 border-l-accent-400">
                       <ClipboardList className="w-5 h-5 text-accent-500 flex-shrink-0" />
                       <div className="flex-1 min-w-0">
@@ -228,6 +322,87 @@ export default function PracticePage() {
     );
   }
 
+  // ── Exam Set Detail ──
+  if (view === 'examSet' && activeExamSet) {
+    const es = activeExamSet;
+    const lastAttempt = examSetAttempts[0];
+    return (
+      <div className="p-6 animate-fade-in h-full flex flex-col">
+        <button onClick={() => setView('home')} className="text-sm text-surface-500 hover:text-surface-700 mb-4 flex-shrink-0"><ChevronLeft className="w-4 h-4 inline" />返回练习中心</button>
+        <div className="flex-1 overflow-y-auto">
+          <div className="bg-white rounded-2xl shadow-soft p-6 mb-4">
+            <div className="flex items-center gap-3 mb-4">
+              <ClipboardList className="w-8 h-8 text-accent-500" />
+              <div>
+                <h2 className="font-display text-xl font-bold text-surface-800">{es.title}</h2>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-accent-50 text-accent-600">
+                    {es.scopeType === 'chapter' ? '章节题集' : es.scopeType === 'stage' ? '阶段题集' : '综合题集'}
+                  </span>
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${es.status === 'completed' ? 'bg-success-50 text-success-600' : es.status === 'in_progress' ? 'bg-primary-50 text-primary-600' : 'bg-surface-100 text-surface-500'}`}>
+                    {es.status === 'completed' ? '已完成' : es.status === 'in_progress' ? '进行中' : '未开始'}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div className="grid grid-cols-4 gap-3 mb-4">
+              <div className="bg-surface-50 rounded-xl p-3 text-center"><p className="text-sm font-semibold text-surface-700">{es.questionCount} 题</p><p className="text-[10px] text-surface-400 mt-0.5">题目数量</p></div>
+              <div className="bg-surface-50 rounded-xl p-3 text-center"><p className="text-sm font-semibold text-surface-700">{es.estimatedMinutes} 分钟</p><p className="text-[10px] text-surface-400 mt-0.5">预计时间</p></div>
+              <div className="bg-surface-50 rounded-xl p-3 text-center"><p className="text-sm font-semibold text-surface-700">{es.totalScore} 分</p><p className="text-[10px] text-surface-400 mt-0.5">总分</p></div>
+              <div className="bg-surface-50 rounded-xl p-3 text-center"><p className="text-sm font-semibold text-surface-700">{es.difficulty === 'easy' ? '简单' : es.difficulty === 'hard' ? '困难' : '中等'}</p><p className="text-[10px] text-surface-400 mt-0.5">难度</p></div>
+            </div>
+            {lastAttempt && lastAttempt.status === 'graded' && (
+              <div className="p-3 bg-surface-50 rounded-xl flex items-center gap-3">
+                <span className="text-xs text-surface-500">最近成绩</span>
+                <span className={`text-lg font-bold ${(lastAttempt.totalScore ?? 0) >= 80 ? 'text-success-600' : (lastAttempt.totalScore ?? 0) >= 50 ? 'text-warning-600' : 'text-error-600'}`}>{lastAttempt.totalScore ?? '-'}分</span>
+                <span className="text-xs text-surface-400">{lastAttempt.submittedAt ? new Date(lastAttempt.submittedAt).toLocaleString() : ''}</span>
+              </div>
+            )}
+          </div>
+          <div className="flex items-center gap-3 mb-4">
+            {es.status !== 'completed' && <button onClick={es.status === 'in_progress' ? continueExamSet : startExamSet} className="flex items-center gap-2 px-5 py-2.5 bg-accent-500 text-white rounded-xl text-sm font-medium hover:bg-accent-600 transition-colors" style={{ backgroundColor: '#14b8a6' }}><Play size={16} />{es.status === 'in_progress' ? '继续作答' : '开始作答'}</button>}
+            <button onClick={startExamSet} className="flex items-center gap-2 px-5 py-2.5 bg-white border border-surface-200 text-surface-600 rounded-xl text-sm font-medium hover:bg-surface-50 transition-colors"><RefreshCw size={16} />再次作答</button>
+          </div>
+          {examSetSubmitted && examSetResults.length > 0 && (
+            <div className="bg-white rounded-2xl shadow-soft p-6 mb-4">
+              <div className="flex items-center gap-3 mb-4">
+                <div className={`w-12 h-12 rounded-full flex items-center justify-center text-xl font-bold ${(examSetTotalScore ?? 0) >= 80 ? 'bg-success-100 text-success-600' : (examSetTotalScore ?? 0) >= 50 ? 'bg-warning-100 text-warning-600' : 'bg-error-100 text-error-600'}`}>{examSetTotalScore ?? '-'}</div>
+                <div><p className="font-semibold text-surface-800">本次成绩</p><p className="text-xs text-surface-500">满分 {examSetResults.length * 10} 分</p></div>
+              </div>
+              {examSetWeakPoints.length > 0 && (
+                <div className="p-3 bg-error-50/50 rounded-xl border border-error-200 mb-3">
+                  <p className="text-xs font-semibold text-error-700 mb-2">薄弱知识点</p>
+                  {examSetWeakPoints.map((wp: any, i: number) => (
+                    <div key={i} className="flex items-center justify-between py-1"><span className="text-xs text-surface-600">{wp.name}</span><span className="text-[10px] px-1.5 py-0.5 rounded-full bg-error-100 text-error-600">错{wp.errorCount || wp.error_count}次</span></div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {examSetAttempts.length > 0 && (
+            <div className="bg-white rounded-2xl shadow-soft p-6">
+              <h3 className="font-display text-sm font-semibold text-surface-700 mb-3">作答历史</h3>
+              <div className="space-y-1.5">
+                {examSetAttempts.map((att, i) => (
+                  <div key={att.attemptId} className="flex items-center justify-between p-2.5 rounded-lg hover:bg-surface-50">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-surface-400">#{examSetAttempts.length - i}</span>
+                      <span className="text-xs text-surface-600">{att.submittedAt ? new Date(att.submittedAt).toLocaleString() : '进行中'}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${att.status === 'graded' ? 'bg-success-50 text-success-600' : att.status === 'submitted' ? 'bg-primary-50 text-primary-600' : 'bg-surface-100 text-surface-500'}`}>{att.status === 'graded' ? '已评分' : att.status === 'submitted' ? '已提交' : '进行中'}</span>
+                      {att.totalScore != null && <span className={`text-xs font-bold ${att.totalScore >= 80 ? 'text-success-600' : att.totalScore >= 50 ? 'text-warning-600' : 'text-error-600'}`}>{att.totalScore}分</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   // ── Quiz ──
   const currentQ = questions[currentIdx];
   const answer = answers[currentQ?.question_id || ''] || '';
@@ -253,7 +428,7 @@ export default function PracticePage() {
   if (view === 'quiz') {
     return (
       <div className="p-6 h-full flex flex-col animate-fade-in max-h-screen">
-        <button onClick={() => setView('home')} className="text-sm text-surface-500 hover:text-surface-700 mb-4 flex-shrink-0"><ChevronLeft className="w-4 h-4 inline" /> 返回</button>
+        <button onClick={() => activeExamSet ? setView('examSet') : setView('home')} className="text-sm text-surface-500 hover:text-surface-700 mb-4 flex-shrink-0"><ChevronLeft className="w-4 h-4 inline" /> {activeExamSet ? '返回题集' : '返回'}</button>
         <div className="flex gap-4 flex-1 min-h-0 overflow-hidden">
           {/* 左侧题号列表 */}
           <div className="w-52 flex-shrink-0 bg-white rounded-2xl shadow-soft p-3 overflow-y-auto">
@@ -342,9 +517,16 @@ export default function PracticePage() {
 
             <div className="sticky bottom-0 flex items-center justify-between flex-shrink-0 pt-3 pb-1 px-1 border-t border-surface-200 bg-white/95 backdrop-blur-sm rounded-b-2xl z-10">
               <button onClick={() => currentIdx > 0 && setCurrentIdx(i => i - 1)} disabled={currentIdx === 0} className="flex items-center gap-1 px-4 py-2.5 text-sm text-surface-500 disabled:opacity-30 hover:bg-surface-50 rounded-xl transition-colors"><ChevronLeft className="w-4 h-4" />上一题</button>
-              {!grade && answer && <button onClick={handleSubmit} disabled={grading} className="px-8 py-2.5 bg-primary-500 text-white rounded-xl text-sm font-medium hover:bg-primary-600 transition-colors shadow-sm">{grading ? '批改中…' : '提交批改'}</button>}
-              {!grade && !answer && <span className="px-8 py-2.5 text-xs text-surface-400">输入答案后提交</span>}
-              {grade && <button onClick={() => { setGrades(g => { const n = { ...g }; delete n[currentQ.question_id]; return n; }); setAnswers(a => { const n = { ...a }; delete n[currentQ.question_id]; return n; }); }} className="px-4 py-2.5 text-sm bg-surface-100 rounded-xl text-surface-500 hover:bg-surface-200 transition-colors"><RefreshCw className="w-3 h-3 inline mr-1" />重做</button>}
+              {activeExamSet ? (
+                <div className="flex items-center gap-2">
+                  <button onClick={async () => { if (!examSetAttemptId) return; try { const answerList = examSetQuestions.map(q => ({ questionId: q.question_id, answer: answers[q.question_id] || '' })); await updateAttempt(examSetAttemptId, { answers: answerList, status: 'in_progress' }); } catch {} }} className="px-4 py-2.5 text-sm bg-surface-100 rounded-xl text-surface-500 hover:bg-surface-200 transition-colors">保存进度</button>
+                  <button onClick={submitExamSetAnswers} disabled={grading} className="px-6 py-2.5 bg-accent-500 text-white rounded-xl text-sm font-medium hover:bg-accent-600 transition-colors shadow-sm" style={{ backgroundColor: '#14b8a6' }}>{grading ? '批改中…' : '提交全部'}</button>
+                </div>
+              ) : (<>
+                {!grade && answer && <button onClick={handleSubmit} disabled={grading} className="px-8 py-2.5 bg-primary-500 text-white rounded-xl text-sm font-medium hover:bg-primary-600 transition-colors shadow-sm">{grading ? '批改中…' : '提交批改'}</button>}
+                {!grade && !answer && <span className="px-8 py-2.5 text-xs text-surface-400">输入答案后提交</span>}
+                {grade && <button onClick={() => { setGrades(g => { const n = { ...g }; delete n[currentQ.question_id]; return n; }); setAnswers(a => { const n = { ...a }; delete n[currentQ.question_id]; return n; }); }} className="px-4 py-2.5 text-sm bg-surface-100 rounded-xl text-surface-500 hover:bg-surface-200 transition-colors"><RefreshCw className="w-3 h-3 inline mr-1" />重做</button>}
+              </>)}
               <button onClick={() => currentIdx < questions.length - 1 && setCurrentIdx(i => i + 1)} disabled={currentIdx >= questions.length - 1} className="flex items-center gap-1 px-4 py-2.5 text-sm text-surface-500 disabled:opacity-30 hover:bg-surface-50 rounded-xl transition-colors">下一题<ChevronRight className="w-4 h-4" /></button>
             </div>
           </div>
