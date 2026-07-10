@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useChatStore } from '../store/chatStore';
-import { Target, BookOpen, AlertCircle, BarChart3, Play, Loader2, ChevronLeft, ChevronRight, Check, X, RefreshCw, Edit3, Users, GraduationCap } from 'lucide-react';
+import { Target, BookOpen, AlertCircle, BarChart3, Play, Loader2, ChevronLeft, ChevronRight, Check, X, RefreshCw, Edit3, Users, GraduationCap, ClipboardList } from 'lucide-react';
 import Markdown from '../utils/markdown';
 import { listQuestions, gradeAnswer, getWeakQuestions, getAnswerHistory, getQuestionSets } from '../api/chat';
+import { listExamSets } from '../api/assessment';
+import type { ExamSet } from '../types/assessment';
 import { getPushedQuestions } from '../api/classSubjects';
 import type { PushedQuestionGroup } from '../types/classSubject';
 import { getCurrentLearner } from '../store/authStore';
@@ -37,6 +39,7 @@ export default function PracticePage() {
   const sessionId = useChatStore((s) => s.currentSessionId);
   const [view, setView] = useState<'home' | 'quiz' | 'weak' | 'history'>('home');
   const [sets, setSets] = useState<QuestionSet[]>([]);
+  const [examSets, setExamSets] = useState<ExamSet[]>([]);
   const [activeSetId, setActiveSetId] = useState<string>('');
   const [questions, setQuestions] = useState<Question[]>([]);
   const [allQuestions, setAllQuestions] = useState<Question[]>([]);
@@ -61,6 +64,7 @@ export default function PracticePage() {
       getAnswerHistory(sessionId).then((d: any) => { setStats(d); setHistoryData(d); }).catch(() => {}),
       getWeakQuestions(sessionId).then(setWeakData).catch(() => {}),
       csid ? getPushedQuestions(csid).then(setPushedGroups).catch(() => {}) : Promise.resolve(),
+      listExamSets({ sessionId }).then((d: any) => setExamSets(d?.examSets || [])).catch(() => {}),
     ]).then(([s]) => setSets(s)).finally(() => setLoading(false));
   }, []);
 
@@ -135,6 +139,36 @@ export default function PracticePage() {
                           {pg.questions.filter(q => q.answered).length}/{pg.questions.length} 完成
                         </span>
                       </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 题集列表 */}
+            {examSets.length > 0 && (
+              <div>
+                <h3 className="text-sm font-semibold text-surface-600 mb-3 flex items-center gap-1.5">
+                  <ClipboardList size={14} className="text-accent-500" /> 题集
+                </h3>
+                <div className="space-y-2">
+                  {examSets.map(es => (
+                    <button key={es.id}
+                      className="w-full flex items-center gap-4 p-4 bg-white rounded-xl border border-accent-200 hover:border-accent-400 hover:shadow-soft transition-all text-left border-l-4 border-l-accent-400">
+                      <ClipboardList className="w-5 h-5 text-accent-500 flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-surface-700 truncate">{es.title}</p>
+                        <div className="flex items-center gap-2 mt-1">
+                          <span className="text-xs text-surface-400">{es.questionCount} 题 · {es.estimatedMinutes}分钟</span>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                            es.status === 'completed' ? 'bg-success-50 text-success-600' :
+                            es.status === 'in_progress' ? 'bg-primary-50 text-primary-600' : 'bg-surface-100 text-surface-500'
+                          }`}>
+                            {es.status === 'completed' ? '已完成' : es.status === 'in_progress' ? '进行中' : '未开始'}
+                          </span>
+                        </div>
+                      </div>
+                      <ChevronRight size={14} className="text-surface-300 flex-shrink-0" />
                     </button>
                   ))}
                 </div>

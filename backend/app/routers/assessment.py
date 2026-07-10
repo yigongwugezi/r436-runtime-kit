@@ -1039,3 +1039,352 @@ def start_exam_set_attempt(
         return {"status": "success", "data": {"attempt": _attempt_dict(attempt)}}
     finally:
         db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Exam Set generation
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class ExamSetGenerateRequest(BaseModel):
+    session_id: str = Field(default="", alias="sessionId")
+    title: str = ""
+    scope_type: str = Field(default="chapter", alias="scopeType")
+    scope_id: str | None = Field(default=None, alias="scopeId")
+    path_id: str | None = Field(default=None, alias="pathId")
+    stage_id: str | None = Field(default=None, alias="stageId")
+    chapter_id: str | None = Field(default=None, alias="chapterId")
+    knowledge_point_ids: list[str] = Field(default_factory=list, alias="knowledgePointIds")
+    knowledge_points: list[str] = Field(default_factory=list, alias="knowledgePoints")
+    difficulty: str = "medium"
+    question_count: int = Field(default=0, alias="questionCount")
+
+
+@router.post("/exam-sets/generate")
+def generate_exam_set(
+    body: ExamSetGenerateRequest,
+    auth: AuthContext = Depends(require_auth),
+) -> dict:
+    """Generate an archived exam set via LLM for a chapter/stage/path.
+
+    Question count is determined by scope_type if not specified:
+    - chapter → 10–12, stage → 15–18, path → 20–25
+    """
+    db = SessionLocal()
+    try:
+        # ── Determine question count ──────────────────────────
+        if body.question_count > 0:
+            count = min(body.question_count, 30)
+        elif body.scope_type == "path":
+            count = 22
+        elif body.scope_type == "stage":
+            count = 15
+        else:
+            count = 12
+
+        # ── Build LLM prompt ──────────────────────────────────
+        kp_list = body.knowledge_points or body.knowledge_point_ids
+        kp_text = "\n".join(f"- {kp}" for kp in kp_list[:15]) if kp_list else "根据标题推断"
+        difficulty_dist = {"easy": max(2, count // 4), "medium": count // 2, "hard": max(1, count // 4)}
+
+        prompt = f"""你是 EduAgent 的试题生成智能体。请生成 {count} 道练习题组成一套完整题集。
+
+## 题集标题
+{body.title}
+
+## 覆盖范围
+范围类型：{body.scope_type}
+知识点：{kp_text}
+
+## 要求
+- 难度：{body.difficulty}
+- 难度分布：简单 {difficulty_dist['easy']} 道、中等 {difficulty_dist['medium']} 道、困难 {difficulty_dist['hard']} 道
+- 题型混合：选择题（约50%）、判断题（约30%）、简答题（约20%）
+- 选择题的干扰项要有迷惑性但明确错误
+- 每道题的解析需写清楚正确答案和解题思路
+- 题目之间不要重复，尽量覆盖不同子知识点
+
+## 输出格式（只输出 JSON）
+{{"questions": [{{"question_id": "q1", "type": "choice", "stem": "...", "options": ["A. ...", "B. ..."], "correct": "A", "explanation": "...", "knowledge_point": "...", "difficulty": "easy"}}, ...]}}"""
+
+        # ── Call LLM ──────────────────────────────────────────
+        llm = get_llm_client()
+        raw = llm.chat(
+            messages=[
+                {"role": "system", "content": "你是专业的试题生成专家。只输出JSON，不要Markdown包裹。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,
+            max_tokens=8000,
+        )
+        parsed = parse_safe(raw)
+        questions = parsed.get("questions") if isinstance(parsed, dict) else None
+        if not isinstance(questions, list) or len(questions) == 0:
+            raise HTTPException(status_code=500, detail="题集生成失败，请重试")
+
+        # ── Compute metadata ──────────────────────────────────
+        questions = questions[:count]
+        actual_count = len(questions)
+
+        diff_counts = {"easy": 0, "medium": 0, "hard": 0}
+        for q in questions:
+            d = q.get("difficulty", "medium")
+            if d in diff_counts:
+                diff_counts[d] += 1
+
+        estimated_minutes = actual_count * 3
+        total_score = actual_count * 10
+
+        # ── Create ExamSetModel ───────────────────────────────
+        exam_id = f"exam_{uuid.uuid4().hex[:12]}"
+        exam = save_exam_set(db, {
+            "id": exam_id,
+            "title": body.title or "综合题集",
+            "session_id": body.session_id,
+            "scope_type": body.scope_type,
+            "scope_id": body.scope_id or body.chapter_id or body.stage_id or body.path_id,
+            "path_id": body.path_id,
+            "stage_id": body.stage_id,
+            "chapter_id": body.chapter_id,
+            "knowledge_point_ids": kp_list,
+            "difficulty": body.difficulty,
+            "difficulty_distribution": diff_counts,
+            "question_count": actual_count,
+            "questions": questions,
+            "estimated_minutes": estimated_minutes,
+            "total_score": total_score,
+            "source": "llm_generated",
+            "archive_policy": "archive",
+        })
+
+        # ── Persist questions ─────────────────────────────────
+        for q in questions:
+            pq = PracticeQuestionModel(
+                question_id=q.get("question_id", f"q_{uuid.uuid4().hex[:12]}"),
+                question_set_id=exam_id,
+                session_id=body.session_id,
+                type=q.get("type", "choice"),
+                stem=q.get("stem", ""),
+                options=q.get("options"),
+                correct=q.get("correct", ""),
+                explanation=q.get("explanation", ""),
+                difficulty=q.get("difficulty", body.difficulty),
+                knowledge_points=[q.get("knowledge_point", "")] if q.get("knowledge_point") else [],
+                reference_answer=q.get("reference_answer"),
+                source="llm_generated",
+                quality_status="passed",
+            )
+            db.add(pq)
+        db.commit()
+
+        # ── Return WITHOUT answers ────────────────────────────
+        safe_questions = []
+        for q in questions:
+            safe_questions.append({
+                "questionId": q.get("question_id", ""),
+                "type": q.get("type", "choice"),
+                "stem": q.get("stem", ""),
+                "options": q.get("options"),
+                "difficulty": q.get("difficulty", body.difficulty),
+                "knowledgePoints": [q.get("knowledge_point", "")] if q.get("knowledge_point") else [],
+            })
+
+        return {
+            "status": "success",
+            "data": {
+                "examSet": _exam_set_dict(exam),
+                "questions": safe_questions,
+            },
+        }
+    finally:
+        db.close()
+
+
+@router.post("/exam-sets/{exam_set_id}/submit")
+def submit_exam_set(
+    exam_set_id: str,
+    body: QuizSubmitRequest,
+    auth: AuthContext = Depends(require_auth),
+) -> dict:
+    """Submit all answers for an exam set — grade each and return results."""
+    db = SessionLocal()
+    try:
+        exam_set = get_exam_set(db, exam_set_id)
+        if exam_set is None:
+            raise HTTPException(status_code=404, detail="题集不存在")
+
+        linked = (
+            db.query(PracticeQuestionModel)
+            .filter(PracticeQuestionModel.question_set_id == exam_set_id)
+            .all()
+        )
+        if not linked:
+            raise HTTPException(status_code=400, detail="该题集没有题目")
+        questions_by_id = {pq.question_id: pq for pq in linked}
+
+        attempt = create_attempt(db, {
+            "attempt_id": f"att_{uuid.uuid4().hex[:12]}",
+            "session_id": body.session_id,
+            "exam_set_id": exam_set_id,
+            "max_score": 100 * len(linked),
+            "learner_id": auth.learner_id if auth else None,
+        })
+
+        results = []
+        total_score = 0
+
+        for ans in body.answers:
+            qid = ans.get("questionId", "")
+            student_answer = str(ans.get("answer", "")).strip()
+            pq = questions_by_id.get(qid)
+            if pq is None:
+                continue
+
+            if pq.type in ("choice", "truefalse"):
+                correct = str(pq.correct or "").strip().upper()
+                student = student_answer.strip().upper()
+                if pq.type == "choice":
+                    is_correct = student[:1] == correct[:1]
+                else:
+                    student_bool = student in ("TRUE", "对", "正确", "YES", "T", "1")
+                    correct_bool = correct in ("TRUE", "对", "正确", "YES", "T", "1")
+                    is_correct = student_bool == correct_bool
+                score = 100 if is_correct else 0
+                error_type = None if is_correct else ("concept" if pq.type == "choice" else "misreading")
+                feedback = "回答正确" if is_correct else "回答错误"
+            else:
+                score = 50
+                is_correct = True
+                error_type = None
+                feedback = "简答题已记录"
+
+            ar = AnswerRecordModel(
+                session_id=body.session_id,
+                question_id=qid,
+                attempt_id=attempt.attempt_id,
+                student_answer=student_answer,
+                total_score=score,
+                error_type=error_type,
+                suggestions=[] if (is_correct) else ["建议复习相关知识点"],
+                source="auto_graded",
+            )
+            db.add(ar)
+            total_score += score
+
+            results.append({
+                "questionId": qid,
+                "studentAnswer": student_answer,
+                "isCorrect": is_correct,
+                "score": score,
+                "maxScore": 100,
+                "correctAnswer": pq.correct,
+                "explanation": pq.explanation,
+                "feedback": feedback,
+                "errorType": error_type,
+                "knowledgePoint": (pq.knowledge_points or [""])[0] if pq.knowledge_points else "",
+            })
+
+        avg_score = round(total_score / max(1, len(results) * 100) * 100)
+        update_attempt(db, attempt.attempt_id, {
+            "answers": body.answers,
+            "total_score": avg_score,
+            "status": "graded",
+        })
+
+        update_exam_set(db, exam_set_id, {"status": "completed"})
+        db.commit()
+
+        weak_points = _record_quiz_weaknesses(
+            db, body.session_id, linked, results, quiz_title=exam_set.title,
+        )
+
+        suggestion = "mastered" if avg_score >= 80 else ("in_progress" if avg_score >= 50 else "needs_review")
+
+        return {
+            "status": "success",
+            "data": {
+                "attempt": _attempt_dict(get_attempt(db, attempt.attempt_id)),
+                "results": results,
+                "totalScore": avg_score,
+                "maxScore": 100,
+                "sectionStatusSuggestion": suggestion,
+                "weakPoints": weak_points,
+            },
+        }
+    finally:
+        db.close()
+
+
+@router.get("/exam-sets/{exam_set_id}/results")
+def get_exam_set_results(
+    exam_set_id: str,
+    auth: AuthContext = Depends(require_auth),
+    attempt_id: str = Query(default="", alias="attemptId"),
+) -> dict:
+    """Get exam set results with answers and grading after submission."""
+    db = SessionLocal()
+    try:
+        exam_set = get_exam_set(db, exam_set_id)
+        if exam_set is None:
+            raise HTTPException(status_code=404, detail="题集不存在")
+
+        linked_questions = (
+            db.query(PracticeQuestionModel)
+            .filter(PracticeQuestionModel.question_set_id == exam_set_id)
+            .all()
+        )
+        question_list = []
+        for pq in linked_questions:
+            question_list.append({
+                "questionId": pq.question_id,
+                "type": pq.type,
+                "stem": pq.stem,
+                "options": pq.options,
+                "difficulty": pq.difficulty,
+                "knowledgePoints": pq.knowledge_points or [],
+                "correctAnswer": pq.correct,
+                "explanation": pq.explanation,
+            })
+
+        result = _exam_set_dict(exam_set)
+        result["linkedQuestions"] = question_list
+
+        if attempt_id:
+            attempt = get_attempt(db, attempt_id)
+            if attempt:
+                result["attempt"] = _attempt_dict(attempt)
+                answer_records = get_attempt_answers(db, attempt_id)
+                kp_map = {pq.question_id: (pq.knowledge_points or [""])[0] for pq in linked_questions}
+                result["gradingResults"] = []
+                for ar in answer_records:
+                    result["gradingResults"].append({
+                        "questionId": ar.question_id,
+                        "studentAnswer": ar.student_answer,
+                        "score": ar.total_score,
+                        "errorType": ar.error_type,
+                        "errorLabel": ar.error_label,
+                        "errorExplanation": ar.error_explanation,
+                        "suggestions": ar.suggestions or [],
+                        "knowledgePoint": kp_map.get(ar.question_id, ""),
+                    })
+
+        return {"status": "success", "data": {"examSet": result}}
+    finally:
+        db.close()
+
+
+@router.get("/exam-sets/{exam_set_id}/attempts")
+def list_exam_set_attempts(
+    exam_set_id: str,
+    auth: AuthContext = Depends(require_auth),
+) -> dict:
+    """List all attempts for an exam set."""
+    db = SessionLocal()
+    try:
+        attempts = list_attempts(db, exam_set_id=exam_set_id)
+        return {
+            "status": "success",
+            "data": {"attempts": [_attempt_dict(a) for a in attempts]},
+        }
+    finally:
+        db.close()

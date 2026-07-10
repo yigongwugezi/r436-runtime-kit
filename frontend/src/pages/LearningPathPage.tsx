@@ -3,7 +3,10 @@ import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useChatPanel } from '../components/layout/AppLayout';
 import { useLearningPath } from '../hooks/useLearningPath';
-import { PlayCircle, BookOpen, Code2, FileCheck, Lock, CheckCircle2, Circle, Loader2, ChevronRight, Zap, Target, ArrowLeft, FileText, Brain, Calendar, ExternalLink, Clock } from 'lucide-react';
+import { PlayCircle, BookOpen, Code2, FileCheck, Lock, CheckCircle2, Circle, Loader2, ChevronRight, Zap, Target, ArrowLeft, FileText, Brain, Calendar, ExternalLink, Clock, ClipboardList, Plus } from 'lucide-react';
+import { listExamSets, generateExamSet } from '../api/assessment';
+import { useChatStore } from '../store/chatStore';
+import type { ExamSet } from '../types/assessment';
 import { PageLoading, PageEmpty, PageError } from '../components/common/PageState';
 import { getCurrentLearner } from '../store/authStore';
 
@@ -136,9 +139,12 @@ export default function LearningPathPage() {
     return m > 0 ? `${h}h${m}m` : `${h}h`;
   };
 
+  const sessionId = useChatStore((s) => s.currentSessionId);
   const inProgressStage = stages.find(s => s.nodes?.some(n => n.status === 'in_progress'));
   const [activeStageId, setActiveStageId] = useState<string | null>(null);
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
+  const [examSets, setExamSets] = useState<ExamSet[]>([]);
+  const [genExamSet, setGenExamSet] = useState(false);
 
   const activeStage = stages.find(s => s.id === activeStageId);
   const activeNode = activeStage?.nodes?.find(n => n.id === activeNodeId);
@@ -156,6 +162,44 @@ export default function LearningPathPage() {
   const handleNodeClick = useCallback((nodeId: string) => {
     nav(`/resources?taskId=${encodeURIComponent(nodeId)}`);
   }, [nav]);
+
+  // ── Exam sets ──
+  useEffect(() => {
+    if (sessionId && path?.id) {
+      listExamSets({ sessionId }).then((d: any) => {
+        setExamSets(d?.examSets || []);
+      }).catch(() => {});
+    }
+  }, [sessionId, path?.id]);
+
+  const handleGenerateExamSet = async (scopeType: 'chapter' | 'stage' | 'path') => {
+    setGenExamSet(true);
+    try {
+      const kps = stages.flatMap(s => (s.nodes || []).map(n => n.topic));
+      const scopeId = scopeType === 'path' ? path?.id :
+        scopeType === 'stage' ? inProgressStage?.id : '';
+      const chTitle = scopeType === 'path' ? path?.courseName || path?.title :
+        scopeType === 'stage' ? inProgressStage?.title : stages[0]?.title;
+      const res: any = await generateExamSet({
+        sessionId: sessionId || '',
+        title: `${chTitle || '综合'} · ${scopeType === 'chapter' ? '章节' : scopeType === 'stage' ? '阶段' : '综合'}题集`,
+        scopeType,
+        scopeId: scopeId || '',
+        pathId: path?.id || '',
+        stageId: scopeType === 'stage' ? inProgressStage?.id : '',
+        chapterId: scopeType === 'chapter' ? stages[0]?.id : '',
+        knowledgePoints: kps.slice(0, 15),
+        difficulty: 'medium',
+      });
+      const data = res?.data || res;
+      if (data?.examSet) {
+        setExamSets(prev => [data.examSet, ...prev]);
+      }
+    } catch (e: any) {
+      alert('题集生成失败: ' + (e?.message || '请重试'));
+    }
+    setGenExamSet(false);
+  };
 
   const ss = (k: string) => statusStyle[k] || _def;
   const nb = (k: string) => nodeBorder[k] || 'bg-surface-50 border-surface-200';
@@ -222,6 +266,68 @@ export default function LearningPathPage() {
           <span className="text-surface-500">共 {totalNodes} 个知识点 · {stages.length} 个阶段</span>
         </div>
       </div>
+
+      {/* ── Exam Sets section ── */}
+      {!isParent && (
+        <div className="bg-white rounded-2xl p-5 shadow-soft mb-4 flex-shrink-0">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-display text-sm font-semibold text-surface-700 flex items-center gap-2">
+              <ClipboardList size={16} className="text-accent-500" />题集
+            </h3>
+            <div className="flex items-center gap-1.5">
+              <button onClick={() => handleGenerateExamSet('chapter')} disabled={genExamSet}
+                className="flex items-center gap-1 px-2.5 py-1.5 bg-accent-500 text-white rounded-lg text-xs hover:bg-accent-600 disabled:opacity-50 transition-colors"
+                style={{ backgroundColor: '#14b8a6' }}>
+                <Plus size={12} />{genExamSet ? '...' : '章节题集'}
+              </button>
+              <button onClick={() => handleGenerateExamSet('stage')} disabled={genExamSet}
+                className="flex items-center gap-1 px-2.5 py-1.5 bg-accent-500 text-white rounded-lg text-xs hover:bg-accent-600 disabled:opacity-50 transition-colors"
+                style={{ backgroundColor: '#14b8a6' }}>
+                <Plus size={12} />{genExamSet ? '...' : '阶段题集'}
+              </button>
+              <button onClick={() => handleGenerateExamSet('path')} disabled={genExamSet}
+                className="flex items-center gap-1 px-2.5 py-1.5 bg-primary-500 text-white rounded-lg text-xs hover:bg-primary-600 disabled:opacity-50 transition-colors">
+                <Plus size={12} />{genExamSet ? '...' : '综合题集'}
+              </button>
+            </div>
+          </div>
+
+          {examSets.length === 0 ? (
+            <p className="text-xs text-surface-400">暂无题集，点击上方按钮生成</p>
+          ) : (
+            <div className="space-y-2 max-h-48 overflow-y-auto">
+              {examSets.map(es => (
+                <div key={es.id}
+                  className="flex items-center gap-3 p-3 rounded-xl border border-surface-200 hover:border-accent-300 hover:shadow-soft transition-all cursor-pointer"
+                  onClick={() => nav(`/practice?examSetId=${es.id}`)}>
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${es.status === 'completed' ? 'bg-success-100 text-success-600' : es.status === 'in_progress' ? 'bg-primary-100 text-primary-600' : 'bg-surface-100 text-surface-400'}`}>
+                    <ClipboardList size={14} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium text-surface-700 truncate">{es.title}</p>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <span className="text-[10px] text-surface-400">{es.questionCount} 题 · {es.estimatedMinutes}分钟</span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                        es.scopeType === 'path' ? 'bg-primary-50 text-primary-600' :
+                        es.scopeType === 'stage' ? 'bg-accent-50 text-accent-600' : 'bg-surface-100 text-surface-500'
+                      }`}>
+                        {es.scopeType === 'chapter' ? '章节' : es.scopeType === 'stage' ? '阶段' : '综合'}
+                      </span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                        es.status === 'completed' ? 'bg-success-50 text-success-600' :
+                        es.status === 'in_progress' ? 'bg-primary-50 text-primary-600' : 'bg-surface-100 text-surface-500'
+                      }`}>
+                        {es.status === 'completed' ? '已完成' : es.status === 'in_progress' ? '进行中' : '未开始'}
+                      </span>
+                    </div>
+                  </div>
+                  <ChevronRight size={14} className="text-surface-300 flex-shrink-0" />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Main content - 两栏，撑满剩余高度 */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 flex-1 min-h-0">

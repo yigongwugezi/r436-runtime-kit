@@ -215,3 +215,55 @@ export async function getQuizResults(
   const { data } = await client.get(`/api/quizzes/${quizId}/results`, { params });
   return data as { status: string; data: { quiz: Quiz & { attempt?: Attempt; gradingResults?: QuizResult[] } } };
 }
+
+// ═════════════════════════════════════════════════════════════════════
+// Exam Set Generation & Submission (Part 4)
+// ═════════════════════════════════════════════════════════════════════
+
+import type { ExamSetGenerateRequest } from '../types/assessment';
+
+/** Generate an archived exam set via LLM. */
+export async function generateExamSet(body: ExamSetGenerateRequest) {
+  const { data } = await client.post('/api/exam-sets/generate', body);
+  return data as {
+    status: string;
+    data: { examSet: ExamSet; questions: LinkedQuestion[] };
+  };
+}
+
+/** Submit all answers for an exam set — grade and return results. */
+export async function submitExamSet(
+  examSetId: string,
+  body: QuizSubmitRequest
+) {
+  const { data } = await client.post(
+    `/api/exam-sets/${examSetId}/submit`,
+    body
+  );
+  return data as { status: string; data: QuizSubmitResponse };
+}
+
+/** Get exam set results with answers and grading. */
+export async function getExamSetResults(
+  examSetId: string,
+  attemptId?: string
+) {
+  const params: Record<string, string> = {};
+  if (attemptId) params.attemptId = attemptId;
+  const { data } = await client.get(
+    `/api/exam-sets/${examSetId}/results`,
+    { params }
+  );
+  return data as {
+    status: string;
+    data: { examSet: ExamSet & { attempt?: Attempt; gradingResults?: QuizResult[] } };
+  };
+}
+
+/** List all attempts for an exam set. */
+export async function listExamSetAttempts(examSetId: string) {
+  const { data } = await client.get(
+    `/api/exam-sets/${examSetId}/attempts`
+  );
+  return data as { status: string; data: { attempts: Attempt[] } };
+}

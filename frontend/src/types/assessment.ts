@@ -158,6 +158,21 @@ export interface WeakPoint {
   source?: string;
 }
 
+/** Request body for exam set generation. */
+export interface ExamSetGenerateRequest {
+  sessionId: string;
+  title: string;
+  scopeType: 'chapter' | 'stage' | 'path';
+  scopeId?: string;
+  pathId?: string;
+  stageId?: string;
+  chapterId?: string;
+  knowledgePointIds?: string[];
+  knowledgePoints?: string[];
+  difficulty?: string;
+  questionCount?: number;
+}
+
 /** Aggregated weakness summary response. */
 export interface WeaknessSummary {
   weakPoints: WeakPoint[];
