@@ -4313,28 +4313,69 @@ def _clean_markdown(md: str) -> str:
     return "\n".join(cleaned)
 
 
+_PROFILE_KEYS = {
+    "major_background", "knowledge_base", "learning_goal", "cognitive_style",
+    "error_patterns", "coding_ability", "learning_progress", "interest_direction",
+    "learning_rhythm",
+}
+_LECTURE_HEADINGS = ("学习目标", "核心概念", "示例", "易错点", "小结")
+
+
+def _is_profile_json(content: str) -> bool:
+    try:
+        value = json.loads(content)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return isinstance(value, dict) and len(_PROFILE_KEYS.intersection(value)) >= 3
+
+
+def _is_valid_section_lecture(content: str, section_title: str, knowledge_points: list[Any]) -> bool:
+    text = str(content or "").strip()
+    if len(text) < 120 or _is_profile_json(text):
+        return False
+    point_names = [str(item.get("name", "")) if isinstance(item, dict) else str(item) for item in knowledge_points]
+    has_subject = section_title in text or any(name and name in text for name in point_names)
+    return has_subject and sum(heading in text for heading in _LECTURE_HEADINGS) >= 2
+
+
+def _fallback_section_lecture(section_title: str, section_goal: str, knowledge_points: list[Any]) -> str:
+    points = [str(item.get("name", "")) if isinstance(item, dict) else str(item) for item in knowledge_points]
+    topic = "、".join(point for point in points if point) or section_title
+    goal = section_goal or f"理解{topic}的核心概念和基本应用。"
+    return f"""# {section_title}
+
+## 学习目标
+- {goal}
+- 能说明{topic}在数据结构学习中的作用。
+
+## 核心概念
+{topic}需要结合定义、操作成本和适用场景理解。学习时先区分概念之间的联系，再用具体操作验证结论。
+
+## 示例
+以顺序访问和插入操作为例，比较不同数据结构在时间复杂度和存储方式上的差异，并说明选择依据。
+
+## 易错点
+- 不要只记结论，要说明操作发生在什么位置。
+- 不要混淆访问、查找、插入和删除的成本。
+
+## 小结
+本节围绕{topic}建立基础认识。完成阅读后，建议结合一道练习题验证对操作复杂度和结构特点的理解。"""
+
+
 @router.get("/sections/{section_id}/lecture")
 def get_section_lecture(section_id: str, sessionId: str = "") -> dict[str, Any]:
     """Read existing lecture for a section. Returns None if not generated yet."""
     try:
         db = SessionLocal()
-        lecture = None
-        # 多种方式查找：resource_id > session+section > section only
-        resource_id = f"lecture_{section_id}"
-        lecture = db.get(ResourceModel, resource_id)
-        if not lecture and sessionId:
-            lecture = db.query(ResourceModel).filter(
-                ResourceModel.session_id == sessionId,
-                ResourceModel.related_section_id == section_id,
-                ResourceModel.type == "lecture",
-            ).order_by(ResourceModel.created_at.desc()).first()
-        if not lecture:
-            lecture = db.query(ResourceModel).filter(
-                ResourceModel.related_section_id == section_id,
-                ResourceModel.type == "lecture",
-            ).order_by(ResourceModel.created_at.desc()).first()
+        query = db.query(ResourceModel).filter(
+            ResourceModel.related_section_id == section_id,
+            ResourceModel.type == "lecture",
+        )
+        if sessionId:
+            query = query.filter(ResourceModel.session_id == sessionId)
+        lecture = query.order_by(ResourceModel.created_at.desc()).first()
 
-        if lecture:
+        if lecture and not _is_profile_json(lecture.content or ""):
             data = {
                 "id": lecture.id,
                 "title": lecture.title or "",
@@ -4488,6 +4529,13 @@ mindmap
 
     # 后处理：清洗空表头等常见格式问题
     raw = _clean_markdown(raw)
+    if not _is_valid_section_lecture(raw, section_title, knowledge_points if isinstance(knowledge_points, list) else []):
+        logger.warning("Rejected invalid lecture output for section %s; using deterministic fallback", section_id)
+        raw = _fallback_section_lecture(
+            section_title,
+            section_goal,
+            knowledge_points if isinstance(knowledge_points, list) else [],
+        )
 
     # 图文并茂：为每个 ## 主章节生成星火配图
     raw = _inject_spark_images(raw, section_title)
