@@ -31,8 +31,14 @@ from app.db.repository import (
 )
 from app.db.repository import save_profile_snapshot
 from app.middleware.auth import AuthContext, require_auth
+from app.agents.grading_agent import GradingAgent
+from app.services.agent_factory import AgentFactory
 from app.services.llm_client import get_llm_client
 from app.utils.llm_json import parse_safe
+
+# Module-level shared instances — one LLM client + one GradingAgent per process
+_assessment_llm = get_llm_client()
+_assessment_factory = AgentFactory(llm_client=_assessment_llm)
 
 logger = logging.getLogger(__name__)
 
@@ -512,8 +518,7 @@ def generate_section_quiz(
 ]}}"""
 
         # ── Call LLM ───────────────────────────────────────────
-        llm = get_llm_client()
-        raw = llm.chat(
+        raw = _assessment_llm.chat(
             messages=[
                 {"role": "system", "content": "你是专业的试题生成专家。只输出JSON，不要Markdown包裹。"},
                 {"role": "user", "content": prompt},
@@ -687,13 +692,13 @@ def submit_quiz(
             else:
                 # Shortanswer/fill — try GradingAgent LLM
                 try:
-                    from app.agents.grading_agent import GradingAgent
-                    ga = GradingAgent()
-                    ga.llm_client = get_llm_client()
-                    grade_result = ga._grade_with_llm(q_dict, student_answer)
-                    if grade_result is None:
-                        # LLM failed, use rule fallback
-                        grade_result = ga._rule_based_grading(q_dict, student_answer)
+                    ga = _assessment_factory.get("grading_agent")
+                    if ga is not None:
+                        grade_result = ga._grade_with_llm(q_dict, student_answer)
+                        if grade_result is None:
+                            grade_result = ga._rule_based_grading(q_dict, student_answer)
+                    else:
+                        grade_result = None
                 except Exception:
                     # If GradingAgent unavailable, use simple fallback
                     grade_result = {
@@ -1253,10 +1258,37 @@ def submit_exam_set(
                 error_type = None if is_correct else ("concept" if pq.type == "choice" else "misreading")
                 feedback = "回答正确" if is_correct else "回答错误"
             else:
-                score = 50
-                is_correct = True
-                error_type = None
-                feedback = "简答题已记录"
+                # Shortanswer/fill — try GradingAgent LLM
+                grade_result = None
+                try:
+                    ga = _assessment_factory.get("grading_agent")
+                    if ga is not None:
+                        grade_result = ga._grade_with_llm(q_dict, student_answer)
+                        if grade_result is None:
+                            grade_result = ga._rule_based_grading(q_dict, student_answer)
+                except Exception:
+                    grade_result = None
+
+                if grade_result and grade_result.get("total_score") is not None:
+                    score = grade_result.get("total_score", 50)
+                    is_correct = score >= 60
+                    error_type = grade_result.get("error_type")
+                    if error_type == "null":
+                        error_type = None
+                    feedback = grade_result.get("dimension_feedback", {}).get("reasoning", "")
+                    error_label = grade_result.get("error_label")
+                    error_expl = grade_result.get("error_explanation", "")
+                    suggestions = grade_result.get("suggestions", [])
+                    strengths = grade_result.get("strengths", [])
+                else:
+                    score = 50
+                    is_correct = True
+                    error_type = None
+                    feedback = "简答题已记录"
+                    error_label = "需人工评阅"
+                    error_expl = "简答题需LLM评阅，当前不可用"
+                    suggestions = []
+                    strengths = []
 
             ar = AnswerRecordModel(
                 session_id=body.session_id,
@@ -1264,8 +1296,13 @@ def submit_exam_set(
                 attempt_id=attempt.attempt_id,
                 student_answer=student_answer,
                 total_score=score,
+                dimension_scores=grade_result.get("dimension_scores") if grade_result else None,
+                dimension_feedback=grade_result.get("dimension_feedback") if grade_result else None,
                 error_type=error_type,
-                suggestions=[] if (is_correct) else ["建议复习相关知识点"],
+                error_label=error_label,
+                error_explanation=error_expl,
+                suggestions=suggestions,
+                strengths=strengths,
                 source="auto_graded",
             )
             db.add(ar)

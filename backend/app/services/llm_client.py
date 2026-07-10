@@ -274,30 +274,48 @@ class DeepSeekLLMClient(BaseLLMClient):
 
 # ── Factory ────────────────────────────────────────────────────────────────
 
+# Module-level cache: one LLM client per provider, reused across all callers.
+# AgentFactory uses this same factory so the whole process shares a single
+# HTTP connection pool / mock instance.
+_llm_client_cache: dict[str, BaseLLMClient] = {}
 
-def get_llm_client(provider: str = "mock") -> BaseLLMClient:
-    """Return an LLM client instance for the given provider.
+
+def get_llm_client(provider: str | None = None) -> BaseLLMClient:
+    """Return a cached LLM client instance for the given provider.
+
+    When *provider* is ``None`` (default), reads ``settings.llm_provider``
+    so callers that omit the argument automatically get the configured
+    provider instead of silently falling back to mock.
 
     Env vars LLM_API_KEY / LLM_BASE_URL / LLM_MODEL override settings,
     so you can switch between Spark / Qwen / DeepSeek without code changes.
 
     Args:
-        provider: ``"mock"`` or ``"deepseek"``.
+        provider: ``"mock"``, ``"deepseek"``, or ``None`` (auto-detect).
 
     Returns:
-        A BaseLLMClient subclass instance.
+        A cached BaseLLMClient subclass instance.
     """
+    if provider is None:
+        provider = settings.llm_provider
+
+    if provider in _llm_client_cache:
+        return _llm_client_cache[provider]
+
     if provider == "mock":
-        return MockLLMClient()
+        client: BaseLLMClient = MockLLMClient()
+    else:
+        api_key = os.environ.get("LLM_API_KEY") or settings.deepseek_api_key
+        base_url = os.environ.get("LLM_BASE_URL") or settings.deepseek_base_url
+        model = os.environ.get("LLM_MODEL") or settings.llm_model
 
-    api_key = os.environ.get("LLM_API_KEY") or settings.deepseek_api_key
-    base_url = os.environ.get("LLM_BASE_URL") or settings.deepseek_base_url
-    model = os.environ.get("LLM_MODEL") or settings.llm_model
+        if not api_key:
+            client = MockLLMClient()
+        else:
+            client = DeepSeekLLMClient(
+                api_key=api_key, base_url=base_url, model=model,
+                temperature=settings.llm_temperature,
+            )
 
-    if not api_key:
-        return MockLLMClient()
-
-    return DeepSeekLLMClient(
-        api_key=api_key, base_url=base_url, model=model,
-        temperature=settings.llm_temperature,
-    )
+    _llm_client_cache[provider] = client
+    return client

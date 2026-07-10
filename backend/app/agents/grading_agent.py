@@ -5,6 +5,7 @@
 
 import json
 import logging
+import time
 from typing import Any
 
 from app.agents.base import BaseAgent, register_agent
@@ -178,7 +179,7 @@ class GradingAgent(BaseAgent):
             "strengths": raw.get("strengths", []) or [],
             "source": "llm_generated",
             "quality_status": "passed",
-            "timestamp": int(__import__("time").time()),
+            "timestamp": int(time.time()),
             "auto_actions": ERROR_AUTO_ACTIONS.get(error_type) if error_type != "null" else None,
         }
 
@@ -206,7 +207,7 @@ class GradingAgent(BaseAgent):
                 "strengths": [],
                 "source": "rule_based_fallback",
                 "quality_status": "fallback",
-                "timestamp": int(__import__("time").time()),
+                "timestamp": int(time.time()),
             }
 
         if q_type == "truefalse":
@@ -230,7 +231,7 @@ class GradingAgent(BaseAgent):
                 "strengths": [],
                 "source": "rule_based_fallback",
                 "quality_status": "fallback",
-                "timestamp": int(__import__("time").time()),
+                "timestamp": int(time.time()),
             }
 
         # 填空、解答：规则无力，返回参考性评价
@@ -248,5 +249,5 @@ class GradingAgent(BaseAgent):
             "strengths": [],
             "source": "rule_based_fallback",
             "quality_status": "fallback",
-            "timestamp": int(__import__("time").time()),
+            "timestamp": int(time.time()),
         }
