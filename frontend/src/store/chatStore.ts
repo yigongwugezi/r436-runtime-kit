@@ -86,8 +86,6 @@ interface ChatStore {
   lastDebugInfo: Record<string, any> | null;
   /** 动态进度条步骤（根据实际运行的 Agent 构建，替代硬编码 GEN_PIPELINE） */
   progressPipelineSteps: import('../types/chat').ProgressStep[];
-  /** §3.2 Agent 执行步骤追踪 — 每个 SSE agent_progress 事件追加一条 */
-  agentSteps: import('../types/chat').AgentStep[];
   dataVersion: number;
 
   setCurrentSession: (id: string) => void;
@@ -102,9 +100,6 @@ interface ChatStore {
   setLastDebugInfo: (info: Record<string, any> | null) => void;
   setProgressPipelineSteps: (steps: import('../types/chat').ProgressStep[]) => void;
   addProgressPipelineStep: (step: import('../types/chat').ProgressStep) => void;
-  /** §3.2 Agent step tracking */
-  upsertAgentStep: (step: import('../types/chat').AgentStep) => void;
-  clearAgentSteps: () => void;
   setSessions: (sessions: ChatSession[]) => void;
   setQuickCommands: (cmds: QuickCommand[]) => void;
   setLoading: (v: boolean) => void;
@@ -137,7 +132,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   selectedImageAttachmentId: null,
   lastDebugInfo: null,
   progressPipelineSteps: [],
-  agentSteps: [],
   dataVersion: 0,
   dataSessionId: loadSessionId(),
 
@@ -240,17 +234,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       if (s.progressPipelineSteps.some((x) => x.key === step.key)) return s;
       return { progressPipelineSteps: [...s.progressPipelineSteps, step] };
     }),
-  upsertAgentStep: (step) =>
-    set((s) => {
-      const idx = s.agentSteps.findIndex((x) => x.node === step.node && x.status !== 'retrying');
-      if (idx >= 0) {
-        const updated = [...s.agentSteps];
-        updated[idx] = { ...updated[idx], ...step };
-        return { agentSteps: updated };
-      }
-      return { agentSteps: [...s.agentSteps, step] };
-    }),
-  clearAgentSteps: () => set({ agentSteps: [] }),
   setSessions: (sessions) => set({ sessions }),
   setQuickCommands: (cmds) => set({ quickCommands: cmds }),
   setLoading: (v) => set({ loading: v }),

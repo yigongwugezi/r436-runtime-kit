@@ -179,16 +179,22 @@ class ConversationAgent(BaseAgent):
         facts = {}
         llm_retry_count = 0
 
-        # Check for FeedbackSignal from previous grading run
-        from app.schemas.feedback import FeedbackSignal
-        raw_signal = context.get("feedback_signal")
-        if raw_signal and action == "none":
-            signal = raw_signal if isinstance(raw_signal, FeedbackSignal) else FeedbackSignal.from_dict(raw_signal) if isinstance(raw_signal, dict) else None
+        # Check for explicit FeedbackSignal from previous grading run
+        feedback_signal = context.get("feedback_signal")
+        if feedback_signal is None:
+            from app.schemas.feedback import FeedbackSignal
+            raw = context.get("profile_facts", {}).get("_pending_adjustment", "")
+            if raw:
+                feedback_signal = FeedbackSignal(error_type=raw)
+        if feedback_signal and action == "none":
+            signal = feedback_signal if isinstance(feedback_signal, FeedbackSignal) else FeedbackSignal.from_dict(feedback_signal) if isinstance(feedback_signal, dict) else None
             if signal and signal.error_type:
                 suggestion = f"上次练习中发现了{signal.error_label or signal.error_type}，建议调整学习计划重点强化这部分。要我现在帮你重新规划吗？"
                 result = self._make_result(reply=suggestion, action="none", facts={})
                 result["needs_clarification"] = False
+                # Clear the signal so it only fires once
                 context["feedback_signal"] = None
+                context.get("profile_facts", {}).pop("_pending_adjustment", None)
                 return result
 
         if action in ("none", "tutoring", "") and not deterministic_none:

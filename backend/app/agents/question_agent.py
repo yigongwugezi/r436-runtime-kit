@@ -53,9 +53,9 @@ class QuestionAgent(BaseAgent):
         dt_questions = []
         dt_set_id = ""
         try:
-            from app.services.deeptutor_facade import deeptutor
+            from app.services.deeptutor_client import deeptutor_call
             import uuid as _uuid
-            dt_result = deeptutor.generate_quiz(str(course), ",".join(knowledge_points), count)
+            dt_result = deeptutor_call("chat", prompt)
             if dt_result and len(dt_result) > 50:
                 dt_questions = self._parse_deeptutor_output(dt_result) or []
                 if dt_questions:

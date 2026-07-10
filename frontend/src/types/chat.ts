@@ -20,8 +20,6 @@ export interface ChatMessage {
   /** 低置信度意图标记 — 前端需展示 clarification 交互面板 */
   isClarification?: boolean;
   attachments?: ChatAttachment[];
-  /** §2.5.3 Structured agent output cards attached to AI messages */
-  cards?: AgentCardData[];
   multimodalResult?: {
     status?: string;
     task_type?: string;
@@ -31,28 +29,6 @@ export interface ChatMessage {
     workflow_trace?: Record<string, unknown>;
     result?: any;
   };
-}
-
-/** Structured card produced by an agent, rendered inline in chat (§2.5.3) */
-export interface AgentCardData {
-  card_type: string;
-  summary: string;
-  node?: string;
-  data?: Record<string, any>;
-}
-
-/** §3.2 Single agent step in the pipeline progress panel */
-export interface AgentStep {
-  node: string;
-  agent_name: string;
-  label: string;
-  status: 'started' | 'completed' | 'failed' | 'retrying';
-  summary?: string;
-  card?: AgentCardData;
-  duration_ms?: number;
-  retry?: number;
-  max_retries?: number;
-  reason?: string;
 }
 
 export interface ChatAttachment {
