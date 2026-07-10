@@ -132,6 +132,24 @@ async def _run_conversation_agent(context: dict[str, Any], factory: AgentFactory
         return {"action": "none", "reply": "", "facts": {}}
 
 
+def _emit_feedback_signal(state: dict) -> dict[str, Any]:
+    """Extract FeedbackSignal from grading results for the next request cycle.
+
+    Returns a dict with a ``feedback_signal`` key (or empty dict) suitable
+    for merging into the pipeline return value.  The signal is consumed by
+    ConversationAgent on the *next* request.
+    """
+    grading = state.get("grading_result") or {}
+    if not isinstance(grading, dict):
+        return {}
+    error_type = str(grading.get("error_type", "")).strip()
+    if not error_type or error_type == "null":
+        return {}
+    from app.schemas.feedback import FeedbackSignal
+    signal = FeedbackSignal.from_grading_result(grading)
+    return {"feedback_signal": signal}
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # LangGraph nodes
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -154,6 +172,7 @@ async def _intent_node(state: dict) -> dict:
         "user_message": state.get("user_message", ""),
         "profile_facts": state.get("profile_facts", {}),
         "conversation_history": state.get("messages", []),
+        "feedback_signal": state.get("feedback_signal"),
     }, factory)
 
     state["intent"] = ca_result["action"]
@@ -353,6 +372,7 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
             "user_message": state.get("user_message", ""),
             "profile_facts": state.get("profile_facts", {}),
             "conversation_history": state.get("messages", []),
+            "feedback_signal": state.get("feedback_signal"),
         }, factory)
         intent = ca_result["action"]
         state["intent"] = intent
@@ -404,6 +424,9 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
             state["final_reply"] = diag_reply
         elif summary_parts:
             state["final_reply"] = "、".join(summary_parts) + "。"
+        fb = _emit_feedback_signal(state)
+        if fb:
+            state.update(fb)
         return dict(state)
 
     # ── Full workflow ──
@@ -414,4 +437,7 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
     retries = result.get("_retry_count", 0)
     if retries >= MAX_RETRIES:
         result["quality_status"] = "warning"
+    fb = _emit_feedback_signal(result)
+    if fb:
+        result.update(fb)
     return dict(result)

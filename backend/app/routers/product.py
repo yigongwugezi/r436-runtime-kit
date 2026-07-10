@@ -3865,8 +3865,9 @@ def generate_questions(payload: dict[str, Any], auth: AuthContext = Depends(reje
     _ensure_session_linked(session_id, subject_id=subject_id)
 
     conversation_store.append_message(session_id, "user", message)
-    intent = _classify_intent(message, session_id)
-    intent["action"] = "generate_questions"
+    # Skip _classify_intent() here — its LLM call would be wasted since
+    # we hard-code action="generate_questions" below.  Facts extraction
+    # is handled by the pipeline via agent_service.run_agents().
 
     result = _run_agents(message, session_id=session_id, progress_callback=None,
                          agents_filter=get_agent_ids("generate_questions"))
