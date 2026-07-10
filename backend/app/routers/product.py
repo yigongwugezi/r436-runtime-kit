@@ -4806,6 +4806,79 @@ def recommend_section_resources(section_id: str, payload: dict[str, Any]) -> dic
     return _product_response({"recommendations": result}, session_id=session_id, source="duckduckgo")
 
 
+def _section_path_context(session_id: str, section_id: str) -> dict[str, Any]:
+    """Read existing path metadata; no planner call or path mutation."""
+    try:
+        path = ag_get_learning_path(session_id) or {}
+        for stage in path.get("stages", []):
+            for chapter in stage.get("chapters", []):
+                for section in chapter.get("sections", []):
+                    if str(section.get("section_id") or section.get("id") or "") == section_id:
+                        return {
+                            "path_id": path.get("id", ""), "stage_id": stage.get("stage_id") or stage.get("id", ""),
+                            "chapter_id": chapter.get("chapter_id") or chapter.get("id", ""), "section_title": section.get("title", ""),
+                            "knowledge_points": section.get("knowledge_points") or section.get("knowledgePoints") or [],
+                        }
+    except Exception:
+        pass
+    return {}
+
+
+@router.post("/sections/{section_id}/resources/generate")
+def generate_section_resource(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Generate one small section resource and archive it in the existing library."""
+    session_id = _payload_session_id(payload)
+    resource_type = str(payload.get("resourceType") or "").strip()
+    context = _section_path_context(session_id, section_id)
+    section_title = str(payload.get("sectionTitle") or context.get("section_title") or "").strip()
+    if not section_title:
+        return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
+    from app.services.section_generated_resources import SectionGeneratedResourcesService
+    service = SectionGeneratedResourcesService()
+    try:
+        db = SessionLocal()
+        existing = service.existing(db, session_id, section_id, resource_type)
+        if existing is not None and not bool(payload.get("regenerate")):
+            return _product_response({"resource": service.serialize(existing), "reused": True}, session_id=session_id, source="db")
+        lecture = db.query(ResourceModel).filter(
+            ResourceModel.session_id == session_id,
+            ResourceModel.related_section_id == section_id,
+            ResourceModel.type == "lecture",
+        ).order_by(ResourceModel.updated_at.desc()).first()
+        resource = service.generate(
+            session_id=session_id, path_id=str(payload.get("pathId") or context.get("path_id") or ""),
+            stage_id=str(payload.get("stageId") or context.get("stage_id") or ""),
+            chapter_id=str(payload.get("chapterId") or context.get("chapter_id") or ""),
+            section_id=section_id, section_title=section_title,
+            lecture_content=str(payload.get("lectureContent") or (lecture.content if lecture else "") or ""),
+            knowledge_points=payload.get("knowledgePoints") if isinstance(payload.get("knowledgePoints"), list) else context.get("knowledge_points", []),
+            resource_type=resource_type,
+        )
+        saved = service.persist(db, session_id, resource)
+        return _product_response({"resource": service.serialize(saved), "reused": False}, session_id=session_id, source="agent")
+    except ValueError:
+        return _product_response(None, session_id=session_id, status="error", message="unsupported resourceType", source="agent")
+    finally:
+        db.close()
+
+
+@router.get("/sections/{section_id}/generated-resources")
+def get_generated_section_resources(section_id: str, sessionId: str = "") -> dict[str, Any]:
+    """Read only resources generated for the current section."""
+    session_id = _require_session_id(sessionId)
+    from app.services.section_generated_resources import SectionGeneratedResourcesService
+    try:
+        db = SessionLocal()
+        rows = db.query(ResourceModel).filter(
+            ResourceModel.session_id == session_id,
+            ResourceModel.related_section_id == section_id,
+        ).order_by(ResourceModel.updated_at.desc()).all()
+        resources = [SectionGeneratedResourcesService.serialize(row) for row in rows if "section_generated" in (row.tags or [])]
+        return _product_response({"resources": resources}, session_id=session_id, source="db")
+    finally:
+        db.close()
+
+
 # 画像推荐
 @router.get("/profile/recommendations")
 def get_profile_recommendations(sessionId: str = "") -> dict[str, Any]:
