@@ -1,5 +1,14 @@
 import client from './client';
-import type { Quiz, ExamSet, Attempt } from '../types/assessment';
+import type {
+  Quiz,
+  ExamSet,
+  Attempt,
+  QuizResult,
+  QuizSubmitResponse,
+  LinkedQuestion,
+  SectionQuizGenerateRequest,
+  QuizSubmitRequest,
+} from '../types/assessment';
 
 // ═════════════════════════════════════════════════════════════════════
 // Quiz
@@ -171,14 +180,6 @@ export async function createAttempt(body: {
 // ═════════════════════════════════════════════════════════════════════
 // Section Quiz Generation & Submission (Part 2)
 // ═════════════════════════════════════════════════════════════════════
-
-import type {
-  QuizResult,
-  QuizSubmitResponse,
-  LinkedQuestion,
-  SectionQuizGenerateRequest,
-  QuizSubmitRequest,
-} from '../types/assessment';
 
 /** Generate a quiz from section context via LLM. */
 export async function generateSectionQuiz(

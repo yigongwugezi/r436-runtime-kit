@@ -384,14 +384,67 @@ def get_weak_questions(
     session_id: str = Query(default="", alias="sessionId"),
     error_type: str = Query(default="", alias="errorType"),
     limit: int = Query(default=20, ge=1, le=100),
+    aggregate: bool = Query(default=False),
 ) -> dict:
-    """Return the student's wrong-answer book — questions answered incorrectly."""
+    """Return the student's wrong-answer book — questions answered incorrectly.
+
+    When ``aggregate=true``, returns a knowledge-point-level weakness summary
+    instead of individual question records.
+    """
     db = SessionLocal()
     try:
         q = db.query(AnswerRecordModel).filter(
             AnswerRecordModel.error_type != "null",
             AnswerRecordModel.error_type.isnot(None),
         )
+        if session_id:
+            q = q.filter(AnswerRecordModel.session_id == session_id)
+        if error_type:
+            q = q.filter(AnswerRecordModel.error_type == error_type)
+
+        # ── Aggregated mode: group by knowledge point ──────────
+        if aggregate:
+            rows = q.order_by(AnswerRecordModel.created_at.desc()).all()
+            # Collect all question_ids to resolve knowledge points
+            qids = list({r.question_id for r in rows})
+            kp_map: dict[str, str] = {}
+            if qids:
+                from app.db.models import PracticeQuestionModel
+                pqs = db.query(PracticeQuestionModel).filter(
+                    PracticeQuestionModel.question_id.in_(qids)
+                ).all()
+                for pq in pqs:
+                    kps = pq.knowledge_points or []
+                    kp_map[pq.question_id] = kps[0] if kps else ""
+
+            # Group by knowledge point
+            kp_groups: dict[str, dict] = {}
+            for r in rows:
+                kp = kp_map.get(r.question_id, "未知知识点")
+                if kp not in kp_groups:
+                    kp_groups[kp] = {"name": kp, "errorCount": 0, "totalAttempts": 0,
+                                     "latestError": "", "errorTypes": []}
+                kp_groups[kp]["errorCount"] += 1
+                kp_groups[kp]["totalAttempts"] += 1
+                if r.created_at:
+                    ts = r.created_at.isoformat()
+                    if ts > kp_groups[kp]["latestError"]:
+                        kp_groups[kp]["latestError"] = ts
+                et = r.error_type
+                if et and et not in kp_groups[kp]["errorTypes"]:
+                    kp_groups[kp]["errorTypes"].append(et)
+
+            weak_points = []
+            for kp, data in kp_groups.items():
+                data["errorRate"] = round(data["errorCount"] / max(1, data["totalAttempts"]), 2)
+                data["masteryEstimate"] = max(10, 100 - int(data["errorRate"] * 100))
+                weak_points.append(data)
+
+            weak_points.sort(key=lambda w: w["errorCount"], reverse=True)
+            return {
+                "status": "success",
+                "data": {"weakPoints": weak_points, "total": len(weak_points)},
+            }
         if session_id:
             q = q.filter(AnswerRecordModel.session_id == session_id)
         if error_type:

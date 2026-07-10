@@ -142,4 +142,24 @@ export interface QuizSubmitResponse {
   totalScore: number;
   maxScore: number;
   sectionStatusSuggestion: 'mastered' | 'in_progress' | 'needs_review';
+  weakPoints?: WeakPoint[];
+}
+
+/** A knowledge-point-level weakness summary. */
+export interface WeakPoint {
+  name: string;
+  errorCount: number;
+  totalAttempts: number;
+  errorRate: number;
+  latestError?: string;
+  errorTypes?: string[];
+  masteryEstimate?: number;
+  suggestedAction?: string;
+  source?: string;
+}
+
+/** Aggregated weakness summary response. */
+export interface WeaknessSummary {
+  weakPoints: WeakPoint[];
+  total: number;
 }

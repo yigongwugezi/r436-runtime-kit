@@ -5,7 +5,7 @@ import { useChatStore } from '../store/chatStore';
 import { ChevronDown, ChevronRight, Sparkles, MessageCircle, Send, Brain, FileText, Check, X, Loader2, HelpCircle } from 'lucide-react';
 import Markdown from '../utils/markdown';
 import { generateSectionQuiz, submitQuizAttempt } from '../api/assessment';
-import type { LinkedQuestion, QuizResult } from '../types/assessment';
+import type { LinkedQuestion, QuizResult, WeakPoint } from '../types/assessment';
 
 export default function LecturePage() {
   const { sectionId } = useParams<{ sectionId: string }>();
@@ -26,6 +26,7 @@ export default function LecturePage() {
   const [quizResults, setQuizResults] = useState<QuizResult[]>([]);
   const [quizTotalScore, setQuizTotalScore] = useState<number | null>(null);
   const [quizSuggestion, setQuizSuggestion] = useState('');
+  const [quizWeakPoints, setQuizWeakPoints] = useState<WeakPoint[]>([]);
 
   useEffect(() => { fetchPath(); }, []);
   useEffect(() => { if (sectionId) setActiveSection(sectionId); }, [sectionId]);
@@ -174,6 +175,7 @@ export default function LecturePage() {
         setQuizResults(data.results);
         setQuizTotalScore(data.totalScore ?? null);
         setQuizSuggestion(data.sectionStatusSuggestion || '');
+        setQuizWeakPoints(data.weakPoints || []);
         setQuizState('submitted');
       }
     } catch (e: any) {
@@ -252,6 +254,33 @@ export default function LecturePage() {
                       </p>
                     </div>
                   </div>
+                </div>
+              )}
+
+              {/* Weakness summary */}
+              {quizState === 'submitted' && quizWeakPoints.length > 0 && (
+                <div className="p-4 bg-error-50/30 rounded-2xl border border-error-200 mb-4">
+                  <h4 className="text-sm font-semibold text-error-700 mb-3">薄弱知识点</h4>
+                  {quizWeakPoints.map((wp, i) => (
+                    <div key={i} className="flex items-center justify-between py-2 border-b border-error-100 last:border-0">
+                      <div className="flex-1 min-w-0">
+                        <span className="text-xs text-surface-700 truncate block">{wp.name}</span>
+                        {wp.suggestedAction && (
+                          <span className="text-[10px] text-surface-400 mt-0.5 block truncate">{wp.suggestedAction}</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0 ml-2">
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-error-100 text-error-600 font-medium">
+                          错{wp.errorCount}次
+                        </span>
+                        {wp.masteryEstimate != null && (
+                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${wp.masteryEstimate >= 60 ? 'bg-warning-100 text-warning-600' : 'bg-error-100 text-error-600'}`}>
+                            掌握{wp.masteryEstimate}%
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
 

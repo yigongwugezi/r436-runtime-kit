@@ -24,10 +24,12 @@ from app.db.repository import (
     list_attempts,
     list_exam_sets,
     list_quizzes,
+    save_exam_set,
     save_quiz,
     update_attempt,
     update_exam_set,
 )
+from app.db.repository import save_profile_snapshot
 from app.middleware.auth import AuthContext, require_auth
 from app.services.llm_client import get_llm_client
 from app.utils.llm_json import parse_safe
@@ -196,6 +198,87 @@ def _attempt_dict(a) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Weakness recording helper
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _record_quiz_weaknesses(
+    db, session_id: str, linked_questions: list, results: list[dict], quiz_title: str = ""
+) -> list[dict]:
+    """Aggregate wrong-answer knowledge points into weakness records.
+
+    Groups errors by knowledge point, computes error counts/rates,
+    and persists a ProfileSnapshotModel with the aggregated weaknesses.
+    Returns the weakness list for inclusion in the API response.
+    """
+    from datetime import datetime as _dt
+
+    wrong = [r for r in results if not r.get("isCorrect")]
+    if not wrong:
+        return []
+
+    # Group by knowledge point
+    kp_errors: dict[str, dict] = {}
+    kp_total: dict[str, int] = {}
+    for pq in linked_questions:
+        kp_name = (pq.knowledge_points or [""])[0] if pq.knowledge_points else ""
+        if not kp_name:
+            continue
+        kp_total[kp_name] = kp_total.get(kp_name, 0) + 1
+
+    for r in wrong:
+        kp = r.get("knowledgePoint", "")
+        if not kp:
+            continue
+        if kp not in kp_errors:
+            kp_errors[kp] = {
+                "name": kp,
+                "error_count": 0,
+                "error_types": [],
+                "grading_evidence": [],
+            }
+        kp_errors[kp]["error_count"] += 1
+        et = r.get("errorType")
+        if et and et not in kp_errors[kp]["error_types"]:
+            kp_errors[kp]["error_types"].append(et)
+        kp_errors[kp]["grading_evidence"].append({
+            "questionId": r.get("questionId", ""),
+            "studentAnswer": r.get("studentAnswer", ""),
+            "correctAnswer": r.get("correctAnswer", ""),
+            "errorType": et,
+        })
+
+    # Build weakness records
+    weaknesses: list[dict] = []
+    now_iso = _dt.now().isoformat()
+    for kp_name, err in kp_errors.items():
+        total = kp_total.get(kp_name, err["error_count"])
+        error_rate = round(err["error_count"] / max(1, total), 2)
+        mastery_est = max(10, 100 - int(error_rate * 100))
+        weaknesses.append({
+            "name": kp_name,
+            "error_count": err["error_count"],
+            "total_attempts": total,
+            "error_rate": error_rate,
+            "last_error_at": now_iso,
+            "error_types": err["error_types"],
+            "grading_evidence": err["grading_evidence"],
+            "mastery_estimate": mastery_est,
+            "suggested_action": f"建议重新学习{kp_name}，重点理解相关概念",
+            "source": "quiz_grading",
+            "quiz_title": quiz_title,
+        })
+
+    # Persist to ProfileSnapshotModel
+    try:
+        save_profile_snapshot(db, session_id, weaknesses=weaknesses)
+    except Exception:
+        pass  # Non-critical — weakness display still works from results
+
+    return weaknesses
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Quiz endpoints
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -361,6 +444,9 @@ def get_quiz_results(
             if attempt:
                 result["attempt"] = _attempt_dict(attempt)
                 answer_records = get_attempt_answers(db, attempt_id)
+                # Resolve knowledge points from linked questions
+                kp_map = {pq.question_id: (pq.knowledge_points or [""])[0]
+                          for pq in linked_questions}
                 result["gradingResults"] = []
                 for ar in answer_records:
                     result["gradingResults"].append({
@@ -371,6 +457,7 @@ def get_quiz_results(
                         "errorLabel": ar.error_label,
                         "errorExplanation": ar.error_explanation,
                         "suggestions": ar.suggestions or [],
+                        "knowledgePoint": kp_map.get(ar.question_id, ""),
                     })
 
         return {"status": "success", "data": {"quiz": result}}
@@ -570,10 +657,14 @@ def submit_quiz(
             # Rule-based for choice/truefalse
             if pq.type in ("choice", "truefalse"):
                 correct = str(pq.correct or "").strip().upper()
-                student = student_answer.upper()
-                is_correct = student[:1] == correct[:1] if pq.type == "choice" else (
-                    student in ("TRUE", "对", "正确", "YES", "T") and correct in ("TRUE", "对", "正确", "YES", "T")
-                )
+                student = student_answer.strip().upper()
+                if pq.type == "choice":
+                    is_correct = student[:1] == correct[:1]
+                else:
+                    # Normalize both to boolean before comparing
+                    student_bool = student in ("TRUE", "对", "正确", "YES", "T", "1")
+                    correct_bool = correct in ("TRUE", "对", "正确", "YES", "T", "1")
+                    is_correct = student_bool == correct_bool
                 score = 100 if is_correct else 0
                 error_type = None if is_correct else ("concept" if pq.type == "choice" else "misreading")
                 feedback = "回答正确" if is_correct else "回答错误"
@@ -648,7 +739,7 @@ def submit_quiz(
                 "maxScore": 100,
                 "correctAnswer": pq.correct,
                 "explanation": pq.explanation,
-                "feedback": feedback if 'feedback' in dir() else "",
+                "feedback": feedback,
                 "errorType": ar.error_type,
                 "errorLabel": ar.error_label,
                 "knowledgePoint": (pq.knowledge_points or [""])[0] if pq.knowledge_points else "",
@@ -671,6 +762,12 @@ def submit_quiz(
         else:
             suggestion = "needs_review"
 
+        # ── Record weaknesses ─────────────────────────────────
+        weak_points = _record_quiz_weaknesses(
+            db, body.session_id, linked, results,
+            quiz_title=quiz.title,
+        )
+
         return {
             "status": "success",
             "data": {
@@ -679,6 +776,7 @@ def submit_quiz(
                 "totalScore": avg_score,
                 "maxScore": 100,
                 "sectionStatusSuggestion": suggestion,
+                "weakPoints": weak_points,
             },
         }
     finally:
