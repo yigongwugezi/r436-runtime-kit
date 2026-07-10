@@ -360,6 +360,8 @@ def upsert_resource(
         completed_at=_utcnow() if (resource_data.get("study_status") or resource_data.get("studyStatus", "")) == "completed" else resource_data.get("completed_at"),
         source=resource_data.get("source", "agent_generated"),
         related_stage_id=resource_data.get("related_stage_id", ""),
+        related_chapter_id=resource_data.get("related_chapter_id", ""),
+        related_section_id=resource_data.get("related_section_id", ""),
         task_id=resource_data.get("task_id", ""),
     )
     existing = db.get(ResourceModel, res.id)
@@ -383,6 +385,8 @@ def upsert_resource(
         existing.completed_at = res.completed_at
         existing.source = res.source
         existing.related_stage_id = res.related_stage_id
+        existing.related_chapter_id = res.related_chapter_id
+        existing.related_section_id = res.related_section_id
         existing.task_id = res.task_id
         existing.updated_at = _utcnow()
         res = existing

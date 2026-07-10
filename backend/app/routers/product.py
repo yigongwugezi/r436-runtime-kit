@@ -31,7 +31,7 @@ from app.agents.diagnosis_agent import DiagnosisAgent
 from app.agents.multimodal_agent import MultimodalAgent
 from app.config import settings
 from app.db.engine import SessionLocal
-from app.db.models import DailyTaskModel, LearnerModel, SessionModel
+from app.db.models import DailyTaskModel, LearnerModel, ResourceModel, SessionModel
 from app.db.repository import (
     get_bookmarked_ids,
     get_daily_tasks as repo_get_daily_tasks,
@@ -489,6 +489,8 @@ def _to_resource(
     content_fmt = item.get("content_format", "markdown")
     related_stage_id = str(item.get("related_stage_id") or course_id)
     related_chapter = str(item.get("related_chapter") or "")
+    related_chapter_id = str(item.get("related_chapter_id") or "")
+    related_section_id = str(item.get("related_section_id") or "")
     related_knowledge_points = item.get("related_knowledge_points") or []
     quality_status = str(item.get("quality_status") or "passed")
     task_id = str(item.get("task_id") or "")
@@ -513,6 +515,8 @@ def _to_resource(
         "completedAt": item.get("completedAt") or item.get("completed_at"),
         "source": _source_label(item.get("source", "")),
         "relatedStageId": related_stage_id,
+        "relatedChapterId": related_chapter_id,
+        "relatedSectionId": related_section_id,
         "taskId": task_id,
         "relatedChapter": related_chapter,
         "relatedKnowledgePoints": related_knowledge_points if isinstance(related_knowledge_points, list) else [related_knowledge_points],
@@ -551,11 +555,127 @@ def _stage_estimated_days(duration: Any) -> int:
 
 
 def _raw_stages_to_nodes(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert raw orchestrator-format stages (with tasks) to frontend-format stages (with nodes).
+    """Convert raw orchestrator-format stages to frontend-format stages.
 
-    Raw format: [{"stage_id": "s1", "title": "...", "tasks": ["task1"], "resource_types": ["lecture"], ...}, ...]
-    Frontend:   [{"id": "s1", "order": 1, "title": "...", "nodes": [{...}, ...], ...}, ...]
+    Supports two formats:
+    1. **Chapter-based** (new): stages → chapters → sections → knowledge_points
+       With canonical IDs: path_xxx_s0, path_xxx_s0_ch0, etc.
+    2. **Task-based** (legacy): stages with flat tasks → nodes
+       Converts tasks into PathNode list.
+
+    Detects format by checking for ``chapters`` key on the first stage.
     """
+    if stages and isinstance(stages[0], dict) and stages[0].get("chapters"):
+        return _chapter_stages_to_frontend(stages)
+    return _task_stages_to_frontend(stages)
+
+
+def _chapter_stages_to_frontend(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert chapter-structured stages to frontend format preserving hierarchy.
+
+    Input: [{"stage_id": "path_xxx_s0", "title": "...", "order": 0,
+             "chapters": [{"chapter_id": "...", "title": "...", "order": 0,
+                           "sections": [{"section_id": "...", "title": "...",
+                                         "knowledge_points": [{"kp_id": "...", ...}]}]}]}]
+    Output: frontend LearningStage with chapters and nodes for backward compat.
+    """
+    result: list[dict[str, Any]] = []
+    for stage_index, stage in enumerate(stages, start=1):
+        if not isinstance(stage, dict):
+            continue
+        chapters = _chapters_to_frontend(stage.get("chapters", []))
+        # Build flat nodes for backward compat
+        all_kps: list[dict[str, Any]] = []
+        for ch in chapters:
+            for sec in ch.get("sections", []):
+                for kp in sec.get("knowledgePoints", []):
+                    all_kps.append({
+                        "id": kp["id"],
+                        "topic": kp.get("name", ""),
+                        "description": sec.get("goal", ""),
+                        "prerequisites": [],
+                        "mastery": kp.get("mastery", 0),
+                        "status": _normalize_content_status(kp.get("status", "not_started")),
+                        "resources": [],
+                        "isKeyPoint": kp.get("type") == "concept",
+                    })
+
+        stage_days = max(1, sum(
+            sec.get("estimatedMinutes", 45)
+            for ch in chapters
+            for sec in ch.get("sections", [])
+        ) // 60)
+
+        result.append({
+            "id": stage.get("stage_id", f"stage_{stage_index}"),
+            "order": stage.get("order", stage_index - 1) + 1,
+            "title": stage.get("title", f"阶段 {stage_index}"),
+            "description": stage.get("description", ""),
+            "chapters": chapters,
+            "nodes": all_kps,  # backward compat
+            "objective": "",
+            "estimatedDays": stage_days or 1,
+            "tasks": [],
+            "resourceTypes": [],
+            "orderingReason": "",
+        })
+    return result
+
+
+def _chapters_to_frontend(chapters: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert chapter dicts to frontend Chapter format."""
+    result: list[dict[str, Any]] = []
+    for ch in chapters:
+        if not isinstance(ch, dict):
+            continue
+        sections: list[dict[str, Any]] = []
+        for sec in ch.get("sections", []):
+            kps: list[dict[str, Any]] = []
+            for kp in sec.get("knowledge_points", []):
+                kps.append({
+                    "id": kp.get("kp_id", ""),
+                    "name": kp.get("name", ""),
+                    "type": kp.get("type", "concept"),
+                    "description": kp.get("description", ""),
+                    "mastery": kp.get("mastery", 0),
+                    "status": _normalize_content_status(kp.get("status", "not_started")),
+                })
+            sections.append({
+                "id": sec.get("section_id", ""),
+                "title": sec.get("title", ""),
+                "goal": sec.get("goal", ""),
+                "estimatedMinutes": sec.get("estimated_minutes", 45),
+                "status": _normalize_content_status(sec.get("status", "not_started")),
+                "knowledgePoints": kps,
+                "lectureIds": sec.get("lectureIds", []),
+            })
+        result.append({
+            "id": ch.get("chapter_id", ""),
+            "title": ch.get("title", ""),
+            "order": ch.get("order", 0),
+            "status": _normalize_content_status(ch.get("status", "not_started")),
+            "sections": sections,
+            "mindmapId": ch.get("mindmapId"),
+        })
+    return result
+
+
+def _normalize_content_status(raw: str) -> str:
+    """Normalize a status string to a valid ContentStatus value."""
+    valid = {"not_started", "in_progress", "mastered", "needs_review", "blocked"}
+    status = str(raw or "").strip().lower()
+    # Map legacy values
+    legacy_map = {
+        "locked": "blocked",
+        "available": "not_started",
+        "completed": "mastered",
+    }
+    status = legacy_map.get(status, status)
+    return status if status in valid else "not_started"
+
+
+def _task_stages_to_frontend(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert legacy task-based stages to frontend format (existing behavior)."""
     result: list[dict[str, Any]] = []
     for index, stage in enumerate(stages, start=1):
         if not isinstance(stage, dict):
@@ -588,6 +708,7 @@ def _raw_stages_to_nodes(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "title": stage.get("title", f"阶段 {index}"),
             "description": stage.get("duration", ""),
             "nodes": nodes,
+            "chapters": [],
             "objective": stage.get("goal", ""),
             "estimatedDays": _stage_estimated_days(stage.get("duration", "")),
             "tasks": stage.get("tasks", []),
@@ -3009,6 +3130,25 @@ def _apply_node_progress(stages: list[dict[str, Any]], session_id: str = "") -> 
                     _log_node_progress(session_id, first_next, "available")
                 next_nodes[0]["status"] = "available"
 
+    # Apply saved progress to chapter hierarchy
+    for stage in stages:
+        for chapter in stage.get("chapters", []):
+            ch_id = chapter.get("chapter_id") or chapter.get("id", "")
+            if ch_id and _nkey(session_id, ch_id) in _node_progress_store:
+                saved = _node_progress_store[_nkey(session_id, ch_id)]
+                chapter["status"] = saved.get("status", chapter.get("status", "not_started"))
+            for section in chapter.get("sections", []):
+                sec_id = section.get("section_id") or section.get("id", "")
+                if sec_id and _nkey(session_id, sec_id) in _node_progress_store:
+                    saved = _node_progress_store[_nkey(session_id, sec_id)]
+                    section["status"] = saved.get("status", section.get("status", "not_started"))
+                for kp in section.get("knowledge_points", []):
+                    kp_id = kp.get("kp_id") or kp.get("id", "")
+                    if kp_id and _nkey(session_id, kp_id) in _node_progress_store:
+                        saved = _node_progress_store[_nkey(session_id, kp_id)]
+                        kp["status"] = saved.get("status", kp.get("status", "not_started"))
+                        kp["mastery"] = saved.get("mastery", kp.get("mastery", 0))
+
     return stages
 
 
@@ -4091,4 +4231,400 @@ def grade_answer(question_id: str, payload: dict[str, Any], auth: AuthContext = 
             db.close()
 
     return _product_response({"gradingResult": result_data}, session_id=session_id, source="agent")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Section lecture endpoints
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _clean_markdown(md: str) -> str:
+    """Clean common LLM-generated markdown formatting issues."""
+    import re
+
+    # 暴力修复表格粘连
+    # 把 |---|...|---| 这样的分隔行拎出来独立一行
+    def _fix_table_line(line: str) -> str:
+        m = re.search(r'((?:\|[-:]{3,})+\|)', line)
+        if not m:
+            return line
+        sep = m.group(0)
+        before = line[:m.start()].strip().rstrip('|').strip()
+        after = line[m.end():].strip()
+        # 表头
+        result = [before + ' |'] if before else []
+        result.append(sep)
+        # 数据行：按 | 拆，数分隔行的竖线数 = 列数+1
+        col_count = sep.count('|') - 1
+        if col_count < 1:
+            col_count = 2
+        cells = [c.strip() for c in after.split('|') if c.strip() and not re.match(r'^[-:]+$', c.strip())]
+        for i in range(0, len(cells), col_count):
+            row = cells[i:i+col_count]
+            if row:
+                result.append('| ' + ' | '.join(row) + ' |')
+        return '\n'.join(result)
+
+    lines = md.split('\n')
+    md = '\n'.join(_fix_table_line(l) for l in lines)
+
+    lines = md.split("\n")
+    fixed: list[str] = []
+    for line in lines:
+        # 找表格分隔行 |---|...|---|
+        sep_match = re.search(r'(\|[-: ]{3,})+\|', line)
+        if not sep_match:
+            fixed.append(line)
+            continue
+
+        # 分隔行位置
+        sep = sep_match.group(0)
+        pos = sep_match.start()
+        header_part = line[:pos].strip().rstrip("|").strip()
+        rows_part = line[pos + len(sep):].strip()
+
+        # 表头行
+        if header_part:
+            # 确保以 | 开头结尾
+            if not header_part.startswith("|"):
+                header_part = "| " + header_part
+            if not header_part.endswith("|"):
+                header_part = header_part + " |"
+            fixed.append(header_part)
+
+        # 分隔行
+        fixed.append(sep)
+
+        # 数据行：按 | 拆分，数表头列数重组
+        col_count = header_part.count("|") - 1 if header_part else sep.count("|") - 1
+        if col_count < 1:
+            col_count = 2
+        cells = [c.strip() for c in rows_part.split("|") if c.strip()]
+        for i in range(0, len(cells), col_count):
+            row_cells = cells[i:i + col_count]
+            if row_cells:
+                fixed.append("| " + " | ".join(row_cells) + " |")
+
+    # 清洗空表头
+    cleaned: list[str] = []
+    for line in fixed:
+        stripped = line.strip()
+        if not stripped:
+            cleaned.append("")
+            continue
+        if stripped.startswith("|") and stripped.endswith("|"):
+            cells = [c.strip() for c in stripped[1:-1].split("|")]
+            if all(re.match(r'^[-:\s]+$', c) for c in cells if c):
+                cleaned.append(stripped)
+                continue
+            filled = [c if c else "(项目)" for c in cells]
+            cleaned.append("| " + " | ".join(filled) + " |")
+        else:
+            cleaned.append(stripped)
+    return "\n".join(cleaned)
+
+
+@router.get("/sections/{section_id}/lecture")
+def get_section_lecture(section_id: str, sessionId: str = "") -> dict[str, Any]:
+    """Read existing lecture for a section. Returns None if not generated yet."""
+    try:
+        db = SessionLocal()
+        lecture = None
+        # 多种方式查找：resource_id > session+section > section only
+        resource_id = f"lecture_{section_id}"
+        lecture = db.get(ResourceModel, resource_id)
+        if not lecture and sessionId:
+            lecture = db.query(ResourceModel).filter(
+                ResourceModel.session_id == sessionId,
+                ResourceModel.related_section_id == section_id,
+                ResourceModel.type == "lecture",
+            ).order_by(ResourceModel.created_at.desc()).first()
+        if not lecture:
+            lecture = db.query(ResourceModel).filter(
+                ResourceModel.related_section_id == section_id,
+                ResourceModel.type == "lecture",
+            ).order_by(ResourceModel.created_at.desc()).first()
+
+        if lecture:
+            data = {
+                "id": lecture.id,
+                "title": lecture.title or "",
+                "content": lecture.content or "",
+                "sectionId": lecture.related_section_id or "",
+                "chapterId": lecture.related_chapter_id or "",
+                "stageId": lecture.related_stage_id or "",
+                "createdAt": int(lecture.created_at.timestamp() * 1000) if lecture.created_at else 0,
+            }
+            return _product_response({"lecture": data}, session_id=sessionId or (lecture.session_id or ""), source="db")
+        return _product_response({"lecture": None}, session_id=sessionId or "", source="db")
+    finally:
+        db.close()
+
+
+@router.post("/sections/{section_id}/lecture/generate")
+def generate_section_lecture(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Generate a structured lecture for a section using LLM, persist as Resource."""
+    session_id = _payload_session_id(payload)
+    section_title = str(payload.get("sectionTitle", "")).strip()
+    section_goal = str(payload.get("sectionGoal", "")).strip()
+    chapter_id = str(payload.get("chapterId", "")).strip()
+    stage_id = str(payload.get("stageId", "")).strip()
+    path_id = str(payload.get("pathId", "")).strip()
+    knowledge_points = payload.get("knowledgePoints", [])
+
+    if not section_title:
+        return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
+
+    # Build knowledge point list for prompt
+    kp_lines = ""
+    if isinstance(knowledge_points, list) and knowledge_points:
+        kp_lines = "\n".join(f"- {kp.get('name', kp) if isinstance(kp, dict) else str(kp)}" for kp in knowledge_points[:10])
+
+    prompt = f"""你是一位资深大学教师，请为小节「{section_title}」编写一份达到正式出版教材水准的讲义。
+
+学习目标：{section_goal or '掌握本节知识点'}
+
+{f"本节涵盖以下知识点：{chr(10)}{kp_lines}" if kp_lines else ""}
+
+教材级讲义要求：
+- 概念解释要有"为什么"而不只是"是什么"——讲清楚来龙去脉、设计动机、底层原理
+- 每个抽象概念配一个具体实例帮助理解
+- 数学公式用 LaTeX（$...$ 或 $$...$$）呈现，重要公式单独成行
+- 复杂流程用 ```mermaid 图可视化（mindmap 节点文本用方括号括起，不要用特殊字符；graph TD 节点 ID 用英文字母，显示文本用方括号）
+- > 引用块用于标注重点、注意事项和常见误区
+- 代码示例完整可运行，有输入输出演示
+
+输出结构（按顺序）：
+
+## 学习目标
+列出 3-5 个具体可衡量的目标
+
+## 前置知识
+| 概念 | 要求 | 与本节关联 |
+|---|---|---|
+| ... | ... | ... |
+（至少 3 行）
+
+## 知识结构图
+```mermaid 绘制 mindmap，覆盖本节所有概念及其关系
+
+## 核心概念详解
+每个概念用 ### 子标题独立成节：
+- 为什么需要这个概念（动机/背景）
+- 原理阐述（配 LaTeX 公式）
+- 具体实例
+- > 重点提示
+
+## 代码实践
+完整可运行代码（```python），详细注释 + 运行结果
+
+## 常见误区
+> 用引用块逐一列出，每个错误写明为什么错 + 正确做法
+
+## 本节总结
+| 关键词 | 解释 |
+|---|---|
+| ... | ... |
+（至少 5 行） + 一段总结段落
+
+格式要求：
+- 表格必须严格遵守 Markdown 表格语法，每列都要有表头文字，分隔行用 |---|---|---|，不要有空表头
+- Mermaid 图表优先使用 mindmap 类型展示知识结构，用 graph TD 展示流程
+- 代码块必须指定语言（如 ```python）
+- 重点内容用 > 引用块标注
+- 不要输出额外的解释说明，直接输出 Markdown 正文
+
+Mermaid 正确示例：
+```mermaid
+mindmap
+  root((核心主题))
+    子概念1
+      细节A
+      细节B
+    子概念2
+      细节C
+```
+
+表格正确示例：
+| 概念 | 说明 | 示例 |
+|---|---|---|
+| 缓存 | 高速小容量存储器 | CPU 三级缓存 |"""
+
+    # 从知识库获取课程内容作为上下文
+    kb_context = ""
+    course_name = str(payload.get("courseId", "")).strip()
+    chapter_id_in = str(payload.get("chapterId", "")).strip()
+    if course_name:
+        try:
+            from app.services.course_catalog import course_catalog
+            course = course_catalog.match_course(course_name)
+            if not course:
+                course = course_catalog.get_course(course_name)
+            if course:
+                course_id = str(course.get("course_id", ""))
+                catalog_chapters = course.get("chapters", [])
+                # 尝试匹配章节：按索引或标题模糊匹配
+                chapter_content = ""
+                chapter_order = 0
+                # 从 chapterId 提取索引（如 path_xxx_s0_ch1 → order=1）
+                import re as _re
+                idx_match = _re.search(r'ch(\d+)', chapter_id_in)
+                if idx_match:
+                    chapter_order = int(idx_match.group(1))
+                if catalog_chapters and chapter_order < len(catalog_chapters):
+                    ch = catalog_chapters[chapter_order]
+                    ch_loaded = course_catalog.load_chapter(course_id, str(ch.get("chapter_id", "")))
+                    if ch_loaded and ch_loaded.get("content"):
+                        chapter_content = ch_loaded["content"]  # 完整教材内容
+
+                chapter_names = "\n".join(f"- 第{i+1}章：{ch.get('title', '')}" for i, ch in enumerate(catalog_chapters[:8]))
+                if chapter_names:
+                    kb_context = f"\n\n本课程章节结构：\n{chapter_names}"
+                if chapter_content:
+                    kb_context += f"\n\n当前章节的参考教材内容（可参考其中的概念和深度，但用自己的话重新组织）：\n{chapter_content}"
+        except Exception:
+            pass
+
+    client = _llm_client()
+    try:
+        raw = client.chat(
+            messages=[{"role": "user", "content": prompt + kb_context}],
+            temperature=0.3, max_tokens=16384,
+        )
+    except Exception as e:
+        logger.warning("Lecture generation failed for section %s: %s", section_id, e)
+        return _product_response(None, session_id=session_id, status="error", message=f"生成失败: {e}", source="agent")
+
+    # 后处理：清洗空表头等常见格式问题
+    raw = _clean_markdown(raw)
+
+    # Persist as Resource
+    resource_id = f"lecture_{section_id}"
+    try:
+        db = SessionLocal()
+        from app.db.repository import upsert_resource
+        upsert_resource(db, session_id, {
+            "id": resource_id,
+            "type": "lecture",
+            "title": f"讲义：{section_title}",
+            "description": section_goal or "",
+            "content": raw,
+            "format": "text",
+            "difficulty": "medium",
+            "estimated_minutes": 30,
+            "source": "agent_generated",
+            "related_stage_id": stage_id,
+            "related_chapter_id": chapter_id,
+            "related_section_id": section_id,
+            "knowledge_points": [kp.get("name", str(kp)) if isinstance(kp, dict) else str(kp) for kp in (knowledge_points or [])],
+        })
+    finally:
+        db.close()
+
+    lecture_data = {
+        "id": resource_id,
+        "title": f"讲义：{section_title}",
+        "content": raw,
+        "sectionId": section_id,
+        "chapterId": chapter_id,
+        "stageId": stage_id,
+        "createdAt": int(time.time() * 1000),
+    }
+    return _product_response({"lecture": lecture_data}, session_id=session_id, source="agent")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 智能辅导端点
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.post("/sections/{section_id}/tutor/ask")
+def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """智辅问答：注入学生画像 + 诊断数据，返回 Markdown 格式回答。"""
+    session_id = _payload_session_id(payload)
+    question = str(payload.get("question", "")).strip()
+    section_title = str(payload.get("sectionTitle", "")).strip()
+    section_goal = str(payload.get("sectionGoal", "")).strip()
+    knowledge_points = payload.get("knowledgePoints", [])
+    lecture_excerpt = str(payload.get("lectureExcerpt", ""))[:1000]
+
+    if not question:
+        return _product_response(None, session_id=session_id, status="error", message="question required", source="agent")
+
+    # 获取学生画像
+    profile_text = ""
+    try:
+        from app.services.agent_service import get_profile, get_analytics
+        p = get_profile(session_id)
+        if p:
+            dims = p.get("dimensions", [])
+            weaknesses = p.get("weaknesses", [])
+            if dims:
+                profile_text += "学生画像：\n" + "\n".join(
+                    f"- {d.get('label', d.get('key',''))}: {d.get('description', d.get('value',''))}"
+                    for d in dims[:5] if d.get("description") or d.get("value")
+                )
+            if weaknesses:
+                profile_text += "\n薄弱点：\n" + "\n".join(
+                    f"- {w.get('topic','')}: {w.get('reason','')}" for w in weaknesses[:3]
+                )
+        # 学习分析
+        analytics = get_analytics(session_id) or {}
+        if analytics.get("quizAccuracy") is not None:
+            profile_text += f"\n练习正确率：{analytics['quizAccuracy']}%"
+        if analytics.get("totalStudyMinutes"):
+            profile_text += f"\n累计学习：{analytics['totalStudyMinutes']}分钟"
+    except Exception:
+        pass
+
+    kp_names = ", ".join(kp.get("name", str(kp)) if isinstance(kp, dict) else str(kp) for kp in (knowledge_points or [])[:8])
+
+    prompt = f"""你是 EduAgent 智能助教，请为学生解答问题。
+
+{profile_text if profile_text else ""}
+
+当前学习内容：
+- 小节：{section_title}
+- 目标：{section_goal}
+- 知识点：{kp_names}
+{chr(10) + '讲义片段：' + chr(10) + lecture_excerpt if lecture_excerpt else ""}
+
+学生问题：{question}
+
+请用 Markdown 格式回答。如需图解用 ```mermaid 绘制。重点用 > 标注。回答要有针对性——结合学生画像中的薄弱点和学习风格来引导。"""
+
+    client = _llm_client()
+    try:
+        raw = client.chat(messages=[{"role": "user", "content": prompt}], temperature=0.3, max_tokens=2048)
+    except Exception as e:
+        return _product_response(None, session_id=session_id, status="error", message=f"智辅失败: {e}", source="agent")
+
+    return _product_response({"reply": raw}, session_id=session_id, source="agent")
+
+
+@router.post("/sections/{section_id}/tutor/video")
+def tutor_video(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """生成小节讲解短视频（调用 MultimodalAgent）。"""
+    session_id = _payload_session_id(payload)
+    section_title = str(payload.get("sectionTitle", "")).strip()
+
+    if not section_title:
+        return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
+
+    try:
+        from app.agents.multimodal_agent import MultimodalAgent
+        agent = MultimodalAgent()
+        result = agent.run({
+            "session_id": session_id,
+            "user_message": f"为小节「{section_title}」生成一个 3 分钟内的微课讲解视频，包含脚本和分镜说明。",
+            "subject_name": section_title,
+        })
+        video_data = result.get("result") if isinstance(result.get("result"), dict) else {}
+        return _product_response({"video": {
+            "status": result.get("status", "unknown"),
+            "task_type": result.get("task_type", ""),
+            "script": video_data.get("script") or video_data.get("teaching_text") or str(result.get("result", ""))[:2000],
+        }}, session_id=session_id, source="agent")
+    except Exception as e:
+        logger.warning("Tutor video failed for section %s: %s", section_id, e)
+        return _product_response(None, session_id=session_id, status="error", message=f"视频生成失败: {e}", source="agent")
 

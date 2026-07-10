@@ -1,22 +1,48 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useLearningPath } from '../hooks/useLearningPath';
 import { useChatStore } from '../store/chatStore';
-import { ChevronDown, ChevronRight, Sparkles, MessageCircle, Send, Brain, FileText, Check, X, Loader2, HelpCircle } from 'lucide-react';
-import Markdown from '../utils/markdown';
+import { ChevronRight, Sparkles, MessageCircle, Send, Brain, BookOpen, ArrowLeft, ArrowRight, Target, Lightbulb, Layers, Clock, GraduationCap, Hash, CheckCircle2, Check, X, Loader2, HelpCircle } from 'lucide-react';
+import Markdown, { splitSections } from '../utils/markdown';
 import { generateSectionQuiz, submitQuizAttempt } from '../api/assessment';
+import type { Chapter, Section, ContentStatus } from '../types/learningPath';
 import type { LinkedQuestion, QuizResult, WeakPoint } from '../types/assessment';
 
+const sectionStatusStyle: Record<ContentStatus, { dot: string; bar: string }> = {
+  not_started:  { dot: 'bg-surface-300 ring-surface-100', bar: 'bg-surface-300' },
+  in_progress:  { dot: 'bg-blue-400 ring-blue-100',      bar: 'bg-blue-400' },
+  mastered:     { dot: 'bg-emerald-400 ring-emerald-100', bar: 'bg-emerald-400' },
+  needs_review: { dot: 'bg-amber-400 ring-amber-100',     bar: 'bg-amber-400' },
+  blocked:      { dot: 'bg-red-400 ring-red-100',         bar: 'bg-red-400' },
+};
+
 export default function LecturePage() {
-  const { sectionId } = useParams<{ sectionId: string }>();
+  const { chapterId, sectionId } = useParams<{ chapterId?: string; sectionId?: string }>();
   const nav = useNavigate();
-  const { path, fetchPath } = useLearningPath();
-  const sessionId = useChatStore((s) => s.currentSessionId);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [activeSection, setActiveSection] = useState(sectionId || '');
+  const { path, updateKnowledgePoint } = useLearningPath();
+  const sessionId = useChatStore((s) => s.dataSessionId);
+
+  // ── 当前章节与小节 ──
+  const chapterCtx = useMemo(() => {
+    for (const stage of (path?.stages ?? [])) {
+      for (const ch of (stage.chapters ?? [])) {
+        if (ch.id === (chapterId || sectionId)) return { chapter: ch, stage };
+      }
+    }
+    return null;
+  }, [path, chapterId, sectionId]);
+
+  const sections = chapterCtx?.chapter.sections ?? [];
+  const [activeSectionId, setActiveSectionId] = useState(sectionId || sections[0]?.id || '');
   const [lecture, setLecture] = useState('');
+  const [lectureLoaded, setLectureLoaded] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [chatMsg, setChatMsg] = useState('');
+  const [chatReply, setChatReply] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const [rightTab, setRightTab] = useState<'tutor' | 'resources' | 'quiz'>('tutor');
+  const [generatedSectionIds, setGeneratedSectionIds] = useState<Set<string>>(new Set());
+  const [showRightPanel, setShowRightPanel] = useState(true);
 
   // ── Quiz state ──
   const [quizState, setQuizState] = useState<'idle' | 'generating' | 'answering' | 'submitted'>('idle');
@@ -28,9 +54,6 @@ export default function LecturePage() {
   const [quizSuggestion, setQuizSuggestion] = useState('');
   const [quizWeakPoints, setQuizWeakPoints] = useState<WeakPoint[]>([]);
 
-  useEffect(() => { fetchPath(); }, []);
-  useEffect(() => { if (sectionId) setActiveSection(sectionId); }, [sectionId]);
-
   // Reset quiz when section changes
   useEffect(() => {
     setQuizState('idle');
@@ -40,102 +63,125 @@ export default function LecturePage() {
     setQuizResults([]);
     setQuizTotalScore(null);
     setQuizSuggestion('');
-  }, [activeSection]);
+    setQuizWeakPoints([]);
+  }, [activeSectionId]);
 
-  const pathData: any = path || {};
-  const chapters = pathData.chapters || pathData.stages || [];
+  const sectionToc = useMemo(() => lecture ? splitSections(lecture) : [], [lecture]);
 
-  // ── Extract current section context ──
-  const getCurrentSectionContext = () => {
-    let sectionTitle = '';
-    let chapterTitle = '';
-    let chapterId = '';
-    const knowledgePoints: string[] = [];
+  useEffect(() => { if (!activeSectionId && sections.length > 0) setActiveSectionId(sections[0].id); }, [sections, activeSectionId]);
 
-    for (const ch of chapters) {
-      const cid = ch.chapter_id || ch.id || '';
-      for (const sec of (ch.sections || ch.nodes || [])) {
-        const sid = sec.section_id || sec.id || '';
-        if (sid === activeSection) {
-          sectionTitle = sec.title || sec.topic || '';
-          chapterTitle = ch.title || '';
-          chapterId = cid;
-          if (sec.topic) knowledgePoints.push(sec.topic);
-          if (sec.description) knowledgePoints.push(sec.description);
-          if (ch.title) knowledgePoints.push(ch.title);
-          break;
+  const currentSection = sections.find((s: Section) => s.id === activeSectionId);
+  const currentIdx = sections.findIndex((s: Section) => s.id === activeSectionId);
+  const prevSection = currentIdx > 0 ? sections[currentIdx - 1] : null;
+  const nextSection = currentIdx < sections.length - 1 ? sections[currentIdx + 1] : null;
+
+  // ── 加载已有讲义 ──
+  const [loadedSectionIds, setLoadedSectionIds] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    if (!activeSectionId) return;
+    if (loadedSectionIds.has(activeSectionId)) return;
+    setLectureLoaded(false);
+    const url = `/api/sections/${encodeURIComponent(activeSectionId)}/lecture?sessionId=${encodeURIComponent(sessionId || '')}`;
+    fetch(url)
+      .then(r => r.json())
+      .then(d => {
+        setLoadedSectionIds(prev => new Set(prev).add(activeSectionId));
+        if (d?.data?.lecture?.content) {
+          setLecture(d.data.lecture.content);
+          setGeneratedSectionIds(prev => new Set(prev).add(activeSectionId));
         }
-      }
-      if (sectionTitle) break;
-    }
+      })
+      .catch(() => setLoadedSectionIds(prev => new Set(prev).add(activeSectionId)))
+      .finally(() => setLectureLoaded(true));
+  }, [activeSectionId, sessionId]);
 
-    // Fallback to path nodes search
-    if (!sectionTitle) {
-      for (const stage of chapters) {
-        for (const node of (stage.nodes || [])) {
-          if (node.id === activeSection) {
-            sectionTitle = node.topic || node.title || '';
-            chapterTitle = stage.title || '';
-            chapterId = stage.id || '';
-            if (node.topic) knowledgePoints.push(node.topic);
-            if (node.description) knowledgePoints.push(node.description);
-            break;
-          }
-        }
-        if (sectionTitle) break;
-      }
-    }
+  const totalKps = chapterCtx?.chapter.sections?.reduce((s, sec) => s + (sec.knowledgePoints?.length ?? 0), 0) ?? 0;
+  const masteredKps = chapterCtx?.chapter.sections?.reduce((s, sec) => s + (sec.knowledgePoints?.filter(k => k.status === 'mastered').length ?? 0), 0) ?? 0;
+  const totalMin = chapterCtx?.chapter.sections?.reduce((s, sec) => s + (sec.estimatedMinutes ?? 45), 0) ?? 0;
 
-    return { sectionTitle, chapterTitle, chapterId, knowledgePoints };
-  };
-
-  const toggle = (id: string) => {
-    const n = new Set(expanded); n.has(id) ? n.delete(id) : n.add(id); setExpanded(n);
-  };
-
-  const handleGenerate = async () => {
+  const handleGenerate = useCallback(async () => {
+    if (!currentSection || !sessionId) return;
     setGenerating(true);
     try {
-      const res = await fetch('/api/chat/stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: `生成图文讲义`, sessionId: `lecture_${activeSection}` }),
+      const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/lecture/generate`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId,
+          sectionTitle: currentSection.title,
+          sectionGoal: currentSection.goal || '',
+          chapterId: chapterCtx?.chapter.id || '',
+          stageId: chapterCtx?.stage.id || '',
+          pathId: path?.id || '',
+          courseId: path?.courseName || '',
+          knowledgePoints: currentSection.knowledgePoints || [],
+        }),
       });
-      const reader = res.body!.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '', content = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try { const evt = JSON.parse(line.slice(6)); if (evt.type === 'messages') content += evt.content || ''; } catch {}
-          }
-        }
+      const data = await res.json();
+      if (data?.data?.lecture?.content) {
+        setLecture(data.data.lecture.content);
+        setGeneratedSectionIds(prev => new Set(prev).add(activeSectionId));
       }
-      setLecture(content);
-    } catch {}
-    setGenerating(false);
-  };
+    } catch {} finally { setGenerating(false); }
+  }, [currentSection, activeSectionId, sessionId, chapterCtx, path]);
+
+  const [videoGenerating, setVideoGenerating] = useState(false);
+  const [videoResult, setVideoResult] = useState<any>(null);
+
+  const sendChat = useCallback(async (question: string) => {
+    if (!question.trim() || !sessionId || !currentSection) return;
+    setChatMsg(''); setChatLoading(true); setChatReply('');
+    try {
+      const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/tutor/ask`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId, question,
+          sectionTitle: currentSection.title,
+          sectionGoal: currentSection.goal || '',
+          knowledgePoints: currentSection.knowledgePoints || [],
+          lectureExcerpt: lecture.slice(0, 1000),
+        }),
+      });
+      const data = await res.json();
+      if (data?.data?.reply) setChatReply(data.data.reply);
+      else if (data?.status === 'error') setChatReply(`出错了：${data.message}`);
+    } catch {} finally { setChatLoading(false); }
+  }, [sessionId, currentSection, activeSectionId, lecture]);
+
+  const handleGenerateVideo = useCallback(async () => {
+    if (!sessionId || !currentSection) return;
+    setVideoGenerating(true); setVideoResult(null);
+    try {
+      const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/tutor/video`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId, sectionTitle: currentSection.title }),
+      });
+      const data = await res.json();
+      setVideoResult(data?.data?.video || { status: 'failed' });
+    } catch {} finally { setVideoGenerating(false); }
+  }, [sessionId, currentSection, activeSectionId]);
+
+  const handleSendChat = useCallback(async () => {
+    await sendChat(chatMsg);
+  }, [chatMsg, sendChat]);
+
+  const loadingLecture = !lectureLoaded;
 
   // ── Quiz generation ──
   const handleQuizGenerate = async () => {
-    const { sectionTitle, chapterTitle, chapterId, knowledgePoints } = getCurrentSectionContext();
+    if (!currentSection) return;
+    const kpNames = (currentSection.knowledgePoints || []).map((kp: any) => kp.name || kp).filter(Boolean);
     setQuizState('generating');
     try {
-      const res = await generateSectionQuiz(activeSection, {
-        sessionId: sessionId || `lecture_${activeSection}`,
-        title: sectionTitle || '当前小节',
-        knowledgePoints: knowledgePoints.length > 0 ? knowledgePoints.slice(0, 5) : [chapterTitle, sectionTitle].filter(Boolean),
+      const res = await generateSectionQuiz(activeSectionId, {
+        sessionId: sessionId || `lecture_${activeSectionId}`,
+        title: currentSection.title || '当前小节',
+        knowledgePoints: kpNames.length > 0 ? kpNames.slice(0, 5) : [chapterCtx?.chapter.title || '', currentSection.title || ''].filter(Boolean),
         lectureSummary: lecture.slice(0, 1500),
         difficulty: 'medium',
-        pathId: pathData.id || '',
-        stageId: chapterId || '',
-        chapterId: chapterId || '',
-        sectionId: activeSection,
+        pathId: path?.id || '',
+        stageId: chapterCtx?.stage.id || '',
+        chapterId: chapterCtx?.chapter.id || '',
+        sectionId: activeSectionId,
       }) as any;
       const data = res?.data || res;
       if (data?.questions && data?.quiz) {
@@ -152,7 +198,6 @@ export default function LecturePage() {
     }
   };
 
-  // ── Quiz answer handling ──
   const handleQuizAnswer = (questionId: string, value: string) => {
     setQuizAnswers(a => ({ ...a, [questionId]: value }));
   };
@@ -167,7 +212,7 @@ export default function LecturePage() {
     }));
     try {
       const res = await submitQuizAttempt(quizId, {
-        sessionId: sessionId || `lecture_${activeSection}`,
+        sessionId: sessionId || `lecture_${activeSectionId}`,
         answers,
       }) as any;
       const data = res?.data || res;
@@ -183,62 +228,136 @@ export default function LecturePage() {
     }
   };
 
-  // ── Quiz type labels ──
   const typeLabel = (t: string) => t === 'choice' ? '选择题' : t === 'truefalse' ? '判断题' : t === 'fill' ? '填空题' : '简答题';
 
   return (
     <div className="flex h-screen -m-6">
-      {/* ── Left sidebar: chapter/section nav ── */}
-      <div className="w-52 border-r border-gray-200 bg-gray-50 overflow-y-auto flex-shrink-0">
-        <div className="p-3 border-b border-gray-200">
-          <span className="text-xs font-medium text-gray-500">{pathData.courseName || '学习路径'}</span>
-        </div>
-        {chapters.map((ch: any, ci: number) => {
-          const cid = ch.chapter_id || `c${ci}`;
-          return (
-            <div key={cid}>
-              <button onClick={() => toggle(cid)} className="w-full flex items-center gap-1.5 px-3 py-2 text-left text-xs hover:bg-gray-100">
-                {expanded.has(cid) ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                <FileText size={12} className="text-gray-400" />
-                <span className="truncate font-medium text-gray-700">{ch.title}</span>
-              </button>
-              {expanded.has(cid) && (ch.sections || ch.nodes || []).map((sec: any, si: number) => {
-                const sid = sec.section_id || sec.id || `s${ci}_${si}`;
-                return (
-                  <button key={sid}
-                    onClick={() => { setActiveSection(sid); nav(`/lecture/${sid}`); }}
-                    className={`w-full text-left pl-8 pr-3 py-1.5 text-xs ${sid === activeSection ? 'bg-blue-50 text-blue-700 border-l-2 border-blue-500' : 'hover:bg-gray-100 text-gray-600'}`}>
-                    {sec.title || sec.topic}
-                  </button>
-                );
-              })}
+      {/* ══ 左：章节 + 小节 ══ */}
+      <div className="w-44 lg:w-52 xl:w-56 bg-white border-r border-surface-200 flex flex-col flex-shrink-0">
+        <div className="p-4 bg-gradient-to-b from-surface-50 to-white border-b border-surface-100">
+          <div className="flex items-center gap-2 mb-2">
+            <div className="w-7 h-7 rounded-lg bg-blue-100 flex items-center justify-center"><Hash size={13} className="text-blue-600" /></div>
+            <p className="text-xs font-bold text-surface-800 leading-snug flex-1">{chapterCtx?.chapter.title || '讲义'}</p>
+          </div>
+          <div className="flex items-center gap-3 text-[10px] text-surface-400">
+            <span className="flex items-center gap-1"><Layers size={10} />{sections.length} 小节</span>
+            <span className="flex items-center gap-1"><GraduationCap size={10} />{totalKps} 知识点</span>
+            <span className="flex items-center gap-1"><Clock size={10} />{Math.round(totalMin / 60)}h</span>
+          </div>
+          {totalKps > 0 && (
+            <div className="flex items-center gap-2 mt-2">
+              <div className="flex-1 h-1.5 bg-surface-100 rounded-full overflow-hidden">
+                <div className="h-full bg-gradient-to-r from-blue-400 to-emerald-400 rounded-full transition-all duration-500" style={{ width: `${Math.round((masteredKps / totalKps) * 100)}%` }} />
+              </div>
+              <span className="text-[10px] font-medium text-surface-500">{Math.round((masteredKps / totalKps) * 100)}%</span>
             </div>
-          );
-        })}
+          )}
+        </div>
+        <div className="flex-1 overflow-y-auto">
+          {sections.map((sec: Section, si: number) => {
+            const isActive = sec.id === activeSectionId;
+            const st = sectionStatusStyle[(sec.status as ContentStatus) || 'not_started'];
+            const hasLecture = (sec.lectureIds?.length ?? 0) > 0 || generatedSectionIds.has(sec.id);
+            const kpCount = sec.knowledgePoints?.length ?? 0;
+            return (
+              <button key={sec.id} onClick={() => setActiveSectionId(sec.id)}
+                className={`w-full text-left px-4 py-3 transition-all group relative ${isActive ? 'bg-blue-50' : 'hover:bg-surface-50'}`}>
+                <div className={`absolute left-0 top-2 bottom-2 w-0.5 rounded-r-full transition-all ${isActive ? 'bg-blue-500' : 'bg-transparent group-hover:bg-surface-200'}`} />
+                <div className="flex items-center gap-2.5">
+                  <div className={`w-2.5 h-2.5 rounded-full ring-2 flex-shrink-0 ${st.dot} ${isActive ? 'scale-110' : ''} transition-transform`} />
+                  <span className={`text-[10px] font-bold w-4 text-right flex-shrink-0 ${isActive ? 'text-blue-500' : 'text-surface-400'}`}>{si + 1}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className={`text-xs truncate transition-colors ${isActive ? 'text-blue-700 font-semibold' : 'text-surface-700 group-hover:text-surface-800'}`}>{sec.title}</p>
+                    <div className="flex items-center gap-2 mt-0.5 text-[10px] text-surface-400">
+                      {hasLecture && <span className="text-blue-400 flex items-center gap-0.5"><BookOpen size={9} />讲义</span>}
+                      <span>{kpCount} 知识点</span>
+                    </div>
+                  </div>
+                  {hasLecture && isActive && <CheckCircle2 size={13} className="text-emerald-400 flex-shrink-0" />}
+                </div>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
-      {/* ── Center: lecture + quiz ── */}
-      <div className="flex-1 flex flex-col min-w-0 border-r border-gray-200">
-        {/* Toolbar */}
-        <div className="px-4 py-2.5 border-b border-gray-200 flex items-center gap-2">
-          <span className="text-sm font-medium truncate flex-1">讲义</span>
-          <button onClick={handleGenerate} disabled={generating}
-            className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white rounded text-xs hover:bg-blue-700 disabled:opacity-50">
-            <Sparkles size={12} />{generating ? '...' : '生成讲义'}
-          </button>
-          <button onClick={handleQuizGenerate} disabled={quizState === 'generating'}
-            className="flex items-center gap-1 px-3 py-1.5 bg-accent-500 text-white rounded text-xs hover:bg-accent-600 disabled:opacity-50"
-            style={{ backgroundColor: '#14b8a6' }}>
-            <HelpCircle size={12} />{quizState === 'generating' ? '...' : '生成小测'}
-          </button>
+      {/* ══ 中：讲义 + 小测 ══ */}
+      <div className="flex-1 flex flex-col min-w-0 bg-surface-50/50">
+        {/* 顶部工具栏 */}
+        <div className="bg-white border-b border-surface-200">
+          <div className="h-1 bg-gradient-to-r from-blue-500 via-violet-500 to-amber-500" />
+          <div className="px-5 py-3.5">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5 text-[10px] text-surface-400 mb-2">
+                  <button onClick={() => nav('/path')} className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-surface-100 hover:text-blue-600 transition-colors">学习路径</button>
+                  <ChevronRight size={10} />
+                  <span className="text-surface-500 truncate max-w-[200px]">{chapterCtx?.chapter.title}</span>
+                </div>
+                <h2 className="text-lg font-bold text-surface-900">{currentSection?.title || '选择小节'}</h2>
+                {currentSection?.goal && (
+                  <p className="text-xs text-surface-400 mt-1.5 flex items-center gap-1.5"><Target size={11} className="text-amber-500 flex-shrink-0" />{currentSection.goal}</p>
+                )}
+                {(currentSection?.knowledgePoints?.length ?? 0) > 0 && (
+                  <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                    {currentSection!.knowledgePoints.map((kp: any) => {
+                      const kpSt = sectionStatusStyle[(kp.status as ContentStatus) || 'not_started'];
+                      return (
+                        <span key={kp.id} onClick={() => updateKnowledgePoint(kp.id, { status: kp.status === 'mastered' ? 'not_started' : 'mastered' })}
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] cursor-pointer hover:opacity-80 transition-opacity ${kp.status === 'mastered' ? 'bg-emerald-50 text-emerald-600' : 'bg-surface-100 text-surface-500'}`}>
+                          <div className={`w-1.5 h-1.5 rounded-full ${kp.status === 'mastered' ? 'bg-emerald-400' : kpSt.dot}`} />
+                          {kp.name}
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button onClick={() => setShowRightPanel(!showRightPanel)}
+                  className={`w-8 h-8 rounded-lg border transition-colors flex items-center justify-center ${showRightPanel ? 'bg-violet-50 border-violet-200 text-violet-500' : 'bg-white border-surface-200 text-surface-400 hover:bg-surface-50'}`}
+                  title={showRightPanel ? '折叠功能面板' : '展开功能面板'}>
+                  <MessageCircle size={14} />
+                </button>
+                {currentSection && (
+                  <>
+                    <button onClick={handleQuizGenerate} disabled={quizState === 'generating'}
+                      className="flex items-center gap-1.5 px-4 py-2.5 bg-accent-500 text-white rounded-xl text-sm font-semibold hover:bg-accent-600 disabled:opacity-50 transition-all shadow-sm"
+                      style={{ backgroundColor: '#14b8a6' }}>
+                      <HelpCircle size={14} />{quizState === 'generating' ? '...' : '生成小测'}
+                    </button>
+                    <button onClick={handleGenerate} disabled={generating || loadingLecture}
+                      className="flex items-center gap-1.5 px-4 py-2.5 bg-gradient-to-r from-blue-600 to-violet-600 text-white rounded-xl text-sm font-semibold hover:from-blue-700 hover:to-violet-700 disabled:opacity-50 transition-all shadow-md shadow-blue-200">
+                      <Sparkles size={14} />{generating ? 'AI 正在生成…' : lecture ? '重新生成' : '生成讲义'}
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+            {sections.length > 1 && (
+              <div className="flex items-center gap-3 mt-3 pt-3 border-t border-surface-100">
+                <button onClick={() => { if (prevSection) setActiveSectionId(prevSection.id); }} disabled={!prevSection}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-xl transition-all disabled:opacity-25 enabled:hover:bg-surface-100 enabled:hover:text-blue-600 text-surface-500">
+                  <ArrowLeft size={13} /><span className="hidden sm:inline">上一节</span>
+                </button>
+                <div className="flex-1 flex items-center justify-center gap-1">
+                  {sections.map((_, i) => (
+                    <div key={i} className={`w-1.5 h-1.5 rounded-full transition-all ${i === currentIdx ? 'bg-blue-500 scale-125' : i < currentIdx ? 'bg-emerald-400' : 'bg-surface-200'}`} />
+                  ))}
+                </div>
+                <button onClick={() => { if (nextSection) setActiveSectionId(nextSection.id); }} disabled={!nextSection}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-xl transition-all disabled:opacity-25 enabled:hover:bg-surface-100 enabled:hover:text-blue-600 text-surface-500">
+                  <span className="hidden sm:inline">下一节</span><ArrowRight size={13} />
+                </button>
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* Scrollable content area */}
         <div className="flex-1 overflow-y-auto">
           {/* ── Quiz Panel ── */}
           {quizState !== 'idle' && (
             <div className="p-4 border-b border-gray-200 bg-gray-50/50">
-              {/* Score summary (after submission) */}
               {quizState === 'submitted' && quizTotalScore !== null && (
                 <div className={`p-4 rounded-2xl mb-4 ${quizTotalScore >= 80 ? 'bg-success-50 border border-success-200' : quizTotalScore >= 50 ? 'bg-warning-50 border border-warning-200' : 'bg-error-50 border border-error-200'}`}>
                   <div className="flex items-center gap-3">
@@ -257,7 +376,6 @@ export default function LecturePage() {
                 </div>
               )}
 
-              {/* Weakness summary */}
               {quizState === 'submitted' && quizWeakPoints.length > 0 && (
                 <div className="p-4 bg-error-50/30 rounded-2xl border border-error-200 mb-4">
                   <h4 className="text-sm font-semibold text-error-700 mb-3">薄弱知识点</h4>
@@ -270,13 +388,9 @@ export default function LecturePage() {
                         )}
                       </div>
                       <div className="flex items-center gap-2 flex-shrink-0 ml-2">
-                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-error-100 text-error-600 font-medium">
-                          错{wp.errorCount}次
-                        </span>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-error-100 text-error-600 font-medium">错{wp.errorCount}次</span>
                         {wp.masteryEstimate != null && (
-                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${wp.masteryEstimate >= 60 ? 'bg-warning-100 text-warning-600' : 'bg-error-100 text-error-600'}`}>
-                            掌握{wp.masteryEstimate}%
-                          </span>
+                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${wp.masteryEstimate >= 60 ? 'bg-warning-100 text-warning-600' : 'bg-error-100 text-error-600'}`}>掌握{wp.masteryEstimate}%</span>
                         )}
                       </div>
                     </div>
@@ -284,7 +398,6 @@ export default function LecturePage() {
                 </div>
               )}
 
-              {/* Generating indicator */}
               {quizState === 'generating' && (
                 <div className="flex items-center gap-3 p-4 text-surface-500">
                   <Loader2 size={18} className="animate-spin text-accent-500" />
@@ -292,7 +405,6 @@ export default function LecturePage() {
                 </div>
               )}
 
-              {/* Questions */}
               {(quizState === 'answering' || quizState === 'submitted') && quizQuestions.map((q, idx) => {
                 const result = quizResults.find(r => r.questionId === q.questionId);
                 const answer = quizAnswers[q.questionId] || '';
@@ -300,30 +412,20 @@ export default function LecturePage() {
 
                 return (
                   <div key={q.questionId} className="bg-white rounded-2xl shadow-soft p-5 mb-4">
-                    {/* Header */}
                     <div className="flex items-center gap-2 mb-3">
                       <span className="text-sm font-bold text-primary-600">#{idx + 1}</span>
-                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary-50 text-primary-600 font-medium">
-                        {typeLabel(q.type)}
-                      </span>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary-50 text-primary-600 font-medium">{typeLabel(q.type)}</span>
                       {q.difficulty && (
                         <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${q.difficulty === 'easy' ? 'bg-success-50 text-success-600' : q.difficulty === 'hard' ? 'bg-error-50 text-error-600' : 'bg-warning-50 text-warning-600'}`}>
                           {q.difficulty === 'easy' ? '简单' : q.difficulty === 'hard' ? '困难' : '中等'}
                         </span>
                       )}
                       {result && (
-                        <span className={`ml-auto text-sm font-bold ${result.isCorrect ? 'text-success-500' : 'text-error-500'}`}>
-                          {result.score}分
-                        </span>
+                        <span className={`ml-auto text-sm font-bold ${result.isCorrect ? 'text-success-500' : 'text-error-500'}`}>{result.score}分</span>
                       )}
                     </div>
+                    <div className="text-sm text-surface-800 mb-4 leading-relaxed"><Markdown content={q.stem} /></div>
 
-                    {/* Stem */}
-                    <div className="text-sm text-surface-800 mb-4 leading-relaxed">
-                      <Markdown content={q.stem} />
-                    </div>
-
-                    {/* Answer area */}
                     {q.type === 'choice' && q.options && (
                       <div className="space-y-2">
                         {q.options.map((opt: string, oi: number) => {
@@ -336,13 +438,9 @@ export default function LecturePage() {
                           else if (isSelected && !isSubmitted) cls += ' border-primary-400 bg-primary-50/70';
                           else cls += ' border-surface-200 hover:border-primary-300 bg-white';
                           return (
-                            <button key={letter}
-                              disabled={isSubmitted}
-                              onClick={() => handleQuizAnswer(q.questionId, letter)}
+                            <button key={letter} disabled={isSubmitted} onClick={() => handleQuizAnswer(q.questionId, letter)}
                               className={`w-full text-left px-4 py-3 rounded-xl transition-all flex items-center gap-3 ${cls}`}>
-                              <span className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 ${isSelected && !isSubmitted ? 'bg-primary-500 text-white' : isSubmitted && isCorrectAnswer ? 'bg-success-500 text-white' : isSubmitted && isSelected ? 'bg-error-500 text-white' : 'bg-surface-100 text-surface-500'}`}>
-                                {letter}
-                              </span>
+                              <span className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 ${isSelected && !isSubmitted ? 'bg-primary-500 text-white' : isSubmitted && isCorrectAnswer ? 'bg-success-500 text-white' : isSubmitted && isSelected ? 'bg-error-500 text-white' : 'bg-surface-100 text-surface-500'}`}>{letter}</span>
                               <span className="text-sm"><Markdown content={opt} /></span>
                               {isSubmitted && isCorrectAnswer && <Check className="w-4 h-4 text-success-500 ml-auto" />}
                               {isSubmitted && isSelected && !result?.isCorrect && <X className="w-4 h-4 text-error-500 ml-auto" />}
@@ -363,10 +461,7 @@ export default function LecturePage() {
                           else if (isSelected && !isSubmitted) cls += ' border-primary-400 bg-primary-50/70';
                           else cls += ' border-surface-200 hover:border-primary-300';
                           return (
-                            <button key={v}
-                              disabled={isSubmitted}
-                              onClick={() => handleQuizAnswer(q.questionId, v)}
-                              className={cls}>
+                            <button key={v} disabled={isSubmitted} onClick={() => handleQuizAnswer(q.questionId, v)} className={cls}>
                               {v === 'true' ? '✓ 正确' : '✗ 错误'}
                             </button>
                           );
@@ -375,100 +470,265 @@ export default function LecturePage() {
                     )}
 
                     {(q.type === 'fill' || q.type === 'shortanswer') && (
-                      <textarea
-                        value={answer}
-                        onChange={e => handleQuizAnswer(q.questionId, e.target.value)}
-                        disabled={isSubmitted}
-                        rows={q.type === 'shortanswer' ? 4 : 2}
-                        placeholder="输入你的答案…"
-                        className="w-full px-4 py-3 bg-surface-50 border-2 border-surface-200 rounded-xl resize-none focus:border-primary-400 focus:outline-none disabled:opacity-60 text-sm"
-                      />
+                      <textarea value={answer} onChange={e => handleQuizAnswer(q.questionId, e.target.value)} disabled={isSubmitted}
+                        rows={q.type === 'shortanswer' ? 4 : 2} placeholder="输入你的答案…"
+                        className="w-full px-4 py-3 bg-surface-50 border-2 border-surface-200 rounded-xl resize-none focus:border-primary-400 focus:outline-none disabled:opacity-60 text-sm" />
                     )}
 
-                    {/* Result detail after submission */}
                     {result && (
                       <div className={`mt-4 p-3 rounded-xl ${result.isCorrect ? 'bg-success-50/50 border border-success-200' : 'bg-error-50/50 border border-error-200'}`}>
                         <div className="flex items-center gap-2 mb-1">
                           {result.isCorrect ? <Check className="w-4 h-4 text-success-500" /> : <X className="w-4 h-4 text-error-500" />}
-                          <span className={`text-xs font-medium ${result.isCorrect ? 'text-success-600' : 'text-error-600'}`}>
-                            {result.isCorrect ? '正确' : '错误'}
-                          </span>
-                          {result.errorLabel && (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-error-100 text-error-600">{result.errorLabel}</span>
-                          )}
+                          <span className={`text-xs font-medium ${result.isCorrect ? 'text-success-600' : 'text-error-600'}`}>{result.isCorrect ? '正确' : '错误'}</span>
+                          {result.errorLabel && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-error-100 text-error-600">{result.errorLabel}</span>}
                         </div>
                         {!result.isCorrect && result.correctAnswer && (
                           <p className="text-xs text-surface-600 mt-1">正确答案：<span className="text-success-600 font-medium">{result.correctAnswer}</span></p>
                         )}
-                        {result.explanation && (
-                          <p className="text-xs text-surface-500 mt-1 leading-relaxed">{result.explanation}</p>
-                        )}
-                        {result.feedback && (
-                          <p className="text-xs text-primary-600 mt-1">💡 {result.feedback}</p>
-                        )}
+                        {result.explanation && <p className="text-xs text-surface-500 mt-1 leading-relaxed">{result.explanation}</p>}
+                        {result.feedback && <p className="text-xs text-primary-600 mt-1">💡 {result.feedback}</p>}
                       </div>
                     )}
                   </div>
                 );
               })}
 
-              {/* Submit button */}
               {quizState === 'answering' && (
                 <div className="flex items-center justify-between pt-2">
                   <span className="text-xs text-surface-400">
                     {allAnswered ? '已完成所有题目' : `已答 ${Object.keys(quizAnswers).filter(k => quizAnswers[k]?.trim()).length} / ${quizQuestions.length} 题`}
                   </span>
-                  <button
-                    onClick={handleQuizSubmit}
-                    disabled={!allAnswered}
+                  <button onClick={handleQuizSubmit} disabled={!allAnswered}
                     className="px-6 py-2.5 bg-accent-500 text-white rounded-xl text-sm font-medium hover:bg-accent-600 disabled:opacity-40 transition-colors shadow-sm"
-                    style={{ backgroundColor: allAnswered ? '#14b8a6' : undefined }}>
-                    提交批改
-                  </button>
+                    style={{ backgroundColor: allAnswered ? '#14b8a6' : undefined }}>提交批改</button>
                 </div>
               )}
 
-              {/* Re-generate button after submission */}
               {quizState === 'submitted' && (
                 <div className="flex justify-end pt-2">
-                  <button
-                    onClick={() => { setQuizState('idle'); setQuizQuestions([]); setQuizAnswers({}); setQuizResults([]); }}
-                    className="px-4 py-2 text-sm text-surface-500 hover:text-surface-700 hover:bg-surface-100 rounded-xl transition-colors">
-                    关闭小测
-                  </button>
+                  <button onClick={() => { setQuizState('idle'); setQuizQuestions([]); setQuizAnswers({}); setQuizResults([]); }}
+                    className="px-4 py-2 text-sm text-surface-500 hover:text-surface-700 hover:bg-surface-100 rounded-xl transition-colors">关闭小测</button>
                 </div>
               )}
             </div>
           )}
 
           {/* ── Lecture content ── */}
-          <div className="p-4">
-            {lecture ? (
-              <div className="prose prose-sm max-w-none"><Markdown content={lecture} /></div>
-            ) : (
-              <div className="flex flex-col items-center justify-center h-64 text-gray-400 gap-2">
-                <Brain size={36} /><p className="text-sm">点击「生成讲义」创建内容</p>
+          {lecture ? (
+            <div className="flex gap-0">
+              <div className="flex-1 min-w-0 px-5 py-4 space-y-5">
+                {sectionToc.map((sec) => (
+                  <section key={sec.id} id={sec.id} className="bg-white rounded-2xl p-6 shadow-soft border border-surface-100">
+                    <Markdown content={sec.content} />
+                  </section>
+                ))}
               </div>
-            )}
-          </div>
+              {sectionToc.length > 1 && (
+                <div className="w-40 flex-shrink-0 hidden xl:block pr-2 pt-4">
+                  <div className="sticky top-4">
+                    <p className="text-[10px] font-bold text-surface-400 uppercase tracking-wider mb-2">页面目录</p>
+                    <nav className="space-y-0.5">
+                      {sectionToc.map((sec) => (
+                        <a key={sec.id} href={`#${sec.id}`}
+                          className="block text-[11px] text-surface-500 hover:text-blue-600 py-1.5 px-2 rounded-lg hover:bg-blue-50 transition-all truncate">{sec.title}</a>
+                      ))}
+                    </nav>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : loadingLecture ? (
+            <div className="flex items-center justify-center h-full">
+              <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center h-full gap-5">
+              <div className="relative">
+                <div className="w-24 h-24 rounded-3xl bg-gradient-to-br from-blue-100 via-violet-100 to-amber-100 flex items-center justify-center shadow-lg shadow-blue-100">
+                  <Brain size={40} className="text-blue-500" />
+                </div>
+                <div className="absolute -bottom-1 -right-1 w-8 h-8 rounded-full bg-white shadow-md flex items-center justify-center">
+                  <Sparkles size={14} className="text-amber-500" />
+                </div>
+              </div>
+              <div className="text-center">
+                <p className="text-base font-semibold text-surface-700">准备开始学习</p>
+                <p className="text-sm text-surface-400 mt-1 max-w-xs">点击「生成讲义」，AI 将根据本节知识点创建专属学习材料</p>
+              </div>
+              <button onClick={handleGenerate} disabled={generating || loadingLecture}
+                className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-blue-600 to-violet-600 text-white rounded-xl text-sm font-semibold hover:from-blue-700 hover:to-violet-700 disabled:opacity-50 transition-all shadow-md shadow-blue-200">
+                <Sparkles size={15} />{generating ? '生成中…' : '开始生成讲义'}
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* ── Right panel: AI tutor ── */}
-      <div className="w-64 bg-gray-50 flex flex-col flex-shrink-0">
-        <div className="px-3 py-2.5 border-b border-gray-200">
-          <span className="text-xs font-medium text-gray-500 flex items-center gap-1"><MessageCircle size={12} />智能辅导</span>
+      {/* ══ 右：功能面板 ══ */}
+      {showRightPanel && (
+      <div className="w-64 lg:w-72 xl:w-80 bg-white border-l border-surface-200 flex flex-col flex-shrink-0 overflow-hidden relative">
+        <button onClick={() => setShowRightPanel(false)}
+          className="absolute top-2 right-2 z-10 w-6 h-6 rounded-md hover:bg-surface-100 flex items-center justify-center text-surface-400 hover:text-surface-600 transition-colors"
+          title="折叠功能面板">
+          <ChevronRight size={14} />
+        </button>
+        <div className="flex border-b border-surface-200 flex-shrink-0">
+          {([
+            { key: 'tutor' as const, label: '智能辅导', icon: <MessageCircle size={12} />, color: 'violet' },
+            { key: 'resources' as const, label: '相关资源', icon: <Lightbulb size={12} />, color: 'amber' },
+            { key: 'quiz' as const, label: '知识点', icon: <Target size={12} />, color: 'emerald' },
+          ]).map(tab => (
+            <button key={tab.key} onClick={() => setRightTab(tab.key)}
+              className={`flex-1 flex items-center justify-center gap-1 py-2.5 text-[10px] font-medium transition-all border-b-2 ${rightTab === tab.key ? `border-${tab.color}-500 text-${tab.color}-700 bg-${tab.color}-50` : 'border-transparent text-surface-400 hover:text-surface-600'}`}>
+              {tab.icon}{tab.label}
+            </button>
+          ))}
         </div>
-        <div className="flex-1 p-3 text-xs text-gray-400">针对当前章节提问。</div>
-        <div className="p-2 border-t border-gray-200">
-          <div className="flex gap-1">
-            <input type="text" value={chatMsg} onChange={e => setChatMsg(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && setChatMsg('')}
-              placeholder="提问..." className="flex-1 px-2 py-1.5 border border-gray-300 rounded text-xs" />
-            <button className="px-2 py-1.5 bg-blue-600 text-white rounded text-xs"><Send size={12} /></button>
-          </div>
+
+        <div className="flex-1 flex flex-col min-h-0 overflow-y-auto">
+          {rightTab === 'tutor' && (
+            <div className="flex flex-col flex-1 min-h-0">
+              {!chatReply && !chatLoading && currentSection && (
+                <div className="px-3 py-2 space-y-1 flex-shrink-0">
+                  <p className="text-[10px] font-medium text-surface-400 uppercase tracking-wide mb-2 px-1">AI 助手</p>
+                  <div className="space-y-2">
+                    <button onClick={() => sendChat(`请详细解释「${currentSection.knowledgePoints?.[0]?.name || '核心概念'}」的含义、原理和应用场景。`)}
+                      className="w-full p-3 rounded-xl bg-gradient-to-br from-violet-50 to-blue-50 border border-violet-100 hover:border-violet-200 hover:shadow-sm transition-all text-left group">
+                      <div className="flex items-center gap-2 mb-1">
+                        <div className="w-7 h-7 rounded-lg bg-violet-100 flex items-center justify-center group-hover:scale-110 transition-transform"><Brain size={13} className="text-violet-600" /></div>
+                        <span className="text-xs font-semibold text-surface-700">概念讲解</span>
+                      </div>
+                      <p className="text-[10px] text-surface-400 leading-relaxed">解释"{currentSection.knowledgePoints?.[0]?.name || '核心概念'}"的含义、原理和应用</p>
+                    </button>
+                    <button onClick={() => sendChat('请用图解（Mermaid）和文字结合的方式，说明本节的核心知识结构和概念关系。')}
+                      className="w-full p-3 rounded-xl bg-gradient-to-br from-amber-50 to-orange-50 border border-amber-100 hover:border-amber-200 hover:shadow-sm transition-all text-left group">
+                      <div className="flex items-center gap-2 mb-1">
+                        <div className="w-7 h-7 rounded-lg bg-amber-100 flex items-center justify-center group-hover:scale-110 transition-transform"><Lightbulb size={13} className="text-amber-600" /></div>
+                        <span className="text-xs font-semibold text-surface-700">图解结构</span>
+                      </div>
+                      <p className="text-[10px] text-surface-400 leading-relaxed">用知识结构图和文字梳理本节概念关系</p>
+                    </button>
+                    <button onClick={() => sendChat(`请根据本节「${currentSection.title}」的内容，出一道中等难度的练习题并给出详细解析。`)}
+                      className="w-full p-3 rounded-xl bg-gradient-to-br from-emerald-50 to-teal-50 border border-emerald-100 hover:border-emerald-200 hover:shadow-sm transition-all text-left group">
+                      <div className="flex items-center gap-2 mb-1">
+                        <div className="w-7 h-7 rounded-lg bg-emerald-100 flex items-center justify-center group-hover:scale-110 transition-transform"><Target size={13} className="text-emerald-600" /></div>
+                        <span className="text-xs font-semibold text-surface-700">随堂练习</span>
+                      </div>
+                      <p className="text-[10px] text-surface-400 leading-relaxed">根据本节内容生成练习题并给出详细解析</p>
+                    </button>
+                    <button onClick={handleGenerateVideo} disabled={videoGenerating}
+                      className="w-full p-3 rounded-xl bg-gradient-to-br from-rose-50 to-pink-50 border border-rose-100 hover:border-rose-200 hover:shadow-sm transition-all text-left group disabled:opacity-60">
+                      <div className="flex items-center gap-2 mb-1">
+                        <div className="w-7 h-7 rounded-lg bg-rose-100 flex items-center justify-center group-hover:scale-110 transition-transform"><Sparkles size={13} className="text-rose-600" /></div>
+                        <span className="text-xs font-semibold text-surface-700">讲解视频</span>
+                      </div>
+                      <p className="text-[10px] text-surface-400 leading-relaxed">{videoGenerating ? '正在生成微课视频脚本…' : videoResult ? '已生成脚本，点击查看' : '生成本节微课讲解视频'}</p>
+                    </button>
+                  </div>
+                </div>
+              )}
+              {videoResult && (
+                <div className="px-3 py-2 flex-shrink-0">
+                  <div className="p-3 rounded-xl bg-rose-50 border border-rose-100">
+                    <p className="text-[10px] font-semibold text-rose-600 mb-1">🎬 讲解视频</p>
+                    <p className="text-xs text-surface-600 leading-relaxed whitespace-pre-wrap line-clamp-6">{videoResult.script || '脚本生成中...'}</p>
+                    {videoResult.status === 'script_ready_provider_not_configured' && (
+                      <p className="text-[10px] text-rose-400 mt-1">视频模型尚未配置，已生成脚本草稿</p>
+                    )}
+                  </div>
+                </div>
+              )}
+              <div className="flex-1 overflow-y-auto px-3 min-h-0">
+                {chatReply ? (
+                  <div className="text-xs surface-600 leading-relaxed"><Markdown content={chatReply} /></div>
+                ) : !chatLoading && (
+                  <p className="text-[11px] text-surface-400 px-1">点击快捷提问或输入问题，AI 结合讲义和知识点为你解答</p>
+                )}
+                {chatLoading && (
+                  <div className="flex items-center gap-2 text-xs text-violet-500 px-1"><div className="w-3 h-3 border-2 border-violet-400 border-t-transparent rounded-full animate-spin" />AI 正在分析…</div>
+                )}
+              </div>
+              <div className="p-3 border-t border-surface-100 flex-shrink-0">
+                <div className="flex gap-1.5">
+                  <input value={chatMsg} onChange={e => setChatMsg(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') handleSendChat(); }} placeholder="输入问题…"
+                    className="flex-1 px-3 py-2 bg-surface-50 border border-surface-200 rounded-lg text-xs focus:outline-none focus:border-violet-300 focus:ring-2 focus:ring-violet-100 transition-all" />
+                  <button onClick={handleSendChat} disabled={chatLoading} className="px-3 py-2 bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-50 transition-colors shadow-sm"><Send size={13} /></button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {rightTab === 'resources' && (
+            <div className="p-4 space-y-3">
+              <div className="p-3 rounded-xl bg-surface-50 border border-surface-100">
+                <p className="text-[10px] font-medium text-surface-400 uppercase tracking-wide mb-2">思维导图</p>
+                {chapterCtx?.chapter.mindmapId ? (
+                  <a onClick={() => nav(`/resources/${chapterCtx.chapter.mindmapId}`)}
+                    className="flex items-center gap-2 text-sm font-medium text-amber-700 hover:text-amber-800 cursor-pointer"><Brain size={16} />查看章节思维导图</a>
+                ) : (
+                  <p className="text-xs text-surface-400">暂未生成，在路径页章节详情中生成</p>
+                )}
+              </div>
+              <div className="p-3 rounded-xl bg-surface-50 border border-surface-100">
+                <p className="text-[10px] font-medium text-surface-400 uppercase tracking-wide mb-2">讲义状态</p>
+                {lecture ? (
+                  <p className="text-xs text-emerald-600 flex items-center gap-1.5"><CheckCircle2 size={13} />已生成</p>
+                ) : (
+                  <p className="text-xs text-surface-400">选择小节后点击「生成讲义」</p>
+                )}
+              </div>
+              <div className="p-3 rounded-xl bg-surface-50 border border-surface-100">
+                <p className="text-[10px] font-medium text-surface-400 uppercase tracking-wide mb-2">章节统计</p>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="text-center p-2 bg-white rounded-lg"><p className="font-bold text-surface-700">{sections.length}</p><p className="text-[10px] text-surface-400">小节</p></div>
+                  <div className="text-center p-2 bg-white rounded-lg"><p className="font-bold text-surface-700">{totalKps}</p><p className="text-[10px] text-surface-400">知识点</p></div>
+                  <div className="text-center p-2 bg-white rounded-lg"><p className="font-bold text-surface-700">{masteredKps}</p><p className="text-[10px] text-surface-400">已掌握</p></div>
+                  <div className="text-center p-2 bg-white rounded-lg"><p className="font-bold text-surface-700">{Math.round(totalMin / 60)}h</p><p className="text-[10px] text-surface-400">总时长</p></div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {rightTab === 'quiz' && (
+            <div className="p-4">
+              {currentSection ? (
+                <>
+                  <p className="text-[10px] font-medium text-surface-400 uppercase tracking-wide mb-3">
+                    {currentSection.title} · {currentSection.knowledgePoints?.length ?? 0} 个知识点
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {(currentSection.knowledgePoints ?? []).map((kp: any, i: number) => {
+                      const isMastered = kp.status === 'mastered';
+                      return (
+                        <button key={i} onClick={() => updateKnowledgePoint(kp.id, { status: isMastered ? 'not_started' : 'mastered' })}
+                          className={`px-2.5 py-1 rounded-full text-[10px] font-medium transition-all cursor-pointer ${isMastered ? 'bg-emerald-100 text-emerald-600 line-through' : 'bg-surface-100 text-surface-500 hover:bg-surface-200 hover:text-surface-700'}`}>
+                          {kp.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {masteredKps === totalKps && totalKps > 0 && (
+                    <div className="mt-4 p-3 bg-emerald-50 rounded-xl text-center">
+                      <CheckCircle2 size={18} className="text-emerald-500 mx-auto mb-1" />
+                      <p className="text-xs font-semibold text-emerald-700">全部掌握！</p>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <p className="text-xs text-surface-400">选择小节后查看知识点</p>
+              )}
+            </div>
+          )}
         </div>
       </div>
+      )}
+      {!showRightPanel && (
+        <button onClick={() => setShowRightPanel(true)}
+          className="absolute right-4 top-4 z-10 w-8 h-8 rounded-lg bg-white border border-surface-200 shadow-sm flex items-center justify-center hover:bg-surface-50 transition-colors"
+          title="展开功能面板">
+          <MessageCircle size={14} className="text-surface-400" />
+        </button>
+      )}
     </div>
   );
 }

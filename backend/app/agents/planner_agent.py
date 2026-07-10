@@ -11,6 +11,13 @@ from typing import Any
 from app.agents.base import BaseAgent, register_agent
 from app.services.course_catalog import course_catalog
 from app.services.llm_client import LLMClientError
+from app.utils.id_factory import (
+    make_chapter_id,
+    make_kp_id,
+    make_path_id,
+    make_section_id,
+    make_stage_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,30 +30,7 @@ class PlannerAgent(BaseAgent):
     # ── 公共接口 ──
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
-        # ── Try chapter-based planning first ──
-        try:
-            chapters = self._generate_chapters(context, profile, planning_points, total_days, diag_meta)
-            if chapters:
-                return self._make_chapter_result(chapters, total_days, diag_meta)
-        except Exception:
-            pass
-
-        # ── Try DeepTutor mastery_path capability (true agent with mastery tracking) ──
-        try:
-            from app.services.deeptutor_client import deeptutor_call
-            course = str(context.get("course_id", "") or "")
-            message = str(context.get("user_message", "") or "")
-            prompt = f"为学生规划学习路径。课程：{course}。需求：{message}"
-            dt_result = deeptutor_call("mastery_path", prompt)
-            if dt_result and len(dt_result) > 50:
-                stages = self._parse_mastery_path(dt_result)
-                if stages:
-                    result = self._make_result(stages, self._infer_days(self._collect_time_text(context), context.get("profile", {})), {})
-                    return result
-        except Exception as e:
-            logger.debug("mastery_path skip: %s", e)
-
-        # Fallback to 4-stage planner
+        # ── Compute shared context needed by all planning paths ──
         diagnosis = context.get("diagnosis") if isinstance(context.get("diagnosis"), dict) else {}
         profile = context.get("profile", {})
         mode = str(context.get("mode", "plan"))
@@ -60,6 +44,29 @@ class PlannerAgent(BaseAgent):
         time_text = self._collect_time_text(context)
         total_days = self._infer_days(time_text, profile)
         diag_meta = self._build_diagnosis_meta(diagnosis, weak_points, total_days, profile, time_text)
+
+        # ── Try chapter-based planning first ──
+        try:
+            chapters = self._generate_chapters(context, profile, planning_points, total_days, diag_meta)
+            if chapters:
+                return self._make_chapter_result(chapters, total_days, diag_meta)
+        except Exception:
+            pass
+
+        # ── Try DeepTutor mastery_path capability ──
+        try:
+            from app.services.deeptutor_client import deeptutor_call
+            course = str(context.get("course_id", "") or "")
+            message = str(context.get("user_message", "") or "")
+            prompt = f"为学生规划学习路径。课程：{course}。需求：{message}"
+            dt_result = deeptutor_call("mastery_path", prompt)
+            if dt_result and len(dt_result) > 50:
+                stages = self._parse_mastery_path(dt_result)
+                if stages:
+                    result = self._make_result(stages, self._infer_days(self._collect_time_text(context), context.get("profile", {})), {})
+                    return result
+        except Exception as e:
+            logger.debug("mastery_path skip: %s", e)
 
         if diag_meta["needs_more_diagnosis"] and not weak_points and not planning_points:
             planning_points = [self._make_probe_point(diagnosis)]
@@ -111,10 +118,12 @@ class PlannerAgent(BaseAgent):
             return None
         try:
             course = str(context.get("course_id", "") or "")
-            weak_names = [p.get("name", "") for p in planning_points[:5]]
+            weak_names = [p.get("name", "") for p in planning_points[:10]]
+            kp_total = max(1, len(planning_points))
+            stage_count = max(2, min(8, max(2, total_days // 4)))
             prompt = f"""你是课程架构师。为「{course}」设计学习路径。
 学生：{total_days}天，薄弱点：{chr(44).join(weak_names) if weak_names else chr(39)+chr(39)}。
-要求：3-6阶段难度递增，优先薄弱点，每阶段2-4类资源。
+要求：大约{stage_count}个阶段，难度递增，优先覆盖薄弱点，每阶段2-4类资源。具体数量按知识点分布灵活调整。
 输出JSON：{{"stages":[{{"stage_id":"s1","title":"","duration":"","goal":"","tasks":[],"resource_types":[],"estimated_days":N}}],"rationale":""}}"""
             raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.3, max_tokens=2000)
             s, e = raw.find("{"), raw.rfind("}") + 1
@@ -190,28 +199,99 @@ class PlannerAgent(BaseAgent):
 
     def _generate_chapters(self, context, profile, planning_points, total_days, diag_meta):
         course = str(context.get('course_id', '') or '')
-        weak = [p.get('name','') for p in planning_points[:5]]
-        prompt = f"""你是课程设计师。为「{course}」设计教科书式章节结构。
-学时：{total_days}天。薄弱点：{','.join(weak) if weak else '待诊断'}。
-要求：3-6章，每章2-4节。必须包含sections数组。每节有section_id、title、goal、estimated_minutes。
-严格按此JSON格式输出：
-{{"chapters":[{{"chapter_id":"ch1","title":"第一章 标题","order":1,"sections":[{{"section_id":"ch1_s1","title":"1.1 节标题","goal":"学习目标","estimated_minutes":60}},{{"section_id":"ch1_s2","title":"1.2 节标题","goal":"学习目标","estimated_minutes":45}}]}},{{"chapter_id":"ch2","title":"第二章 标题","order":2,"sections":[...]}}]}}"""
+        weak = [p.get('name','') for p in planning_points[:10]]
+        prompt = f"""你是课程设计师。为「{course}」设计学习路径。
+总学时：{total_days}天。薄弱知识点：{','.join(weak) if weak else '待诊断'}。
+
+请按照阶段(stages)→章节(chapters)→小节(sections)→知识点(knowledge_points)的层级输出。
+阶段和章节数量根据内容自行决定。
+知识点type取：concept|procedure|memory。
+严格按此JSON格式：
+{{"stages":[{{"stage_id":"s0","title":"第一阶段标题","order":0,"chapters":[{{"chapter_id":"ch0","title":"第一章标题","order":0,"sections":[{{"section_id":"sec0","title":"1.1 节标题","goal":"学习目标","estimated_minutes":60,"knowledge_points":[{{"name":"知识点","type":"concept"}}]}}]}}]}}]}}"""
         if self.llm_client:
             try:
-                raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.3, max_tokens=2000)
+                raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.3, max_tokens=4000)
                 s, e = raw.find("{"), raw.rfind("}") + 1
-                if s >= 0 and e > s: return json.loads(raw[s:e]).get("chapters", [])
+                if s >= 0 and e > s:
+                    data = json.loads(raw[s:e])
+                    stages = data.get("stages") or data.get("chapters") or []
+                    return self._rewrite_chapter_ids(context, stages)
             except: pass
         return None
 
-    def _make_chapter_result(self, chapters, total_days, diag_meta):
-        total_sections = sum(len(c.get("sections",[])) for c in chapters)
+    def _rewrite_chapter_ids(self, context, chapters: list) -> list:
+        """Rewrite LLM-generated IDs with canonical, stable IDs."""
+        session_id = str(context.get("session_id", "") or "")
+        course_id = str(context.get("course_id", "") or "")
+        path_id = make_path_id(session_id)
+
+        rewritten = []
+        for stage_index, stage in enumerate(chapters):
+            # If the LLM returned chapters directly (not wrapped in stages),
+            # treat them as one stage
+            stage_id = make_stage_id(path_id, stage_index)
+            rewritten_stage = {
+                "stage_id": stage_id,
+                "title": stage.get("title", f"阶段 {stage_index + 1}"),
+                "order": stage_index,
+                "chapters": [],
+            }
+            raw_chapters = stage.get("chapters") or [stage]  # support nested or flat
+            for ch_index, ch in enumerate(raw_chapters):
+                chapter_id = make_chapter_id(stage_id, ch_index)
+                rewritten_ch = {
+                    "chapter_id": chapter_id,
+                    "title": ch.get("title", f"第{ch_index + 1}章"),
+                    "order": ch_index,
+                    "sections": [],
+                }
+                for sec_index, sec in enumerate(ch.get("sections", [])):
+                    section_id = make_section_id(chapter_id, sec_index)
+                    kps = []
+                    for kp_index, kp in enumerate(sec.get("knowledge_points", [])):
+                        kps.append({
+                            "kp_id": make_kp_id(section_id, kp_index),
+                            "name": kp.get("name", ""),
+                            "type": kp.get("type", "concept"),
+                        })
+                    rewritten_ch["sections"].append({
+                        "section_id": section_id,
+                        "title": sec.get("title", f"{sec_index + 1}.{sec_index + 1}"),
+                        "goal": sec.get("goal", ""),
+                        "estimated_minutes": sec.get("estimated_minutes", 45),
+                        "knowledge_points": kps,
+                    })
+                rewritten_stage["chapters"].append(rewritten_ch)
+            rewritten.append(rewritten_stage)
+        return rewritten
+
+    def _make_chapter_result(self, stages_with_chapters, total_days, diag_meta):
+        """Wrap chapter-structured stages into the canonical result format.
+
+        Each stage already contains chapters → sections → knowledge_points
+        with canonical IDs from _rewrite_chapter_ids.
+        """
+        total_chapters = sum(len(s.get("chapters", [])) for s in stages_with_chapters)
+        total_sections = sum(
+            len(c.get("sections", []))
+            for s in stages_with_chapters
+            for c in s.get("chapters", [])
+        )
+        total_kps = sum(
+            len(sec.get("knowledge_points", []))
+            for s in stages_with_chapters
+            for c in s.get("chapters", [])
+            for sec in c.get("sections", [])
+        )
         return {
-            "learning_path": chapters, "stages": chapters,
-            "chapters": chapters, "estimatedDays": total_days,
+            "learning_path": stages_with_chapters,
+            "stages": stages_with_chapters,
+            "chapters": stages_with_chapters,
+            "estimatedDays": total_days,
             "section_count": total_sections,
-            "plan_summary": f"{len(chapters)}章{total_sections}节",
-            "summary": f"{len(chapters)}章{total_sections}节",
+            "knowledge_point_count": total_kps,
+            "plan_summary": f"{len(stages_with_chapters)}阶段{total_chapters}章{total_sections}节{total_kps}知识点",
+            "summary": f"{len(stages_with_chapters)}阶段{total_chapters}章{total_sections}节",
             "diagnosis_used": diag_meta.get("diagnosis_used", False),
             "needs_more_diagnosis": diag_meta.get("needs_more_diagnosis", False),
             "agent_step": {"agent_id": self.agent_id, "agent_name": self.agent_name, "status": "completed"},

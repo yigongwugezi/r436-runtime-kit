@@ -352,8 +352,38 @@ export default function LearningPathPage() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 gap-2.5">
-                {activeStage?.nodes?.map((node: any, ni: number) => {
+              {/* -- 章节列表（新格式） -- */}
+              { activeStage?.chapters?.length > 0 && (
+                <div className="grid grid-cols-1 gap-2.5 mb-4">
+                  {activeStage.chapters.map((ch: any, ci: number) => {
+                    const secCount = ch.sections?.length ?? 0;
+                    const totalKps = ch.sections?.reduce((s: number, sec: any) => s + (sec.knowledgePoints?.length ?? 0), 0) ?? 0;
+                    return (
+                      <div key={ch.id}
+                        onClick={() => nav(`/lecture/${encodeURIComponent(ch.id)}`)}
+                        className="flex items-center gap-3 p-3.5 rounded-xl cursor-pointer transition-all border border-surface-200 bg-surface-50 hover:border-primary-300 hover:shadow-elevated group">
+                        <div className="w-9 h-9 rounded-lg bg-primary-100 text-primary-600 flex items-center justify-center flex-shrink-0 font-bold text-sm">{ci + 1}</div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-semibold text-surface-800 truncate group-hover:text-primary-600 transition-colors">{ch.title}</p>
+                          </div>
+                          <div className="flex items-center gap-2 mt-0.5 text-[10px] text-surface-400">
+                            <span className="flex items-center gap-0.5"><BookOpen size={10} />{secCount} 小节</span>
+                            <span>{totalKps} 知识点</span>
+                            {ch.mindmapId && <span className="text-accent-500">思维导图</span>}
+                          </div>
+                        </div>
+                        <ExternalLink size={14} className="text-surface-300 group-hover:text-primary-400 transition-colors" />
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* -- 知识点列表（仅旧格式兜底） -- */}
+              { (!activeStage?.chapters || activeStage.chapters.length === 0) && (
+                <div className="grid grid-cols-1 gap-2.5">
+                  {activeStage?.nodes?.map((node: any, ni: number) => {
                   const nc = nb(node.status || 'available');
                   const nStatus = node.status || 'available';
                   const resourceCount = node.resources?.length || 0;
@@ -397,6 +427,7 @@ export default function LearningPathPage() {
                   );
                 })}
               </div>
+              )}
             </div>
           ) : (
             <div className="flex-1 flex flex-col min-h-0">

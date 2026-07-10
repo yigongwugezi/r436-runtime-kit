@@ -169,6 +169,16 @@ export const useSubjectStore = create<SubjectStore>((set, get) => ({
       await subjectsApi.deletePersonalSubject(id);
       const subjects = loadSubjects().filter(s => s.id !== id);
       persistSubjects(subjects);
+
+      // Clear chat session data from localStorage for the deleted subject
+      // so stale data doesn't leak if the subject is re-created.
+      const learner = getCurrentLearner();
+      const learnerId = learner?.id || 'anonymous';
+      try {
+        localStorage.removeItem(runtimeStorageKeys.chatSession(`${learnerId}_${id}`).primary);
+        localStorage.removeItem(runtimeStorageKeys.chatSessions(`${learnerId}_${id}`).primary);
+      } catch { /* ignore storage errors */ }
+
       const active = get().activeSubject;
       if (active?.id === id) {
         persistActiveSubject(null);

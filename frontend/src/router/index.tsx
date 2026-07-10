@@ -67,7 +67,8 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: <Home /> },
       { path: 'chat', element: <RequireStudent><ChatPage /></RequireStudent> },
-      { path: 'lecture/:sectionId', element: <RequireStudent><LecturePage /></RequireStudent> },
+      { path: 'lecture/:chapterId', element: <RequireStudent><LecturePage /></RequireStudent> },
+      { path: 'lecture/section/:sectionId', element: <RequireStudent><LecturePage /></RequireStudent> },
       { path: 'resources', element: <RequireStudent><ResourceLibrary /></RequireStudent> },
       { path: 'resources/:id', element: <RequireStudent><ResourceLibrary /></RequireStudent> },
       { path: 'path', element: <RequireStudent><LearningPathPage /></RequireStudent> },
