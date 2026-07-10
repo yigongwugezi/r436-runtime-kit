@@ -15,6 +15,7 @@ import MarkmapDiagram from '../utils/markmap';
 import ChatHistorySidebar from '../components/chat/ChatHistorySidebar';
 import ChatClarification from '../components/chat/ChatClarification';
 import PromptTemplates from '../components/chat/PromptTemplates';
+import AgentExecutionDetails from '../components/chat/AgentExecutionDetails';
 
 /** Agent 通用阶段映射 —— 后端 agent_id → 中文标签 */
 const AGENT_LABELS: Record<string, string> = {
@@ -187,6 +188,8 @@ function HistoryPopover({ sessions, currentSessionId, onSelect, onDelete, onRena
 
 function MultimodalResultView({ result }: { result: ChatMessage['multimodalResult'] }) {
   const data = result?.result || {};
+  const publicContent = safeText(result?.content);
+  const publicContentUrl = safeText(result?.content_url);
   const trace = result?.trace || result?.workflow_trace || {};
   const sessionId = useChatStore((s) => s.currentSessionId);
   const [saveState, setSaveState] = useState('');
@@ -430,6 +433,12 @@ function MultimodalResultView({ result }: { result: ChatMessage['multimodalResul
       {data.script && (
         <div className="rounded-xl border border-surface-200 bg-white p-3 text-xs whitespace-pre-wrap">{data.script}</div>
       )}
+      {publicContent && !diagram && publicContent !== data.script && (
+        <div className="rounded-xl border border-surface-200 bg-white p-3 text-xs whitespace-pre-wrap"><MathText>{publicContent}</MathText></div>
+      )}
+      {publicContentUrl && (
+        <a href={publicContentUrl} target="_blank" rel="noreferrer" className="inline-flex rounded-lg border border-primary-200 bg-white px-3 py-2 text-xs font-medium text-primary-700 hover:bg-primary-50">打开生成内容</a>
+      )}
       {(data.resource_save_candidate || candidates.length > 0) && (
         <div className="rounded-xl border border-surface-200 bg-white p-3 text-xs text-surface-600 space-y-2">
           <div className="font-semibold text-surface-700">资源与知识候选</div>
@@ -514,6 +523,7 @@ export default function ChatPage() {
     messages,
     isStreaming,
     agentProgress,
+    lastDebugInfo,
     currentSessionId,
     setLoading,
     lastImageAttachment,
@@ -718,6 +728,7 @@ export default function ChatPage() {
               <>
                 {messages.map((msg: ChatMessage) => <MessageBubble key={msg.id} msg={msg} onClarificationSelect={send} />)}
                 {agentProgress && <AgentPipelineProgress progress={agentProgress} onRetry={() => { const lastUser = [...messages].reverse().find(m => m.role === 'user'); if (lastUser) send(lastUser.content); }} onNavigate={(p: string) => nav(p)} />}
+                {!isStreaming && <AgentExecutionDetails info={lastDebugInfo} />}
                 {isStreaming && !agentProgress && (
                   <div className="flex items-start gap-3 animate-fade-in"><div className="w-8 h-8 rounded-xl bg-gradient-to-br from-primary-500 to-accent-500 flex items-center justify-center flex-shrink-0"><Bot size={16} className="text-white" /></div><div className="bg-surface-100 rounded-2xl px-4 py-3"><div className="flex items-center gap-2 text-surface-500"><Loader2 size={14} className="animate-spin" />正在思考...</div></div></div>
                 )}

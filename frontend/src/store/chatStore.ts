@@ -4,7 +4,7 @@ import { getCurrentLearner } from './authStore';
 import { useSubjectStore } from './subjectStore';
 import { readStorageItem, readStorageJson, writeStorageItem, writeStorageJson, runtimeStorageKeys } from '../utils/storageKeys';
 import { getSubjectSession } from '../api/subjects';
-import { getSessions, getSessionMessages } from '../api/chat';
+import { createChatSession, getSessions, getSessionMessages } from '../api/chat';
 import { createLogger } from '../utils/logger';
 
 const log = createLogger('ChatStore');
@@ -156,7 +156,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     const cachedMessages = targetSession?.messages || [];
 
     persistSessionId(id);
-    set({ currentSessionId: id, messages: cachedMessages, progressPipelineSteps: [], agentProgress: null, lastImageAttachment: null, imageAttachmentHistory: [], selectedImageAttachmentId: null });
+    writeStorageItem(runtimeStorageKeys.pendingGeneration, '');
+    set({ currentSessionId: id, dataSessionId: id, messages: cachedMessages, isStreaming: false, progressPipelineSteps: [], agentProgress: null, lastDebugInfo: null, lastImageAttachment: null, imageAttachmentHistory: [], selectedImageAttachmentId: null });
   },
 
   addMessage: (msg) =>
@@ -261,8 +262,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       }
     }
     const id = createSessionId();
+    const now = Date.now();
+    const subjectId = useSubjectStore.getState().activeSubject?.id ?? useSubjectStore.getState().activeClassSubject?.subject;
+    const sessions = [{ id, title: '新对话', messages: [], createdAt: now, updatedAt: now }, ...loadSessions().filter((session) => session.id !== id)];
     persistSessionId(id);
-    set({ currentSessionId: id, messages: [], progressPipelineSteps: [], agentProgress: null, lastImageAttachment: null, imageAttachmentHistory: [], selectedImageAttachmentId: null });
+    persistSessions(sessions);
+    writeStorageItem(runtimeStorageKeys.pendingGeneration, '');
+    set({ currentSessionId: id, dataSessionId: id, sessions, messages: [], isStreaming: false, progressPipelineSteps: [], agentProgress: null, lastDebugInfo: null, lastImageAttachment: null, imageAttachmentHistory: [], selectedImageAttachmentId: null });
+    void createChatSession({ sessionId: id, subjectId }).catch((error) => log.warn('Failed to create chat session', error));
     // dataSessionId 不变，保持科目级数据查询稳定
   },
   removeLastMessage: () =>

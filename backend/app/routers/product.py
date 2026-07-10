@@ -995,7 +995,7 @@ def _questions_from_vision(vision: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _cache_multimodal_context(session_id: str, image_input: dict[str, Any], result: dict[str, Any]) -> None:
-    if result.get("status") not in {"success", "partial_success", "needs_manual_review"}:
+    if result.get("status") != "completed":
         return
     data = result.get("result") if isinstance(result.get("result"), dict) else {}
     vision = _vision_from_multimodal_result(result)
@@ -1061,8 +1061,8 @@ def _multimodal_workflow_trace(
             task_type=task_type,
             selected_image_attachment_id=selected_image_attachment_id,
         )
-    status = str(result.get("status") or "failed")
-    workflow_status = "success" if status == "success" else ("partial" if status in {"needs_input", "provider_not_configured", "unsupported"} else "failed")
+    status = str(result.get("status") or "generation_failed")
+    workflow_status = "success" if status == "completed" else ("partial" if status == "provider_not_configured" else "failed")
     return _with_image_context_trace({
         "workflow_name": "multimodal_generation",
         "workflow_status": workflow_status,
@@ -1083,45 +1083,50 @@ def _multimodal_workflow_trace(
 def _multimodal_reply(result: dict[str, Any]) -> str:
     task_type = result.get("task_type")
     status = result.get("status")
+    error_code = result.get("error_code")
+    raw_status = ((result.get("metadata") or {}).get("raw_status") if isinstance(result.get("metadata"), dict) else "")
     data = result.get("result") if isinstance(result.get("result"), dict) else {}
     for key in ("display_text", "teaching_text", "answer_text", "chat_text"):
         text = _clean_multimodal_text(data.get(key))
         if text:
             return text
-    if task_type == "image_understanding" and status in {"success", "partial_success", "needs_manual_review"}:
+    content = _clean_multimodal_text(result.get("content"))
+    if content:
+        return content
+    if task_type == "image_understanding" and status == "completed":
         return "已完成图片理解，识别结果已整理成结构化信息。"
-    if task_type == "image_to_mindmap" and status in {"success", "needs_manual_review"}:
+    if task_type == "image_to_mindmap" and status == "completed":
         return "已根据图片内容生成思维导图。"
-    if task_type in {"image_to_flashcards", "note_image_to_flashcards", "question_image_to_flashcards"} and status in {"success", "needs_manual_review"}:
+    if task_type in {"image_to_flashcards", "note_image_to_flashcards", "question_image_to_flashcards"} and status == "completed":
         count = len(((result.get("result") or {}).get("cards")) or [])
         return f"已根据图片内容生成 {count} 张复习卡片。"
-    if task_type in {"explain_image_question", "solve_image_question"} and status in {"success", "needs_manual_review"}:
+    if task_type in {"explain_image_question", "solve_image_question"} and status == "completed":
         return "已读取题图并整理讲解信息；证据不足的部分已标记为需要人工确认。"
-    if task_type == "image_wrong_question_analysis" and status in {"success", "needs_manual_review"}:
+    if task_type == "image_wrong_question_analysis" and status == "completed":
         return "已根据图片整理错题分析；证据不足的部分已标记为需要人工确认。"
-    if task_type == "image_note_summary" and status in {"success", "needs_manual_review"}:
+    if task_type == "image_note_summary" and status == "completed":
         return "已根据图片整理笔记总结。"
-    if task_type == "image_to_learning_plan" and status in {"success", "needs_manual_review"}:
+    if task_type == "image_to_learning_plan" and status == "completed":
         return "已根据图片中的知识点整理学习计划。"
-    if task_type == "image_to_variant_questions" and status in {"success", "needs_manual_review"}:
+    if task_type == "image_to_variant_questions" and status == "completed":
         count = len(((result.get("result") or {}).get("variants")) or [])
         return f"已根据题图生成 {count} 道变式题；识别不确定处已标记。"
-    if task_type == "image_to_resource_bundle" and status in {"success", "needs_manual_review"}:
+    if task_type == "image_to_resource_bundle" and status == "completed":
         return "已整理图片学习资源包，并生成待确认的资源保存候选和知识候选。"
-    if task_type in {"video_generation", "micro_lesson_video", "video_script_generation"} and status == "script_ready_provider_not_configured":
+    if task_type in {"video_generation", "micro_lesson_video", "video_script_generation"} and status == "provider_not_configured" and raw_status == "script_ready_provider_not_configured":
         return "视频模型尚未配置，但我已先生成微课脚本和分镜草稿，没有返回假视频链接。"
-    if task_type in {"image_generation", "concept_card_generation", "teaching_diagram_generation"} and status == "success":
+    if task_type in {"image_generation", "concept_card_generation", "teaching_diagram_generation"} and status == "completed":
         return "图片生成任务已返回结果。"
-    if task_type == "mindmap_generation" and status == "success":
+    if task_type == "mindmap_generation" and status == "completed":
         stage_count = ((result.get("result") or {}).get("stage_count")) or 0
         return f"已根据当前学习路径生成思维导图，共整理 {stage_count} 个阶段。"
-    if status == "needs_input" and (str(task_type or "").startswith("image_") or task_type in {"explain_image_question", "solve_image_question"}):
+    if error_code == "missing_input" and (str(task_type or "").startswith("image_") or task_type in {"explain_image_question", "solve_image_question"}):
         return "我还没有拿到可复用的图片。请先上传题图，或者在同一会话里接着上一张图继续提问。"
-    if status == "needs_input":
+    if error_code == "missing_input":
         return "还缺少可执行这个多模态任务的输入。比如生成思维导图需要先有学习路径或知识内容。"
     if status == "provider_not_configured":
         return "这个多模态能力还没有配置对应的模型 Provider，所以我不会假装已经生成或识别成功。"
-    if status == "unsupported":
+    if error_code == "unsupported":
         return "这个多模态请求暂时还不支持真实执行，我没有返回伪造结果。"
     return "多模态任务执行失败。"
 
@@ -1746,6 +1751,30 @@ GEN_STAGES = [
 
 
 
+
+
+@router.post("/chat/sessions")
+def create_chat_session(payload: dict[str, Any]) -> dict[str, Any]:
+    """Persist an empty chat session before its first message is sent."""
+    session_id = _payload_session_id(payload)
+    subject_id = _payload_subject_id(payload)
+    learner_id = str(payload.get("learnerId", "")).strip() or None
+    try:
+        db = SessionLocal()
+        session = get_or_create_session(db, session_id, learner_id=learner_id, subject_id=subject_id)
+        conversation_store.get(session.id)
+        return _product_response(
+            {
+                "sessionId": session.id,
+                "title": session.title or "新对话",
+                "createdAt": int(session.created_at.timestamp() * 1000) if session.created_at else int(time.time() * 1000),
+            },
+            session_id=session.id,
+            subject_id=subject_id,
+            source="db",
+        )
+    finally:
+        db.close()
 
 
 @router.get("/chat/sessions")
@@ -4284,28 +4313,69 @@ def _clean_markdown(md: str) -> str:
     return "\n".join(cleaned)
 
 
+_PROFILE_KEYS = {
+    "major_background", "knowledge_base", "learning_goal", "cognitive_style",
+    "error_patterns", "coding_ability", "learning_progress", "interest_direction",
+    "learning_rhythm",
+}
+_LECTURE_HEADINGS = ("学习目标", "核心概念", "示例", "易错点", "小结")
+
+
+def _is_profile_json(content: str) -> bool:
+    try:
+        value = json.loads(content)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return isinstance(value, dict) and len(_PROFILE_KEYS.intersection(value)) >= 3
+
+
+def _is_valid_section_lecture(content: str, section_title: str, knowledge_points: list[Any]) -> bool:
+    text = str(content or "").strip()
+    if len(text) < 120 or _is_profile_json(text):
+        return False
+    point_names = [str(item.get("name", "")) if isinstance(item, dict) else str(item) for item in knowledge_points]
+    has_subject = section_title in text or any(name and name in text for name in point_names)
+    return has_subject and sum(heading in text for heading in _LECTURE_HEADINGS) >= 2
+
+
+def _fallback_section_lecture(section_title: str, section_goal: str, knowledge_points: list[Any]) -> str:
+    points = [str(item.get("name", "")) if isinstance(item, dict) else str(item) for item in knowledge_points]
+    topic = "、".join(point for point in points if point) or section_title
+    goal = section_goal or f"理解{topic}的核心概念和基本应用。"
+    return f"""# {section_title}
+
+## 学习目标
+- {goal}
+- 能说明{topic}在数据结构学习中的作用。
+
+## 核心概念
+{topic}需要结合定义、操作成本和适用场景理解。学习时先区分概念之间的联系，再用具体操作验证结论。
+
+## 示例
+以顺序访问和插入操作为例，比较不同数据结构在时间复杂度和存储方式上的差异，并说明选择依据。
+
+## 易错点
+- 不要只记结论，要说明操作发生在什么位置。
+- 不要混淆访问、查找、插入和删除的成本。
+
+## 小结
+本节围绕{topic}建立基础认识。完成阅读后，建议结合一道练习题验证对操作复杂度和结构特点的理解。"""
+
+
 @router.get("/sections/{section_id}/lecture")
 def get_section_lecture(section_id: str, sessionId: str = "") -> dict[str, Any]:
     """Read existing lecture for a section. Returns None if not generated yet."""
     try:
         db = SessionLocal()
-        lecture = None
-        # 多种方式查找：resource_id > session+section > section only
-        resource_id = f"lecture_{section_id}"
-        lecture = db.get(ResourceModel, resource_id)
-        if not lecture and sessionId:
-            lecture = db.query(ResourceModel).filter(
-                ResourceModel.session_id == sessionId,
-                ResourceModel.related_section_id == section_id,
-                ResourceModel.type == "lecture",
-            ).order_by(ResourceModel.created_at.desc()).first()
-        if not lecture:
-            lecture = db.query(ResourceModel).filter(
-                ResourceModel.related_section_id == section_id,
-                ResourceModel.type == "lecture",
-            ).order_by(ResourceModel.created_at.desc()).first()
+        query = db.query(ResourceModel).filter(
+            ResourceModel.related_section_id == section_id,
+            ResourceModel.type == "lecture",
+        )
+        if sessionId:
+            query = query.filter(ResourceModel.session_id == sessionId)
+        lecture = query.order_by(ResourceModel.created_at.desc()).first()
 
-        if lecture:
+        if lecture and not _is_profile_json(lecture.content or ""):
             data = {
                 "id": lecture.id,
                 "title": lecture.title or "",
@@ -4459,6 +4529,13 @@ mindmap
 
     # 后处理：清洗空表头等常见格式问题
     raw = _clean_markdown(raw)
+    if not _is_valid_section_lecture(raw, section_title, knowledge_points if isinstance(knowledge_points, list) else []):
+        logger.warning("Rejected invalid lecture output for section %s; using deterministic fallback", section_id)
+        raw = _fallback_section_lecture(
+            section_title,
+            section_goal,
+            knowledge_points if isinstance(knowledge_points, list) else [],
+        )
 
     # 图文并茂：为每个 ## 主章节生成星火配图
     raw = _inject_spark_images(raw, section_title)
@@ -4502,6 +4579,90 @@ mindmap
 # 智能辅导端点
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _is_invalid_tutor_reply(reply: Any) -> bool:
+    text = str(reply or "").strip()
+    return len(text) < 20 or _is_profile_json(text) or any(key in text for key in _PROFILE_KEYS)
+
+
+def _fallback_tutor_reply(
+    action_type: str,
+    section_title: str,
+    section_goal: str,
+    knowledge_points: list[Any],
+    lecture_excerpt: str,
+    question: str,
+) -> str:
+    points = [str(item.get("name", "")) if isinstance(item, dict) else str(item) for item in knowledge_points]
+    topic = "、".join(point for point in points if point) or section_title
+    action = action_type.lower()
+    if not action:
+        action = "diagram" if any(word in question for word in ("图", "结构", "关系")) else "concept_explanation"
+    excerpt = re.sub(r"\s+", " ", lecture_excerpt).strip()[:180]
+    context = f"本节目标是{section_goal or f'理解{topic}'}。"
+    if action in {"diagram", "structure"}:
+        return f"""## {section_title} 的知识结构
+
+```mermaid
+mindmap
+  root(({topic}))
+    核心定义
+    典型操作
+    时间复杂度
+    常见误区
+```
+
+{context}先理解核心定义，再比较典型操作的成本，最后通过练习检验掌握情况。"""
+    if action in {"example", "exercise"}:
+        return f"""## {section_title} 示例
+
+以{topic}为例，先写出操作目标，再分别分析访问、查找、插入和删除时需要移动或访问的数据量。比较结果时要说明操作位置和数据规模。
+
+> 练习：选择一个具体操作，写出你的判断依据，而不只写结论。"""
+    if action == "simplify":
+        return f"""## {section_title} 的简单解释
+
+把{topic}看成解决“怎样存放和处理数据”的不同工具。先记住每种工具最擅长的操作，再通过一个小例子比较它们的差异。{context}"""
+    if action == "summarize":
+        return f"""## {section_title} 小结
+
+- 本节围绕{topic}建立基础概念。
+- 重点是把操作过程和时间复杂度对应起来。
+- 下一步用一道具体练习验证理解。"""
+    if action == "common_mistakes":
+        return f"""## {section_title} 常见错误
+
+- 只背复杂度结论，没有说明操作位置。
+- 混淆访问、查找、插入和删除。
+- 忽略数据规模变化对操作成本的影响。"""
+    detail = f"讲义当前重点：{excerpt}" if excerpt else context
+    return f"""## {section_title} 概念讲解
+
+{topic}需要从定义、操作方式和适用场景三个角度理解。先明确数据如何组织，再分析每种操作需要访问或移动多少数据。
+
+{detail}
+
+> 学习时请把每个结论和一个具体操作对应起来。"""
+
+
+def _public_tutor_video(result: dict[str, Any]) -> dict[str, Any]:
+    raw_status = str(result.get("status") or "failed")
+    script = str(result.get("script") or "").strip()
+    if raw_status in {"success", "script_ready"}:
+        status, message = "completed", "讲解视频脚本已准备好。"
+    elif raw_status in {"provider_not_configured", "script_ready_provider_not_configured"}:
+        status = "provider_not_configured"
+        message = "视频暂不能生成，但脚本已准备好。" if script else "讲解视频服务暂未配置，当前可以先查看或生成视频脚本。"
+    else:
+        status, message = "generation_failed", "讲解视频生成失败，请稍后重试。"
+    return {
+        "status": status,
+        "provider": str(result.get("provider") or "spark_video"),
+        "script": script,
+        "userMessage": message,
+        "metadata": {"raw_status": raw_status},
+    }
+
+
 @router.post("/sections/{section_id}/tutor/ask")
 def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """智辅问答：注入学生画像 + 诊断数据，返回 Markdown 格式回答。"""
@@ -4511,6 +4672,7 @@ def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     section_goal = str(payload.get("sectionGoal", "")).strip()
     knowledge_points = payload.get("knowledgePoints", [])
     lecture_excerpt = str(payload.get("lectureExcerpt", ""))[:1000]
+    action_type = str(payload.get("actionType") or payload.get("action_type") or "").strip()
 
     if not question:
         return _product_response(None, session_id=session_id, status="error", message="question required", source="agent")
@@ -4561,7 +4723,18 @@ def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     try:
         raw = client.chat(messages=[{"role": "user", "content": prompt}], temperature=0.3, max_tokens=2048)
     except Exception as e:
-        return _product_response(None, session_id=session_id, status="error", message=f"智辅失败: {e}", source="agent")
+        logger.warning("Tutor generation failed for section %s: %s", section_id, e)
+        raw = ""
+
+    if _is_invalid_tutor_reply(raw):
+        raw = _fallback_tutor_reply(
+            action_type,
+            section_title,
+            section_goal,
+            knowledge_points if isinstance(knowledge_points, list) else [],
+            lecture_excerpt,
+            question,
+        )
 
     return _product_response({"reply": raw}, session_id=session_id, source="agent")
 
@@ -4582,11 +4755,7 @@ def tutor_video(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             "user_message": f"为小节「{section_title}」生成微课讲解视频",
             "subject_name": section_title,
         })
-        return _product_response({"video": {
-            "status": result.get("status", "script_ready"),
-            "provider": result.get("provider", "spark_video"),
-            "script": result.get("script", str(result))[:2000],
-        }}, session_id=session_id, source="agent")
+        return _product_response({"video": _public_tutor_video(result)}, session_id=session_id, source="agent")
     except Exception as e:
         logger.warning("Tutor video failed for section %s: %s", section_id, e)
         return _product_response(None, session_id=session_id, status="error", message=f"视频生成失败: {e}", source="agent")
