@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timezone
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -54,11 +55,11 @@ class QuizCreateRequest(BaseModel):
     session_id: str = Field(default="", alias="sessionId")
     title: str = ""
     scope_type: str = Field(default="knowledge_point", alias="scopeType")
-    scope_id: str | None = Field(default=None, alias="scopeId")
-    path_id: str | None = Field(default=None, alias="pathId")
-    stage_id: str | None = Field(default=None, alias="stageId")
-    chapter_id: str | None = Field(default=None, alias="chapterId")
-    section_id: str | None = Field(default=None, alias="sectionId")
+    scope_id: Annotated[str | None, Field(alias="scopeId")] = None
+    path_id: Annotated[str | None, Field(alias="pathId")] = None
+    stage_id: Annotated[str | None, Field(alias="stageId")] = None
+    chapter_id: Annotated[str | None, Field(alias="chapterId")] = None
+    section_id: Annotated[str | None, Field(alias="sectionId")] = None
     knowledge_point_ids: list[str] | None = Field(default=None, alias="knowledgePointIds")
     difficulty: str = "medium"
     questions: list[dict] | None = None
@@ -68,11 +69,11 @@ class QuizCreateRequest(BaseModel):
 class ExamSetCreateRequest(BaseModel):
     session_id: str = Field(default="", alias="sessionId")
     title: str = ""
-    scope_type: str = Field(default="chapter", alias="scopeType")
-    scope_id: str | None = Field(default=None, alias="scopeId")
-    path_id: str | None = Field(default=None, alias="pathId")
-    stage_id: str | None = Field(default=None, alias="stageId")
-    chapter_id: str | None = Field(default=None, alias="chapterId")
+    scope_type: Annotated[str, Field(alias="scopeType")] = "chapter"
+    scope_id: Annotated[str | None, Field(alias="scopeId")] = None
+    path_id: Annotated[str | None, Field(alias="pathId")] = None
+    stage_id: Annotated[str | None, Field(alias="stageId")] = None
+    chapter_id: Annotated[str | None, Field(alias="chapterId")] = None
     knowledge_point_ids: list[str] | None = Field(default=None, alias="knowledgePointIds")
     difficulty: str = "medium"
     difficulty_distribution: dict[str, int] | None = Field(default=None, alias="difficultyDistribution")
@@ -96,9 +97,9 @@ class ExamSetUpdateRequest(BaseModel):
 
 class AttemptCreateRequest(BaseModel):
     session_id: str = Field(default="", alias="sessionId")
-    quiz_id: str | None = Field(default=None, alias="quizId")
-    exam_set_id: str | None = Field(default=None, alias="examSetId")
-    max_score: int = Field(default=100, alias="maxScore")
+    quiz_id: Annotated[str | None, Field(alias="quizId")] = None
+    exam_set_id: Annotated[str | None, Field(alias="examSetId")] = None
+    max_score: Annotated[int, Field(alias="maxScore")] = 100
 
 
 class AttemptUpdateRequest(BaseModel):
@@ -118,10 +119,10 @@ class SectionQuizGenerateRequest(BaseModel):
     knowledge_points: list[str] = Field(default_factory=list, alias="knowledgePoints")
     lecture_summary: str = Field(default="", alias="lectureSummary")
     difficulty: str = "medium"
-    path_id: str | None = Field(default=None, alias="pathId")
-    stage_id: str | None = Field(default=None, alias="stageId")
-    chapter_id: str | None = Field(default=None, alias="chapterId")
-    section_id: str | None = Field(default=None, alias="sectionId")
+    path_id: Annotated[str | None, Field(alias="pathId")] = None
+    stage_id: Annotated[str | None, Field(alias="stageId")] = None
+    chapter_id: Annotated[str | None, Field(alias="chapterId")] = None
+    section_id: Annotated[str | None, Field(alias="sectionId")] = None
 
 
 class QuizSubmitRequest(BaseModel):
@@ -518,17 +519,23 @@ def generate_section_quiz(
 ]}}"""
 
         # ── Call LLM ───────────────────────────────────────────
-        raw = _assessment_llm.chat(
-            messages=[
-                {"role": "system", "content": "你是专业的试题生成专家。只输出JSON，不要Markdown包裹。"},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.3,
-            max_tokens=3000,
-        )
+        try:
+            raw = _assessment_llm.chat(
+                messages=[
+                    {"role": "system", "content": "你是专业的试题生成专家。只输出JSON，不要Markdown包裹。"},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.3,
+                max_tokens=3000,
+            )
+        except Exception as e:
+            logger.error("Section quiz LLM call failed: %s", e)
+            raise HTTPException(status_code=500, detail="题目生成失败，LLM 调用异常，请重试")
+
         parsed = parse_safe(raw)
         questions = parsed.get("questions") if isinstance(parsed, dict) else None
         if not isinstance(questions, list) or len(questions) == 0:
+            logger.error("Quiz parse failed: parsed_keys=%s", list(parsed.keys()) if isinstance(parsed, dict) else type(parsed).__name__)
             raise HTTPException(status_code=500, detail="题目生成失败，请重试")
 
         # ── Create QuizModel ───────────────────────────────────
@@ -552,8 +559,9 @@ def generate_section_quiz(
 
         # ── Persist questions (without revealing answers) ──────
         for q in questions:
+            qid = f"q_{uuid.uuid4().hex[:12]}"
             pq = PracticeQuestionModel(
-                question_id=q.get("question_id", f"q_{uuid.uuid4().hex[:12]}"),
+                question_id=qid,
                 question_set_id=quiz_id,
                 session_id=body.session_id,
                 type=q.get("type", "choice"),
@@ -1052,17 +1060,17 @@ def start_exam_set_attempt(
 
 
 class ExamSetGenerateRequest(BaseModel):
-    session_id: str = Field(default="", alias="sessionId")
+    session_id: Annotated[str, Field(alias="sessionId")] = ""
     title: str = ""
-    scope_type: str = Field(default="chapter", alias="scopeType")
-    scope_id: str | None = Field(default=None, alias="scopeId")
-    path_id: str | None = Field(default=None, alias="pathId")
-    stage_id: str | None = Field(default=None, alias="stageId")
-    chapter_id: str | None = Field(default=None, alias="chapterId")
-    knowledge_point_ids: list[str] = Field(default_factory=list, alias="knowledgePointIds")
-    knowledge_points: list[str] = Field(default_factory=list, alias="knowledgePoints")
+    scope_type: Annotated[str, Field(alias="scopeType")] = "chapter"
+    scope_id: Annotated[str | None, Field(alias="scopeId")] = None
+    path_id: Annotated[str | None, Field(alias="pathId")] = None
+    stage_id: Annotated[str | None, Field(alias="stageId")] = None
+    chapter_id: Annotated[str | None, Field(alias="chapterId")] = None
+    knowledge_point_ids: Annotated[list[str], Field(default_factory=list, alias="knowledgePointIds")]
+    knowledge_points: Annotated[list[str], Field(default_factory=list, alias="knowledgePoints")]
     difficulty: str = "medium"
-    question_count: int = Field(default=0, alias="questionCount")
+    question_count: Annotated[int, Field(alias="questionCount")] = 0
 
 
 @router.post("/exam-sets/generate")
@@ -1113,18 +1121,28 @@ def generate_exam_set(
 {{"questions": [{{"question_id": "q1", "type": "choice", "stem": "...", "options": ["A. ...", "B. ..."], "correct": "A", "explanation": "...", "knowledge_point": "...", "difficulty": "easy"}}, ...]}}"""
 
         # ── Call LLM ──────────────────────────────────────────
-        llm = get_llm_client()
-        raw = llm.chat(
-            messages=[
-                {"role": "system", "content": "你是专业的试题生成专家。只输出JSON，不要Markdown包裹。"},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.3,
-            max_tokens=8000,
-        )
+        # 20+ questions need more tokens: ~500 tokens/question with explanations
+        max_tok = max(8000, count * 500)
+        try:
+            raw = _assessment_llm.chat(
+                messages=[
+                    {"role": "system", "content": "你是专业的试题生成专家。只输出JSON，不要Markdown包裹。"},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.3,
+                max_tokens=max_tok,
+            )
+        except Exception as e:
+            logger.error("Exam set LLM call failed: %s", e)
+            raise HTTPException(status_code=500, detail="题集生成失败，LLM 调用异常，请重试")
+
+        logger.info("Exam set LLM raw response (first 200 chars): %s", raw[:200])
         parsed = parse_safe(raw)
         questions = parsed.get("questions") if isinstance(parsed, dict) else None
         if not isinstance(questions, list) or len(questions) == 0:
+            logger.error("Exam set parse failed: parsed_keys=%s, questions_type=%s",
+                         list(parsed.keys()) if isinstance(parsed, dict) else type(parsed).__name__,
+                         type(questions).__name__ if questions else None)
             raise HTTPException(status_code=500, detail="题集生成失败，请重试")
 
         # ── Compute metadata ──────────────────────────────────
@@ -1164,8 +1182,10 @@ def generate_exam_set(
 
         # ── Persist questions ─────────────────────────────────
         for q in questions:
+            # Always generate unique IDs — LLM may return hardcoded placeholders
+            qid = f"q_{uuid.uuid4().hex[:12]}"
             pq = PracticeQuestionModel(
-                question_id=q.get("question_id", f"q_{uuid.uuid4().hex[:12]}"),
+                question_id=qid,
                 question_set_id=exam_id,
                 session_id=body.session_id,
                 type=q.get("type", "choice"),
