@@ -16,13 +16,16 @@ from sqlalchemy.orm import Session
 
 from app.db.models import (
     AnswerRecordModel,
+    AttemptModel,
     DailyTaskModel,
+    ExamSetModel,
     LearnerModel,
     LearningEventModel,
     LearningPathModel,
     MessageModel,
-    ProfileSnapshotModel,
     PracticeQuestionModel,
+    ProfileSnapshotModel,
+    QuizModel,
     ResourceModel,
     SessionModel,
 )
@@ -1209,3 +1212,206 @@ def get_answer_stats(db: Session, session_id: str) -> dict:
     total = len(records)
     correct = sum(1 for r in records if r.total_score is not None and r.total_score >= 60)
     return {"totalAttempted": total, "totalCorrect": correct}
+
+
+# ── Quiz (M5) ──────────────────────────────────────────────────────────
+
+
+def save_quiz(db: Session, quiz_data: dict) -> QuizModel:
+    """Create a new instant quiz. Returns the saved QuizModel."""
+    quiz = QuizModel(
+        id=quiz_data.get("id", f"quiz_{uuid.uuid4().hex[:12]}"),
+        title=quiz_data.get("title", ""),
+        session_id=quiz_data.get("session_id", ""),
+        scope_type=quiz_data.get("scope_type", "knowledge_point"),
+        scope_id=quiz_data.get("scope_id"),
+        path_id=quiz_data.get("path_id"),
+        stage_id=quiz_data.get("stage_id"),
+        chapter_id=quiz_data.get("chapter_id"),
+        section_id=quiz_data.get("section_id"),
+        knowledge_point_ids=quiz_data.get("knowledge_point_ids"),
+        difficulty=quiz_data.get("difficulty", "medium"),
+        question_count=quiz_data.get("question_count", 0),
+        questions=quiz_data.get("questions"),
+        source=quiz_data.get("source", "llm_generated"),
+    )
+    db.add(quiz)
+    db.commit()
+    db.refresh(quiz)
+    return quiz
+
+
+def get_quiz(db: Session, quiz_id: str) -> QuizModel | None:
+    """Get a quiz by its primary-key id."""
+    return db.get(QuizModel, quiz_id)
+
+
+def list_quizzes(
+    db: Session, session_id: str = "", scope_type: str = ""
+) -> list[QuizModel]:
+    """List quizzes, optionally filtered by session and scope type."""
+    q = db.query(QuizModel)
+    if session_id:
+        q = q.filter(QuizModel.session_id == session_id)
+    if scope_type:
+        q = q.filter(QuizModel.scope_type == scope_type)
+    return q.order_by(desc(QuizModel.created_at)).all()
+
+
+def delete_quiz(db: Session, quiz_id: str) -> bool:
+    """Delete a quiz by id. Returns True if deleted."""
+    quiz = db.get(QuizModel, quiz_id)
+    if quiz is None:
+        return False
+    db.delete(quiz)
+    db.commit()
+    return True
+
+
+# ── Exam Set ──────────────────────────────────────────────────────────
+
+
+def save_exam_set(db: Session, exam_data: dict) -> ExamSetModel:
+    """Create a new exam set. Returns the saved ExamSetModel."""
+    exam = ExamSetModel(
+        id=exam_data.get("id", f"exam_{uuid.uuid4().hex[:12]}"),
+        title=exam_data.get("title", ""),
+        session_id=exam_data.get("session_id", ""),
+        scope_type=exam_data.get("scope_type", "chapter"),
+        scope_id=exam_data.get("scope_id"),
+        path_id=exam_data.get("path_id"),
+        stage_id=exam_data.get("stage_id"),
+        chapter_id=exam_data.get("chapter_id"),
+        knowledge_point_ids=exam_data.get("knowledge_point_ids"),
+        difficulty=exam_data.get("difficulty", "medium"),
+        difficulty_distribution=exam_data.get("difficulty_distribution"),
+        question_count=exam_data.get("question_count", 0),
+        questions=exam_data.get("questions"),
+        estimated_minutes=exam_data.get("estimated_minutes", 30),
+        total_score=exam_data.get("total_score", 100),
+        source=exam_data.get("source", "llm_generated"),
+        archive_policy=exam_data.get("archive_policy", "archive"),
+    )
+    db.add(exam)
+    db.commit()
+    db.refresh(exam)
+    return exam
+
+
+def get_exam_set(db: Session, exam_set_id: str) -> ExamSetModel | None:
+    """Get an exam set by its primary-key id."""
+    return db.get(ExamSetModel, exam_set_id)
+
+
+def list_exam_sets(
+    db: Session,
+    session_id: str = "",
+    scope_type: str = "",
+    status: str = "",
+) -> list[ExamSetModel]:
+    """List exam sets, optionally filtered by session, scope type, or status."""
+    q = db.query(ExamSetModel)
+    if session_id:
+        q = q.filter(ExamSetModel.session_id == session_id)
+    if scope_type:
+        q = q.filter(ExamSetModel.scope_type == scope_type)
+    if status:
+        q = q.filter(ExamSetModel.status == status)
+    return q.order_by(desc(ExamSetModel.created_at)).all()
+
+
+def update_exam_set(db: Session, exam_set_id: str, data: dict) -> ExamSetModel | None:
+    """Partial-update an exam set. Returns the updated model or None."""
+    exam = db.get(ExamSetModel, exam_set_id)
+    if exam is None:
+        return None
+    for key in ("title", "status", "difficulty", "question_count",
+                "estimated_minutes", "total_score"):
+        if key in data and data[key] is not None:
+            setattr(exam, key, data[key])
+    for key in ("questions", "difficulty_distribution", "knowledge_point_ids"):
+        if key in data and data[key] is not None:
+            setattr(exam, key, data[key])
+    db.commit()
+    db.refresh(exam)
+    return exam
+
+
+def delete_exam_set(db: Session, exam_set_id: str) -> bool:
+    """Delete an exam set by id. Returns True if deleted."""
+    exam = db.get(ExamSetModel, exam_set_id)
+    if exam is None:
+        return False
+    db.delete(exam)
+    db.commit()
+    return True
+
+
+# ── Attempt ──────────────────────────────────────────────────────────
+
+
+def create_attempt(db: Session, attempt_data: dict) -> AttemptModel:
+    """Create a new attempt for a quiz or exam set. Returns the saved model."""
+    attempt = AttemptModel(
+        attempt_id=attempt_data.get("attempt_id", f"att_{uuid.uuid4().hex[:12]}"),
+        session_id=attempt_data.get("session_id", ""),
+        quiz_id=attempt_data.get("quiz_id"),
+        exam_set_id=attempt_data.get("exam_set_id"),
+        max_score=attempt_data.get("max_score", 100),
+        learner_id=attempt_data.get("learner_id"),
+    )
+    db.add(attempt)
+    db.commit()
+    db.refresh(attempt)
+    return attempt
+
+
+def get_attempt(db: Session, attempt_id: str) -> AttemptModel | None:
+    """Get an attempt by its attempt_id string."""
+    return db.query(AttemptModel).filter(
+        AttemptModel.attempt_id == attempt_id
+    ).first()
+
+
+def list_attempts(
+    db: Session,
+    session_id: str = "",
+    quiz_id: str = "",
+    exam_set_id: str = "",
+) -> list[AttemptModel]:
+    """List attempts, optionally filtered."""
+    q = db.query(AttemptModel)
+    if session_id:
+        q = q.filter(AttemptModel.session_id == session_id)
+    if quiz_id:
+        q = q.filter(AttemptModel.quiz_id == quiz_id)
+    if exam_set_id:
+        q = q.filter(AttemptModel.exam_set_id == exam_set_id)
+    return q.order_by(desc(AttemptModel.started_at)).all()
+
+
+def update_attempt(db: Session, attempt_id: str, data: dict) -> AttemptModel | None:
+    """Partial-update an attempt (save progress or submit). Returns updated model."""
+    attempt = db.query(AttemptModel).filter(
+        AttemptModel.attempt_id == attempt_id
+    ).first()
+    if attempt is None:
+        return None
+    if "answers" in data and data["answers"] is not None:
+        attempt.answers = data["answers"]
+    if "status" in data and data["status"] is not None:
+        attempt.status = data["status"]
+    if "total_score" in data and data["total_score"] is not None:
+        attempt.total_score = data["total_score"]
+    if data.get("status") in ("submitted", "graded"):
+        attempt.submitted_at = _utcnow()
+    db.commit()
+    db.refresh(attempt)
+    return attempt
+
+
+def get_attempt_answers(db: Session, attempt_id: str) -> list[AnswerRecordModel]:
+    """Get all answer records linked to an attempt."""
+    return db.query(AnswerRecordModel).filter(
+        AnswerRecordModel.attempt_id == attempt_id
+    ).order_by(AnswerRecordModel.created_at).all()

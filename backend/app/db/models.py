@@ -462,6 +462,7 @@ class AnswerRecordModel(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     session_id: Mapped[str] = mapped_column(String(64), index=True)
     question_id: Mapped[str] = mapped_column(String(32), index=True)
+    attempt_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None, index=True)
     student_answer: Mapped[str] = mapped_column(Text)
     total_score: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     dimension_scores: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
@@ -473,6 +474,138 @@ class AnswerRecordModel(Base):
     suggestions: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     strengths: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     source: Mapped[str] = mapped_column(String(32), default="llm_generated")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+# ── Quiz (M5) ──────────────────────────────────────────────────────────
+
+
+class QuizModel(Base):
+    """A lightweight instant quiz — generated on the fly for a section or
+    knowledge point. Not archived in the resource library.
+
+    Questions are stored in PracticeQuestionModel with question_set_id
+    matching this quiz's id.  scope_type drives which scope-id field is
+    authoritative.
+    """
+
+    __tablename__ = "quizzes"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    title: Mapped[str] = mapped_column(String(256), default="")
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+
+    # ── Scope linking ─────────────────────────────────────────────
+    scope_type: Mapped[str] = mapped_column(
+        String(32), default="knowledge_point"
+    )  # knowledge_point | section | chapter | stage | path
+    scope_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    path_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    stage_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    chapter_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    section_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    knowledge_point_ids: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+
+    # ── Content snapshot ─────────────────────────────────────────
+    difficulty: Mapped[str] = mapped_column(String(16), default="medium")
+    question_count: Mapped[int] = mapped_column(Integer, default=0)
+    questions: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True, default=None
+    )  # [{question_id, type, stem_abbr}, …]
+
+    # ── Provenance ───────────────────────────────────────────────
+    source: Mapped[str] = mapped_column(String(32), default="llm_generated")
+    archive_policy: Mapped[str] = mapped_column(String(16), default="none")  # "none"
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+class ExamSetModel(Base):
+    """A heavyweight exam / practice set — persistent, archivable, and
+    supports multiple attempts.  Visible in the practice centre.
+
+    The same scope-link fields as QuizModel, plus metadata for the
+    practice-centre listing (difficulty distribution, estimated time,
+    total score) and status tracking.
+    """
+
+    __tablename__ = "exam_sets"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    title: Mapped[str] = mapped_column(String(256), default="")
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+
+    # ── Scope linking ─────────────────────────────────────────────
+    scope_type: Mapped[str] = mapped_column(
+        String(32), default="chapter"
+    )  # chapter | stage | path
+    scope_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    path_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    stage_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    chapter_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    knowledge_point_ids: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+
+    # ── Content ──────────────────────────────────────────────────
+    difficulty: Mapped[str] = mapped_column(String(16), default="medium")
+    difficulty_distribution: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True, default=None
+    )  # {"easy": 3, "medium": 5, "hard": 2}
+    question_count: Mapped[int] = mapped_column(Integer, default=0)
+    questions: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True, default=None
+    )  # [{question_id, type, difficulty, score}, …]
+
+    # ── Metadata ─────────────────────────────────────────────────
+    estimated_minutes: Mapped[int] = mapped_column(Integer, default=30)
+    total_score: Mapped[int] = mapped_column(Integer, default=100)
+    status: Mapped[str] = mapped_column(
+        String(16), default="not_started"
+    )  # not_started | in_progress | completed
+
+    # ── Provenance ───────────────────────────────────────────────
+    source: Mapped[str] = mapped_column(String(32), default="llm_generated")
+    archive_policy: Mapped[str] = mapped_column(String(16), default="archive")  # archive
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+
+class AttemptModel(Base):
+    """A single attempt at a quiz or an exam set — groups multiple
+    AnswerRecordModel rows into one session.
+
+    An attempt belongs to exactly one quiz OR one exam set (not both).
+    Individual answers link back via AnswerRecordModel.attempt_id.
+    """
+
+    __tablename__ = "attempts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    attempt_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+
+    # ── Polymorphic parent ────────────────────────────────────
+    quiz_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None, index=True
+    )
+    exam_set_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None, index=True
+    )
+
+    # ── Answers snapshot ──────────────────────────────────────
+    answers: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True, default=None
+    )  # [{question_id, student_answer, score}, …]
+    total_score: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    max_score: Mapped[int] = mapped_column(Integer, default=100)
+
+    # ── Status ────────────────────────────────────────────────
+    status: Mapped[str] = mapped_column(
+        String(16), default="in_progress"
+    )  # in_progress | submitted | graded
+    learner_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+
+    # ── Timestamps ────────────────────────────────────────────
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 

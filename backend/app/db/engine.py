@@ -156,6 +156,9 @@ def init_db() -> None:
         "user_preferences": {
             "preferences": "JSON",
         },
+        "answer_records": {
+            "attempt_id": "VARCHAR(64)",
+        },
     }
     for table, columns in migrations.items():
         for column, definition in columns.items():
