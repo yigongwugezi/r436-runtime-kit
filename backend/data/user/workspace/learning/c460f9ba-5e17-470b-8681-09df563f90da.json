@@ -1,0 +1,112 @@
+{
+  "book_id": "c460f9ba-5e17-470b-8681-09df563f90da",
+  "diagnostic": null,
+  "modules": [
+    {
+      "id": "c460f9ba-5e17-470b-8681-09df563f90da_m0",
+      "name": "流水线基础概念",
+      "order": 0,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "c460f9ba-5e17-470b-8681-09df563f90da_m0_kp0",
+          "name": "什么是指令流水线",
+          "type": "concept",
+          "module_id": "c460f9ba-5e17-470b-8681-09df563f90da_m0"
+        },
+        {
+          "id": "c460f9ba-5e17-470b-8681-09df563f90da_m0_kp1",
+          "name": "流水线 vs 非流水线对比",
+          "type": "concept",
+          "module_id": "c460f9ba-5e17-470b-8681-09df563f90da_m0"
+        },
+        {
+          "id": "c460f9ba-5e17-470b-8681-09df563f90da_m0_kp2",
+          "name": "经典5级流水线结构",
+          "type": "memory",
+          "module_id": "c460f9ba-5e17-470b-8681-09df563f90da_m0"
+        }
+      ]
+    },
+    {
+      "id": "c460f9ba-5e17-470b-8681-09df563f90da_m1",
+      "name": "流水线冒险与解决",
+      "order": 1,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "c460f9ba-5e17-470b-8681-09df563f90da_m1_kp0",
+          "name": "结构冒险",
+          "type": "concept",
+          "module_id": "c460f9ba-5e17-470b-8681-09df563f90da_m1"
+        },
+        {
+          "id": "c460f9ba-5e17-470b-8681-09df563f90da_m1_kp1",
+          "name": "数据冒险",
+          "type": "concept",
+          "module_id": "c460f9ba-5e17-470b-8681-09df563f90da_m1"
+        },
+        {
+          "id": "c460f9ba-5e17-470b-8681-09df563f90da_m1_kp2",
+          "name": "控制冒险",
+          "type": "concept",
+          "module_id": "c460f9ba-5e17-470b-8681-09df563f90da_m1"
+        },
+        {
+          "id": "c460f9ba-5e17-470b-8681-09df563f90da_m1_kp3",
+          "name": "冒险解决技术（转发/停顿/分支预测）",
+          "type": "procedure",
+          "module_id": "c460f9ba-5e17-470b-8681-09df563f90da_m1"
+        }
+      ]
+    },
+    {
+      "id": "c460f9ba-5e17-470b-8681-09df563f90da_m2",
+      "name": "流水线性能分析",
+      "order": 2,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "c460f9ba-5e17-470b-8681-09df563f90da_m2_kp0",
+          "name": "吞吐量与加速比",
+          "type": "concept",
+          "module_id": "c460f9ba-5e17-470b-8681-09df563f90da_m2"
+        },
+        {
+          "id": "c460f9ba-5e17-470b-8681-09df563f90da_m2_kp1",
+          "name": "流水线CPI计算",
+          "type": "procedure",
+          "module_id": "c460f9ba-5e17-470b-8681-09df563f90da_m2"
+        }
+      ]
+    }
+  ],
+  "current_module_id": "c460f9ba-5e17-470b-8681-09df563f90da_m0",
+  "current_stage": "diagnostic",
+  "current_kp_index": 0,
+  "mastery_levels": {},
+  "qualitative_mastery": {},
+  "knowledge_types": {
+    "c460f9ba-5e17-470b-8681-09df563f90da_m0_kp0": "concept",
+    "c460f9ba-5e17-470b-8681-09df563f90da_m0_kp1": "concept",
+    "c460f9ba-5e17-470b-8681-09df563f90da_m0_kp2": "memory",
+    "c460f9ba-5e17-470b-8681-09df563f90da_m1_kp0": "concept",
+    "c460f9ba-5e17-470b-8681-09df563f90da_m1_kp1": "concept",
+    "c460f9ba-5e17-470b-8681-09df563f90da_m1_kp2": "concept",
+    "c460f9ba-5e17-470b-8681-09df563f90da_m1_kp3": "procedure",
+    "c460f9ba-5e17-470b-8681-09df563f90da_m2_kp0": "concept",
+    "c460f9ba-5e17-470b-8681-09df563f90da_m2_kp1": "procedure"
+  },
+  "quiz_attempts": [],
+  "error_records": [],
+  "repetition_states": {},
+  "review_queue": [],
+  "pending_question": null,
+  "feynman_retries": {},
+  "feynman_explanations": {},
+  "stage_failure_counts": {},
+  "stage_failure_notes": {},
+  "version": 2,
+  "created_at": 1783666642.7088523,
+  "updated_at": 1783666646.6819108
+}

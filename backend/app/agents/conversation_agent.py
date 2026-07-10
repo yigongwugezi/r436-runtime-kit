@@ -630,6 +630,10 @@ action："""
         if any(w in text for w in ["思维导图", "脑图"]):
             return self._fallback_result("resources", "mindmap_request")
 
+        # Video/animation → route to DeepTutor (handles script + rendering)
+        if any(w in text for w in ["视频", "动画", "微课", "短片"]):
+            return self._fallback_result("none", "video_request")
+
         # Full workflow triggers
         if any(phrase in compact for phrase in ("完整方案","全套方案","全部方案","整套方案")):
             return self._fallback_result("full_workflow", "full_workflow_request")

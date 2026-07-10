@@ -1,0 +1,248 @@
+{
+  "book_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0",
+  "diagnostic": null,
+  "modules": [
+    {
+      "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m0",
+      "name": "计算机系统概论",
+      "order": 0,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m0_kp0",
+          "name": "计算机的层次结构与基本组成",
+          "type": "concept",
+          "module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m0"
+        },
+        {
+          "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m0_kp1",
+          "name": "冯·诺依曼体系结构",
+          "type": "concept",
+          "module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m0"
+        },
+        {
+          "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m0_kp2",
+          "name": "计算机的主要性能指标（吞吐率、响应时间、MIPS、CPI）",
+          "type": "memory",
+          "module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m0"
+        }
+      ]
+    },
+    {
+      "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m1",
+      "name": "数据的表示与运算",
+      "order": 1,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m1_kp0",
+          "name": "进位计数制与进制转换",
+          "type": "procedure",
+          "module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m1"
+        },
+        {
+          "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m1_kp1",
+          "name": "定点数的原码/反码/补码表示",
+          "type": "concept",
+          "module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m1"
+        },
+        {
+          "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m1_kp2",
+          "name": "定点数的加减乘除运算",
+          "type": "procedure",
+          "module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m1"
+        },
+        {
+          "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m1_kp3",
+          "name": "浮点数的IEEE 754标准表示",
+          "type": "memory",
+          "module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m1"
+        },
+        {
+          "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m1_kp4",
+          "name": "ALU（算术逻辑单元）原理",
+          "type": "concept",
+          "module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m1"
+        }
+      ]
+    },
+    {
+      "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m2",
+      "name": "存储系统",
+      "order": 2,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m2_kp0",
+          "name": "存储器的层次结构（Cache-主存-辅存）",
+          "type": "concept",
+          "module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m2"
+        },
+        {
+          "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m2_kp1",
+          "name": "SRAM与DRAM的区别与原理",
+          "type": "memory",
+          "module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m2"
+        },
+        {
+          "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m2_kp2",
+          "name": "Cache的基本原理（映射方式、替换算法、写入策略）",
+          "type": "concept",
+          "module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m2"
+        },
+        {
+          "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m2_kp3",
+          "name": "Cache容量与命中率的计算",
+          "type": "procedure",
+          "module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m2"
+        },
+        {
+          "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m2_kp4",
+          "name": "虚拟存储器与页式管理",
+          "type": "concept",
+          "module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m2"
+        }
+      ]
+    },
+    {
+      "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m3",
+      "name": "指令系统",
+      "order": 3,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m3_kp0",
+          "name": "指令格式与寻址方式",
+          "type": "memory",
+          "module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m3"
+        },
+        {
+          "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m3_kp1",
+          "name": "CISC与RISC的区别",
+          "type": "concept",
+          "module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m3"
+        },
+        {
+          "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m3_kp2",
+          "name": "MIPS指令集基础",
+          "type": "procedure",
+          "module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m3"
+        }
+      ]
+    },
+    {
+      "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m4",
+      "name": "中央处理器（CPU）",
+      "order": 4,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m4_kp0",
+          "name": "CPU的功能与基本结构",
+          "type": "concept",
+          "module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m4"
+        },
+        {
+          "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m4_kp1",
+          "name": "数据通路与指令周期",
+          "type": "concept",
+          "module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m4"
+        },
+        {
+          "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m4_kp2",
+          "name": "硬布线控制器与微程序控制器",
+          "type": "concept",
+          "module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m4"
+        },
+        {
+          "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m4_kp3",
+          "name": "流水线技术（五级流水线、冒险与解决）",
+          "type": "concept",
+          "module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m4"
+        },
+        {
+          "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m4_kp4",
+          "name": "流水线性能分析（吞吐率、加速比）",
+          "type": "procedure",
+          "module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m4"
+        }
+      ]
+    },
+    {
+      "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m5",
+      "name": "总线与输入输出系统",
+      "order": 5,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m5_kp0",
+          "name": "总线的基本概念与分类",
+          "type": "memory",
+          "module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m5"
+        },
+        {
+          "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m5_kp1",
+          "name": "总线仲裁方式",
+          "type": "concept",
+          "module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m5"
+        },
+        {
+          "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m5_kp2",
+          "name": "I/O控制方式（程序查询、中断、DMA）",
+          "type": "concept",
+          "module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m5"
+        },
+        {
+          "id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m5_kp3",
+          "name": "中断系统原理",
+          "type": "concept",
+          "module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m5"
+        }
+      ]
+    }
+  ],
+  "current_module_id": "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m0",
+  "current_stage": "diagnostic",
+  "current_kp_index": 0,
+  "mastery_levels": {},
+  "qualitative_mastery": {},
+  "knowledge_types": {
+    "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m0_kp0": "concept",
+    "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m0_kp1": "concept",
+    "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m0_kp2": "memory",
+    "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m1_kp0": "procedure",
+    "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m1_kp1": "concept",
+    "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m1_kp2": "procedure",
+    "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m1_kp3": "memory",
+    "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m1_kp4": "concept",
+    "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m2_kp0": "concept",
+    "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m2_kp1": "memory",
+    "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m2_kp2": "concept",
+    "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m2_kp3": "procedure",
+    "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m2_kp4": "concept",
+    "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m3_kp0": "memory",
+    "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m3_kp1": "concept",
+    "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m3_kp2": "procedure",
+    "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m4_kp0": "concept",
+    "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m4_kp1": "concept",
+    "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m4_kp2": "concept",
+    "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m4_kp3": "concept",
+    "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m4_kp4": "procedure",
+    "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m5_kp0": "memory",
+    "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m5_kp1": "concept",
+    "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m5_kp2": "concept",
+    "cef126ac-cf80-42f9-8c6f-e12ab62790c0_m5_kp3": "concept"
+  },
+  "quiz_attempts": [],
+  "error_records": [],
+  "repetition_states": {},
+  "review_queue": [],
+  "pending_question": null,
+  "feynman_retries": {},
+  "feynman_explanations": {},
+  "stage_failure_counts": {},
+  "stage_failure_notes": {},
+  "version": 2,
+  "created_at": 1783663616.1614668,
+  "updated_at": 1783663622.5595148
+}

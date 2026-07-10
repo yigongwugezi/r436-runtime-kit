@@ -166,13 +166,26 @@ async def _intent_node(state: dict) -> dict:
 
 async def _conversation_node(state: dict) -> dict:
     """Handle chat-only intents."""
+    msg = state.get("user_message", "")
     reply = state.get("_conversation_reply", "")
-    if not reply:
+
+    # Video/animation → native async DeepTutor
+    if any(kw in msg for kw in ["视频","动画","微课","短片"]):
         try:
             reply = await deeptutor.chat(
-                state.get("user_message", ""),
+                f"为'{msg}'生成教学视频脚本。包含片头、核心讲解场景、片尾。标注时间轴。2000字以上。",
                 state.get("messages", []) or [],
             )
+            if reply and len(reply) > 100:
+                state["final_reply"] = reply
+                state.setdefault("agent_steps", []).append({"node": "conversation_video"})
+                return state
+        except Exception:
+            pass
+
+    if not reply:
+        try:
+            reply = await deeptutor.chat(msg, state.get("messages", []) or [])
         except Exception:
             reply = ""
     state["final_reply"] = reply or "你好！我是EduAgent学习助手，有什么可以帮你的？"

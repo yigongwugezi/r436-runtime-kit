@@ -39,6 +39,15 @@ async def _run_chat(message: str, session_id: str) -> tuple[str, dict[str, Any]]
     result = await run_pipeline(**state)
     reply = result.get("final_reply", "") or result.get("_conversation_reply", "") or "处理完成"
     conversation_store.append_message(session_id, "assistant", reply)
+    # ── 随学随新：每轮对话自动提取facts并更新画像 ──
+    facts = result.get("_conversation_facts", {}) or {}
+    if facts and isinstance(facts, dict):
+        fact_map = {"background":"background","target_course":"target_course","knowledge_base":"knowledge_base",
+                     "weak_points":"weak_points","learning_goal":"learning_goal","time_budget":"time_budget","preference":"preference"}
+        for lk, fk in fact_map.items():
+            v = str(facts.get(lk,"")).strip()
+            if v and len(v)>=2 and v not in {"的是什么","什么","啥","未知","未提及","无","none"}:
+                state_obj.facts[fk] = v
     # Clear one-shot feedback signal after consumption
     if state_obj.feedback_signal is not None:
         state_obj.feedback_signal = None

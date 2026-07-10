@@ -1,0 +1,177 @@
+{
+  "book_id": "1836f502-44a7-4bee-a774-b020815fccf8",
+  "diagnostic": null,
+  "modules": [
+    {
+      "id": "1836f502-44a7-4bee-a774-b020815fccf8_m0",
+      "name": "操作系统概述",
+      "order": 0,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "1836f502-44a7-4bee-a774-b020815fccf8_m0_kp0",
+          "name": "操作系统的定义与功能",
+          "type": "concept",
+          "module_id": "1836f502-44a7-4bee-a774-b020815fccf8_m0"
+        },
+        {
+          "id": "1836f502-44a7-4bee-a774-b020815fccf8_m0_kp1",
+          "name": "操作系统的发展历程",
+          "type": "memory",
+          "module_id": "1836f502-44a7-4bee-a774-b020815fccf8_m0"
+        },
+        {
+          "id": "1836f502-44a7-4bee-a774-b020815fccf8_m0_kp2",
+          "name": "系统调用与内核态/用户态",
+          "type": "concept",
+          "module_id": "1836f502-44a7-4bee-a774-b020815fccf8_m0"
+        }
+      ]
+    },
+    {
+      "id": "1836f502-44a7-4bee-a774-b020815fccf8_m1",
+      "name": "进程与线程管理",
+      "order": 1,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "1836f502-44a7-4bee-a774-b020815fccf8_m1_kp0",
+          "name": "进程的概念与状态转换",
+          "type": "concept",
+          "module_id": "1836f502-44a7-4bee-a774-b020815fccf8_m1"
+        },
+        {
+          "id": "1836f502-44a7-4bee-a774-b020815fccf8_m1_kp1",
+          "name": "进程调度算法",
+          "type": "procedure",
+          "module_id": "1836f502-44a7-4bee-a774-b020815fccf8_m1"
+        },
+        {
+          "id": "1836f502-44a7-4bee-a774-b020815fccf8_m1_kp2",
+          "name": "线程与多线程模型",
+          "type": "concept",
+          "module_id": "1836f502-44a7-4bee-a774-b020815fccf8_m1"
+        },
+        {
+          "id": "1836f502-44a7-4bee-a774-b020815fccf8_m1_kp3",
+          "name": "进程同步与互斥（信号量、管程）",
+          "type": "concept",
+          "module_id": "1836f502-44a7-4bee-a774-b020815fccf8_m1"
+        },
+        {
+          "id": "1836f502-44a7-4bee-a774-b020815fccf8_m1_kp4",
+          "name": "死锁的预防、避免、检测与恢复",
+          "type": "procedure",
+          "module_id": "1836f502-44a7-4bee-a774-b020815fccf8_m1"
+        }
+      ]
+    },
+    {
+      "id": "1836f502-44a7-4bee-a774-b020815fccf8_m2",
+      "name": "内存管理",
+      "order": 2,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "1836f502-44a7-4bee-a774-b020815fccf8_m2_kp0",
+          "name": "内存管理的概念与地址绑定",
+          "type": "concept",
+          "module_id": "1836f502-44a7-4bee-a774-b020815fccf8_m2"
+        },
+        {
+          "id": "1836f502-44a7-4bee-a774-b020815fccf8_m2_kp1",
+          "name": "分页与分段存储管理",
+          "type": "concept",
+          "module_id": "1836f502-44a7-4bee-a774-b020815fccf8_m2"
+        },
+        {
+          "id": "1836f502-44a7-4bee-a774-b020815fccf8_m2_kp2",
+          "name": "虚拟内存与页面置换算法",
+          "type": "procedure",
+          "module_id": "1836f502-44a7-4bee-a774-b020815fccf8_m2"
+        }
+      ]
+    },
+    {
+      "id": "1836f502-44a7-4bee-a774-b020815fccf8_m3",
+      "name": "文件系统",
+      "order": 3,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "1836f502-44a7-4bee-a774-b020815fccf8_m3_kp0",
+          "name": "文件系统的概念与目录结构",
+          "type": "concept",
+          "module_id": "1836f502-44a7-4bee-a774-b020815fccf8_m3"
+        },
+        {
+          "id": "1836f502-44a7-4bee-a774-b020815fccf8_m3_kp1",
+          "name": "磁盘调度算法",
+          "type": "procedure",
+          "module_id": "1836f502-44a7-4bee-a774-b020815fccf8_m3"
+        },
+        {
+          "id": "1836f502-44a7-4bee-a774-b020815fccf8_m3_kp2",
+          "name": "文件分配方式与空闲空间管理",
+          "type": "concept",
+          "module_id": "1836f502-44a7-4bee-a774-b020815fccf8_m3"
+        }
+      ]
+    },
+    {
+      "id": "1836f502-44a7-4bee-a774-b020815fccf8_m4",
+      "name": "输入输出管理",
+      "order": 4,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "1836f502-44a7-4bee-a774-b020815fccf8_m4_kp0",
+          "name": "I/O硬件与软件层次结构",
+          "type": "concept",
+          "module_id": "1836f502-44a7-4bee-a774-b020815fccf8_m4"
+        },
+        {
+          "id": "1836f502-44a7-4bee-a774-b020815fccf8_m4_kp1",
+          "name": "缓冲技术与SPOOLing",
+          "type": "concept",
+          "module_id": "1836f502-44a7-4bee-a774-b020815fccf8_m4"
+        }
+      ]
+    }
+  ],
+  "current_module_id": "1836f502-44a7-4bee-a774-b020815fccf8_m0",
+  "current_stage": "diagnostic",
+  "current_kp_index": 0,
+  "mastery_levels": {},
+  "qualitative_mastery": {},
+  "knowledge_types": {
+    "1836f502-44a7-4bee-a774-b020815fccf8_m0_kp0": "concept",
+    "1836f502-44a7-4bee-a774-b020815fccf8_m0_kp1": "memory",
+    "1836f502-44a7-4bee-a774-b020815fccf8_m0_kp2": "concept",
+    "1836f502-44a7-4bee-a774-b020815fccf8_m1_kp0": "concept",
+    "1836f502-44a7-4bee-a774-b020815fccf8_m1_kp1": "procedure",
+    "1836f502-44a7-4bee-a774-b020815fccf8_m1_kp2": "concept",
+    "1836f502-44a7-4bee-a774-b020815fccf8_m1_kp3": "concept",
+    "1836f502-44a7-4bee-a774-b020815fccf8_m1_kp4": "procedure",
+    "1836f502-44a7-4bee-a774-b020815fccf8_m2_kp0": "concept",
+    "1836f502-44a7-4bee-a774-b020815fccf8_m2_kp1": "concept",
+    "1836f502-44a7-4bee-a774-b020815fccf8_m2_kp2": "procedure",
+    "1836f502-44a7-4bee-a774-b020815fccf8_m3_kp0": "concept",
+    "1836f502-44a7-4bee-a774-b020815fccf8_m3_kp1": "procedure",
+    "1836f502-44a7-4bee-a774-b020815fccf8_m3_kp2": "concept",
+    "1836f502-44a7-4bee-a774-b020815fccf8_m4_kp0": "concept",
+    "1836f502-44a7-4bee-a774-b020815fccf8_m4_kp1": "concept"
+  },
+  "quiz_attempts": [],
+  "error_records": [],
+  "repetition_states": {},
+  "review_queue": [],
+  "pending_question": null,
+  "feynman_retries": {},
+  "feynman_explanations": {},
+  "stage_failure_counts": {},
+  "stage_failure_notes": {},
+  "version": 2,
+  "created_at": 1783664286.067542,
+  "updated_at": 1783664294.6403646
+}

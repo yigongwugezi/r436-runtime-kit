@@ -1,0 +1,105 @@
+{
+  "book_id": "1ca13e9f-de41-4959-a960-85d9a55e56d0",
+  "diagnostic": null,
+  "modules": [
+    {
+      "id": "1ca13e9f-de41-4959-a960-85d9a55e56d0_m0",
+      "name": "CPU指令流水线基础",
+      "order": 0,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "1ca13e9f-de41-4959-a960-85d9a55e56d0_m0_kp0",
+          "name": "流水线的概念与类比",
+          "type": "concept",
+          "module_id": "1ca13e9f-de41-4959-a960-85d9a55e56d0_m0"
+        },
+        {
+          "id": "1ca13e9f-de41-4959-a960-85d9a55e56d0_m0_kp1",
+          "name": "经典五级流水线阶段",
+          "type": "memory",
+          "module_id": "1ca13e9f-de41-4959-a960-85d9a55e56d0_m0"
+        },
+        {
+          "id": "1ca13e9f-de41-4959-a960-85d9a55e56d0_m0_kp2",
+          "name": "流水线 vs 单周期/多周期",
+          "type": "concept",
+          "module_id": "1ca13e9f-de41-4959-a960-85d9a55e56d0_m0"
+        }
+      ]
+    },
+    {
+      "id": "1ca13e9f-de41-4959-a960-85d9a55e56d0_m1",
+      "name": "流水线冒险与解决",
+      "order": 1,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "1ca13e9f-de41-4959-a960-85d9a55e56d0_m1_kp0",
+          "name": "结构冒险",
+          "type": "concept",
+          "module_id": "1ca13e9f-de41-4959-a960-85d9a55e56d0_m1"
+        },
+        {
+          "id": "1ca13e9f-de41-4959-a960-85d9a55e56d0_m1_kp1",
+          "name": "数据冒险与转发技术",
+          "type": "concept",
+          "module_id": "1ca13e9f-de41-4959-a960-85d9a55e56d0_m1"
+        },
+        {
+          "id": "1ca13e9f-de41-4959-a960-85d9a55e56d0_m1_kp2",
+          "name": "控制冒险与分支预测",
+          "type": "concept",
+          "module_id": "1ca13e9f-de41-4959-a960-85d9a55e56d0_m1"
+        }
+      ]
+    },
+    {
+      "id": "1ca13e9f-de41-4959-a960-85d9a55e56d0_m2",
+      "name": "流水线性能分析",
+      "order": 2,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "1ca13e9f-de41-4959-a960-85d9a55e56d0_m2_kp0",
+          "name": "吞吐率与加速比计算",
+          "type": "procedure",
+          "module_id": "1ca13e9f-de41-4959-a960-85d9a55e56d0_m2"
+        },
+        {
+          "id": "1ca13e9f-de41-4959-a960-85d9a55e56d0_m2_kp1",
+          "name": "流水线CPI与理想CPI",
+          "type": "procedure",
+          "module_id": "1ca13e9f-de41-4959-a960-85d9a55e56d0_m2"
+        }
+      ]
+    }
+  ],
+  "current_module_id": "1ca13e9f-de41-4959-a960-85d9a55e56d0_m0",
+  "current_stage": "diagnostic",
+  "current_kp_index": 0,
+  "mastery_levels": {},
+  "qualitative_mastery": {},
+  "knowledge_types": {
+    "1ca13e9f-de41-4959-a960-85d9a55e56d0_m0_kp0": "concept",
+    "1ca13e9f-de41-4959-a960-85d9a55e56d0_m0_kp1": "memory",
+    "1ca13e9f-de41-4959-a960-85d9a55e56d0_m0_kp2": "concept",
+    "1ca13e9f-de41-4959-a960-85d9a55e56d0_m1_kp0": "concept",
+    "1ca13e9f-de41-4959-a960-85d9a55e56d0_m1_kp1": "concept",
+    "1ca13e9f-de41-4959-a960-85d9a55e56d0_m1_kp2": "concept",
+    "1ca13e9f-de41-4959-a960-85d9a55e56d0_m2_kp0": "procedure",
+    "1ca13e9f-de41-4959-a960-85d9a55e56d0_m2_kp1": "procedure"
+  },
+  "quiz_attempts": [],
+  "error_records": [],
+  "repetition_states": {},
+  "review_queue": [],
+  "pending_question": null,
+  "feynman_retries": {},
+  "feynman_explanations": {},
+  "stage_failure_counts": {},
+  "stage_failure_notes": {},
+  "version": 2,
+  "created_at": 1783666831.4347107,
+  "updated_at": 1783666835.3874059
+}
