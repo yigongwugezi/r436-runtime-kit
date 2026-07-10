@@ -25,8 +25,8 @@ class AgentFactory:
 
     - Exactly **one** ``BaseLLMClient`` is created and shared across all agents.
     - Agents are instantiated lazily on first ``get()`` and cached.
-    - ConversationAgent is NOT managed here (it has its own lifecycle via
-      ``from_context()`` — though that too is unified in Phase 2).
+    - ConversationAgent IS managed here (the orchestrator creates it via
+      ``factory.get("conversation_agent")``).
     """
 
     def __init__(self, llm_client: BaseLLMClient | None = None) -> None:

@@ -48,9 +48,12 @@ async def _run_chat(message: str, session_id: str) -> tuple[str, dict[str, Any]]
             v = str(facts.get(lk,"")).strip()
             if v and len(v)>=2 and v not in {"的是什么","什么","啥","未知","未提及","无","none"}:
                 state_obj.facts[fk] = v
-    # Clear one-shot feedback signal after consumption
+    # Clear one-shot feedback signal after consumption, store new signal for next request
     if state_obj.feedback_signal is not None:
         state_obj.feedback_signal = None
+    new_signal = result.get("feedback_signal")
+    if new_signal is not None:
+        state_obj.feedback_signal = new_signal
     if result:
         conversation_store.set_result(session_id, result)
     return reply, result

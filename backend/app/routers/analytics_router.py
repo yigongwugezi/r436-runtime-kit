@@ -1,4 +1,8 @@
-"""Learning analytics read endpoint."""
+"""Learning analytics read endpoint.
+
+DEPRECATED (MAF-Refactor Phase 2): This router is no longer registered in main.py.
+Its functionality has been migrated to ``product.py``. Kept for reference only.
+"""
 
 from __future__ import annotations
 

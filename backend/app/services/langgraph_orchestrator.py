@@ -132,6 +132,24 @@ async def _run_conversation_agent(context: dict[str, Any], factory: AgentFactory
         return {"action": "none", "reply": "", "facts": {}}
 
 
+def _emit_feedback_signal(state: dict) -> dict[str, Any]:
+    """Extract FeedbackSignal from grading results for the next request cycle.
+
+    Returns a dict with a ``feedback_signal`` key (or empty dict) suitable
+    for merging into the pipeline return value.  The signal is consumed by
+    ConversationAgent on the *next* request.
+    """
+    grading = state.get("grading_result") or {}
+    if not isinstance(grading, dict):
+        return {}
+    error_type = str(grading.get("error_type", "")).strip()
+    if not error_type or error_type == "null":
+        return {}
+    from app.schemas.feedback import FeedbackSignal
+    signal = FeedbackSignal.from_grading_result(grading)
+    return {"feedback_signal": signal}
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # LangGraph nodes
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -154,6 +172,7 @@ async def _intent_node(state: dict) -> dict:
         "user_message": state.get("user_message", ""),
         "profile_facts": state.get("profile_facts", {}),
         "conversation_history": state.get("messages", []),
+        "feedback_signal": state.get("feedback_signal"),
     }, factory)
 
     state["intent"] = ca_result["action"]
@@ -284,6 +303,7 @@ def build_unified_graph() -> StateGraph:
     edge_targets = {
         "conversation": "conversation",
         "profile": "profile",
+        "knowledge": "knowledge",
         "planner": "planner",
         "resource": "resource",
         "question": "question",
@@ -297,6 +317,12 @@ def build_unified_graph() -> StateGraph:
     g.add_edge("conversation", END)
     g.add_edge("reply", END)
 
+    # NOTE: "question" and "grading" nodes are intentionally NOT in the full-workflow
+    # pipeline edges below. They are reached only via the single-agent shortcut path
+    # (intent_router → run_pipeline single-agent branch). This is by design:
+    # question generation and grading are on-demand actions triggered by explicit
+    # user intent, not automatic pipeline stages.
+    #
     # Pipeline edges (fixed order for full_workflow)
     g.add_edge("profile", "knowledge")
     g.add_edge("knowledge", "diagnosis")
@@ -359,6 +385,7 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
             "user_message": state.get("user_message", ""),
             "profile_facts": state.get("profile_facts", {}),
             "conversation_history": state.get("messages", []),
+            "feedback_signal": state.get("feedback_signal"),
         }, factory)
         intent = ca_result["action"]
         state["intent"] = intent
@@ -380,7 +407,10 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
         return dict(state)
 
     # ── Single-agent shortcut ──
-    agent_ids = get_agent_ids(intent)
+    # If agents_filter is explicitly provided (from product.py multi-action dispatch),
+    # use it directly; otherwise derive agent_ids from intent.
+    agents_filter = state.pop("agents_filter", None)
+    agent_ids = agents_filter if (agents_filter is not None and len(agents_filter) > 0) else get_agent_ids(intent)
     if agent_ids is not None and len(agent_ids) > 0:
         # Map agent_id → short node key (e.g. "planner_agent" → "planner")
         for full_id in agent_ids:
@@ -407,6 +437,9 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
             state["final_reply"] = diag_reply
         elif summary_parts:
             state["final_reply"] = "、".join(summary_parts) + "。"
+        fb = _emit_feedback_signal(state)
+        if fb:
+            state.update(fb)
         return dict(state)
 
     # ── Full workflow ──
@@ -417,4 +450,7 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
     retries = result.get("_retry_count", 0)
     if retries >= MAX_RETRIES:
         result["quality_status"] = "warning"
+    fb = _emit_feedback_signal(result)
+    if fb:
+        result.update(fb)
     return dict(result)

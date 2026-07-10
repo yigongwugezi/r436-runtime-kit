@@ -26,8 +26,10 @@ class ResourceAgent(BaseAgent):
     agent_id = "resource_agent"
     agent_name = "学习资源生成智能体"
 
-    # 保存分批生成的中间结果，超时时 get_fallback 可返回
-    _partial_resources: list[dict] = []
+    # 保存分批生成的中间结果，超时时 get_fallback 可返回。
+    # 注意：设为 None 避免 Python 类级别可变默认值的陷阱；
+    # run() 在每次请求时初始化为新列表。
+    _partial_resources: list[dict] | None = None
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         """主入口 — DeepTutor first, LLM fallback, rule last resort."""
@@ -170,8 +172,8 @@ class ResourceAgent(BaseAgent):
     def get_fallback(self, context: dict[str, Any] | None = None) -> dict[str, Any]:
         ctx = context or {}
         # 返回超时前已完成批次的资源，不全丢
-        partial = self._partial_resources
-        self._partial_resources = []
+        partial = self._partial_resources or []
+        self._partial_resources = None
         if partial:
             logger.info("get_fallback: returning %d partial resources from timed-out batches", len(partial))
         return {

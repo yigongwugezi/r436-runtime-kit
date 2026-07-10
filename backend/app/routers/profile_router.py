@@ -1,4 +1,9 @@
-"""Profile read endpoint — GET only, reads from DB."""
+"""Profile read endpoint — GET only, reads from DB.
+
+DEPRECATED (MAF-Refactor Phase 2): This router is no longer registered in main.py.
+Its functionality has been migrated to ``product.py`` (GET endpoints) and
+``agent_service.py`` (trigger endpoints). Kept for reference only.
+"""
 
 from __future__ import annotations
 
