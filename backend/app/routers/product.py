@@ -27,6 +27,7 @@ from fastapi.responses import StreamingResponse
 from app.middleware.auth import AuthContext, reject_parent
 
 from app.agents.conversation_agent import ConversationAgent
+from app.agents.multimodal_agent import MultimodalAgent
 from app.config import settings
 from app.db.engine import SessionLocal
 from app.db.models import DailyTaskModel, LearnerModel, SessionModel
@@ -766,6 +767,21 @@ _MULTIMODAL_PATTERNS = (
 
 
 _MULTIMODAL_PATTERNS = _MULTIMODAL_PATTERNS + (
+    "\u751f\u6210\u601d\u7ef4\u5bfc\u56fe",
+    "\u753b\u4e2a\u601d\u7ef4\u5bfc\u56fe",
+    "\u601d\u7ef4\u5bfc\u56fe",
+    "\u751f\u6210\u77e5\u8bc6\u56fe\u8c31",
+    "\u753b\u77e5\u8bc6\u56fe",
+    "\u77e5\u8bc6\u56fe\u8c31",
+    "\u751f\u6210\u77e5\u8bc6\u5361\u7247",
+    "\u77e5\u8bc6\u5361\u7247",
+    "\u751f\u6210\u8bb2\u89e3\u56fe",
+    "\u751f\u6210\u56fe\u7247",
+    "\u751f\u6210\u4e00\u4e2a\u5fae\u8bfe\u89c6\u9891",
+    "\u5fae\u8bfe\u89c6\u9891",
+    "\u751f\u6210\u89c6\u9891",
+    "\u8bb2\u89e3\u89c6\u9891",
+    "\u56fe\u7247\u8bc6\u522b",
     "\u8fd9\u5f20\u56fe",
     "\u4e0a\u9762\u8fd9\u5f20\u56fe",
     "\u521a\u624d\u90a3\u5f20\u56fe",

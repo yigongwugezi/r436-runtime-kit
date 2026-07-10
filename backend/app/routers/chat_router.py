@@ -58,6 +58,43 @@ def _done_event(session_id: str, result: dict[str, Any], error: str | None = Non
     return event
 
 
+def _subject_id(payload: dict[str, Any]) -> str:
+    return str(payload.get("subjectId") or payload.get("subject_id") or "").strip()
+
+
+def _try_multimodal_chat(message: str, session_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    from app.routers.product import _classify_intent, _is_multimodal_request, _multimodal_chat_payload
+
+    if not _is_multimodal_request(message, payload):
+        return None
+
+    conversation_store.append_message(session_id, "user", message)
+    intent = _classify_intent(message, session_id)
+    conversation_store.set_intent(session_id, intent)
+    multimodal_payload = _multimodal_chat_payload(message, session_id, _subject_id(payload), payload, intent)
+    if not multimodal_payload:
+        return None
+
+    reply = multimodal_payload["reply"]["content"]
+    conversation_store.append_message(session_id, "assistant", reply)
+    conversation_store.set_result(session_id, multimodal_payload)
+    return multimodal_payload
+
+
+def _multimodal_done_event(session_id: str, multimodal_payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **_done_event(session_id, multimodal_payload),
+        "agents_run": ["multimodal_agent"],
+        "action": "multimodal",
+        "workflow_trace": multimodal_payload.get("workflow_trace", {}),
+        "multimodal_result": multimodal_payload.get("multimodal_result", {}),
+        "intent_result": multimodal_payload.get("intent_result", {}),
+        "final_reply_owner": "conversation_agent",
+        "reply_source": "multimodal_agent",
+        "fallback_used": False,
+    }
+
+
 @router.post("/api/chat/stream")
 async def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
     message = str(payload.get("message", "")).strip()
@@ -73,6 +110,15 @@ async def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
 
     async def event_stream():
         try:
+            multimodal_payload = _try_multimodal_chat(message, session_id, payload)
+            if multimodal_payload:
+                reply = multimodal_payload["reply"]["content"]
+                yield f"data: {json.dumps({'stage': '正在执行多模态任务', 'agentName': 'multimodal', 'progress': 80, 'done': False}, ensure_ascii=False)}\n\n"
+                for chunk in reply.splitlines(keepends=True):
+                    yield f"data: {json.dumps({'type': 'messages', 'content': chunk}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps(_multimodal_done_event(session_id, multimodal_payload), ensure_ascii=False)}\n\n"
+                return
+
             reply, result = await _run_chat(message, session_id)
             for chunk in reply.splitlines(keepends=True):
                 yield f"data: {json.dumps({'type': 'messages', 'content': chunk}, ensure_ascii=False)}\n\n"
@@ -98,6 +144,13 @@ async def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
 
     _ensure_session(session_id)
     try:
+        multimodal_payload = _try_multimodal_chat(message, session_id, payload)
+        if multimodal_payload:
+            return {
+                **multimodal_payload,
+                **_multimodal_done_event(session_id, multimodal_payload),
+            }
+
         reply, result = await _run_chat(message, session_id)
         return {
             "sessionId": session_id,
