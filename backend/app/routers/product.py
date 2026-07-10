@@ -4879,6 +4879,62 @@ def get_generated_section_resources(section_id: str, sessionId: str = "") -> dic
         db.close()
 
 
+def _chapter_path_context(session_id: str, chapter_id: str) -> dict[str, Any]:
+    try:
+        path = ag_get_learning_path(session_id) or {}
+        for stage in path.get("stages", []):
+            for chapter in stage.get("chapters", []):
+                if str(chapter.get("chapter_id") or chapter.get("id") or "") == chapter_id:
+                    return {
+                        "path_id": path.get("id", ""), "stage_id": stage.get("stage_id") or stage.get("id", ""),
+                        "chapter_title": chapter.get("title", ""), "sections": chapter.get("sections", []),
+                    }
+    except Exception:
+        pass
+    return {}
+
+
+@router.post("/chapters/{chapter_id}/mindmap/generate")
+def generate_chapter_mindmap(chapter_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Generate one local Mermaid mind map for a chapter and archive it."""
+    session_id = _payload_session_id(payload)
+    context = _chapter_path_context(session_id, chapter_id)
+    chapter_title = str(payload.get("chapterTitle") or context.get("chapter_title") or "").strip()
+    if not chapter_title:
+        return _product_response(None, session_id=session_id, status="error", message="chapterTitle required", source="agent")
+    from app.services.chapter_mindmap_resources import ChapterMindmapResourceService
+    service = ChapterMindmapResourceService()
+    try:
+        db = SessionLocal()
+        existing = service.existing(db, session_id, chapter_id)
+        if existing is not None and not bool(payload.get("regenerate")):
+            return _product_response({"mindmap": service.serialize(existing), "reused": True}, session_id=session_id, source="db")
+        resource = service.generate(
+            path_id=str(payload.get("pathId") or context.get("path_id") or ""),
+            stage_id=str(payload.get("stageId") or context.get("stage_id") or ""),
+            chapter_id=chapter_id, chapter_title=chapter_title,
+            sections=payload.get("sections") if isinstance(payload.get("sections"), list) else context.get("sections", []),
+        )
+        saved = service.persist(db, session_id, resource)
+        return _product_response({"mindmap": service.serialize(saved), "reused": False}, session_id=session_id, source="agent")
+    except ValueError:
+        return _product_response(None, session_id=session_id, status="error", message="思维导图生成失败，请稍后重试", source="agent")
+    finally:
+        db.close()
+
+
+@router.get("/chapters/{chapter_id}/mindmap")
+def get_chapter_mindmap(chapter_id: str, sessionId: str = "") -> dict[str, Any]:
+    session_id = _require_session_id(sessionId)
+    from app.services.chapter_mindmap_resources import ChapterMindmapResourceService
+    try:
+        db = SessionLocal()
+        resource = ChapterMindmapResourceService().existing(db, session_id, chapter_id)
+        return _product_response({"mindmap": ChapterMindmapResourceService.serialize(resource) if resource else None}, session_id=session_id, source="db")
+    finally:
+        db.close()
+
+
 # 画像推荐
 @router.get("/profile/recommendations")
 def get_profile_recommendations(sessionId: str = "") -> dict[str, Any]:
