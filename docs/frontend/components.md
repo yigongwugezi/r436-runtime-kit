@@ -68,6 +68,23 @@
 | `TimelineEventDetail` | 事件展开详情（分类型展示 Quiz/Practice/Feedback/Resource/Node 详情） |
 | `TimelineSummaryCard` | 时间线统计概览卡片 |
 
+## 练习组件 (`components/practice/`)
+
+练习功能集中于 `PracticePage.tsx`（单文件组件），无独立子组件目录。五个视图通过内部状态切换。
+
+## API 模块 (`api/`)
+
+| 模块 | 说明 |
+|------|------|
+| `assessment.ts` | 练习与评估 API：quizzes, exam-sets, attempts, sections/quiz/generate, submit, results |
+| `questions.ts` | 题目 API：list, generate, grade, weak, history（原有接口） |
+
+## 类型定义 (`types/`)
+
+| 模块 | 说明 |
+|------|------|
+| `assessment.ts` | Quiz, ExamSet, Attempt, QuizResult, WeakPoint, LinkedQuestion, QuestionRef 等类型 |
+
 ## Hooks (`hooks/`)
 
 | Hook | 说明 |

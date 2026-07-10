@@ -1,15 +1,53 @@
-# 题目与判卷接口标准
+# 题目、小测、题集与判卷接口标准
 
 ## 端点总览
 
+### 题目与判卷（原有）
 | 方法 | 路径 | 用途 |
 |------|------|------|
 | POST | `/api/questions/generate` | 生成题目 |
 | GET | `/api/questions` | 查题目列表（不含答案） |
 | GET | `/api/questions/{id}` | 单题详情 |
 | POST | `/api/questions/{id}/grade` | 提交作答 + 判卷 |
-| GET | `/api/questions/weak` | 错题本 |
+| GET | `/api/questions/weak` | 错题本（支持 `?aggregate=true` 聚合） |
 | GET | `/api/questions/history` | 答题历史 |
+
+### 即时小测（Part 1-2 新增）
+| 方法 | 路径 | 用途 |
+|------|------|------|
+| POST | `/api/quizzes` | 创建小测 |
+| GET | `/api/quizzes` | 列出小测 |
+| GET | `/api/quizzes/{id}` | 获取小测及关联题目 |
+| POST | `/api/quizzes/{id}/submit` | 提交作答 + 逐题评分 + 薄弱点回写 |
+| GET | `/api/quizzes/{id}/results` | 查看小测结果（含答案和评分） |
+| POST | `/api/quizzes/{id}/attempts` | 开始一次作答 |
+| GET | `/api/quizzes/{id}/attempts` | 列出所有作答记录 |
+
+### 小节即时生成（Part 2 新增）
+| 方法 | 路径 | 用途 |
+|------|------|------|
+| POST | `/api/sections/{section_id}/quiz/generate` | 从小节上下文 LLM 生成 3-5 题小测 |
+
+### 大型题集（Part 4 新增）
+| 方法 | 路径 | 用途 |
+|------|------|------|
+| POST | `/api/exam-sets/generate` | LLM 生成题集（章节 10-12 / 阶段 15-18 / 路径 20-25 题） |
+| POST | `/api/exam-sets` | 创建题集 |
+| GET | `/api/exam-sets` | 列出题集（支持 scopeType/status 筛选） |
+| GET | `/api/exam-sets/{id}` | 获取题集及关联题目 |
+| PATCH | `/api/exam-sets/{id}` | 更新题集 |
+| POST | `/api/exam-sets/{id}/submit` | 提交全部作答 + 评分 + 薄弱点回写 |
+| GET | `/api/exam-sets/{id}/results` | 查看题集结果（含答案和评分） |
+| POST | `/api/exam-sets/{id}/attempts` | 开始题集作答 |
+| GET | `/api/exam-sets/{id}/attempts` | 列出题集所有作答记录 |
+
+### 作答记录（Part 1 新增）
+| 方法 | 路径 | 用途 |
+|------|------|------|
+| POST | `/api/attempts` | 创建作答记录 |
+| GET | `/api/attempts/{id}` | 获取作答记录及关联答案 |
+| PATCH | `/api/attempts/{id}` | 更新作答（保存进度） |
+| POST | `/api/attempts/{id}/submit` | 提交作答 |
 
 ---
 
@@ -337,4 +375,124 @@ CREATE TABLE answer_records (
   source TEXT DEFAULT 'llm_generated',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+```
+
+---
+
+## 新增数据结构（Part 1-5）
+
+### Quiz（即时小测）
+```json
+{
+  "id": "quiz_xxx", "title": "极限概念 小测", "sessionId": "session_xxx",
+  "scopeType": "section", "scopeId": "sec_001",
+  "pathId": null, "stageId": null, "chapterId": null, "sectionId": "sec_001",
+  "knowledgePointIds": ["极限定义"], "difficulty": "medium", "questionCount": 4,
+  "questions": [{"questionId": "q1", "type": "choice", "stemAbbr": "ε-δ定义"}],
+  "linkedQuestions": [/* Question[] — 不含答案 */],
+  "source": "llm_generated", "archivePolicy": "none", "createdAt": "2026-07-10T00:00:00Z"
+}
+```
+
+### ExamSet（大型题集）
+```json
+{
+  "id": "exam_xxx", "title": "第一章综合题集", "sessionId": "session_xxx",
+  "scopeType": "chapter", "scopeId": "ch_01", "chapterId": "ch_01",
+  "knowledgePointIds": ["AI概述", "图灵测试"], "difficulty": "medium",
+  "difficultyDistribution": {"easy": 3, "medium": 5, "hard": 2},
+  "questionCount": 10, "estimatedMinutes": 30, "totalScore": 100,
+  "status": "not_started", "source": "llm_generated", "archivePolicy": "archive",
+  "createdAt": "2026-07-10T00:00:00Z", "updatedAt": "2026-07-10T00:00:00Z"
+}
+```
+
+### Attempt（作答记录）
+```json
+{
+  "id": 1, "attemptId": "att_xxx", "sessionId": "session_xxx",
+  "quizId": "quiz_xxx", "examSetId": null, "learnerId": "learner_xxx",
+  "answers": [{"questionId": "q1", "studentAnswer": "B", "score": 100}],
+  "totalScore": 85, "maxScore": 100, "status": "graded",
+  "startedAt": "2026-07-10T00:00:00Z", "submittedAt": "2026-07-10T00:00:10Z"
+}
+```
+
+### QuizResult（单题评分结果）
+```json
+{
+  "questionId": "q1", "studentAnswer": "B", "isCorrect": true,
+  "score": 100, "maxScore": 100, "correctAnswer": "B",
+  "explanation": "极限的定义要求...", "feedback": "回答正确",
+  "errorType": null, "errorLabel": null, "knowledgePoint": "极限定义"
+}
+```
+
+### WeakPoint（薄弱知识点 — Part 3）
+```json
+{
+  "name": "极限定义", "errorCount": 2, "totalAttempts": 3, "errorRate": 0.67,
+  "lastErrorAt": "2026-07-10T00:00:00Z", "errorTypes": ["concept"],
+  "masteryEstimate": 33, "suggestedAction": "建议重新学习极限定义",
+  "source": "quiz_grading"
+}
+```
+
+---
+
+## 新增端点详情
+
+### 7. 小节即时生成小测
+`POST /api/sections/{section_id}/quiz/generate`
+```json
+// 请求: { sessionId, title, knowledgePoints[], lectureSummary, difficulty, pathId?, stageId?, chapterId?, sectionId? }
+// 响应: { status, data: { quiz: Quiz, questions: [Question — 不含答案] } }
+```
+LLM 生成 3-5 题，题型混合选择/判断/简答。答案存储在服务端，提交后才返回。
+
+### 8. 小测/题集提交与评分
+`POST /api/quizzes/{quiz_id}/submit`
+`POST /api/exam-sets/{exam_set_id}/submit`
+```json
+// 请求: { sessionId, answers: [{questionId, answer}] }
+// 响应: { status, data: { attempt, results: [QuizResult], totalScore, maxScore,
+//           sectionStatusSuggestion, weakPoints: [WeakPoint] } }
+```
+- 选择/判断：规则直接判定（100/0分）
+- 简答：调用 GradingAgent LLM 评分
+- 自动回写薄弱点到 ProfileSnapshotModel.weaknesses
+- 状态建议：≥80% mastered, 50-79% in_progress, <50% needs_review
+
+### 9. 题集 LLM 生成
+`POST /api/exam-sets/generate`
+```json
+// 请求: { sessionId, title, scopeType, scopeId, knowledgePoints[], difficulty, questionCount? }
+// 响应: { status, data: { examSet: ExamSet, questions: [Question — 不含答案] } }
+```
+题目数量按 scope_type 自动：chapter→12, stage→15, path→22。
+
+### 10. 错题本聚合查询
+`GET /api/questions/weak?sessionId=X&aggregate=true`
+返回知识点级别薄弱汇总 `{weakPoints: [WeakPoint], total: N}`。
+
+### 11. 新增数据库表
+
+```sql
+CREATE TABLE quizzes (
+  id VARCHAR(64) PRIMARY KEY, title VARCHAR(256), session_id VARCHAR(64),
+  scope_type VARCHAR(32), scope_id VARCHAR(64),
+  path_id VARCHAR(64), stage_id VARCHAR(64), chapter_id VARCHAR(64), section_id VARCHAR(64),
+  knowledge_point_ids JSON, difficulty VARCHAR(16), question_count INTEGER,
+  questions JSON, source VARCHAR(32), archive_policy VARCHAR(16), created_at DATETIME
+);
+CREATE TABLE exam_sets ( /* 同上 + difficulty_distribution JSON, estimated_minutes INTEGER,
+  total_score INTEGER, status VARCHAR(16), updated_at DATETIME */ );
+CREATE TABLE attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, attempt_id VARCHAR(64) UNIQUE,
+  session_id VARCHAR(64), quiz_id VARCHAR(64), exam_set_id VARCHAR(64),
+  answers JSON, total_score INTEGER, max_score INTEGER,
+  status VARCHAR(16), learner_id VARCHAR(64),
+  started_at DATETIME, submitted_at DATETIME, created_at DATETIME
+);
+ALTER TABLE answer_records ADD COLUMN attempt_id VARCHAR(64);
 ```

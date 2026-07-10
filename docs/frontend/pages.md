@@ -13,6 +13,15 @@
 | `/profile` | `ProfilePage.tsx` | 学习画像 |
 | `/analytics` | `LearningAnalyticsPage.tsx` | 学习分析 |
 | `/timeline` | `LearningTimelinePage.tsx` | 学习时间线 |
+| `/lecture/:sectionId` | `LecturePage.tsx` | 讲义阅读 + 即时小测 |
+| `/practice` | `PracticePage.tsx` | 练习中心（题目集 + 题集） |
+| `/generate` | `ResourceGenerationPage.tsx` | 资源生成中心 |
+| `/history` | `ConversationHistoryPage.tsx` | 对话历史 |
+| `/settings` | `SettingsPage.tsx` | 系统设置 |
+| `/admin` | `AdminDashboard.tsx` | 管理后台 |
+| `/review-queue` | `ReviewQueuePage.tsx` | 题目审核队列 |
+| `/teacher` | `TeacherHome.tsx` | 教师首页 |
+| `/teacher/classes/:id` | `TeacherClassDetail.tsx` | 班级详情 |
 
 ---
 
@@ -55,11 +64,12 @@
 
 ### 5. 学习路径 `/path`
 - **组件**: `LearningPathPage.tsx`
-- **功能**: 展示分阶段的学习路径，节点状态（锁定/未开始/进行中/已完成），掌握度
+- **功能**: 展示分阶段的学习路径（SVG 可视化时间轴），节点状态（锁定/未开始/进行中/已完成），掌握度。题集区域：显示关联题集，支持一键生成章节/阶段/综合题集
 - **关键子组件**:
   - `StageSection` — 阶段折叠组件
   - `NodeCard` — 知识点节点卡片
-- **数据来源**: `useLearningPath`
+  - 题集区域 — 生成按钮 + 题集卡片列表
+- **数据来源**: `useLearningPath`, `listExamSets`, `generateExamSet`
 
 ### 6. 学习画像 `/profile`
 - **组件**: `ProfilePage.tsx`
@@ -92,3 +102,26 @@
   - `TimelineSummaryCard` — 统计概览卡片
   - `FilterBar` — 筛选条
 - **数据来源**: `useLearningEvents`
+
+### 9. 讲义阅读 `/lecture/:sectionId`
+- **组件**: `LecturePage.tsx`
+- **功能**: 三栏布局：左侧章节/小节导航、中间讲义内容 + 即时小测面板、右侧智能辅导聊天
+- **关键功能**:
+  - "生成讲义"按钮 — 通过 SSE 流式生成 AI 讲解内容
+  - "生成小测"按钮 — 基于当前小节上下文 LLM 生成 3-5 题即时小测
+  - 小测面板 — 逐题作答、提交全部、评分展示、薄弱知识点回写
+- **数据来源**: `useLearningPath`, `useChatStore`, `generateSectionQuiz()`, `submitQuizAttempt()`
+
+### 10. 练习中心 `/practice`
+- **组件**: `PracticePage.tsx`
+- **功能**: 五大视图（首页/答题/错题本/历史/题集详情），统一练习入口
+- **首页**:
+  - 四张快捷卡片：快速诊断、自定义练习、错题重练、答题历史
+  - 班级练习（教师推送）+ 题集列表 + 题目集列表
+  - 右侧统计：正确率、薄弱点、总答题
+- **答题**: 逐题展示（选择/判断/填空/简答），提交评分，结果显示
+- **错题本**: 错误题目回顾，按错误类型筛选
+- **历史**: 全部答题记录及正确率
+- **题集详情**: 题集元数据（题数/时间/总分/难度）、开始/继续/再次作答、作答历史（多次 attempt）
+- **数据来源**: `useChatStore`, `listExamSets`, `startExamSetAttempt`, `submitExamSet`, `listExamSetAttempts`, `getExamSetResults`
+- **URL 参数**: `?classSubjectId=`, `?examSetId=`

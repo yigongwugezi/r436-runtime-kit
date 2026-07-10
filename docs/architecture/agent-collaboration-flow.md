@@ -1,19 +1,23 @@
 # Runtime Kit 模块协作流程
 
-## 1. Agent Pipeline (6 agents)
+## 1. Agent Pipeline (9 agents)
 
-各处理模块由 `AgentOrchestrator` 统一调度。管线依次运行，每个模块的输出会合并进共享上下文。
+各处理模块由 `LangGraph Orchestrator` 统一调度。管线依次运行，每个模块的输出会合并进共享上下文。
 
 | Agent | Chinese Name | Responsibility | Status |
 | --- | --- | --- | --- |
-| `ProfileAgent` | 画像模块 | 从用户输入中提取 8 个维度学生画像 | Real (DeepSeek) |
-| `KnowledgeAgent` | 知识检索模块 | 根据 `course_id` 定位课程知识点和章节内容 | Mock |
-| `DiagnosisAgent` | 诊断模块 | 根据画像和课程要求识别知识短板 | Mock |
-| `PlannerAgent` | 路径规划模块 | 生成阶段化学习路径 | Mock |
-| `ResourceAgent` | 资源模块 | 生成讲义、题库、拓展阅读、实操案例、思维导图、视频脚本等 6 类资源 | Mock (schema ready) |
-| `ReviewAgent` | 质量检查模块 | 检查格式完整性、资源覆盖度和内容安全 | Mock |
+| `ConversationAgent` | 对话智能体 | 意图分类、总控调度、最终回复生成 | Real (DeepSeek) |
+| `ProfileAgent` | 画像模块 | 从用户输入中提取 10 维度学生画像 | Real (DeepSeek) |
+| `KnowledgeAgent` | 知识检索模块 | 根据 `course_id` 定位课程知识点和章节内容 | Real (RAG) |
+| `DiagnosisAgent` | 诊断模块 | 根据画像和课程要求识别知识短板，支持自适应三步诊断 | Real (DeepSeek) |
+| `PlannerAgent` | 路径规划模块 | 四阶段 LLM 生成学习路径（Architect→Creator→Reviewer→Refine） | Real (DeepSeek) |
+| `ResourceAgent` | 资源模块 | 生成讲义、题库、拓展阅读、实操案例、思维导图、视频脚本等 6 类资源 | Real (DeepSeek) |
+| `QuestionAgent` | 试题生成智能体 | 生成选择/填空/判断/简答/变式题，含自洽性检验、难度校准、去重 | Real (DeepSeek) |
+| `GradingAgent` | 自动批改智能体 | 四维评分（推理 40%/完整 30%/计算 20%/表达 10%），五种错误分类 | Real (DeepSeek) |
+| `ReviewAgent` | 质量检查模块 | 检查格式完整性、资源覆盖度和内容安全 | Real (DeepSeek) |
+| `MultimodalAgent` | 多模态智能体 | 图片理解、思维导图生成、视频脚本生成（独立调用） | Real |
 
-> **注意**: 思维导图 (Mermaid) 由 `ResourceAgent` 作为 `mindmap` 类型资源生成，不作为独立 Agent 存在。
+> **注意**: QuestionAgent 和 GradingAgent 可作为独立服务调用（无需完整管线）。小测/题集生成通过 `POST /api/sections/{id}/quiz/generate` 和 `POST /api/exam-sets/generate` 直接调用 LLM，提交作答时通过 `submit` 端点调用 GradingAgent。
 
 ## 2. Main Flow
 

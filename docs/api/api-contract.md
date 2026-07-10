@@ -1597,3 +1597,63 @@ Account (用户)
 1. **第一阶段** (当前): 所有数据挂在一个默认科目下 (`subject_default`)
 2. **第二阶段** (目标): 前端先做科目切换 UI，后端逐步实现按 subjectId 隔离
 3. 向后兼容: 不带 `subjectId` 的请求默认使用 `subject_default`
+
+### 4.7 练习与评估 API（M5 Assessment，v0.6.0 新增）
+
+#### 题目与判卷（原有）
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/questions/generate` | 生成题目 |
+| GET | `/api/questions` | 查题目列表（不含答案） |
+| GET | `/api/questions/{id}` | 单题详情 |
+| POST | `/api/questions/{id}/grade` | 提交作答 + 判卷 |
+| GET | `/api/questions/weak` | 错题本（支持 `?aggregate=true`） |
+| GET | `/api/questions/history` | 答题历史 |
+
+#### 即时小测
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/sections/{id}/quiz/generate` | 从小节上下文 LLM 生成 3-5 题 |
+| POST | `/api/quizzes` | 创建小测 |
+| GET | `/api/quizzes` | 列出小测 |
+| GET | `/api/quizzes/{id}` | 获取小测及关联题目 |
+| POST | `/api/quizzes/{id}/submit` | 提交作答 + 逐题评分 + 薄弱点回写 |
+| GET | `/api/quizzes/{id}/results` | 查看小测结果 |
+| POST | `/api/quizzes/{id}/attempts` | 开始一次作答 |
+| GET | `/api/quizzes/{id}/attempts` | 列出所有作答记录 |
+
+#### 大型题集
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/exam-sets/generate` | LLM 生成题集（章节 10-12 / 阶段 15-18 / 路径 20-25 题） |
+| POST | `/api/exam-sets` | 创建题集 |
+| GET | `/api/exam-sets` | 列出题集（支持 scopeType/status 筛选） |
+| GET | `/api/exam-sets/{id}` | 获取题集及关联题目 |
+| PATCH | `/api/exam-sets/{id}` | 更新题集 |
+| POST | `/api/exam-sets/{id}/submit` | 提交全部作答 + 评分 + 薄弱点回写 |
+| GET | `/api/exam-sets/{id}/results` | 查看题集结果 |
+| POST | `/api/exam-sets/{id}/attempts` | 开始题集作答 |
+| GET | `/api/exam-sets/{id}/attempts` | 列出题集所有作答记录 |
+
+#### 作答记录
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/attempts` | 创建作答记录 |
+| GET | `/api/attempts/{id}` | 获取作答记录及关联答案 |
+| PATCH | `/api/attempts/{id}` | 更新作答（保存进度） |
+| POST | `/api/attempts/{id}/submit` | 提交作答 |
+
+#### 评分策略
+
+- 选择/判断题：规则直接判定（100/0 分）
+- 简答题：调用 GradingAgent LLM 四维评分
+- 提交时自动回写薄弱点到 ProfileSnapshotModel.weaknesses
+- 状态建议：≥80% mastered, 50-79% in_progress, <50% needs_review
+
+#### 新增数据模型
+
+`Quiz`（即时小测）、`ExamSet`（大型题集）、`Attempt`（作答记录）、`QuizResult`（单题评分）、`WeakPoint`（薄弱知识点）。详见 `docs/api-questions.md`。

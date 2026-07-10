@@ -28,6 +28,27 @@
 | **通用** | `/learning-events` | POST | `sessionId`, `event`, `resourceId?`, `metadata?` | (记录学习事件) |
 | **通用** | `/resources/{id}/bookmark` | POST | `sessionId` | `bookmarked` |
 
+### 题目与练习（M5 Assessment）
+| **Practice** | `/quizzes` | GET/POST | `sessionId`, `scopeType?` | `quizzes[]` |
+| **Practice** | `/quizzes/{id}` | GET | `quizId` | `quiz`, `linkedQuestions[]` |
+| **Practice** | `/quizzes/{id}/submit` | POST | `sessionId`, `answers[]` | `attempt`, `results[]`, `totalScore`, `weakPoints[]` |
+| **Practice** | `/quizzes/{id}/results` | GET | `quizId`, `attemptId?` | `quiz`, `gradingResults[]` |
+| **Practice** | `/quizzes/{id}/attempts` | GET/POST | `sessionId` | `attempts[]` |
+| **Practice** | `/attempts/{id}` | GET/PATCH | — | `attempt`, `linkedAnswers[]` |
+| **Practice** | `/attempts/{id}/submit` | POST | `answers[]`, `totalScore?` | `attempt` |
+| **Practice** | `/sections/{id}/quiz/generate` | POST | `sessionId`, `title`, `knowledgePoints[]`, `lectureSummary` | `quiz`, `questions[]` |
+| **Practice** | `/exam-sets` | GET/POST | `sessionId`, `scopeType?`, `status?` | `examSets[]` |
+| **Practice** | `/exam-sets/generate` | POST | `sessionId`, `title`, `scopeType`, `scopeId`, `knowledgePoints[]` | `examSet`, `questions[]` |
+| **Practice** | `/exam-sets/{id}` | GET/PATCH | — | `examSet`, `linkedQuestions[]` |
+| **Practice** | `/exam-sets/{id}/submit` | POST | `sessionId`, `answers[]` | `attempt`, `results[]`, `weakPoints[]` |
+| **Practice** | `/exam-sets/{id}/results` | GET | `attemptId?` | `examSet`, `gradingResults[]` |
+| **Practice** | `/exam-sets/{id}/attempts` | GET/POST | `sessionId` | `attempts[]` |
+| **Practice** | `/questions` | GET | `sessionId`, `knowledgePoint?`, `difficulty?`, `type?` | `questions[]` |
+| **Practice** | `/questions/generate` | POST | `sessionId`, `message?` | `questionSetId`, `questions[]` |
+| **Practice** | `/questions/{id}/grade` | POST | `sessionId`, `answer` | `gradingResult` |
+| **Practice** | `/questions/weak` | GET | `sessionId`, `errorType?`, `aggregate?` | `records[]` 或 `weakPoints[]` |
+| **Practice** | `/questions/history` | GET | `sessionId`, `limit?` | `records[]`, `totalCorrect`, `totalAttempted` |
+
 ## 数据流说明
 
 ```
@@ -41,4 +62,9 @@
                                    ReviewAgent → (质量审核)
                                          ↓
                                    前端跳转至对应页面展示结果
+
+练习闭环：LecturePage → /sections/{id}/quiz/generate → 小测
+         → /quizzes/{id}/submit → 评分 + 薄弱点回写
+         LearningPathPage → /exam-sets/generate → 题集
+         → /exam-sets/{id}/submit → 多次作答 + 历史
 ```
