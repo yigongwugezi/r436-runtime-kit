@@ -15,7 +15,7 @@ const IMAGE_REFERENCE_RE = /(这张图|这张图片|上面这张图|刚才那张
 const DEBUG_FIELDS = ['action', 'confidence', 'should_run_pipeline', 'skip_pipeline',
   'skip_reason', 'agents_run', 'final_reply_owner', 'reply_source', 'fallback_used',
   'llm_retry_count', 'pipeline_executed', 'learning_path_created', 'resources_created',
-  'questions_created'];
+  'questions_created', 'current_agent', 'warnings'];
 
 function setDebugInfoFromPayload(payload: Record<string, unknown>) {
   const debugInfo: Record<string, unknown> = {};

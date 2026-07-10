@@ -995,7 +995,7 @@ def _questions_from_vision(vision: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _cache_multimodal_context(session_id: str, image_input: dict[str, Any], result: dict[str, Any]) -> None:
-    if result.get("status") not in {"success", "partial_success", "needs_manual_review"}:
+    if result.get("status") != "completed":
         return
     data = result.get("result") if isinstance(result.get("result"), dict) else {}
     vision = _vision_from_multimodal_result(result)
@@ -1061,8 +1061,8 @@ def _multimodal_workflow_trace(
             task_type=task_type,
             selected_image_attachment_id=selected_image_attachment_id,
         )
-    status = str(result.get("status") or "failed")
-    workflow_status = "success" if status == "success" else ("partial" if status in {"needs_input", "provider_not_configured", "unsupported"} else "failed")
+    status = str(result.get("status") or "generation_failed")
+    workflow_status = "success" if status == "completed" else ("partial" if status == "provider_not_configured" else "failed")
     return _with_image_context_trace({
         "workflow_name": "multimodal_generation",
         "workflow_status": workflow_status,
@@ -1083,45 +1083,50 @@ def _multimodal_workflow_trace(
 def _multimodal_reply(result: dict[str, Any]) -> str:
     task_type = result.get("task_type")
     status = result.get("status")
+    error_code = result.get("error_code")
+    raw_status = ((result.get("metadata") or {}).get("raw_status") if isinstance(result.get("metadata"), dict) else "")
     data = result.get("result") if isinstance(result.get("result"), dict) else {}
     for key in ("display_text", "teaching_text", "answer_text", "chat_text"):
         text = _clean_multimodal_text(data.get(key))
         if text:
             return text
-    if task_type == "image_understanding" and status in {"success", "partial_success", "needs_manual_review"}:
+    content = _clean_multimodal_text(result.get("content"))
+    if content:
+        return content
+    if task_type == "image_understanding" and status == "completed":
         return "已完成图片理解，识别结果已整理成结构化信息。"
-    if task_type == "image_to_mindmap" and status in {"success", "needs_manual_review"}:
+    if task_type == "image_to_mindmap" and status == "completed":
         return "已根据图片内容生成思维导图。"
-    if task_type in {"image_to_flashcards", "note_image_to_flashcards", "question_image_to_flashcards"} and status in {"success", "needs_manual_review"}:
+    if task_type in {"image_to_flashcards", "note_image_to_flashcards", "question_image_to_flashcards"} and status == "completed":
         count = len(((result.get("result") or {}).get("cards")) or [])
         return f"已根据图片内容生成 {count} 张复习卡片。"
-    if task_type in {"explain_image_question", "solve_image_question"} and status in {"success", "needs_manual_review"}:
+    if task_type in {"explain_image_question", "solve_image_question"} and status == "completed":
         return "已读取题图并整理讲解信息；证据不足的部分已标记为需要人工确认。"
-    if task_type == "image_wrong_question_analysis" and status in {"success", "needs_manual_review"}:
+    if task_type == "image_wrong_question_analysis" and status == "completed":
         return "已根据图片整理错题分析；证据不足的部分已标记为需要人工确认。"
-    if task_type == "image_note_summary" and status in {"success", "needs_manual_review"}:
+    if task_type == "image_note_summary" and status == "completed":
         return "已根据图片整理笔记总结。"
-    if task_type == "image_to_learning_plan" and status in {"success", "needs_manual_review"}:
+    if task_type == "image_to_learning_plan" and status == "completed":
         return "已根据图片中的知识点整理学习计划。"
-    if task_type == "image_to_variant_questions" and status in {"success", "needs_manual_review"}:
+    if task_type == "image_to_variant_questions" and status == "completed":
         count = len(((result.get("result") or {}).get("variants")) or [])
         return f"已根据题图生成 {count} 道变式题；识别不确定处已标记。"
-    if task_type == "image_to_resource_bundle" and status in {"success", "needs_manual_review"}:
+    if task_type == "image_to_resource_bundle" and status == "completed":
         return "已整理图片学习资源包，并生成待确认的资源保存候选和知识候选。"
-    if task_type in {"video_generation", "micro_lesson_video", "video_script_generation"} and status == "script_ready_provider_not_configured":
+    if task_type in {"video_generation", "micro_lesson_video", "video_script_generation"} and status == "provider_not_configured" and raw_status == "script_ready_provider_not_configured":
         return "视频模型尚未配置，但我已先生成微课脚本和分镜草稿，没有返回假视频链接。"
-    if task_type in {"image_generation", "concept_card_generation", "teaching_diagram_generation"} and status == "success":
+    if task_type in {"image_generation", "concept_card_generation", "teaching_diagram_generation"} and status == "completed":
         return "图片生成任务已返回结果。"
-    if task_type == "mindmap_generation" and status == "success":
+    if task_type == "mindmap_generation" and status == "completed":
         stage_count = ((result.get("result") or {}).get("stage_count")) or 0
         return f"已根据当前学习路径生成思维导图，共整理 {stage_count} 个阶段。"
-    if status == "needs_input" and (str(task_type or "").startswith("image_") or task_type in {"explain_image_question", "solve_image_question"}):
+    if error_code == "missing_input" and (str(task_type or "").startswith("image_") or task_type in {"explain_image_question", "solve_image_question"}):
         return "我还没有拿到可复用的图片。请先上传题图，或者在同一会话里接着上一张图继续提问。"
-    if status == "needs_input":
+    if error_code == "missing_input":
         return "还缺少可执行这个多模态任务的输入。比如生成思维导图需要先有学习路径或知识内容。"
     if status == "provider_not_configured":
         return "这个多模态能力还没有配置对应的模型 Provider，所以我不会假装已经生成或识别成功。"
-    if status == "unsupported":
+    if error_code == "unsupported":
         return "这个多模态请求暂时还不支持真实执行，我没有返回伪造结果。"
     return "多模态任务执行失败。"
 
@@ -1746,6 +1751,30 @@ GEN_STAGES = [
 
 
 
+
+
+@router.post("/chat/sessions")
+def create_chat_session(payload: dict[str, Any]) -> dict[str, Any]:
+    """Persist an empty chat session before its first message is sent."""
+    session_id = _payload_session_id(payload)
+    subject_id = _payload_subject_id(payload)
+    learner_id = str(payload.get("learnerId", "")).strip() or None
+    try:
+        db = SessionLocal()
+        session = get_or_create_session(db, session_id, learner_id=learner_id, subject_id=subject_id)
+        conversation_store.get(session.id)
+        return _product_response(
+            {
+                "sessionId": session.id,
+                "title": session.title or "新对话",
+                "createdAt": int(session.created_at.timestamp() * 1000) if session.created_at else int(time.time() * 1000),
+            },
+            session_id=session.id,
+            subject_id=subject_id,
+            source="db",
+        )
+    finally:
+        db.close()
 
 
 @router.get("/chat/sessions")

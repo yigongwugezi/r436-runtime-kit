@@ -24,6 +24,12 @@ export interface ChatMessage {
     status?: string;
     task_type?: string;
     provider?: string;
+    title?: string;
+    content?: string;
+    content_url?: string | null;
+    metadata?: Record<string, unknown>;
+    error_code?: string | null;
+    user_message?: string;
     warnings?: string[];
     trace?: Record<string, unknown>;
     workflow_trace?: Record<string, unknown>;

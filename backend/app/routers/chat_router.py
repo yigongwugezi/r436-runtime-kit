@@ -60,14 +60,23 @@ async def _run_chat(message: str, session_id: str) -> tuple[str, dict[str, Any]]
 
 
 def _done_event(session_id: str, result: dict[str, Any], error: str | None = None) -> dict[str, Any]:
+    result = result if isinstance(result, dict) else {}
     event = {
         "type": "done",
         "done": True,
         "sessionId": session_id,
         "pipeline_executed": error is None,
-        "learning_path_created": bool(result.get("learning_path")) if result else False,
-        "resources_created": bool(result.get("resources")) if result else False,
-        "questions_created": bool(result.get("questions")) if result else False,
+        "agents_run": result.get("agents_run") or [],
+        "current_agent": result.get("current_agent") or "",
+        "progress": result.get("progress") or {},
+        "learning_path_created": bool(result.get("learning_path")),
+        "resources_created": bool(result.get("resources")),
+        "questions_created": bool(result.get("questions")),
+        "multimodal_result": result.get("multimodal_result") or {},
+        "diagnosis_result": result.get("diagnosis_result") or result.get("diagnosis") or {},
+        "planner_metadata": result.get("planner_metadata") or {},
+        "warnings": result.get("warnings") or [],
+        "fallback_used": bool(result.get("fallback_used")),
     }
     if error:
         event["error"] = error
@@ -141,8 +150,9 @@ async def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
             yield f"data: {json.dumps(_done_event(session_id, result), ensure_ascii=False)}\n\n"
         except Exception as exc:
             logger.error("Stream error: %s", exc, exc_info=exc)
-            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)}, ensure_ascii=False)}\n\n"
-            yield f"data: {json.dumps(_done_event(session_id, {}, str(exc)), ensure_ascii=False)}\n\n"
+            error_message = "学习方案生成失败，请稍后重试。"
+            yield f"data: {json.dumps({'type': 'error', 'message': error_message}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps(_done_event(session_id, {}, error_message), ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_stream(),
@@ -180,4 +190,4 @@ async def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
         }
     except Exception as exc:
         logger.error("Chat send error: %s", exc, exc_info=exc)
-        return {"sessionId": session_id, "reply": None, "error": str(exc)}
+        return {"sessionId": session_id, "reply": None, "error": "学习方案生成失败，请稍后重试。"}

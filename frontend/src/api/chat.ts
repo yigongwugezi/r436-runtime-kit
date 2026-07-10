@@ -18,6 +18,11 @@ export interface ChatResponse {
   workflow_trace?: Record<string, unknown>;
   action?: string;
   agents_run?: string[];
+  current_agent?: string;
+  progress?: Record<string, unknown>;
+  warnings?: string[];
+  diagnosis_result?: Record<string, unknown>;
+  planner_metadata?: Record<string, unknown>;
   done?: boolean;
   pipeline_executed?: boolean;
   learning_path_created?: boolean;
@@ -28,6 +33,11 @@ export interface ChatResponse {
 
 export interface SessionListResponse {
   sessions: ChatSession[];
+}
+
+export async function createChatSession(params: { sessionId: string; subjectId?: string; learnerId?: string }): Promise<{ sessionId: string }> {
+  const { data } = await client.post('/api/chat/sessions', params);
+  return data;
 }
 
 /** 发送消息（非流式） */

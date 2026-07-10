@@ -22,7 +22,7 @@ def _has_image(context: dict[str, Any]) -> bool:
 def _infer_task_type(context: dict[str, Any]) -> str:
     explicit = _text(context.get("task_type"))
     if explicit:
-        return explicit
+        return {"image_explanation": "explain_image_question"}.get(explicit, explicit)
 
     message = _text(context.get("user_message"))
     has_image = _has_image(context)
@@ -56,6 +56,35 @@ def _infer_task_type(context: dict[str, Any]) -> str:
     return "mindmap_generation"
 
 
+def _public_status(status: Any) -> tuple[str, str | None]:
+    """Expose a small provider-agnostic status contract to the UI."""
+    raw_status = _text(status) or "failed"
+    if raw_status in {"success", "partial_success", "needs_manual_review", "script_ready"}:
+        return "completed", None
+    if raw_status in {"provider_not_configured", "script_ready_provider_not_configured"}:
+        return "provider_not_configured", None
+    if raw_status == "needs_input":
+        return "generation_failed", "missing_input"
+    if raw_status == "unsupported":
+        return "generation_failed", "unsupported"
+    return "generation_failed", raw_status
+
+
+def _result_content(result: dict[str, Any]) -> tuple[str, str | None]:
+    for key in ("display_text", "teaching_text", "answer_text", "chat_text", "markdown", "script"):
+        text = _text(result.get(key))
+        if text:
+            return text, None
+    for key in ("video_url", "image_url"):
+        url = _text(result.get(key))
+        if url:
+            return "", url
+    image_urls = result.get("image_urls")
+    if isinstance(image_urls, list) and image_urls:
+        return "", _text(image_urls[0]) or None
+    return "", None
+
+
 class MultimodalAgent:
     """Route multimodal requests to the existing tool registry."""
 
@@ -67,20 +96,42 @@ class MultimodalAgent:
         tool_name, tool = self.registry.select_tool(task_type)
         if not tool:
             return {
-                "status": "unsupported",
+                "status": "generation_failed",
                 "provider": "none",
                 "task_type": task_type,
                 "tool": "",
-                "warnings": [f"No multimodal tool registered for task_type={task_type}."],
+                "title": task_type.replace("_", " ").title(),
+                "content": "",
+                "content_url": None,
+                "metadata": {"raw_status": "unsupported"},
+                "error_code": "unsupported",
+                "user_message": _text(context.get("user_message")),
+                "warnings": ["当前多模态请求暂不支持。"],
                 "result": {},
                 "trace": {"input_keys": sorted(context.keys())},
             }
 
         result = tool.run({**context, "task_type": task_type})
         if not isinstance(result, dict):
-            result = {"status": "failed", "provider": tool_name or "unknown", "warnings": ["Tool returned non-dict result."], "result": {}}
+            result = {"status": "failed", "provider": tool_name or "unknown", "warnings": ["多模态服务返回了无效结果。"], "result": {}}
+        payload = result.get("result") if isinstance(result.get("result"), dict) else result
+        status, error_code = _public_status(result.get("status"))
+        content, content_url = _result_content(payload)
+        warnings = result.get("warnings") if isinstance(result.get("warnings"), list) else []
+        if status == "generation_failed":
+            warnings = ["请求的多模态内容生成失败，请检查输入后重试。"]
+        elif status == "provider_not_configured":
+            warnings = ["所需的多模态服务尚未配置。"]
         return {
             "task_type": task_type,
             "tool": tool_name or "",
             **result,
+            "status": status,
+            "title": task_type.replace("_", " ").title(),
+            "content": content,
+            "content_url": content_url,
+            "metadata": {"raw_status": _text(result.get("status")), "tool": tool_name or ""},
+            "error_code": error_code,
+            "user_message": _text(context.get("user_message")),
+            "warnings": warnings,
         }
