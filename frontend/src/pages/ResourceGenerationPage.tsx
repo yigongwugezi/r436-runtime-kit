@@ -21,6 +21,9 @@ import { generateResource } from '../api/resources';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
 import { getCurrentLearner } from '../store/authStore';
+import { useLearningPath } from '../hooks/useLearningPath';
+import { useSearchParams } from 'react-router-dom';
+import type { Chapter, Section } from '../types/learningPath';
 
 const resourceTypes = [
   { id: 'lecture', label: '课程讲义', icon: FileText, color: 'from-blue-500 to-cyan-400', description: '专业知识点讲解' },
@@ -52,39 +55,52 @@ export default function ResourceGenerationPage() {
   }
   const sessionId = useChatStore(s => s.currentSessionId);
   const subjectId = useSubjectStore(s => s.activeSubject?.id);
-  const [selectedTypes, setSelectedTypes] = useState<string[]>(['lecture', 'mindmap', 'quiz']);
-  const [prompt, setPrompt] = useState('');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [selectedTypes, setSelectedTypes] = useState<string[]>(() => {
+    const fromUrl = searchParams.get('types');
+    return fromUrl ? fromUrl.split(',') : ['lecture', 'mindmap', 'quiz'];
+  });
+  const [prompt, setPrompt] = useState(() => searchParams.get('q') || '');
+
+  // 持久化选中类型到 URL
+  const updateTypes = (types: string[]) => {
+    setSelectedTypes(types);
+    const p = new URLSearchParams(searchParams);
+    if (types.length > 0) p.set('types', types.join(','));
+    if (prompt) p.set('q', prompt);
+    setSearchParams(p, { replace: true });
+  };
   const [isGenerating, setIsGenerating] = useState(false);
   const [genError, setGenError] = useState('');
+  const [activeAgent, setActiveAgent] = useState<string | null>(null);
+  const { path } = useLearningPath();
 
   const toggleType = (id: string) => {
-    setSelectedTypes(prev =>
-      prev.includes(id) ? prev.filter(t => t !== id) : [...prev, id]
-    );
+    updateTypes(selectedTypes.includes(id) ? selectedTypes.filter(t => t !== id) : [...selectedTypes, id]);
+  };
+
+  const updatePrompt = (val: string) => {
+    setPrompt(val);
+    const p = new URLSearchParams(searchParams);
+    if (val) p.set('q', val); else p.delete('q');
+    if (selectedTypes.length > 0) p.set('types', selectedTypes.join(','));
+    setSearchParams(p, { replace: true });
   };
 
   const handleGenerate = async () => {
     if (selectedTypes.length === 0 || !prompt.trim()) return;
-    setIsGenerating(true);
-    setGenError('');
+    setIsGenerating(true); setGenError('');
+    const agents = ['profile', 'knowledge', 'diagnosis', 'planner', 'resource', 'review'];
+    let idx = 0;
+    const timer = setInterval(() => { if (idx < agents.length) { setActiveAgent(agents[idx]); idx++; } else clearInterval(timer); }, 600);
     try {
-      // 对每种选中的类型依次生成
       for (const type of selectedTypes) {
-        await generateResource({
-          sessionId,
-          subjectId,
-          type,
-          topic: prompt.trim(),
-          difficulty: 'medium',
-        });
+        await generateResource({ sessionId, subjectId, type, topic: prompt.trim(), difficulty: 'medium' });
       }
-      // 生成完成后跳转到资源库
-      nav('/resources');
-    } catch (e: any) {
-      setGenError(e?.message || '生成失败，请重试');
-    } finally {
-      setIsGenerating(false);
-    }
+      clearInterval(timer); setActiveAgent('review');
+      setTimeout(() => nav('/resources'), 1000);
+    } catch (e: any) { clearInterval(timer); setGenError(e?.message || '生成失败，请重试'); }
+    finally { setIsGenerating(false); setActiveAgent(null); }
   };
 
   return (
@@ -109,23 +125,29 @@ export default function ResourceGenerationPage() {
         </div>
         <div className="flex items-center gap-4 overflow-x-auto pb-2">
           {([
-            { name: '画像分析', emoji: '🧠', color: '#6366f1' },
-            { name: '知识诊断', emoji: '🔍', color: '#14b8a6' },
-            { name: '路径规划', emoji: '🗺️', color: '#f59e0b' },
-            { name: '资源生成', emoji: '✨', color: '#ec4899' },
-            { name: '质量审核', emoji: '✅', color: '#22c55e' },
-          ]).map((a) => (
-            <div key={a.name} className={`flex-shrink-0 flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${isGenerating ? 'bg-primary-50' : 'bg-surface-50'}`}>
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center text-lg" style={{ backgroundColor: a.color + '20' }}>
-                {a.emoji}
-              </div>
+            { id: 'profile', name: '画像分析', emoji: '🧠', color: '#6366f1' },
+            { id: 'knowledge', name: '知识检索', emoji: '📚', color: '#14b8a6' },
+            { id: 'diagnosis', name: '诊断分析', emoji: '🔍', color: '#f59e0b' },
+            { id: 'planner', name: '路径规划', emoji: '🗺️', color: '#ec4899' },
+            { id: 'resource', name: '资源生成', emoji: '✨', color: '#8b5cf6' },
+            { id: 'review', name: '质量审核', emoji: '✅', color: '#22c55e' },
+          ]).map((a, i) => {
+            const agents = ['profile', 'knowledge', 'diagnosis', 'planner', 'resource', 'review'];
+            const doneIdx = activeAgent ? agents.indexOf(activeAgent) : -1;
+            const isActive = activeAgent === a.id;
+            const isDone = doneIdx > agents.indexOf(a.id);
+            return (
+            <div key={a.name} className={`flex-shrink-0 flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${isActive ? 'bg-violet-50 scale-105 shadow-sm' : isDone ? 'bg-emerald-50' : isGenerating ? 'bg-surface-50 opacity-40' : 'bg-surface-50'}`}>
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center text-lg" style={{ backgroundColor: a.color + '20' }}>{a.emoji}</div>
               <div className="min-w-0">
-                <p className="text-sm font-medium text-surface-800">{a.name}</p>
-                <p className="text-xs text-surface-400">就绪</p>
+                <p className={`text-sm font-medium ${isActive ? 'text-violet-700' : isDone ? 'text-emerald-700' : 'text-surface-800'}`}>{a.name}</p>
+                <p className={`text-xs ${isActive ? 'text-violet-500' : isDone ? 'text-emerald-500' : 'text-surface-400'}`}>{isActive ? '执行中…' : isDone ? '完成' : isGenerating ? '等待' : '就绪'}</p>
               </div>
-              <CheckCircle2 size={16} className="text-success-500" />
+              {isDone && <CheckCircle2 size={16} className="text-emerald-400" />}
+              {isActive && <div className="w-4 h-4 border-2 border-violet-400 border-t-transparent rounded-full animate-spin" />}
+              {!isGenerating && <CheckCircle2 size={16} className="text-success-500" />}
             </div>
-          ))}
+          )})}
         </div>
       </div>
 
@@ -140,7 +162,7 @@ export default function ResourceGenerationPage() {
             </label>
             <textarea
               value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
+              onChange={(e) => updatePrompt(e.target.value)}
               placeholder="例如：我需要学习CNN卷积神经网络的核心原理，包括卷积层、池化层的工作机制..."
               className="w-full h-32 px-4 py-3 bg-surface-50 border border-surface-200 rounded-xl text-surface-800 placeholder:text-surface-400 focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 resize-none transition-all"
             />

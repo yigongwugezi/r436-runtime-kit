@@ -27,10 +27,10 @@ def _infer_task_type(context: dict[str, Any]) -> str:
     message = _text(context.get("user_message"))
     has_image = _has_image(context)
 
-    if any(word in message for word in ("微课", "视频", "动画", "分镜")):
-        return "video_script_generation"
-    if any(word in message for word in ("生成图片", "画图", "配图", "讲解图")):
-        return "teaching_diagram_generation"
+    if any(word in message for word in ("微课", "视频", "动画", "分镜", "短视频", "讲解视频")):
+        return "video_generation"
+    if any(word in message for word in ("生成图片", "画图", "配图", "讲解图", "插图", "图示", "图片")):
+        return "image_generation"
     if any(word in message for word in ("思维导图", "知识图谱", "脑图")):
         return "image_to_mindmap" if has_image else "mindmap_generation"
 

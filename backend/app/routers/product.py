@@ -1255,24 +1255,9 @@ def _casual_reply(session_id: str) -> str:
     if not session_id:
         raise ValueError("session_id is required for _casual_reply")
     state = conversation_store.get(session_id)
-    known = "\n".join(conversation_store.known_lines(state))
-    if known:
-        return (
-            "你好，我是 EduAgent。"
-            "你刚才提供的信息我已经记录了，"
-            "不用重新填表。\n\n"
-            "我目前已记录：\n"
-            f"{known}\n\n"
-            "你可以继续补充想学的课程、"
-            "已有基础、目标或偏好；"
-            "也可以直接说「开始生成学习方案」。"
-        )
-    return (
-        "你好，我是 EduAgent。你可以告诉我你的专业、学习基础、目标和偏好的学习方式，"
-        "我会帮你生成学习画像、学习路径和个性化资源。\n\n"
-        "例如：我是软件工程大三学生，Python 和数据结构还可以，但线性代数比较弱，"
-        "想用十天学懂神经网络，希望多给我代码实验和图解。"
-    )
+    if state.messages:
+        return "还有什么想了解的？或者说说你最近学得怎么样？"
+    return "你好！想学什么课？之前有没有接触过相关内容？每天大概能花多少时间？随便聊聊就好。"
 
 
 def _date_query_reply() -> str:
@@ -1284,15 +1269,11 @@ def _date_query_reply() -> str:
 def _clarification_reply(session_id: str) -> str:
     state = conversation_store.get(session_id)
     if not state.messages:
-        return "我刚刚没有足够上下文可以解释。你可以把不理解的那句话再发我一次。"
-
-    known = "\n".join(conversation_store.known_lines(state)) or "- 暂时还没有稳定学习画像"
-    questions = "\n".join(f"- {question}" for question in conversation_store.next_questions(state, limit=2))
-    return (
-        "我的意思是：我会先通过对话收集你的学习画像，再根据画像生成学习路径和资源。\n\n"
-        f"当前我已记录：\n{known}\n\n"
-        f"如果你想继续生成个性化学习方案，下一步最有用的是补充：\n{questions}"
-    )
+        return "没太理解你的意思，能换个方式再说说吗？"
+    questions = conversation_store.next_questions(state, limit=2)
+    if questions:
+        return f"我的意思是先聊聊{'和'.join(questions[:2])}，了解清楚了我才好帮你规划。你觉得呢？"
+    return "还有什么想了解的？或者你有具体的学习困惑也可以直接说。"
 
 
 def _format_known_and_missing(session_id: str) -> tuple[str, list[dict[str, str]]]:
@@ -1314,59 +1295,28 @@ def _readiness_line(session_id: str) -> str:
 def _info_request_reply(session_id: str) -> str:
     state = conversation_store.get(session_id)
     known, missing = _format_known_and_missing(session_id)
-    if not known:
-        known = "- 暂时还没有稳定画像信息"
-
     if not missing:
-        return (
-            "你目前提供的信息已经够我生成第一版学习画像和学习路径了。\n\n"
-            f"我已记录的信息：\n{known}\n\n"
-            "下一步你可以直接说「开始生成学习方案」，或者继续补充最近做题情况、错题类型和喜欢的资源形式，我会继续更新画像。"
-        )
-
-    questions = "\n".join(f"- {question}" for question in conversation_store.next_questions(state, limit=2))
-    return (
-        "可以，我会根据你已经说过的信息继续补全画像，不需要一次性填表。\n\n"
-        f"{_readiness_line(session_id)}\n\n我目前已记录：\n{known}\n\n"
-        f"接下来最有用的是补充这几项：\n{questions}\n\n"
-        "你可以直接用一句话回答，例如：我数据结构基础一般，链表和树比较薄弱，想两周内能做课程实验，更喜欢图解加代码。"
-    )
+        return "信息差不多了！不过你还有什么特别想重点突破的方向吗？没有的话说「开始」我就给你出方案了。"
+    questions = conversation_store.next_questions(state, limit=2)
+    qs = "、".join(questions[:2]) if questions else "你的学习目标和时间安排"
+    return f"收到。再跟我聊聊{qs}？了解越多我规划得越准。"
 
 
 def _profile_query_reply(session_id: str) -> str:
     state = conversation_store.get(session_id)
     if state.last_result is None:
-        known, missing = _format_known_and_missing(session_id)
-        if known:
-            questions = "\n".join(f"- {item['question']}" for item in missing[:3])
-            return (
-                "我现在已经能形成一个很粗的学习画像，但还不够完整。\n\n"
-                f"已记录的信息：\n{known}\n\n"
-                f"建议你继续补充：\n{questions}"
-            )
-        return (
-            "我现在还没有足够信息判断你是什么类型的学习者。\n\n"
-            "你可以告诉我你的专业、年级、学过什么、哪里薄弱、想达成什么目标。"
-            "我会先构建学习画像，再基于画像回答你适合的学习方向和学习策略。"
-        )
+        _, missing = _format_known_and_missing(session_id)
+        if missing:
+            qs = [m.get('question', '') for m in missing[:2]]
+            return f"了解了一些，不过我还想知道{'和'.join(qs) if qs else '更多细节'}。能再聊聊吗？"
+        return "跟我说说你想学什么、之前有没有基础？"
 
     profile = _to_profile(state.last_result)
     descriptions = [
         f"{dimension['label']}：{dimension['description']}"
-        for dimension in profile["dimensions"]
-        if dimension.get("description")
-    ]
-    summary = "\n".join(f"- {item}" for item in descriptions[:6])
-    known, missing = _format_known_and_missing(session_id)
-    missing_text = "\n".join(f"- {item['label']}" for item in missing[:3]) or "- 暂无明显缺失"
-    return (
-        "根据目前已有的学习画像，我对你的判断是：\n\n"
-        f"{summary}\n\n"
-        f"会话中额外记录的信息：\n{known or '- 暂无'}\n\n"
-        f"后续还可以补充：\n{missing_text}\n\n"
-        "这不是性格判断，而是基于你提供的学习背景、目标和偏好形成的学习画像。"
-        "如果你补充更多学习经历或练习反馈，我可以继续更新这个判断。"
-    )
+        for dimension in profile["dimensions"] if dimension.get("description")
+    ][:3]
+    return "根据目前的信息，我觉得你" + "；".join(descriptions) + "。还有什么要补充的吗？没有的话说「开始」就行。"
 
 
 def _profile_update_reply(session_id: str) -> str:
@@ -1381,28 +1331,12 @@ def _profile_update_reply(session_id: str) -> str:
     conflict_notice = f"\n\n检测到和之前画像不一致的信息，已按你最新说法更新：\n{conflicts}" if conflicts else ""
 
     if readiness["readyToPlan"]:
-        return (
-            "收到，我已经把这条信息更新进你的学习画像了。\n\n"
-            f"本次更新：\n{update_text}{conflict_notice}\n\n"
-            f"{_readiness_line(session_id)}，已经可以生成第一版学习方案。\n\n"
-            f"当前画像信息：\n{known}\n\n"
-            "你可以继续补充薄弱点、学习时间或资源偏好；也可以直接说「开始生成学习方案」，我会启动多智能体生成学习路径和资源。"
-        )
-
-    if not updated and supplemental_updated:
-        return (
-            "收到，这条信息我会作为补充背景保留，但它还不足以决定学习路径。\n\n"
-            f"本次记录：\n{supplemental_updated}{conflict_notice}\n\n"
-            f"{_readiness_line(session_id)}\n\n"
-            f"为了真正生成个性化学习方案，接下来更需要补充：\n{missing_questions}"
-        )
-
-    return (
-        "收到，我已经把这条信息记进你的学习画像了。\n\n"
-        f"本次更新：\n{update_text}{conflict_notice}\n\n"
-        f"{_readiness_line(session_id)}\n\n当前已记录：\n{known or '- 暂时还没有稳定画像信息'}\n\n"
-        f"为了更准确地规划，接下来建议你补充：\n{missing_questions}"
-    )
+        return "收到，信息够了！还有什么特别想攻克的难点吗？没有的话说「开始生成」我就出方案。"
+    if missing:
+        q = conversation_store.next_questions(state, limit=2)
+        next_q = "和".join(q[:2]) if q else "你的学习时间"
+        return f"收到。再聊聊{next_q}？这样我规划得更贴合你的情况。"
+    return "收到，记下了。还有别的吗？"
 
 
 def _start_advice_reply(session_id: str) -> str:
@@ -1410,33 +1344,16 @@ def _start_advice_reply(session_id: str) -> str:
     known, _ = _format_known_and_missing(session_id)
 
     if not known and state.last_result is None:
-        return (
-            "如果你是第一次使用，我还不能直接判断你该从哪一步开始，因为我还没有你的学习画像。\n\n"
-            "你先用一句话告诉我三个信息就够了：你是谁、想学什么、现在基础怎么样。\n"
-            "例如：我是软件工程大三学生，Python 和数据结构还可以，线性代数比较弱，想用十天学懂神经网络。"
-        )
+        return "你还没告诉我具体情况呢。比如你是什么专业的？想学哪门课？基础怎么样？随便聊聊，像「我是软件大二，C还行，想一个月入门数据结构」这样就行。"
 
     if state.last_result:
         path = state.last_result.get("learning_path", [])
         first_stage = path[0] if path else {}
         first_task = (first_stage.get("tasks") or ["先阅读入门讲义"])[0]
-        stage_title = first_stage.get("title", "第一阶段")
-        return (
-            "我建议你从学习路径的第一步开始，而不是直接跳到练习或项目。\n\n"
-            f"当前建议起点：{stage_title}\n"
-            f"第一件事：{first_task}\n\n"
-            "原因是这一步通常负责补齐概念框架，后面的题库、代码实验和拓展阅读才更容易吸收。"
-            "你可以先去「学习路径」页面看第 1 阶段，再到「资源库」打开对应讲义。"
-        )
+        return f"建议从「{first_stage.get('title', '第一阶段')}」开始，先{first_task}，把概念框架搭起来再进练习。"
 
     target = state.facts.get("target_course", "目标课程")
-    weak = state.facts.get("weak_points") or state.facts.get("knowledge_base") or "当前薄弱基础"
-    return (
-        f"按你目前提供的信息，我建议先从「{target}」的基础概念层开始。\n\n"
-        f"我已记录的信息：\n{known}\n\n"
-        f"原因：你现在最需要先把「{weak}」对应的前置概念理顺，再进入练习和项目。\n"
-        "如果你希望我给出完整路径，可以直接说「开始生成学习方案」。"
-    )
+    return f"建议先从「{target}」的基础概念开始，把前置知识理顺。说「开始生成」就能出完整路径。"
 
 
 def _learning_plan_request_reply(
@@ -1460,13 +1377,7 @@ def _learning_plan_request_reply(
 
 
 def _tutoring_reply(message: str) -> str:
-    return (
-        "我理解你是在寻求知识点讲解或问题辅导。\n\n"
-        f"你的问题是：{message}\n\n"
-        "当前第一阶段还没有完整接入 TutorAgent，我可以先建议你补充："
-        "课程名称、具体知识点、题目或代码片段。后续会由 KnowledgeAgent + TutorAgent "
-        "给出文字解释、图解说明和练习建议。"
-    )
+    return f"好问题！你说的「{message[:40]}」，能具体到哪个知识点吗？是概念不太清楚还是做题卡住了？跟我说说细节我好对症讲解。"
 
 
 def _resource_request_reply(message: str, session_id: str, progress_callback: Callable | None = None) -> str:
@@ -4238,6 +4149,55 @@ def grade_answer(question_id: str, payload: dict[str, Any], auth: AuthContext = 
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _inject_spark_images(md: str, section_title: str) -> str:
+    """为讲义中每个 ## 主章节标题下插入星火生成的配图。
+
+    只生成前 3 张图片以避免耗时过长，每张图片用 base64 嵌入。
+    如果 Spark 未配置或生成失败，跳过不影响讲义正文。
+    """
+    import re as _re_img
+    try:
+        from app.services.spark_provider import generate_image
+    except Exception:
+        return md
+
+    # 找到所有 ## 标题位置
+    headings = list(_re_img.finditer(r'^## (.+)$', md, _re_img.MULTILINE))
+    if not headings:
+        return md
+
+    parts: list[str] = []
+    last_end = 0
+    img_count = 0
+    max_images = 3
+
+    for m in headings:
+        if img_count >= max_images:
+            break
+        title = m.group(1).strip()
+        # 标题前的文本
+        parts.append(md[last_end:m.end()])
+        last_end = m.end()
+
+        # 生成配图
+        try:
+            result = generate_image(
+                f"教育插图：{section_title} - {title}。简洁清晰的图解风格，适合教材配图。",
+                width=1024, height=768,
+            )
+            if result.get("status") == "success" and result.get("image_base64"):
+                img_md = f'\n\n![{title}](data:image/png;base64,{result["image_base64"]})\n\n'
+                parts.append(img_md)
+                img_count += 1
+                logger.info("Spark image generated for section: %s", title)
+        except Exception as e:
+            logger.debug("Spark image failed for %s: %s", title, e)
+
+    # 剩余内容
+    parts.append(md[last_end:])
+    return "".join(parts)
+
+
 def _clean_markdown(md: str) -> str:
     """Clean common LLM-generated markdown formatting issues."""
     import re
@@ -4387,12 +4347,14 @@ def generate_section_lecture(section_id: str, payload: dict[str, Any]) -> dict[s
 {f"本节涵盖以下知识点：{chr(10)}{kp_lines}" if kp_lines else ""}
 
 教材级讲义要求：
-- 概念解释要有"为什么"而不只是"是什么"——讲清楚来龙去脉、设计动机、底层原理
+- 概念解释要有"为什么"而不只是"是什么"——讲清楚来龙去脉、设计动机、底层原理，每个概念至少写200字
 - 每个抽象概念配一个具体实例帮助理解
 - 数学公式用 LaTeX（$...$ 或 $$...$$）呈现，重要公式单独成行
-- 复杂流程用 ```mermaid 图可视化（mindmap 节点文本用方括号括起，不要用特殊字符；graph TD 节点 ID 用英文字母，显示文本用方括号）
+- 复杂流程用 ```mermaid 图可视化
 - > 引用块用于标注重点、注意事项和常见误区
 - 代码示例完整可运行，有输入输出演示
+- 表格每行必须独占一行（表头/分隔行/数据行各一行），禁止把多行表格挤在一行里
+- 正文段落至少2-3句，禁止用空泛的一句话敷衍
 
 输出结构（按顺序）：
 
@@ -4497,6 +4459,9 @@ mindmap
 
     # 后处理：清洗空表头等常见格式问题
     raw = _clean_markdown(raw)
+
+    # 图文并茂：为每个 ## 主章节生成星火配图
+    raw = _inject_spark_images(raw, section_title)
 
     # Persist as Resource
     resource_id = f"lecture_{section_id}"
@@ -4611,18 +4576,16 @@ def tutor_video(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
 
     try:
-        from app.agents.multimodal_agent import MultimodalAgent
-        agent = MultimodalAgent()
-        result = agent.run({
-            "session_id": session_id,
-            "user_message": f"为小节「{section_title}」生成一个 3 分钟内的微课讲解视频，包含脚本和分镜说明。",
+        from app.services.spark_provider import SparkVideoProvider
+        provider = SparkVideoProvider()
+        result = provider.run({
+            "user_message": f"为小节「{section_title}」生成微课讲解视频",
             "subject_name": section_title,
         })
-        video_data = result.get("result") if isinstance(result.get("result"), dict) else {}
         return _product_response({"video": {
-            "status": result.get("status", "unknown"),
-            "task_type": result.get("task_type", ""),
-            "script": video_data.get("script") or video_data.get("teaching_text") or str(result.get("result", ""))[:2000],
+            "status": result.get("status", "script_ready"),
+            "provider": result.get("provider", "spark_video"),
+            "script": result.get("script", str(result))[:2000],
         }}, session_id=session_id, source="agent")
     except Exception as e:
         logger.warning("Tutor video failed for section %s: %s", section_id, e)

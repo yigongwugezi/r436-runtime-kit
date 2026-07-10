@@ -1,0 +1,142 @@
+{
+  "timestamp": "2026-07-10T23:17:28.342963",
+  "query": "\"custom_5767\"",
+  "model": "duckduckgo",
+  "provider": "duckduckgo",
+  "answer": "### Search Results for \"\"custom_5767\"\"\n\n**[1] Mindworm (Spider-Man) Custom Action Figure**\nMindworm custom action figure from the Spider-Man series using 5\" Captain America, Kraven, Spider-Man as the base, created by LWes.\n*Source: DuckDuckGo*\n🔗 [https://www.figurerealm.com/customfigure?action=view&id=5767](https://www.figurerealm.com/customfigure?action=view&id=5767)\n\n**[2] Link to facebook.com**\nThe site owner hides the web page description.\n*Source: DuckDuckGo*\n🔗 [https://www.facebook.com/alesvychodilbasses/posts](https://www.facebook.com/alesvychodilbasses/posts)\n\n**[3] How to Make Custom Hirono | TikTok**\nPerfect for gifts or personal keepsakes. how to make custom Hirono figures, DIY custom Hirono, custom Hirono figure guide, Hirono custom making tips, personalized Hirono gifts.\n*Source: DuckDuckGo*\n🔗 [https://www.tiktok.com/discover/how-to-make-custom-hirono](https://www.tiktok.com/discover/how-to-make-custom-hirono)\n\n**[4] Furniture Ruang Tamu | Hasan Jati Furniture**\nSidetable Classic. 8244 617. Sofa Custom. 5767 197. Bufet TV minimalis modern warna ivory kombinasi kayu walnut.\n*Source: DuckDuckGo*\n🔗 [https://hasanjatifurniture.com/tag/furniture-ruang-tamu/](https://hasanjatifurniture.com/tag/furniture-ruang-tamu/)\n\n**[5] Absolut | John Stango | RoGallery**\nRoGallery framing experts will choose the best moulding to match your artwork based on your color selection. If you have custom framing requests contact us. $267.50.\n*Source: DuckDuckGo*\n🔗 [https://www.rogallery.com/artists/john-stango/absolut/](https://www.rogallery.com/artists/john-stango/absolut/)\n\n---\n*5 results via duckduckgo*",
+  "response": {
+    "content": "### Search Results for \"\"custom_5767\"\"\n\n**[1] Mindworm (Spider-Man) Custom Action Figure**\nMindworm custom action figure from the Spider-Man series using 5\" Captain America, Kraven, Spider-Man as the base, created by LWes.\n*Source: DuckDuckGo*\n🔗 [https://www.figurerealm.com/customfigure?action=view&id=5767](https://www.figurerealm.com/customfigure?action=view&id=5767)\n\n**[2] Link to facebook.com**\nThe site owner hides the web page description.\n*Source: DuckDuckGo*\n🔗 [https://www.facebook.com/alesvychodilbasses/posts](https://www.facebook.com/alesvychodilbasses/posts)\n\n**[3] How to Make Custom Hirono | TikTok**\nPerfect for gifts or personal keepsakes. how to make custom Hirono figures, DIY custom Hirono, custom Hirono figure guide, Hirono custom making tips, personalized Hirono gifts.\n*Source: DuckDuckGo*\n🔗 [https://www.tiktok.com/discover/how-to-make-custom-hirono](https://www.tiktok.com/discover/how-to-make-custom-hirono)\n\n**[4] Furniture Ruang Tamu | Hasan Jati Furniture**\nSidetable Classic. 8244 617. Sofa Custom. 5767 197. Bufet TV minimalis modern warna ivory kombinasi kayu walnut.\n*Source: DuckDuckGo*\n🔗 [https://hasanjatifurniture.com/tag/furniture-ruang-tamu/](https://hasanjatifurniture.com/tag/furniture-ruang-tamu/)\n\n**[5] Absolut | John Stango | RoGallery**\nRoGallery framing experts will choose the best moulding to match your artwork based on your color selection. If you have custom framing requests contact us. $267.50.\n*Source: DuckDuckGo*\n🔗 [https://www.rogallery.com/artists/john-stango/absolut/](https://www.rogallery.com/artists/john-stango/absolut/)\n\n---\n*5 results via duckduckgo*",
+    "role": "assistant",
+    "finish_reason": "stop"
+  },
+  "usage": {},
+  "citations": [
+    {
+      "id": 1,
+      "reference": "[1]",
+      "url": "https://www.figurerealm.com/customfigure?action=view&id=5767",
+      "title": "Mindworm (Spider-Man) Custom Action Figure",
+      "snippet": "Mindworm custom action figure from the Spider-Man series using 5\" Captain America, Kraven, Spider-Man as the base, created by LWes.",
+      "date": "",
+      "source": "DuckDuckGo",
+      "content": "",
+      "type": "web",
+      "icon": "",
+      "website": "",
+      "web_anchor": ""
+    },
+    {
+      "id": 2,
+      "reference": "[2]",
+      "url": "https://www.facebook.com/alesvychodilbasses/posts",
+      "title": "Link to facebook.com",
+      "snippet": "The site owner hides the web page description.",
+      "date": "",
+      "source": "DuckDuckGo",
+      "content": "",
+      "type": "web",
+      "icon": "",
+      "website": "",
+      "web_anchor": ""
+    },
+    {
+      "id": 3,
+      "reference": "[3]",
+      "url": "https://www.tiktok.com/discover/how-to-make-custom-hirono",
+      "title": "How to Make Custom Hirono | TikTok",
+      "snippet": "Perfect for gifts or personal keepsakes. how to make custom Hirono figures, DIY custom Hirono, custom Hirono figure guide, Hirono custom making tips, personalized Hirono gifts.",
+      "date": "",
+      "source": "DuckDuckGo",
+      "content": "",
+      "type": "web",
+      "icon": "",
+      "website": "",
+      "web_anchor": ""
+    },
+    {
+      "id": 4,
+      "reference": "[4]",
+      "url": "https://hasanjatifurniture.com/tag/furniture-ruang-tamu/",
+      "title": "Furniture Ruang Tamu | Hasan Jati Furniture",
+      "snippet": "Sidetable Classic. 8244 617. Sofa Custom. 5767 197. Bufet TV minimalis modern warna ivory kombinasi kayu walnut.",
+      "date": "",
+      "source": "DuckDuckGo",
+      "content": "",
+      "type": "web",
+      "icon": "",
+      "website": "",
+      "web_anchor": ""
+    },
+    {
+      "id": 5,
+      "reference": "[5]",
+      "url": "https://www.rogallery.com/artists/john-stango/absolut/",
+      "title": "Absolut | John Stango | RoGallery",
+      "snippet": "RoGallery framing experts will choose the best moulding to match your artwork based on your color selection. If you have custom framing requests contact us. $267.50.",
+      "date": "",
+      "source": "DuckDuckGo",
+      "content": "",
+      "type": "web",
+      "icon": "",
+      "website": "",
+      "web_anchor": ""
+    }
+  ],
+  "search_results": [
+    {
+      "title": "Mindworm (Spider-Man) Custom Action Figure",
+      "url": "https://www.figurerealm.com/customfigure?action=view&id=5767",
+      "snippet": "Mindworm custom action figure from the Spider-Man series using 5\" Captain America, Kraven, Spider-Man as the base, created by LWes.",
+      "date": "",
+      "source": "DuckDuckGo",
+      "content": "",
+      "score": 0.0,
+      "sitelinks": [],
+      "attributes": {}
+    },
+    {
+      "title": "Link to facebook.com",
+      "url": "https://www.facebook.com/alesvychodilbasses/posts",
+      "snippet": "The site owner hides the web page description.",
+      "date": "",
+      "source": "DuckDuckGo",
+      "content": "",
+      "score": 0.0,
+      "sitelinks": [],
+      "attributes": {}
+    },
+    {
+      "title": "How to Make Custom Hirono | TikTok",
+      "url": "https://www.tiktok.com/discover/how-to-make-custom-hirono",
+      "snippet": "Perfect for gifts or personal keepsakes. how to make custom Hirono figures, DIY custom Hirono, custom Hirono figure guide, Hirono custom making tips, personalized Hirono gifts.",
+      "date": "",
+      "source": "DuckDuckGo",
+      "content": "",
+      "score": 0.0,
+      "sitelinks": [],
+      "attributes": {}
+    },
+    {
+      "title": "Furniture Ruang Tamu | Hasan Jati Furniture",
+      "url": "https://hasanjatifurniture.com/tag/furniture-ruang-tamu/",
+      "snippet": "Sidetable Classic. 8244 617. Sofa Custom. 5767 197. Bufet TV minimalis modern warna ivory kombinasi kayu walnut.",
+      "date": "",
+      "source": "DuckDuckGo",
+      "content": "",
+      "score": 0.0,
+      "sitelinks": [],
+      "attributes": {}
+    },
+    {
+      "title": "Absolut | John Stango | RoGallery",
+      "url": "https://www.rogallery.com/artists/john-stango/absolut/",
+      "snippet": "RoGallery framing experts will choose the best moulding to match your artwork based on your color selection. If you have custom framing requests contact us. $267.50.",
+      "date": "",
+      "source": "DuckDuckGo",
+      "content": "",
+      "score": 0.0,
+      "sitelinks": [],
+      "attributes": {}
+    }
+  ]
+}

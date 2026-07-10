@@ -7,7 +7,7 @@ import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import 'katex/dist/katex.min.css';
 import mermaid from 'mermaid';
 
-mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose' });
+mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose', suppressErrorRendering: true });
 
 interface Props { content: string; }
 
@@ -134,48 +134,51 @@ export default function Markdown({ content }: Props) {
             return <img src={src} alt={alt} className="rounded-xl max-w-full my-4 shadow-sm" loading="lazy" />;
           },
           h1({ children }: any) {
-            return <h1 className="text-xl font-bold text-surface-900 mt-8 mb-4 pb-2 border-b border-surface-200">{children}</h1>;
+            return <h1 className="text-2xl font-bold text-surface-900 mt-10 mb-5 pb-3 border-b-2 border-surface-200 tracking-tight">{children}</h1>;
           },
           h2({ children }: any) {
-            return <h2 className="text-lg font-bold text-surface-800 mt-8 mb-3 flex items-center gap-2 before:content-[''] before:w-1 before:h-5 before:rounded-full before:bg-blue-500">{children}</h2>;
+            return <h2 className="text-xl font-bold text-surface-800 mt-10 mb-4 flex items-center gap-3 before:content-[''] before:w-1.5 before:h-6 before:rounded-full before:bg-blue-500">{children}</h2>;
           },
           h3({ children }: any) {
-            return <h3 className="text-base font-semibold text-surface-800 mt-6 mb-2">{children}</h3>;
+            return <h3 className="text-base font-bold text-surface-800 mt-8 mb-3 pl-3 border-l-2 border-surface-300">{children}</h3>;
           },
           p({ children }: any) {
-            return <p className="my-2 text-surface-600 leading-relaxed">{children}</p>;
+            return <p className="my-3 text-surface-700 leading-relaxed text-[15px]">{children}</p>;
           },
           ul({ children }: any) {
-            return <ul className="my-3 pl-5 space-y-1.5 list-disc text-surface-600 marker:text-surface-300">{children}</ul>;
+            return <ul className="my-4 pl-6 space-y-2 list-disc text-surface-700 marker:text-blue-400">{children}</ul>;
           },
           ol({ children }: any) {
-            return <ol className="my-3 pl-5 space-y-1.5 list-decimal text-surface-600 marker:text-surface-400 marker:text-xs">{children}</ol>;
+            return <ol className="my-4 pl-6 space-y-2 list-decimal text-surface-700 marker:text-surface-400 marker:text-sm marker:font-semibold">{children}</ol>;
           },
           li({ children }: any) {
-            return <li className="pl-1">{children}</li>;
+            return <li className="pl-1 leading-relaxed">{children}</li>;
           },
           blockquote({ children }: any) {
             return (
-              <div className="my-4 pl-4 py-3 pr-4 bg-amber-50 border-l-4 border-amber-400 rounded-r-xl">
-                <div className="flex items-center gap-1.5 mb-1 text-[10px] font-semibold text-amber-600 uppercase tracking-wide">重点提示</div>
-                <div className="text-sm text-amber-800">{children}</div>
+              <div className="my-5 pl-5 py-3.5 pr-4 bg-amber-50/80 border-l-[3px] border-amber-400 rounded-r-xl shadow-sm">
+                <div className="flex items-center gap-1.5 mb-1.5 text-[10px] font-bold text-amber-600 uppercase tracking-wider">重点</div>
+                <div className="text-sm text-amber-900 leading-relaxed">{children}</div>
               </div>
             );
           },
           table({ children }: any) {
-            return <div className="my-4 overflow-x-auto rounded-xl border border-surface-200"><table className="min-w-full text-sm">{children}</table></div>;
+            return <div className="my-5 overflow-x-auto rounded-xl border border-surface-200 shadow-sm"><table className="min-w-full text-sm [&_tr:nth-child(even)]:bg-surface-50/50">{children}</table></div>;
           },
           th({ children }: any) {
-            return <th className="px-4 py-2.5 bg-surface-50 text-left text-xs font-semibold text-surface-500 uppercase tracking-wide border-b border-surface-200">{children}</th>;
+            return <th className="px-5 py-3 bg-surface-100 text-left text-xs font-bold text-surface-500 uppercase tracking-wider border-b-2 border-surface-200">{children}</th>;
           },
           td({ children }: any) {
-            return <td className="px-4 py-2.5 border-b border-surface-100 text-surface-600">{children}</td>;
+            return <td className="px-5 py-3 border-b border-surface-100 text-surface-700 leading-relaxed">{children}</td>;
           },
           strong({ children }: any) {
-            return <strong className="font-semibold text-surface-900 bg-gradient-to-r from-blue-50 to-transparent px-0.5">{children}</strong>;
+            return <strong className="font-bold text-surface-900">{children}</strong>;
+          },
+          em({ children }: any) {
+            return <em className="italic text-surface-600">{children}</em>;
           },
           hr() {
-            return <hr className="my-8 border-surface-100" />;
+            return <hr className="my-10 border-surface-100" />;
           },
         }}
       >

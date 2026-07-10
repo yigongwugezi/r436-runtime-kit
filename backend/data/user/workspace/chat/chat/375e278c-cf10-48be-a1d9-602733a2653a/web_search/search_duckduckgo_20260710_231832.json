@@ -1,0 +1,142 @@
+{
+  "timestamp": "2026-07-10T23:18:32.665055",
+  "query": "custom_5767 学习 平台",
+  "model": "duckduckgo",
+  "provider": "duckduckgo",
+  "answer": "### Search Results for \"custom_5767 学习 平台\"\n\n**[1] 超星学习通 - 指针平台助力学校构建**\n超星平台登录页面，提供用户账号登录入口，支持多种登录方式。\n*Source: DuckDuckGo*\n🔗 [https://v8.chaoxing.com/](https://v8.chaoxing.com/)\n\n**[2] 学习通**\n软件介绍 学习通是基于微服务架构打造的课程学习，知识传播与管理分享平台。 它利用超星20余年来积累的海量的图书、期刊、报纸、视频、原创等资源，集知识管理、课程学习、专题创作，办公应用为一体，为读者提供一站式学习与工作环境。\n*Source: DuckDuckGo*\n🔗 [https://app.chaoxing.com/](https://app.chaoxing.com/)\n\n**[3] 学堂在线 - 精品在线课程学习平台**\nXuetangX is an online learning platform spearheaded by Tsinghua University, with a mission to bring world-class education into the future. We provide learners with the high quality courses from elite universities and training of practical skills.\n*Source: DuckDuckGo*\n🔗 [http://xuetangx.com/](http://xuetangx.com/)\n\n**[4] 中国大学MOOC_优质在线课程学习平台**\n中国大学MOOC (慕课) 是爱课程网携手网易云课堂打造的在线学习平台，每一个有提升愿望的人，都可以在这里学习中国优质的大学课程，学完还能获得认证证书。 中国大学MOOC是国内优质的中文MOOC学习平台，拥有众多985高校的大学课程，与名师零距离。\n*Source: DuckDuckGo*\n🔗 [https://www.icourse163.org/](https://www.icourse163.org/)\n\n**[5] 登录 - 学习平台 - 5xuexi.com**\n登录学习平台，享受便捷的在线学习服务。\n*Source: DuckDuckGo*\n🔗 [http://www.5xuexi.com/mycenter/toMyCenter.action](http://www.5xuexi.com/mycenter/toMyCenter.action)\n\n---\n*5 results via duckduckgo*",
+  "response": {
+    "content": "### Search Results for \"custom_5767 学习 平台\"\n\n**[1] 超星学习通 - 指针平台助力学校构建**\n超星平台登录页面，提供用户账号登录入口，支持多种登录方式。\n*Source: DuckDuckGo*\n🔗 [https://v8.chaoxing.com/](https://v8.chaoxing.com/)\n\n**[2] 学习通**\n软件介绍 学习通是基于微服务架构打造的课程学习，知识传播与管理分享平台。 它利用超星20余年来积累的海量的图书、期刊、报纸、视频、原创等资源，集知识管理、课程学习、专题创作，办公应用为一体，为读者提供一站式学习与工作环境。\n*Source: DuckDuckGo*\n🔗 [https://app.chaoxing.com/](https://app.chaoxing.com/)\n\n**[3] 学堂在线 - 精品在线课程学习平台**\nXuetangX is an online learning platform spearheaded by Tsinghua University, with a mission to bring world-class education into the future. We provide learners with the high quality courses from elite universities and training of practical skills.\n*Source: DuckDuckGo*\n🔗 [http://xuetangx.com/](http://xuetangx.com/)\n\n**[4] 中国大学MOOC_优质在线课程学习平台**\n中国大学MOOC (慕课) 是爱课程网携手网易云课堂打造的在线学习平台，每一个有提升愿望的人，都可以在这里学习中国优质的大学课程，学完还能获得认证证书。 中国大学MOOC是国内优质的中文MOOC学习平台，拥有众多985高校的大学课程，与名师零距离。\n*Source: DuckDuckGo*\n🔗 [https://www.icourse163.org/](https://www.icourse163.org/)\n\n**[5] 登录 - 学习平台 - 5xuexi.com**\n登录学习平台，享受便捷的在线学习服务。\n*Source: DuckDuckGo*\n🔗 [http://www.5xuexi.com/mycenter/toMyCenter.action](http://www.5xuexi.com/mycenter/toMyCenter.action)\n\n---\n*5 results via duckduckgo*",
+    "role": "assistant",
+    "finish_reason": "stop"
+  },
+  "usage": {},
+  "citations": [
+    {
+      "id": 1,
+      "reference": "[1]",
+      "url": "https://v8.chaoxing.com/",
+      "title": "超星学习通 - 指针平台助力学校构建",
+      "snippet": "超星平台登录页面，提供用户账号登录入口，支持多种登录方式。",
+      "date": "",
+      "source": "DuckDuckGo",
+      "content": "",
+      "type": "web",
+      "icon": "",
+      "website": "",
+      "web_anchor": ""
+    },
+    {
+      "id": 2,
+      "reference": "[2]",
+      "url": "https://app.chaoxing.com/",
+      "title": "学习通",
+      "snippet": "软件介绍 学习通是基于微服务架构打造的课程学习，知识传播与管理分享平台。 它利用超星20余年来积累的海量的图书、期刊、报纸、视频、原创等资源，集知识管理、课程学习、专题创作，办公应用为一体，为读者提供一站式学习与工作环境。",
+      "date": "",
+      "source": "DuckDuckGo",
+      "content": "",
+      "type": "web",
+      "icon": "",
+      "website": "",
+      "web_anchor": ""
+    },
+    {
+      "id": 3,
+      "reference": "[3]",
+      "url": "http://xuetangx.com/",
+      "title": "学堂在线 - 精品在线课程学习平台",
+      "snippet": "XuetangX is an online learning platform spearheaded by Tsinghua University, with a mission to bring world-class education into the future. We provide learners with the high quality courses from elite universities and training of practical skills.",
+      "date": "",
+      "source": "DuckDuckGo",
+      "content": "",
+      "type": "web",
+      "icon": "",
+      "website": "",
+      "web_anchor": ""
+    },
+    {
+      "id": 4,
+      "reference": "[4]",
+      "url": "https://www.icourse163.org/",
+      "title": "中国大学MOOC_优质在线课程学习平台",
+      "snippet": "中国大学MOOC (慕课) 是爱课程网携手网易云课堂打造的在线学习平台，每一个有提升愿望的人，都可以在这里学习中国优质的大学课程，学完还能获得认证证书。 中国大学MOOC是国内优质的中文MOOC学习平台，拥有众多985高校的大学课程，与名师零距离。",
+      "date": "",
+      "source": "DuckDuckGo",
+      "content": "",
+      "type": "web",
+      "icon": "",
+      "website": "",
+      "web_anchor": ""
+    },
+    {
+      "id": 5,
+      "reference": "[5]",
+      "url": "http://www.5xuexi.com/mycenter/toMyCenter.action",
+      "title": "登录 - 学习平台 - 5xuexi.com",
+      "snippet": "登录学习平台，享受便捷的在线学习服务。",
+      "date": "",
+      "source": "DuckDuckGo",
+      "content": "",
+      "type": "web",
+      "icon": "",
+      "website": "",
+      "web_anchor": ""
+    }
+  ],
+  "search_results": [
+    {
+      "title": "超星学习通 - 指针平台助力学校构建",
+      "url": "https://v8.chaoxing.com/",
+      "snippet": "超星平台登录页面，提供用户账号登录入口，支持多种登录方式。",
+      "date": "",
+      "source": "DuckDuckGo",
+      "content": "",
+      "score": 0.0,
+      "sitelinks": [],
+      "attributes": {}
+    },
+    {
+      "title": "学习通",
+      "url": "https://app.chaoxing.com/",
+      "snippet": "软件介绍 学习通是基于微服务架构打造的课程学习，知识传播与管理分享平台。 它利用超星20余年来积累的海量的图书、期刊、报纸、视频、原创等资源，集知识管理、课程学习、专题创作，办公应用为一体，为读者提供一站式学习与工作环境。",
+      "date": "",
+      "source": "DuckDuckGo",
+      "content": "",
+      "score": 0.0,
+      "sitelinks": [],
+      "attributes": {}
+    },
+    {
+      "title": "学堂在线 - 精品在线课程学习平台",
+      "url": "http://xuetangx.com/",
+      "snippet": "XuetangX is an online learning platform spearheaded by Tsinghua University, with a mission to bring world-class education into the future. We provide learners with the high quality courses from elite universities and training of practical skills.",
+      "date": "",
+      "source": "DuckDuckGo",
+      "content": "",
+      "score": 0.0,
+      "sitelinks": [],
+      "attributes": {}
+    },
+    {
+      "title": "中国大学MOOC_优质在线课程学习平台",
+      "url": "https://www.icourse163.org/",
+      "snippet": "中国大学MOOC (慕课) 是爱课程网携手网易云课堂打造的在线学习平台，每一个有提升愿望的人，都可以在这里学习中国优质的大学课程，学完还能获得认证证书。 中国大学MOOC是国内优质的中文MOOC学习平台，拥有众多985高校的大学课程，与名师零距离。",
+      "date": "",
+      "source": "DuckDuckGo",
+      "content": "",
+      "score": 0.0,
+      "sitelinks": [],
+      "attributes": {}
+    },
+    {
+      "title": "登录 - 学习平台 - 5xuexi.com",
+      "url": "http://www.5xuexi.com/mycenter/toMyCenter.action",
+      "snippet": "登录学习平台，享受便捷的在线学习服务。",
+      "date": "",
+      "source": "DuckDuckGo",
+      "content": "",
+      "score": 0.0,
+      "sitelinks": [],
+      "attributes": {}
+    }
+  ]
+}

@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     # Learning event deduplication
     event_dedup_view_window_seconds: int = 300  # 5-minute window for resource_view dedup
 
+    # ── 科大讯飞 星火多模态 ──────────────────────────────────────────
+    spark_app_id: str = ""
+    spark_api_key: str = ""
+    spark_api_secret: str = ""
+    spark_image_host_url: str = "https://spark-api.cn-huabei-1.xf-yun.com/v2.1/tti"
+
     # Web search provider settings
     search_provider: str = "mock"       # "mock" | "duckduckgo" | "tavily"
     tavily_api_key: str = ""
