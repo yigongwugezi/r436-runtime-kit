@@ -160,7 +160,7 @@ export default function LearningPathPage() {
   }, []);
 
   const handleNodeClick = useCallback((nodeId: string) => {
-    nav(`/resources?taskId=${encodeURIComponent(nodeId)}`);
+    nav(`/lecture/section/${encodeURIComponent(nodeId)}`);
   }, [nav]);
 
   // ── Exam sets ──
@@ -421,7 +421,16 @@ export default function LearningPathPage() {
                           <div className={`h-full rounded-full ${(node.mastery || 0) >= 80 ? 'bg-success-500' : (node.mastery || 0) >= 40 ? 'bg-primary-500' : 'bg-surface-300'}`} style={{ width: `${node.mastery || 0}%` }} />
                         </div>
                         <span className="text-xs font-medium text-surface-500 w-7 text-right tabular-nums">{node.mastery || 0}%</span>
-                        <ExternalLink size={14} className="text-surface-300 group-hover:text-primary-400 transition-colors" />
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            nav(`/resources?taskId=${encodeURIComponent(node.id)}`);
+                          }}
+                          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-surface-500 hover:bg-surface-100 hover:text-primary-600"
+                        >
+                          关联资源<ExternalLink size={12} />
+                        </button>
                       </div>
                     </div>
                   );

@@ -5,7 +5,7 @@ import { useChatStore } from '../store/chatStore';
 import { ChevronRight, Sparkles, MessageCircle, Send, Brain, BookOpen, ArrowLeft, ArrowRight, Target, Lightbulb, Layers, Clock, GraduationCap, Hash, CheckCircle2, Check, X, Loader2, HelpCircle } from 'lucide-react';
 import Markdown, { splitSections } from '../utils/markdown';
 import { generateSectionQuiz, submitQuizAttempt } from '../api/assessment';
-import type { Chapter, Section, ContentStatus } from '../types/learningPath';
+import type { Chapter, PathNode, Section, ContentStatus } from '../types/learningPath';
 import type { LinkedQuestion, QuizResult, WeakPoint } from '../types/assessment';
 
 const sectionStatusStyle: Record<ContentStatus, { dot: string; bar: string }> = {
@@ -15,6 +15,29 @@ const sectionStatusStyle: Record<ContentStatus, { dot: string; bar: string }> = 
   needs_review: { dot: 'bg-amber-400 ring-amber-100',     bar: 'bg-amber-400' },
   blocked:      { dot: 'bg-red-400 ring-red-100',         bar: 'bg-red-400' },
 };
+
+function legacyNodeSection(node: PathNode): Section {
+  const status: ContentStatus = node.status === 'locked'
+    ? 'blocked'
+    : node.status === 'available'
+      ? 'not_started'
+      : node.status;
+  return {
+    id: node.id,
+    title: node.topic,
+    goal: node.description || `学习${node.topic}的核心内容。`,
+    estimatedMinutes: 45,
+    status,
+    knowledgePoints: [{
+      id: node.id,
+      name: node.topic,
+      type: 'concept',
+      mastery: node.mastery || 0,
+      status,
+    }],
+    lectureIds: [],
+  };
+}
 
 export default function LecturePage() {
   const { chapterId, sectionId } = useParams<{ chapterId?: string; sectionId?: string }>();
@@ -26,7 +49,20 @@ export default function LecturePage() {
   const chapterCtx = useMemo(() => {
     for (const stage of (path?.stages ?? [])) {
       for (const ch of (stage.chapters ?? [])) {
-        if (ch.id === (chapterId || sectionId)) return { chapter: ch, stage };
+        if (ch.id === chapterId || ch.sections.some(section => section.id === sectionId)) return { chapter: ch, stage };
+      }
+      const legacyNode = sectionId ? stage.nodes?.find(node => node.id === sectionId) : undefined;
+      if (legacyNode) {
+        return {
+          chapter: {
+            id: stage.id,
+            title: stage.title,
+            order: stage.order,
+            status: 'not_started' as ContentStatus,
+            sections: [legacyNodeSection(legacyNode)],
+          },
+          stage,
+        };
       }
     }
     return null;
@@ -68,7 +104,9 @@ export default function LecturePage() {
 
   const sectionToc = useMemo(() => lecture ? splitSections(lecture) : [], [lecture]);
 
-  useEffect(() => { if (!activeSectionId && sections.length > 0) setActiveSectionId(sections[0].id); }, [sections, activeSectionId]);
+  useEffect(() => {
+    setActiveSectionId(sectionId || sections[0]?.id || '');
+  }, [sectionId, sections]);
 
   const currentSection = sections.find((s: Section) => s.id === activeSectionId);
   const currentIdx = sections.findIndex((s: Section) => s.id === activeSectionId);
@@ -80,6 +118,7 @@ export default function LecturePage() {
   useEffect(() => {
     if (!activeSectionId) return;
     if (loadedSectionIds.has(activeSectionId)) return;
+    setLecture('');
     setLectureLoaded(false);
     const url = `/api/sections/${encodeURIComponent(activeSectionId)}/lecture?sessionId=${encodeURIComponent(sessionId || '')}`;
     fetch(url)
