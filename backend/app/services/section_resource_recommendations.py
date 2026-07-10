@@ -20,6 +20,7 @@ class SectionResourceRecommendationService:
     def recommend(
         self,
         *,
+        session_id: str,
         section_id: str,
         section_title: str,
         knowledge_points: list[Any] | None = None,
@@ -28,9 +29,11 @@ class SectionResourceRecommendationService:
         profile: dict[str, Any] | None = None,
         weak_points: list[Any] | None = None,
     ) -> dict[str, Any]:
-        del section_id, profile  # Context is used to shape the caller's query, never persisted.
+        del session_id, section_id, profile  # Context is used to shape the caller's query, never persisted.
         points = self._point_names(knowledge_points)
-        queries = self._queries(section_title, points, resource_types)
+        weak_names = self._point_names(weak_points)
+        query_points = list(dict.fromkeys([*points, *weak_names]))
+        queries = self._queries(section_title, query_points, resource_types)
         warnings: list[str] = []
         raw_items: list[Any] = []
 
@@ -50,7 +53,7 @@ class SectionResourceRecommendationService:
                 "warnings": list(dict.fromkeys(warnings or ["未找到可用的外部学习资源。"])),
             }
 
-        resources = self._deduplicate_and_rank(raw_items, section_title, points, weak_points, language)
+        resources = self._deduplicate_and_rank(raw_items, section_title, query_points, weak_points, language)
         return {
             "query": queries,
             "resources": resources[:5],
@@ -62,7 +65,7 @@ class SectionResourceRecommendationService:
     def _point_names(items: list[Any] | None) -> list[str]:
         names = []
         for item in items or []:
-            name = item.get("name", "") if isinstance(item, dict) else str(item)
+            name = (item.get("name") or item.get("topic") or "") if isinstance(item, dict) else str(item)
             name = str(name).strip()
             if name and name not in names:
                 names.append(name)

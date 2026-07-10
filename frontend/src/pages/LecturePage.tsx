@@ -7,6 +7,7 @@ import Markdown, { splitSections } from '../utils/markdown';
 import { generateSectionQuiz, submitQuizAttempt } from '../api/assessment';
 import type { Chapter, PathNode, Section, ContentStatus } from '../types/learningPath';
 import type { LinkedQuestion, QuizResult, WeakPoint } from '../types/assessment';
+import SectionResourceWorkspace from '../components/learning/SectionResourceWorkspace';
 
 const sectionStatusStyle: Record<ContentStatus, { dot: string; bar: string }> = {
   not_started:  { dot: 'bg-surface-300 ring-surface-100', bar: 'bg-surface-300' },
@@ -702,17 +703,19 @@ export default function LecturePage() {
           )}
 
           {rightTab === 'resources' && (
-            <div className="p-4 space-y-3">
-              <div className="p-3 rounded-xl bg-surface-50 border border-surface-100">
-                <p className="text-[10px] font-medium text-surface-400 uppercase tracking-wide mb-2">思维导图</p>
-                {chapterCtx?.chapter.mindmapId ? (
-                  <a onClick={() => nav(`/resources/${chapterCtx.chapter.mindmapId}`)}
-                    className="flex items-center gap-2 text-sm font-medium text-amber-700 hover:text-amber-800 cursor-pointer"><Brain size={16} />查看章节思维导图</a>
-                ) : (
-                  <p className="text-xs text-surface-400">暂未生成，在路径页章节详情中生成</p>
-                )}
-              </div>
-              <div className="p-3 rounded-xl bg-surface-50 border border-surface-100">
+            <div className="space-y-3">
+              <SectionResourceWorkspace
+                sessionId={sessionId}
+                pathId={path?.id || ''}
+                stageId={chapterCtx?.stage.id || ''}
+                chapterId={chapterCtx?.chapter.id || ''}
+                chapterTitle={chapterCtx?.chapter.title || ''}
+                section={currentSection}
+                lectureContent={lecture}
+                sections={sections}
+                legacyMindmapId={chapterCtx?.chapter.mindmapId}
+              />
+              <div className="mx-4 mb-4 p-3 rounded-xl bg-surface-50 border border-surface-100">
                 <p className="text-[10px] font-medium text-surface-400 uppercase tracking-wide mb-2">讲义状态</p>
                 {lecture ? (
                   <p className="text-xs text-emerald-600 flex items-center gap-1.5"><CheckCircle2 size={13} />已生成</p>
@@ -720,7 +723,7 @@ export default function LecturePage() {
                   <p className="text-xs text-surface-400">选择小节后点击「生成讲义」</p>
                 )}
               </div>
-              <div className="p-3 rounded-xl bg-surface-50 border border-surface-100">
+              <div className="mx-4 mb-4 p-3 rounded-xl bg-surface-50 border border-surface-100">
                 <p className="text-[10px] font-medium text-surface-400 uppercase tracking-wide mb-2">章节统计</p>
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   <div className="text-center p-2 bg-white rounded-lg"><p className="font-bold text-surface-700">{sections.length}</p><p className="text-[10px] text-surface-400">小节</p></div>

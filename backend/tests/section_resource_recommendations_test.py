@@ -29,15 +29,16 @@ class UnavailableClient:
 
 def main() -> None:
     service = SectionResourceRecommendationService(client=FakeClient())
-    result = service.recommend(section_id="s1", section_title="数组与链表", knowledge_points=["时间复杂度", "链表"], resource_types=["video"])
+    result = service.recommend(session_id="test", section_id="s1", section_title="数组与链表", knowledge_points=["时间复杂度"], weak_points=[{"topic": "链表"}], resource_types=["video"])
     assert result["status"] == "completed"
     assert len(result["query"]) == 3 and len(result["resources"]) == 2
+    assert any("链表" in query for query in result["query"])
     assert result["resources"][0]["url"].startswith("https://")
     assert all("example.com" not in item["url"] for item in result["resources"])
     assert {item["resource_type"] for item in result["resources"]} == {"course", "video"}
     assert all(item["reason"] and item["relevance_score"] <= 1 for item in result["resources"])
 
-    unavailable = SectionResourceRecommendationService(client=UnavailableClient()).recommend(section_id="s1", section_title="数组", knowledge_points=[])
+    unavailable = SectionResourceRecommendationService(client=UnavailableClient()).recommend(session_id="test", section_id="s1", section_title="数组", knowledge_points=[])
     assert unavailable["status"] == "search_unavailable" and not unavailable["resources"]
     print("section resource recommendations: PASS")
 
