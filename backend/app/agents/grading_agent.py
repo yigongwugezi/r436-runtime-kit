@@ -7,7 +7,7 @@ import json
 import logging
 from typing import Any
 
-from app.agents.base import BaseAgent
+from app.agents.base import BaseAgent, register_agent
 from app.utils.llm_json import parse_safe
 
 logger = logging.getLogger(__name__)
@@ -39,6 +39,7 @@ ERROR_AUTO_ACTIONS: dict[str, dict[str, Any]] = {
 }
 
 
+@register_agent
 class GradingAgent(BaseAgent):
     agent_id = "grading_agent"
     agent_name = "自动批改智能体"

@@ -33,11 +33,15 @@ async def _run_chat(message: str, session_id: str) -> tuple[str, dict[str, Any]]
         "user_message": message,
         "course_id": state_obj.facts.get("target_course"),
         "profile_facts": dict(state_obj.facts),
+        "feedback_signal": state_obj.feedback_signal,
     }
 
     result = await run_pipeline(**state)
     reply = result.get("final_reply", "") or result.get("_conversation_reply", "") or "处理完成"
     conversation_store.append_message(session_id, "assistant", reply)
+    # Clear one-shot feedback signal after consumption
+    if state_obj.feedback_signal is not None:
+        state_obj.feedback_signal = None
     if result:
         conversation_store.set_result(session_id, result)
     return reply, result

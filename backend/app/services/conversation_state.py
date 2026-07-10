@@ -128,6 +128,7 @@ class ConversationState:
     last_extracted_questions: list[dict[str, Any]] = field(default_factory=list)
     last_multimodal_task_context: dict[str, Any] = field(default_factory=dict)
     last_proposal: str | None = None  # 上一轮向用户确认了什么：plan/resources/questions/full/None
+    feedback_signal: Any | None = None  # FeedbackSignal from grading → next request (replaces _pending_adjustment)
     generating: bool = False
     current_progress: dict[str, Any] | None = None
     updated_at: float = field(default_factory=time.time)

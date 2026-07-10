@@ -10,7 +10,7 @@ import time
 import uuid
 from typing import Any
 
-from app.agents.base import BaseAgent
+from app.agents.base import BaseAgent, register_agent
 from app.services.llm_client import LLMClientError
 from app.utils.llm_json import parse_safe
 
@@ -20,6 +20,7 @@ QUESTION_TYPES = ["choice", "fill", "truefalse", "shortanswer", "variant"]
 DIFFICULTY_LEVELS = {"easy": "简单", "medium": "中等", "hard": "困难"}
 
 
+@register_agent
 class QuestionAgent(BaseAgent):
     agent_id = "question_agent"
     agent_name = "试题生成智能体"

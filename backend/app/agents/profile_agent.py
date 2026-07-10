@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any
 
-from app.agents.base import AgentValidationError, BaseAgent
+from app.agents.base import AgentValidationError, BaseAgent, register_agent
 from app.utils.profile_normalizer import (
     PROFILE_DIMENSION_LABELS,
     PROFILE_DIMENSION_ORDER,
@@ -13,6 +13,7 @@ from app.utils.profile_normalizer import (
 )
 
 
+@register_agent
 class ProfileAgent(BaseAgent):
     agent_id = "profile_agent"
     agent_name = "Student Profile Agent"

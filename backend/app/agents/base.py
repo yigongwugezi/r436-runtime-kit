@@ -5,6 +5,7 @@ All stage agents inherit from BaseAgent.  The contract now supports:
 - Optional ``mock_data`` for explicit local demos only.
 - ``validate_result()`` — override to enforce required output fields.
 - ``get_fallback()`` — safe defaults returned when the agent fails or times out.
+- ``@register_agent`` — decorator-based auto-registration (replaces manual __init__.py).
 """
 
 from __future__ import annotations
@@ -15,6 +16,52 @@ from typing import Any
 from app.services.llm_client import BaseLLMClient
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Global Agent Registry — single source of truth for agent discovery
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_AGENT_REGISTRY: dict[str, type["BaseAgent"]] = {}
+
+
+def register_agent(cls=None, *, agent_id: str | None = None):
+    """Decorator that registers an agent class in the global registry.
+
+    Can be used as ``@register_agent`` (reads ``cls.agent_id``) or
+    ``@register_agent(agent_id="custom_id")`` for explicit naming.
+
+    Registered agents are discoverable via :func:`get_registered_agents`
+    and :func:`get_agent_class`.
+    """
+    def _wrap(c: type["BaseAgent"]) -> type["BaseAgent"]:
+        aid = agent_id or getattr(c, "agent_id", c.__name__)
+        _AGENT_REGISTRY[aid] = c
+        return c
+    if cls is None:
+        return _wrap
+    return _wrap(cls)
+
+
+def get_registered_agents() -> dict[str, type["BaseAgent"]]:
+    """Return a shallow copy of the global agent registry.
+
+    Keys are ``agent_id`` strings; values are agent classes (not instances).
+    """
+    return dict(_AGENT_REGISTRY)
+
+
+def get_agent_class(agent_id: str) -> type["BaseAgent"] | None:
+    """Look up a registered agent class by its ``agent_id``.
+
+    Returns *None* if no agent is registered under that id.
+    """
+    return _AGENT_REGISTRY.get(agent_id)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Exception classes
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
 class AgentValidationError(Exception):
     """Raised when an agent's output fails validation."""
 
@@ -23,10 +70,23 @@ class AgentError(Exception):
     """Raised when an agent encounters an unrecoverable error during ``run()``."""
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# BaseAgent
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
 class BaseAgent(ABC):
     """Common contract for all agents in the multi-agent pipeline.
 
     Subclasses must define ``agent_id``, ``agent_name``, and ``run()``.
+
+    Use the ``@register_agent`` decorator to auto-register new agents::
+
+        @register_agent
+        class MyAgent(BaseAgent):
+            agent_id = "my_agent"
+            agent_name = "My Agent"
+            def run(self, context): ...
     """
 
     agent_id: str

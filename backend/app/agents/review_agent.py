@@ -1,10 +1,11 @@
 import re
 from typing import Any
 
-from app.agents.base import BaseAgent
+from app.agents.base import BaseAgent, register_agent
 from app.services.course_catalog import course_catalog
 
 
+@register_agent
 class ReviewAgent(BaseAgent):
     agent_id = "review_agent"
     agent_name = "质量审核智能体"

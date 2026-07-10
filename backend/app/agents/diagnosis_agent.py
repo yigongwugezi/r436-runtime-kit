@@ -9,7 +9,7 @@ import re
 from collections import Counter
 from typing import Any
 
-from app.agents.base import BaseAgent
+from app.agents.base import BaseAgent, register_agent
 from app.services.llm_client import LLMClientError
 
 logger = logging.getLogger(__name__)
@@ -26,9 +26,29 @@ def _spaced_repetition_interval(score: float) -> int:
     return 60  # mastered — review in 2 months
 
 
+@register_agent
 class DiagnosisAgent(BaseAgent):
     agent_id = "diagnosis_agent"
     agent_name = "学习诊断智能体"
+
+    def __init__(
+        self,
+        mock_data: dict[str, Any] | None = None,
+        llm_client: Any = None,
+        question_agent_factory: Any = None,
+    ) -> None:
+        """Initialise DiagnosisAgent.
+
+        Args:
+            mock_data: Optional demo data.
+            llm_client: Optional LLM client.
+            question_agent_factory: Optional callable ``() -> BaseAgent`` that
+                returns a QuestionAgent instance.  Injected by AgentFactory
+                to break the hard import coupling.  Falls back to importing
+                QuestionAgent directly when *None*.
+        """
+        super().__init__(mock_data=mock_data, llm_client=llm_client)
+        self._question_agent_factory = question_agent_factory
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         """主入口。支持 mode="adaptive" 进行三步自适应诊断。"""
@@ -209,10 +229,13 @@ class DiagnosisAgent(BaseAgent):
 
     def _generate_diagnostic_questions(self, knowledge_points: list[dict], count: int,
                                         difficulty: str, step_label: str) -> list[dict]:
-        """内部调用 QuestionAgent 生成诊断题（通过依赖注入支持复用）。"""
+        """Generate diagnostic questions via QuestionAgent (DI-injected or fallback import)."""
         try:
-            from app.agents.question_agent import QuestionAgent
-            qa = QuestionAgent(mock_data={}, llm_client=self.llm_client)
+            if self._question_agent_factory is not None:
+                qa = self._question_agent_factory()
+            else:
+                from app.agents.question_agent import QuestionAgent
+                qa = QuestionAgent(mock_data={}, llm_client=self.llm_client)
             q_context = {
                 "user_message": f"为{step_label}生成{count}道诊断题",
                 "profile_facts": {"_raw_user_message": f"生成{count}道诊断题，难度{difficulty}"},

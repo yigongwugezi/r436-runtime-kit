@@ -15,7 +15,7 @@ import threading
 import time
 from typing import Any
 
-from app.agents.base import BaseAgent
+from app.agents.base import BaseAgent, register_agent
 from app.services.llm_client import LLMClientError
 
 logger = logging.getLogger(__name__)
@@ -27,6 +27,7 @@ EXACT_CASUAL = {
 }
 
 
+@register_agent
 class ConversationAgent(BaseAgent):
     agent_id = "conversation_agent"
     agent_name = "对话智能体"
@@ -178,21 +179,30 @@ class ConversationAgent(BaseAgent):
         facts = {}
         llm_retry_count = 0
 
-        # Auto-detect pending adjustment from grading
-        pending_adj = context.get("profile_facts", {}).get("_pending_adjustment", "")
-        if pending_adj and action == "none":
-            et_labels = {"concept":"概念错误","calculation":"计算失误","misreading":"审题偏差","method":"方法不当","forgetting":"知识遗忘"}
-            suggestion = f"上次练习中发现了{et_labels.get(pending_adj, pending_adj)}，建议调整学习计划重点强化这部分。要我现在帮你重新规划吗？"
-            result = self._make_result(reply=suggestion, action="none", facts={})
-            result["needs_clarification"] = False
-            context["profile_facts"]["_pending_adjustment"] = ""
-            return result
+        # Check for explicit FeedbackSignal from previous grading run
+        feedback_signal = context.get("feedback_signal")
+        if feedback_signal is None:
+            from app.schemas.feedback import FeedbackSignal
+            raw = context.get("profile_facts", {}).get("_pending_adjustment", "")
+            if raw:
+                feedback_signal = FeedbackSignal(error_type=raw)
+        if feedback_signal and action == "none":
+            signal = feedback_signal if isinstance(feedback_signal, FeedbackSignal) else FeedbackSignal.from_dict(feedback_signal) if isinstance(feedback_signal, dict) else None
+            if signal and signal.error_type:
+                suggestion = f"上次练习中发现了{signal.error_label or signal.error_type}，建议调整学习计划重点强化这部分。要我现在帮你重新规划吗？"
+                result = self._make_result(reply=suggestion, action="none", facts={})
+                result["needs_clarification"] = False
+                # Clear the signal so it only fires once
+                context["feedback_signal"] = None
+                context.get("profile_facts", {}).pop("_pending_adjustment", None)
+                return result
 
         if action in ("none", "tutoring", "") and not deterministic_none:
             dt = self._try_deeptutor_reply(user_message, self._history)
             if dt and len(dt) > 5:
                 llm_reply = re.sub(r'<[^>]+>', '', dt).strip()
 
+        exec_action = ""
         if not llm_reply and not deterministic_none:
             try:
                 for attempt in range(3):

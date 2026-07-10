@@ -2,9 +2,10 @@
 
 from typing import Any
 
-from app.agents.base import BaseAgent
+from app.agents.base import BaseAgent, register_agent
 
 
+@register_agent
 class KnowledgeAgent(BaseAgent):
     agent_id = "knowledge_agent"
     agent_name = "知识库检索智能体"

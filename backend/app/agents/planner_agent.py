@@ -8,13 +8,14 @@ import re
 from math import ceil
 from typing import Any
 
-from app.agents.base import BaseAgent
+from app.agents.base import BaseAgent, register_agent
 from app.services.course_catalog import course_catalog
 from app.services.llm_client import LLMClientError
 
 logger = logging.getLogger(__name__)
 
 
+@register_agent
 class PlannerAgent(BaseAgent):
     agent_id = "planner_agent"
     agent_name = "学习路径规划智能体"
@@ -494,6 +495,22 @@ class PlannerAgent(BaseAgent):
         return " ".join(parts)
 
     def _infer_days(self, time_text: str, profile: dict) -> int:
+        # Single source of truth: if ProfileAgent already normalized time_budget or
+        # learning_rhythm to a numeric score, extract days from it directly.
+        for dim_key in ("learning_rhythm", "time_budget"):
+            dim = profile.get(dim_key)
+            if isinstance(dim, dict) and isinstance(dim.get("score"), (int, float)):
+                if dim["score"] >= 80:   return 60   # ample time
+                if dim["score"] >= 60:   return 30
+                if dim["score"] >= 40:   return 14
+                if dim["score"] >= 20:   return 7
+            val = (dim.get("value", "") if isinstance(dim, dict) else "")
+            if val and isinstance(val, str):
+                days = self._rule_infer_days(val, profile)
+                if 1 <= days <= 60:
+                    return self._clamp_days(days)
+
+        # Fallback: LLM or rule-based from time_text
         if self.llm_client:
             llm_days = self._llm_infer_days(time_text, profile)
             if llm_days:

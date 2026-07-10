@@ -7,7 +7,7 @@ import logging
 import re
 from typing import Any
 
-from app.agents.base import BaseAgent
+from app.agents.base import BaseAgent, register_agent
 from app.services.course_catalog import course_catalog
 from app.services.llm_client import LLMClientError
 
@@ -21,6 +21,7 @@ SOURCE_TYPE_AGENT = "agent_generated"
 QUALITY_STATUSES = {"passed", "warning", "fallback", "insufficient_context"}
 
 
+@register_agent
 class ResourceAgent(BaseAgent):
     agent_id = "resource_agent"
     agent_name = "学习资源生成智能体"

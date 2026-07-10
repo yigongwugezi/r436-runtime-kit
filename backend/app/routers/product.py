@@ -53,6 +53,8 @@ from app.services.agent_service import (
     get_resources as ag_get_resources,
     run_agents as ag_run_agents,
 )
+from app.services.intent_router import get_agent_ids, should_run_agents, chat_only_intents
+from app.schemas.feedback import FeedbackSignal
 from app.utils.errors import InvalidEventTypeError, MissingSessionIdError, NotFoundError
 from app.utils.profile_normalizer import PROFILE_DIMENSION_LABELS, normalize_profile_dimensions
 from app.services.conversation_state import conversation_store
@@ -255,6 +257,7 @@ def _intent_context(session_id: str | None = None) -> dict[str, Any]:
         "recent_resource_ids": recent_resource_ids,
         "recent_stage_id": recent_stage_id,
         "recent_messages": recent_messages,
+        "feedback_signal": state.feedback_signal,
     }
 
 
@@ -1579,7 +1582,7 @@ def _reply_for_intent(
         actions = [a.strip() for a in action.split(",")]
         agents_filter = []
         for a in actions:
-            af = _agents_for_action(a, session_id)
+            af = get_agent_ids(a)
             if af is None:
                 agents_filter = None
                 break
@@ -1616,16 +1619,16 @@ def _reply_for_intent(
         # 调用 ConversationAgent final_reply 模式生成最终回复
         final_reply = _generate_final_reply(message, session_id, result)
 
-        # ── 主动推送：grading发现错误 → 建议重规划 + 存储待调整标记 ──
+        # ── 主动推送：grading发现错误 → 建议重规划 + 存储 FeedbackSignal ──
         grading = result.get("grading_result", {}) or {}
         if grading.get("error_type") and grading["error_type"] != "null":
             et = grading.get("error_type", "")
             et_label = {"concept":"概念错误","calculation":"计算失误","misreading":"审题偏差","method":"方法不当","forgetting":"知识遗忘"}.get(et, et)
             final_reply += f"\n\n💡 检测到你在这道题上是**{et_label}**，可能需要调整学习计划重点强化这部分内容。要我现在帮你重新规划学习路径吗？"
-            # 存储待调整标记，下次对话自动检测
+            # 存储显式 FeedbackSignal（替代隐式 _pending_adjustment）
+            signal = FeedbackSignal.from_grading_result(grading)
             state = conversation_store.get(session_id)
-            state.facts["_pending_adjustment"] = et
-            state.facts["weak_points"] = state.facts.get("weak_points", "") + f"、{et_label}"
+            state.feedback_signal = signal
 
         # 行动已完成，清除上次提议，检测是否提出了下一步
         conversation_store.set_proposal(session_id, None)
@@ -1636,23 +1639,7 @@ def _reply_for_intent(
     return llm_reply or _casual_reply(session_id), False
 
 
-def _agents_for_action(action: str, session_id: str = "") -> list[str] | None:
-    """每个 action 只跑最少必需的 Agent。"""
-    if action == "full_workflow":
-        return None  # 全部，但已有数据跳过
-    if action == "plan":
-        return ["planner_agent"]
-    if action == "resources":
-        return ["resource_agent"]
-    if action == "generate_questions":
-        return ["question_agent"]
-    if action == "diagnose":
-        return ["diagnosis_agent"]
-    if action == "grade_answer":
-        return ["grading_agent"]
-    if action == "profile":
-        return ["profile_agent"]
-    return None
+# _agents_for_action removed — use get_agent_ids(action) from app.services.intent_router instead.
 
 
 def _generate_final_reply(message: str, session_id: str, result: dict[str, Any]) -> str:
@@ -3932,7 +3919,7 @@ def generate_questions(payload: dict[str, Any], auth: AuthContext = Depends(reje
     intent["action"] = "generate_questions"
 
     result = _run_agents(message, session_id=session_id, progress_callback=None,
-                         agents_filter=_agents_for_action("generate_questions"))
+                         agents_filter=get_agent_ids("generate_questions"))
 
     questions = result.get("questions", [])
     qsid = result.get("question_set_id", "")
