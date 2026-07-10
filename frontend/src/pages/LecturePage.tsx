@@ -166,7 +166,7 @@ export default function LecturePage() {
   const [videoGenerating, setVideoGenerating] = useState(false);
   const [videoResult, setVideoResult] = useState<any>(null);
 
-  const sendChat = useCallback(async (question: string) => {
+  const sendChat = useCallback(async (question: string, actionType = '') => {
     if (!question.trim() || !sessionId || !currentSection) return;
     setChatMsg(''); setChatLoading(true); setChatReply('');
     try {
@@ -178,6 +178,7 @@ export default function LecturePage() {
           sectionGoal: currentSection.goal || '',
           knowledgePoints: currentSection.knowledgePoints || [],
           lectureExcerpt: lecture.slice(0, 1000),
+          actionType,
         }),
       });
       const data = await res.json();
@@ -195,8 +196,13 @@ export default function LecturePage() {
         body: JSON.stringify({ sessionId, sectionTitle: currentSection.title }),
       });
       const data = await res.json();
-      setVideoResult(data?.data?.video || { status: 'failed' });
-    } catch {} finally { setVideoGenerating(false); }
+      setVideoResult(data?.data?.video || {
+        status: 'generation_failed',
+        userMessage: data?.message || '讲解视频生成失败，请稍后重试。',
+      });
+    } catch {
+      setVideoResult({ status: 'generation_failed', userMessage: '讲解视频生成失败，请稍后重试。' });
+    } finally { setVideoGenerating(false); }
   }, [sessionId, currentSection, activeSectionId]);
 
   const handleSendChat = useCallback(async () => {
@@ -631,7 +637,7 @@ export default function LecturePage() {
                 <div className="px-3 py-2 space-y-1 flex-shrink-0">
                   <p className="text-[10px] font-medium text-surface-400 uppercase tracking-wide mb-2 px-1">AI 助手</p>
                   <div className="space-y-2">
-                    <button onClick={() => sendChat(`请详细解释「${currentSection.knowledgePoints?.[0]?.name || '核心概念'}」的含义、原理和应用场景。`)}
+                    <button onClick={() => sendChat(`请详细解释「${currentSection.knowledgePoints?.[0]?.name || '核心概念'}」的含义、原理和应用场景。`, 'concept_explanation')}
                       className="w-full p-3 rounded-xl bg-gradient-to-br from-violet-50 to-blue-50 border border-violet-100 hover:border-violet-200 hover:shadow-sm transition-all text-left group">
                       <div className="flex items-center gap-2 mb-1">
                         <div className="w-7 h-7 rounded-lg bg-violet-100 flex items-center justify-center group-hover:scale-110 transition-transform"><Brain size={13} className="text-violet-600" /></div>
@@ -639,7 +645,7 @@ export default function LecturePage() {
                       </div>
                       <p className="text-[10px] text-surface-400 leading-relaxed">解释"{currentSection.knowledgePoints?.[0]?.name || '核心概念'}"的含义、原理和应用</p>
                     </button>
-                    <button onClick={() => sendChat('请用图解（Mermaid）和文字结合的方式，说明本节的核心知识结构和概念关系。')}
+                    <button onClick={() => sendChat('请用图解（Mermaid）和文字结合的方式，说明本节的核心知识结构和概念关系。', 'diagram')}
                       className="w-full p-3 rounded-xl bg-gradient-to-br from-amber-50 to-orange-50 border border-amber-100 hover:border-amber-200 hover:shadow-sm transition-all text-left group">
                       <div className="flex items-center gap-2 mb-1">
                         <div className="w-7 h-7 rounded-lg bg-amber-100 flex items-center justify-center group-hover:scale-110 transition-transform"><Lightbulb size={13} className="text-amber-600" /></div>
@@ -647,7 +653,7 @@ export default function LecturePage() {
                       </div>
                       <p className="text-[10px] text-surface-400 leading-relaxed">用知识结构图和文字梳理本节概念关系</p>
                     </button>
-                    <button onClick={() => sendChat(`请根据本节「${currentSection.title}」的内容，出一道中等难度的练习题并给出详细解析。`)}
+                    <button onClick={() => sendChat(`请根据本节「${currentSection.title}」的内容，出一道中等难度的练习题并给出详细解析。`, 'example')}
                       className="w-full p-3 rounded-xl bg-gradient-to-br from-emerald-50 to-teal-50 border border-emerald-100 hover:border-emerald-200 hover:shadow-sm transition-all text-left group">
                       <div className="flex items-center gap-2 mb-1">
                         <div className="w-7 h-7 rounded-lg bg-emerald-100 flex items-center justify-center group-hover:scale-110 transition-transform"><Target size={13} className="text-emerald-600" /></div>
@@ -661,7 +667,7 @@ export default function LecturePage() {
                         <div className="w-7 h-7 rounded-lg bg-rose-100 flex items-center justify-center group-hover:scale-110 transition-transform"><Sparkles size={13} className="text-rose-600" /></div>
                         <span className="text-xs font-semibold text-surface-700">讲解视频</span>
                       </div>
-                      <p className="text-[10px] text-surface-400 leading-relaxed">{videoGenerating ? '正在生成微课视频脚本…' : videoResult ? '已生成脚本，点击查看' : '生成本节微课讲解视频'}</p>
+                      <p className="text-[10px] text-surface-400 leading-relaxed">{videoGenerating ? '正在生成微课视频脚本…' : videoResult?.script ? '已生成脚本，点击查看' : videoResult?.userMessage || '生成本节微课讲解视频'}</p>
                     </button>
                   </div>
                 </div>
@@ -670,10 +676,8 @@ export default function LecturePage() {
                 <div className="px-3 py-2 flex-shrink-0">
                   <div className="p-3 rounded-xl bg-rose-50 border border-rose-100">
                     <p className="text-[10px] font-semibold text-rose-600 mb-1">🎬 讲解视频</p>
-                    <p className="text-xs text-surface-600 leading-relaxed whitespace-pre-wrap line-clamp-6">{videoResult.script || '脚本生成中...'}</p>
-                    {videoResult.status === 'script_ready_provider_not_configured' && (
-                      <p className="text-[10px] text-rose-400 mt-1">视频模型尚未配置，已生成脚本草稿</p>
-                    )}
+                    {videoResult.script && <p className="text-xs text-surface-600 leading-relaxed whitespace-pre-wrap line-clamp-6">{videoResult.script}</p>}
+                    <p className="text-[10px] text-rose-400 mt-1">{videoResult.userMessage || (videoResult.status === 'generation_failed' ? '讲解视频生成失败，请稍后重试。' : '讲解视频服务暂未配置，当前可以先查看或生成视频脚本。')}</p>
                   </div>
                 </div>
               )}

@@ -4579,6 +4579,90 @@ mindmap
 # 智能辅导端点
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _is_invalid_tutor_reply(reply: Any) -> bool:
+    text = str(reply or "").strip()
+    return len(text) < 20 or _is_profile_json(text) or any(key in text for key in _PROFILE_KEYS)
+
+
+def _fallback_tutor_reply(
+    action_type: str,
+    section_title: str,
+    section_goal: str,
+    knowledge_points: list[Any],
+    lecture_excerpt: str,
+    question: str,
+) -> str:
+    points = [str(item.get("name", "")) if isinstance(item, dict) else str(item) for item in knowledge_points]
+    topic = "、".join(point for point in points if point) or section_title
+    action = action_type.lower()
+    if not action:
+        action = "diagram" if any(word in question for word in ("图", "结构", "关系")) else "concept_explanation"
+    excerpt = re.sub(r"\s+", " ", lecture_excerpt).strip()[:180]
+    context = f"本节目标是{section_goal or f'理解{topic}'}。"
+    if action in {"diagram", "structure"}:
+        return f"""## {section_title} 的知识结构
+
+```mermaid
+mindmap
+  root(({topic}))
+    核心定义
+    典型操作
+    时间复杂度
+    常见误区
+```
+
+{context}先理解核心定义，再比较典型操作的成本，最后通过练习检验掌握情况。"""
+    if action in {"example", "exercise"}:
+        return f"""## {section_title} 示例
+
+以{topic}为例，先写出操作目标，再分别分析访问、查找、插入和删除时需要移动或访问的数据量。比较结果时要说明操作位置和数据规模。
+
+> 练习：选择一个具体操作，写出你的判断依据，而不只写结论。"""
+    if action == "simplify":
+        return f"""## {section_title} 的简单解释
+
+把{topic}看成解决“怎样存放和处理数据”的不同工具。先记住每种工具最擅长的操作，再通过一个小例子比较它们的差异。{context}"""
+    if action == "summarize":
+        return f"""## {section_title} 小结
+
+- 本节围绕{topic}建立基础概念。
+- 重点是把操作过程和时间复杂度对应起来。
+- 下一步用一道具体练习验证理解。"""
+    if action == "common_mistakes":
+        return f"""## {section_title} 常见错误
+
+- 只背复杂度结论，没有说明操作位置。
+- 混淆访问、查找、插入和删除。
+- 忽略数据规模变化对操作成本的影响。"""
+    detail = f"讲义当前重点：{excerpt}" if excerpt else context
+    return f"""## {section_title} 概念讲解
+
+{topic}需要从定义、操作方式和适用场景三个角度理解。先明确数据如何组织，再分析每种操作需要访问或移动多少数据。
+
+{detail}
+
+> 学习时请把每个结论和一个具体操作对应起来。"""
+
+
+def _public_tutor_video(result: dict[str, Any]) -> dict[str, Any]:
+    raw_status = str(result.get("status") or "failed")
+    script = str(result.get("script") or "").strip()
+    if raw_status in {"success", "script_ready"}:
+        status, message = "completed", "讲解视频脚本已准备好。"
+    elif raw_status in {"provider_not_configured", "script_ready_provider_not_configured"}:
+        status = "provider_not_configured"
+        message = "视频暂不能生成，但脚本已准备好。" if script else "讲解视频服务暂未配置，当前可以先查看或生成视频脚本。"
+    else:
+        status, message = "generation_failed", "讲解视频生成失败，请稍后重试。"
+    return {
+        "status": status,
+        "provider": str(result.get("provider") or "spark_video"),
+        "script": script,
+        "userMessage": message,
+        "metadata": {"raw_status": raw_status},
+    }
+
+
 @router.post("/sections/{section_id}/tutor/ask")
 def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """智辅问答：注入学生画像 + 诊断数据，返回 Markdown 格式回答。"""
@@ -4588,6 +4672,7 @@ def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     section_goal = str(payload.get("sectionGoal", "")).strip()
     knowledge_points = payload.get("knowledgePoints", [])
     lecture_excerpt = str(payload.get("lectureExcerpt", ""))[:1000]
+    action_type = str(payload.get("actionType") or payload.get("action_type") or "").strip()
 
     if not question:
         return _product_response(None, session_id=session_id, status="error", message="question required", source="agent")
@@ -4638,7 +4723,18 @@ def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     try:
         raw = client.chat(messages=[{"role": "user", "content": prompt}], temperature=0.3, max_tokens=2048)
     except Exception as e:
-        return _product_response(None, session_id=session_id, status="error", message=f"智辅失败: {e}", source="agent")
+        logger.warning("Tutor generation failed for section %s: %s", section_id, e)
+        raw = ""
+
+    if _is_invalid_tutor_reply(raw):
+        raw = _fallback_tutor_reply(
+            action_type,
+            section_title,
+            section_goal,
+            knowledge_points if isinstance(knowledge_points, list) else [],
+            lecture_excerpt,
+            question,
+        )
 
     return _product_response({"reply": raw}, session_id=session_id, source="agent")
 
@@ -4659,11 +4755,7 @@ def tutor_video(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             "user_message": f"为小节「{section_title}」生成微课讲解视频",
             "subject_name": section_title,
         })
-        return _product_response({"video": {
-            "status": result.get("status", "script_ready"),
-            "provider": result.get("provider", "spark_video"),
-            "script": result.get("script", str(result))[:2000],
-        }}, session_id=session_id, source="agent")
+        return _product_response({"video": _public_tutor_video(result)}, session_id=session_id, source="agent")
     except Exception as e:
         logger.warning("Tutor video failed for section %s: %s", section_id, e)
         return _product_response(None, session_id=session_id, status="error", message=f"视频生成失败: {e}", source="agent")
