@@ -2,6 +2,12 @@
 // Learning Path types
 // ================================================================
 
+export type ContentStatus = 'not_started' | 'in_progress' | 'mastered' | 'needs_review' | 'blocked';
+export const CONTENT_STATUS_ORDER: ContentStatus[] = ['not_started', 'in_progress', 'mastered', 'needs_review', 'blocked'];
+export function legacyStatusToContent(s: PathNodeStatus): ContentStatus { switch (s) { case 'locked': return 'blocked'; case 'available': return 'not_started'; case 'in_progress': return 'in_progress'; case 'mastered': return 'mastered'; } }
+export function nextContentStatus(c: ContentStatus): ContentStatus { const i = CONTENT_STATUS_ORDER.indexOf(c); return CONTENT_STATUS_ORDER[(i + 1) % CONTENT_STATUS_ORDER.length]; }
+export function contentStatusToProgress(s: ContentStatus): number { switch (s) { case 'not_started': case 'blocked': return 0; case 'in_progress': return 40; case 'needs_review': return 70; case 'mastered': return 100; } }
+
 export interface LearningPath {
   id: string;
   title: string;
@@ -9,16 +15,12 @@ export interface LearningPath {
   courseName: string;
   stages: LearningStage[];
   createdAt: number;
-  /** 总体进度 */
-  overallProgress: number; // 0-100
-  /** 预计完成天数 */
+  overallProgress: number;
   estimatedDays: number;
   source?: 'agent_generated' | 'system_inferred' | 'none';
-  /** 每阶段资源完成统计 { stageId: { total, completed } } */
   stageResourceStats?: Record<string, { total: number; completed: number }>;
 }
 
-/** 阶段状态 — 由节点状态计算得出 */
 export type StageStatus = 'not_started' | 'in_progress' | 'completed';
 
 export interface LearningStage {
@@ -26,35 +28,52 @@ export interface LearningStage {
   order: number;
   title: string;
   description: string;
-  /** 知识点列表（按学习顺序） */
   nodes: PathNode[];
-  /** 阶段目标 */
+  chapters: Chapter[];
   objective: string;
-  /** 预计天数 */
   estimatedDays: number;
-  /** 学习任务列表（原始文本） */
   tasks?: string[];
-  /** 推荐资源类型列表 */
   resourceTypes?: string[];
-  /** 排序理由 */
   orderingReason?: string;
+}
+
+export interface Chapter {
+  id: string;
+  title: string;
+  order: number;
+  status: ContentStatus;
+  sections: Section[];
+  mindmapId?: string;
+}
+
+export interface Section {
+  id: string;
+  title: string;
+  goal: string;
+  estimatedMinutes: number;
+  status: ContentStatus;
+  knowledgePoints: KnowledgePoint[];
+  lectureIds: string[];
+}
+
+export interface KnowledgePoint {
+  id: string;
+  name: string;
+  type: 'concept' | 'procedure' | 'memory';
+  description?: string;
+  mastery: number;
+  status: ContentStatus;
 }
 
 export interface PathNode {
   id: string;
   topic: string;
   description: string;
-  /** 前置依赖节点 ID */
   prerequisites: string[];
-  /** 掌握度 0-100 */
   mastery: number;
-  /** 状态 */
   status: PathNodeStatus;
-  /** 推荐资源 */
   resources: PathResource[];
-  /** 是否为重点/难点 */
   isKeyPoint?: boolean;
-  /** 艾宾浩斯复习节点 */
   reviewSchedule?: ReviewSchedule;
 }
 
@@ -71,7 +90,7 @@ export interface PathResource {
 export interface ReviewSchedule {
   nextReviewAt: number;
   intervalDays: number;
-  reviewCount: number; // 第几次复习 (1-6)
+  reviewCount: number;
 }
 
 export interface KnowledgeGraph {

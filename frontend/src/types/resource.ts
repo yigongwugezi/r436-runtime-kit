@@ -72,6 +72,10 @@ export interface Resource {
   completedAt?: number | null;
   /** 关联的学习阶段 ID */
   relatedStageId?: string;
+  /** 关联的章节 ID（canonical chapter_id） */
+  relatedChapterId?: string;
+  /** 关联的小节 ID（canonical section_id） */
+  relatedSectionId?: string;
   /** 关联的子阶段/任务 ID */
   taskId?: string;
   /** 关联的章节名称 */
@@ -141,6 +145,8 @@ export interface ResourceFilter {
   search?: string;
   sortBy?: SortBy;
   relatedStageId?: string;
+  relatedChapterId?: string;
+  relatedSectionId?: string;
   taskId?: string;
   resourceIds?: string;
   /** 章节筛选 */

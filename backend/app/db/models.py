@@ -243,6 +243,8 @@ class ResourceModel(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
     source: Mapped[str] = mapped_column(String(16), default="agent_generated")   # db|agent_generated|system_inferred
     related_stage_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    related_chapter_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    related_section_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
     task_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)

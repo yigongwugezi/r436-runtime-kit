@@ -1,0 +1,206 @@
+{
+  "book_id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff",
+  "diagnostic": null,
+  "modules": [
+    {
+      "id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m0",
+      "name": "模块一：计算机系统概述",
+      "order": 0,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m0_kp0",
+          "name": "计算机的层次结构与冯·诺依曼体系",
+          "type": "concept",
+          "module_id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m0"
+        },
+        {
+          "id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m0_kp1",
+          "name": "计算机的主要性能指标（吞吐率、响应时间、MIPS、CPI）",
+          "type": "concept",
+          "module_id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m0"
+        }
+      ]
+    },
+    {
+      "id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m1",
+      "name": "模块二：数据的表示与运算",
+      "order": 1,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m1_kp0",
+          "name": "数制与编码（二进制、八进制、十六进制、补码、浮点数IEEE754）",
+          "type": "memory",
+          "module_id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m1"
+        },
+        {
+          "id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m1_kp1",
+          "name": "定点数的加减乘除运算与ALU",
+          "type": "procedure",
+          "module_id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m1"
+        },
+        {
+          "id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m1_kp2",
+          "name": "浮点数的运算",
+          "type": "procedure",
+          "module_id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m1"
+        }
+      ]
+    },
+    {
+      "id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m2",
+      "name": "模块三：存储系统",
+      "order": 2,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m2_kp0",
+          "name": "存储器的层次结构（寄存器、Cache、主存、辅存）",
+          "type": "concept",
+          "module_id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m2"
+        },
+        {
+          "id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m2_kp1",
+          "name": "Cache的基本原理（映射方式、替换算法、写策略）",
+          "type": "concept",
+          "module_id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m2"
+        },
+        {
+          "id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m2_kp2",
+          "name": "虚拟存储器与页式管理",
+          "type": "concept",
+          "module_id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m2"
+        }
+      ]
+    },
+    {
+      "id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m3",
+      "name": "模块四：指令系统",
+      "order": 3,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m3_kp0",
+          "name": "指令格式与寻址方式",
+          "type": "memory",
+          "module_id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m3"
+        },
+        {
+          "id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m3_kp1",
+          "name": "CISC与RISC的区别",
+          "type": "concept",
+          "module_id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m3"
+        },
+        {
+          "id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m3_kp2",
+          "name": "MIPS指令集基础",
+          "type": "procedure",
+          "module_id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m3"
+        }
+      ]
+    },
+    {
+      "id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m4",
+      "name": "模块五：中央处理器（CPU）",
+      "order": 4,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m4_kp0",
+          "name": "CPU的功能与基本结构（数据通路、控制器）",
+          "type": "concept",
+          "module_id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m4"
+        },
+        {
+          "id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m4_kp1",
+          "name": "硬布线控制器与微程序控制器",
+          "type": "concept",
+          "module_id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m4"
+        },
+        {
+          "id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m4_kp2",
+          "name": "指令流水线的基本概念与性能分析",
+          "type": "concept",
+          "module_id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m4"
+        },
+        {
+          "id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m4_kp3",
+          "name": "流水线冒险（结构冒险、数据冒险、控制冒险）",
+          "type": "concept",
+          "module_id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m4"
+        },
+        {
+          "id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m4_kp4",
+          "name": "流水线的优化技术（转发、分支预测）",
+          "type": "concept",
+          "module_id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m4"
+        }
+      ]
+    },
+    {
+      "id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m5",
+      "name": "模块六：总线与输入输出系统",
+      "order": 5,
+      "pass_threshold": 0.7,
+      "knowledge_points": [
+        {
+          "id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m5_kp0",
+          "name": "总线的基本概念与标准",
+          "type": "memory",
+          "module_id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m5"
+        },
+        {
+          "id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m5_kp1",
+          "name": "I/O控制方式（程序查询、中断、DMA）",
+          "type": "concept",
+          "module_id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m5"
+        },
+        {
+          "id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m5_kp2",
+          "name": "中断系统的工作原理",
+          "type": "concept",
+          "module_id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m5"
+        }
+      ]
+    }
+  ],
+  "current_module_id": "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m0",
+  "current_stage": "diagnostic",
+  "current_kp_index": 0,
+  "mastery_levels": {},
+  "qualitative_mastery": {},
+  "knowledge_types": {
+    "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m0_kp0": "concept",
+    "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m0_kp1": "concept",
+    "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m1_kp0": "memory",
+    "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m1_kp1": "procedure",
+    "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m1_kp2": "procedure",
+    "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m2_kp0": "concept",
+    "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m2_kp1": "concept",
+    "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m2_kp2": "concept",
+    "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m3_kp0": "memory",
+    "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m3_kp1": "concept",
+    "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m3_kp2": "procedure",
+    "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m4_kp0": "concept",
+    "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m4_kp1": "concept",
+    "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m4_kp2": "concept",
+    "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m4_kp3": "concept",
+    "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m4_kp4": "concept",
+    "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m5_kp0": "memory",
+    "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m5_kp1": "concept",
+    "cf9b66fa-aee7-46a4-83e6-c1909dad31ff_m5_kp2": "concept"
+  },
+  "quiz_attempts": [],
+  "error_records": [],
+  "repetition_states": {},
+  "review_queue": [],
+  "pending_question": null,
+  "feynman_retries": {},
+  "feynman_explanations": {},
+  "stage_failure_counts": {},
+  "stage_failure_notes": {},
+  "version": 2,
+  "created_at": 1783680324.4549313,
+  "updated_at": 1783680331.359506
+}

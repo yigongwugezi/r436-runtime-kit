@@ -14,7 +14,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.db.engine import SessionLocal
-from app.db.models import LearnerModel, PersonalSubjectModel, SessionModel
+from app.db.models import (
+    AnswerRecordModel,
+    LearnerModel,
+    PersonalSubjectModel,
+    PracticeQuestionModel,
+    SessionModel,
+)
 from app.middleware.auth import AuthContext, reject_parent, require_auth
 
 logger = logging.getLogger(__name__)
@@ -267,15 +273,21 @@ def get_subject_session(
                 db.commit()
                 logger.info("Backfilled learner_id on session %s → %s", session.id, target_id)
 
-        # 3. Any session for this learner — link it to this subject
+        # 3. Any unbound session for this learner — link it to this subject.
+        #    Only match sessions whose subject_id is NULL; sessions already
+        #    bound to a different subject must not be returned (they belong
+        #    to that other subject, not this one).
         if session is None:
             session = (
                 db.query(SessionModel)
-                .filter(SessionModel.learner_id == target_id)
+                .filter(
+                    SessionModel.learner_id == target_id,
+                    SessionModel.subject_id.is_(None),
+                )
                 .order_by(SessionModel.updated_at.desc())
                 .first()
             )
-            if session is not None and not session.subject_id:
+            if session is not None:
                 session.subject_id = subject_id
                 db.commit()
                 logger.info("Linked session %s to subject %s", session.id, subject_id)
@@ -302,7 +314,7 @@ def delete_subject(
     subject_id: str,
     auth: AuthContext = Depends(reject_parent),
 ) -> dict:
-    """Delete a personal subject. Only the owner may delete it."""
+    """Delete a personal subject and all linked session data. Only the owner may delete it."""
     db = SessionLocal()
     try:
         ps = db.get(PersonalSubjectModel, subject_id)
@@ -311,8 +323,31 @@ def delete_subject(
         if ps.learner_id != auth.learner_id:
             raise HTTPException(status_code=403, detail="无权删除此科目")
 
+        # Clean up linked sessions so old data doesn't leak if the subject
+        # is re-created.  SessionModel cascades messages, profile snapshots,
+        # learning paths, resources, events, and daily tasks automatically.
+        # PracticeQuestionModel and AnswerRecordModel use plain-string
+        # session_id (no FK), so they must be deleted explicitly.
+        linked_sessions = (
+            db.query(SessionModel)
+            .filter(SessionModel.subject_id == subject_id)
+            .all()
+        )
+        for s in linked_sessions:
+            db.query(PracticeQuestionModel).filter(
+                PracticeQuestionModel.session_id == s.id
+            ).delete()
+            db.query(AnswerRecordModel).filter(
+                AnswerRecordModel.session_id == s.id
+            ).delete()
+            db.delete(s)
+
         db.delete(ps)
         db.commit()
+        logger.info(
+            "Deleted subject %s and %d linked sessions for learner %s",
+            subject_id, len(linked_sessions), auth.learner_id,
+        )
         return {"status": "success", "data": {}}
     finally:
         db.close()
