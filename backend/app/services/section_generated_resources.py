@@ -60,7 +60,7 @@ class SectionGeneratedResourcesService:
             content = self._llm_client.chat(messages=[{"role": "user", "content": prompt}], temperature=0.3, max_tokens=1200)
         except Exception:
             content = ""
-        if self._invalid(content, section_title):
+        if self._invalid(content, section_title, resource_type):
             content = self._fallback(resource_type, section_title, points, lecture_content)
 
         return {
@@ -108,9 +108,11 @@ class SectionGeneratedResourcesService:
         return [str(item.get("name", "")).strip() if isinstance(item, dict) else str(item).strip() for item in items if (item.get("name", "") if isinstance(item, dict) else item)][:6]
 
     @staticmethod
-    def _invalid(content: Any, section_title: str) -> bool:
+    def _invalid(content: Any, section_title: str, resource_type: str = "") -> bool:
         text = str(content or "").strip()
         if len(text) < 80 or section_title not in text:
+            return True
+        if resource_type == "review_notes" and not all(label in text for label in ("关键知识", "复习提醒", "自测问题")):
             return True
         try:
             value = json.loads(text)
@@ -129,5 +131,14 @@ class SectionGeneratedResourcesService:
             return f"## {title} 例题详解\n\n**题目**：选择一个与 {topic} 有关的操作，说明操作步骤和成本。\n\n**解题步骤**：先明确输入，再逐步写出操作过程，最后解释为什么得到该结论。\n\n> 不只写答案，要写判断依据。"
         if resource_type == "mistake_checklist":
             return f"## {title} 易错点检查清单\n\n- [ ] 没有混淆 {topic} 的定义与操作。\n- [ ] 能说明结论对应的条件。\n- [ ] 能用一个例子检验理解。"
-        excerpt = " ".join(str(lecture or "").split())[:180]
-        return f"## {title} 复习笔记\n\n### 关键知识\n{topic}\n\n### 复习提醒\n{excerpt or '先回顾核心定义，再完成一道应用练习。'}"
+        point_lines = "\n".join(f"- {point}" for point in points) or f"- {title}"
+        return (
+            f"# {title} 复习笔记\n\n"
+            f"## 关键知识\n{point_lines}\n\n"
+            "## 复习提醒\n"
+            "- 先用自己的话说明核心定义和适用条件。\n"
+            "- 再完成一道相关练习，检查是否能把概念用于具体问题。\n\n"
+            "## 自测问题\n"
+            f"1. {title} 中最需要区分的概念是什么？\n"
+            "2. 你能用一个例子说明它的适用场景吗？"
+        )
