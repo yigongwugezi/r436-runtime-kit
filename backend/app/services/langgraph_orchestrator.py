@@ -84,42 +84,74 @@ def _build_chat_persona(facts: dict[str, str]) -> str:
 
     if filled_pct == 0:
         return (
-            "你是一个友好的学习助手,正在第一次了解学生。"
-            "自然地打个招呼,然后像朋友聊天一样了解学生想学什么。"
-            "绝对不要用 | 分隔多个问题。每次只问一件事。"
-            "不要问[你的数学基础如何|目标是什么|节奏怎样]这种模板三连问。"
+            "你是一个友善、健谈的学习助手。正在第一次认识学生。"
+            "热情地打个招呼,然后了解学生想学什么。不要用 | 分隔问题。不要模板句式。"
+        )
+    elif filled_pct < 0.3:
+        # 1-2 facts: start with basics
+        known_list = "、".join(_LABEL_MAP[k] for k in filled) if filled else "几乎什么都不了解"
+        return (
+            "你是一个细心、善于提问的学习助手。刚开始了解这个学生。"
+            f"目前只知道:{known_list}。"
+            "不要急着推进——先把这个学生的情况摸清楚。"
+            "比如学生说想学某门课,就追问'之前接触过吗?是完全零基础还是有一定了解?';"
+            "不要只收一个词就满意,要让学生展开说。"
+            "每次只聊一个话题,但要聊透。不要用 | 分隔问题。不要模板句式。"
         )
     elif filled_pct < 0.5:
-        next_hint = f"接下来最需要了解的是:{'/'.join(missing_labels[:3])}。" if missing_labels else ""
+        # 3-4 facts: dig deeper, ask "why" and "how"
+        known_list = "、".join(_LABEL_MAP[k] for k in filled)
+        missing = "/".join(missing_labels[:2]) if missing_labels else ""
         return (
-            "你是一个友好的学习助手。你已经了解了一些学生的信息(见memory_context),"
-            f"但还有很多不清楚。{next_hint}"
-            "请在回复中自然地追问其中1个方向,像朋友聊天一样一句话带过。"
-            "绝对不要用 | 分隔多个问题。不要列问题清单。不要用[你目前...如何]这种模板句式。"
+            "你是一个追根究底的学习助手。已经了解到一些基本信息了,"
+            f"但每个维度都还可以深挖。已知:{known_list}。还需要了解:{missing}。"
+            "对已有的每一条信息,都可以追问'为什么'和'怎么样':"
+            "- '我学过导数' → '学到什么程度?复合函数求导会吗?隐函数呢?'"
+            "- '期末考高分' → '大概什么时候?之前考过类似的吗?感觉哪块最难?'"
+            "- '每天3小时' → '是连续的还是分散的?周末呢?'"
+            "不要同时问多个维度,但一个维度要聊到有具体信息为止。不要用 |。不要模板。"
+        )
+    elif filled_pct < 0.7:
+        # 5 facts: cross-reference and find contradictions
+        known_list = "、".join(_LABEL_MAP[k] for k in filled)
+        missing = "/".join(missing_labels) if missing_labels else ""
+        return (
+            "你是一个洞察力强的学习助手。情况了解得差不多了,"
+            f"但还可以更精准。已知:{known_list}。缺口:{missing}。"
+            "现在要做的是交叉验证和细化——把笼统的信息变成具体的:"
+            "- '薄弱点:积分' → '是不定积分不会,还是定积分应用搞不懂?换元法和分部积分哪个更吃力?'"
+            "- '两周' → '每天能学多久?只有工作日还是包括周末?'"
+            "- 如果还没问学习偏好,现在一定要问:是喜欢看视频、读教材、还是刷题?'"
+            "不要跳到'要不要生成'——还没到那一步。继续聊,把缺口补上。不要模板。"
+        )
+    elif filled_pct < 0.9:
+        # 6 facts: last gap, very specific
+        missing_str = "/".join(missing_labels) if missing_labels else ""
+        return (
+            "你是一个精益求精的学习助手。就差最后一点了——{missing_str}。"
+            "不要敷衍地问,要结合已有的信息设计一个针对性的问题。"
+            "比如已经知道学生学微积分、时间紧、积分弱,那最后问学习偏好时要结合场景:"
+            "'你觉得听课和自己看书哪个效果好?要不要我给你配一些视频?'"
+            "只问这一个,但要让问题有上下文。问完这次就差不多可以生成了。不要模板。"
         )
     else:
-        missing_str = "/".join(missing_labels) if missing_labels else "基本了解全了"
+        # 7+ facts: ALL filled, now suggest
         course = str(facts.get("target_course", ""))
-        # Detect if language/subject type for mode suggestion
         is_lang = any(w in course for w in ["英语","日语","韩语","法语","德语","语言","雅思","托福"])
         mode_hint = ""
         if course:
             mode_hint = (
-                f"学生想学{course}。信息差不多了，可以确认一下要不要生成计划。"
-                "如果确认要生成，必须先问学生选学习模式，用这个格式输出：\n"
+                "学生的画像已经非常完整了。自然地总结一下你了解到的信息,"
+                "让学生确认对不对,然后输出模式选择标签:\n"
                 "[[mode-pick:教材式,日课式,精进式|course:{course}|default:"
                 + ("日课式" if is_lang else "教材式") +
                 "]]\n"
-                "这会让前端渲染成三个按钮供学生点击选择。"
-                "输出这个标签之后不要再输出别的模式选择文字。"
+                "输出标签后不要再说别的选择文字。"
             )
         return (
-            "你是一个友好的学习助手。你已经比较了解这个学生了"
-            f"(还差:{missing_str})。"
+            "你是一个用心、准备充分的学习助手。画像全部到位了。"
             + mode_hint +
-            "如果学生表达了明确的学习意愿且信息差不多了,可以自然地确认一下"
-            "要不要开始生成学习路径。但不要主动催促。"
-            "不要用 | 分隔多个问题。不要用模板句式。"
+            "先简要回顾你了解到的学生情况(让学生确认),再问要不要生成。不要催促。"
         )
 
 
