@@ -2440,6 +2440,8 @@ def get_resources(
             "completedAt": item.get("completedAt", item.get("completed_at")),
             "source": _source_label(item.get("source", "")),
             "relatedStageId": item.get("relatedStageId", item.get("related_stage_id", "")),
+            "relatedChapterId": item.get("relatedChapterId", item.get("related_chapter_id", "")),
+            "relatedSectionId": item.get("relatedSectionId", item.get("related_section_id", "")),
             "taskId": item.get("taskId", item.get("task_id", "")),
             "relatedChapter": item.get("relatedChapter", item.get("related_chapter", "")),
             "relatedKnowledgePoints": item.get("relatedKnowledgePoints", item.get("related_knowledge_points", [])),
@@ -2582,6 +2584,10 @@ def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "") -> 
                 "bookmarked": db_match["id"] in bookmarks,
                 "studyStatus": db_match.get("study_status", "new"),
                 "source": _source_label(db_match.get("source", "")),
+                "relatedStageId": db_match.get("related_stage_id", ""),
+                "relatedChapterId": db_match.get("related_chapter_id", ""),
+                "relatedSectionId": db_match.get("related_section_id", ""),
+                "taskId": db_match.get("task_id", ""),
             }},
             session_id=session_id, subject_id=subjectId, source="db",
         )
@@ -4783,6 +4789,180 @@ def tutor_video(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     except Exception as e:
         logger.warning("Tutor video failed for section %s: %s", section_id, e)
         return _product_response(None, session_id=session_id, status="error", message=f"视频生成失败: {e}", source="agent")
+
+
+@router.post("/sections/{section_id}/resources/recommendations")
+def recommend_section_resources(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Return real external links for a section without archiving them as resources."""
+    session_id = _payload_session_id(payload)
+    section_title = str(payload.get("sectionTitle") or "").strip()
+    knowledge_points = payload.get("knowledgePoints") or []
+    if not section_title:
+        try:
+            from app.services.agent_service import get_learning_path
+            for stage in (get_learning_path(session_id) or {}).get("stages", []):
+                for chapter in stage.get("chapters", []):
+                    for section in chapter.get("sections", []):
+                        if str(section.get("section_id") or section.get("id") or "") == section_id:
+                            section_title = str(section.get("title") or "").strip()
+                            knowledge_points = section.get("knowledge_points") or section.get("knowledgePoints") or []
+                            break
+        except Exception:
+            pass
+    if not section_title:
+        return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
+
+    profile: dict[str, Any] | None = None
+    weak_points: list[Any] = []
+    try:
+        from app.services.agent_service import get_analytics, get_profile
+        profile = get_profile(session_id)
+        analytics = get_analytics(session_id) or {}
+        weak_points = analytics.get("weakTopics") or []
+    except Exception:
+        pass
+
+    from app.services.section_resource_recommendations import SectionResourceRecommendationService
+    result = SectionResourceRecommendationService().recommend(
+        session_id=session_id,
+        section_id=section_id,
+        section_title=section_title,
+        knowledge_points=knowledge_points if isinstance(knowledge_points, list) else [],
+        language=str(payload.get("language") or "zh-CN"),
+        resource_types=payload.get("resourceTypes") if isinstance(payload.get("resourceTypes"), list) else [],
+        profile=profile,
+        weak_points=weak_points,
+    )
+    return _product_response({"recommendations": result}, session_id=session_id, source="duckduckgo")
+
+
+def _section_path_context(session_id: str, section_id: str) -> dict[str, Any]:
+    """Read existing path metadata; no planner call or path mutation."""
+    try:
+        path = ag_get_learning_path(session_id) or {}
+        for stage in path.get("stages", []):
+            for chapter in stage.get("chapters", []):
+                for section in chapter.get("sections", []):
+                    if str(section.get("section_id") or section.get("id") or "") == section_id:
+                        return {
+                            "path_id": path.get("id", ""), "stage_id": stage.get("stage_id") or stage.get("id", ""),
+                            "chapter_id": chapter.get("chapter_id") or chapter.get("id", ""), "section_title": section.get("title", ""),
+                            "knowledge_points": section.get("knowledge_points") or section.get("knowledgePoints") or [],
+                        }
+    except Exception:
+        pass
+    return {}
+
+
+@router.post("/sections/{section_id}/resources/generate")
+def generate_section_resource(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Generate one small section resource and archive it in the existing library."""
+    session_id = _payload_session_id(payload)
+    resource_type = str(payload.get("resourceType") or "").strip()
+    context = _section_path_context(session_id, section_id)
+    section_title = str(payload.get("sectionTitle") or context.get("section_title") or "").strip()
+    if not section_title:
+        return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
+    from app.services.section_generated_resources import SectionGeneratedResourcesService
+    service = SectionGeneratedResourcesService()
+    try:
+        db = SessionLocal()
+        existing = service.existing(db, session_id, section_id, resource_type)
+        if existing is not None and not bool(payload.get("regenerate")):
+            return _product_response({"resource": service.serialize(existing), "reused": True}, session_id=session_id, source="db")
+        lecture = db.query(ResourceModel).filter(
+            ResourceModel.session_id == session_id,
+            ResourceModel.related_section_id == section_id,
+            ResourceModel.type == "lecture",
+        ).order_by(ResourceModel.updated_at.desc()).first()
+        resource = service.generate(
+            session_id=session_id, path_id=str(payload.get("pathId") or context.get("path_id") or ""),
+            stage_id=str(payload.get("stageId") or context.get("stage_id") or ""),
+            chapter_id=str(payload.get("chapterId") or context.get("chapter_id") or ""),
+            section_id=section_id, section_title=section_title,
+            lecture_content=str(payload.get("lectureContent") or (lecture.content if lecture else "") or ""),
+            knowledge_points=payload.get("knowledgePoints") if isinstance(payload.get("knowledgePoints"), list) else context.get("knowledge_points", []),
+            resource_type=resource_type,
+        )
+        saved = service.persist(db, session_id, resource)
+        return _product_response({"resource": service.serialize(saved), "reused": False}, session_id=session_id, source="agent")
+    except ValueError:
+        return _product_response(None, session_id=session_id, status="error", message="unsupported resourceType", source="agent")
+    finally:
+        db.close()
+
+
+@router.get("/sections/{section_id}/generated-resources")
+def get_generated_section_resources(section_id: str, sessionId: str = "") -> dict[str, Any]:
+    """Read only resources generated for the current section."""
+    session_id = _require_session_id(sessionId)
+    from app.services.section_generated_resources import SectionGeneratedResourcesService
+    try:
+        db = SessionLocal()
+        rows = db.query(ResourceModel).filter(
+            ResourceModel.session_id == session_id,
+            ResourceModel.related_section_id == section_id,
+        ).order_by(ResourceModel.updated_at.desc()).all()
+        resources = [SectionGeneratedResourcesService.serialize(row) for row in rows if "section_generated" in (row.tags or [])]
+        return _product_response({"resources": resources}, session_id=session_id, source="db")
+    finally:
+        db.close()
+
+
+def _chapter_path_context(session_id: str, chapter_id: str) -> dict[str, Any]:
+    try:
+        path = ag_get_learning_path(session_id) or {}
+        for stage in path.get("stages", []):
+            for chapter in stage.get("chapters", []):
+                if str(chapter.get("chapter_id") or chapter.get("id") or "") == chapter_id:
+                    return {
+                        "path_id": path.get("id", ""), "stage_id": stage.get("stage_id") or stage.get("id", ""),
+                        "chapter_title": chapter.get("title", ""), "sections": chapter.get("sections", []),
+                    }
+    except Exception:
+        pass
+    return {}
+
+
+@router.post("/chapters/{chapter_id}/mindmap/generate")
+def generate_chapter_mindmap(chapter_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Generate one local Mermaid mind map for a chapter and archive it."""
+    session_id = _payload_session_id(payload)
+    context = _chapter_path_context(session_id, chapter_id)
+    chapter_title = str(payload.get("chapterTitle") or context.get("chapter_title") or "").strip()
+    if not chapter_title:
+        return _product_response(None, session_id=session_id, status="error", message="chapterTitle required", source="agent")
+    from app.services.chapter_mindmap_resources import ChapterMindmapResourceService
+    service = ChapterMindmapResourceService()
+    try:
+        db = SessionLocal()
+        existing = service.existing(db, session_id, chapter_id)
+        if existing is not None and not bool(payload.get("regenerate")):
+            return _product_response({"mindmap": service.serialize(existing), "reused": True}, session_id=session_id, source="db")
+        resource = service.generate(
+            path_id=str(payload.get("pathId") or context.get("path_id") or ""),
+            stage_id=str(payload.get("stageId") or context.get("stage_id") or ""),
+            chapter_id=chapter_id, chapter_title=chapter_title,
+            sections=payload.get("sections") if isinstance(payload.get("sections"), list) else context.get("sections", []),
+        )
+        saved = service.persist(db, session_id, resource)
+        return _product_response({"mindmap": service.serialize(saved), "reused": False}, session_id=session_id, source="agent")
+    except ValueError:
+        return _product_response(None, session_id=session_id, status="error", message="思维导图生成失败，请稍后重试", source="agent")
+    finally:
+        db.close()
+
+
+@router.get("/chapters/{chapter_id}/mindmap")
+def get_chapter_mindmap(chapter_id: str, sessionId: str = "") -> dict[str, Any]:
+    session_id = _require_session_id(sessionId)
+    from app.services.chapter_mindmap_resources import ChapterMindmapResourceService
+    try:
+        db = SessionLocal()
+        resource = ChapterMindmapResourceService().existing(db, session_id, chapter_id)
+        return _product_response({"mindmap": ChapterMindmapResourceService.serialize(resource) if resource else None}, session_id=session_id, source="db")
+    finally:
+        db.close()
 
 
 # 画像推荐

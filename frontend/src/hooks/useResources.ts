@@ -6,7 +6,8 @@ import type { Resource, ResourceFilter } from '../types/resource';
 
 export function useResources(initialFilter?: ResourceFilter) {
   const subjectId = useSubjectStore((s) => s.activeSubject?.id ?? s.activeClassSubject?.subject);
-  const sessionId = useChatStore((state) => state.dataSessionId);
+  // Resource details already use the active chat session; the list must use it too.
+  const sessionId = useChatStore((state) => state.currentSessionId);
   const dataVersion = useChatStore((state) => state.dataVersion);
   const [resources, setResources] = useState<Resource[]>([]);
   const [total, setTotal] = useState(0);

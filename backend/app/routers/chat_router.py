@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -15,6 +16,86 @@ from app.services.langgraph_orchestrator import run_pipeline
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["chat"])
+
+
+_SECTION_RESOURCE_REQUESTS = {
+    "summary_card": ("生成总结卡片", "生成总结卡", "生成总结"),
+    "concept_comparison": ("生成概念对比", "生成概念比较"),
+    "worked_example": ("生成例题详解", "生成例题"),
+    "mistake_checklist": ("生成易错点清单", "生成易错清单"),
+    "review_notes": ("生成复习笔记",),
+}
+_SECTION_RESOURCE_GUIDANCE = "请先进入一个小节的讲义页面，再生成对应的学习资源。"
+
+
+def _section_resource_types(message: str) -> list[str]:
+    """Return requested section-resource types without entering the main pipeline."""
+    normalized = re.sub(r"\s+", "", message)
+    if "生成本节资源" in normalized or "生成本节学习资源" in normalized:
+        return list(_SECTION_RESOURCE_REQUESTS)
+    return [
+        resource_type
+        for resource_type, phrases in _SECTION_RESOURCE_REQUESTS.items()
+        if any(phrase in normalized for phrase in phrases)
+    ]
+
+
+def _section_context(payload: dict[str, Any]) -> dict[str, Any] | None:
+    current = payload.get("currentSection") or payload.get("current_section") or {}
+    current = current if isinstance(current, dict) else {}
+    section_id = str(payload.get("sectionId") or payload.get("section_id") or current.get("id") or "").strip()
+    if not section_id:
+        return None
+    return {
+        "sectionId": section_id,
+        "sectionTitle": str(payload.get("sectionTitle") or payload.get("section_title") or current.get("title") or "").strip(),
+        "pathId": str(payload.get("pathId") or payload.get("path_id") or "").strip(),
+        "stageId": str(payload.get("stageId") or payload.get("stage_id") or "").strip(),
+        "chapterId": str(payload.get("chapterId") or payload.get("chapter_id") or "").strip(),
+        "knowledgePoints": payload.get("knowledgePoints") or payload.get("knowledge_points") or current.get("knowledgePoints") or [],
+        "lectureContent": str(payload.get("lectureContent") or payload.get("lecture_content") or ""),
+    }
+
+
+def _try_section_resource_chat(message: str, session_id: str, payload: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    resource_types = _section_resource_types(message)
+    if not resource_types:
+        return None
+
+    conversation_store.append_message(session_id, "user", message)
+    state = conversation_store.get(session_id)
+    context = _section_context(payload)
+    result = dict(state.last_result or {})
+    result["action"] = "section_generated_resource"
+
+    if context is None:
+        reply = _SECTION_RESOURCE_GUIDANCE
+        result["section_resource_request"] = {"status": "needs_section_context", "resource_types": resource_types}
+    else:
+        # Reuse the existing section endpoint so generation and persistence stay identical.
+        from app.routers.product import generate_section_resource
+
+        generated = []
+        for resource_type in resource_types:
+            response = generate_section_resource(
+                context["sectionId"],
+                {"sessionId": session_id, "resourceType": resource_type, **context},
+            )
+            resource = (response.get("data") or {}).get("resource") if isinstance(response, dict) else None
+            if resource:
+                generated.append(resource)
+
+        if generated:
+            names = "、".join(str(item.get("title") or "学习资源") for item in generated)
+            reply = f"已为当前小节生成：{names}。"
+            result["section_resource_request"] = {"status": "completed", "resources": generated}
+        else:
+            reply = "当前小节资源生成失败，请稍后重试。"
+            result["section_resource_request"] = {"status": "failed", "resource_types": resource_types}
+
+    conversation_store.append_message(session_id, "assistant", reply)
+    conversation_store.set_result(session_id, result)
+    return reply, result
 
 
 def _ensure_session(session_id: str) -> None:
@@ -144,6 +225,14 @@ async def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
                 yield f"data: {json.dumps(_multimodal_done_event(session_id, multimodal_payload), ensure_ascii=False)}\n\n"
                 return
 
+            section_resource_result = _try_section_resource_chat(message, session_id, payload)
+            if section_resource_result:
+                reply, result = section_resource_result
+                for chunk in reply.splitlines(keepends=True):
+                    yield f"data: {json.dumps({'type': 'messages', 'content': chunk}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps(_done_event(session_id, result), ensure_ascii=False)}\n\n"
+                return
+
             reply, result = await _run_chat(message, session_id)
             for chunk in reply.splitlines(keepends=True):
                 yield f"data: {json.dumps({'type': 'messages', 'content': chunk}, ensure_ascii=False)}\n\n"
@@ -175,6 +264,20 @@ async def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
             return {
                 **multimodal_payload,
                 **_multimodal_done_event(session_id, multimodal_payload),
+            }
+
+        section_resource_result = _try_section_resource_chat(message, session_id, payload)
+        if section_resource_result:
+            reply, result = section_resource_result
+            return {
+                "sessionId": session_id,
+                "reply": {
+                    "id": f"assistant_{int(time.time() * 1000)}",
+                    "role": "assistant",
+                    "content": reply,
+                    "timestamp": int(time.time() * 1000),
+                },
+                **_done_event(session_id, result),
             }
 
         reply, result = await _run_chat(message, session_id)

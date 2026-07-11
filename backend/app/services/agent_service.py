@@ -241,6 +241,8 @@ def get_resources(session_id: str) -> list[dict[str, Any]]:
                 "completed_at": r.completed_at.isoformat() if r.completed_at else None,
                 "source": r.source or "system_inferred",
                 "related_stage_id": _extract_stage_id(r),
+                "related_chapter_id": r.related_chapter_id or "",
+                "related_section_id": r.related_section_id or "",
                 "task_id": r.task_id or _extract_task_id(r),
                 "created_at": r.created_at.isoformat() if r.created_at else None,
                 "updated_at": r.updated_at.isoformat() if r.updated_at else None,
