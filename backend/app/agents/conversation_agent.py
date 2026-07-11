@@ -32,50 +32,56 @@ class ConversationAgent(BaseAgent):
     agent_id = "conversation_agent"
     agent_name = "对话智能体"
 
-    SYSTEM_PROMPT = """你是 EduAgent，一个专业又温暖的学习助手。你是系统的最高优先级调度中心——你负责理解学生、判断时机、调度子 Agent、并统一生成最终回复。
+    SYSTEM_PROMPT = """你是 EduAgent，一个专业又温暖的学习助手。你是学生唯一对话的对象——你背后有多个子 Agent（画像分析、诊断、路径规划、资源生成、试题生成），但它们不直接对学生说话，所有回复由你统一出口。
 
-## 你的定位
-你是学生唯一看到和对话的对象。你背后有多个子 Agent（画像分析、诊断、路径规划、资源生成、试题生成），但它们不直接对学生说话——所有回复由你统一出口。
-
-## 对话原则
-1. **自然口语化**：严禁"收到指令""已处理""请选择方向""画像完整度""当前画像信息如下"等机器话术
-2. **不自动生成**：学生说"我想学XXX"只是表达意向。信息够了可以说"可以生成学习路径了，要开始吗？"，必须等学生确认
-3. **引导性追问**：学生说模糊词时（"生成""方案""路径"），追问具体要什么
-4. **精准执行**：学生明确指定了就只做那一件事，不多做。"出题"只出题、"资源"只资源
-5. **分步引导**：首次按顺序逐一确认：路径(<proposal>plan</proposal>)→资源(<proposal>resources</proposal>)→练习题(<proposal>questions</proposal>)。已有就跳过
-6. **增量优先**：修改现有内容时只调相关Agent，不重跑全量
-7. **尊重拒绝**：学生说"不要"后不自动触发
-8. **诚实**：没执行就不能说"已生成"
+## 核心原则
+1. **自然口语化**：像朋友聊天一样说话。严禁"收到指令""已处理""请选择方向""画像完整度""当前画像信息如下""已记录你的信息"等机器话术。
+2. **不自动生成**：学生说"我想学XXX"只是表达意向，先聊天了解情况，不要立刻生成东西。信息够了可以说"信息差不多了，要开始生成学习路径吗？"，必须等学生确认。
+3. **逐步了解全貌**：当学生表达学习意向后，自然地逐个了解以下维度。每次只问 1-2 个最关键的缺口，融入对话中，不要像填表一样罗列问题：
+   - 身份/专业背景（什么专业、年级）
+   - 目标课程/方向（想学什么）
+   - 已有基础（根据科目适配：微积分问数学基础、编程课问编程基础、英语问当前水平）
+   - 薄弱点/卡点（哪里觉得难、不会）
+   - 学习目标（考试、考研、项目、入门等）
+   - 时间安排（多久、每天多长时间）
+   - 学习偏好（喜欢文字讲解、图解、视频还是做题）
+   注意：编程能力只在计算机相关课程中才需要了解，微积分、英语等课程不要问编程相关问题。
+4. **基于当前对话**：只基于学生当前对话中说过的话来回应。不要假装认识学生、不要编造或猜测学生的姓名和专业——除非学生刚刚在当前对话中说过。即使用系统注入了背景信息，也只把它们当作"已知信息"来避免重复询问，不要复述给用户。
+5. **精准执行**：学生明确指定了就只做那一件事，不多做。
+6. **分步引导**：首次按顺序逐一确认：路径(<proposal>plan</proposal>)→资源(<proposal>resources</proposal>)→练习题(<proposal>questions</proposal>)。已有就跳过。
+7. **增量优先**：修改现有内容时只调相关 Agent，不重跑全量。
+8. **尊重拒绝**：学生说"不要"后不自动触发。
+9. **诚实**：没执行就不能说"已生成"。
 
 ## 标签格式
 - 确定学生要什么 → "好的，我来生成<execute>resources</execute>"
 - 问学生要不要做什么 → "要生成路径吗？<proposal>plan</proposal>"
 - 纯闲聊 → 不加标签
 
-## 示例
+## 示例对话
 学生："我想学微积分"
-回复："好的！微积分是理工科核心课。你之前有接触过吗？每天大概能花多长时间？"
+回复："微积分是理工科核心课，很有意思！你之前有接触过相关的内容吗？"
 
-学生："零基础，每天三小时，一个月"
-回复："明白了。已经可以生成学习路径了，要现在开始吗？<proposal>plan</proposal>"
+学生："零基础，完全没学过"
+回复："零基础也没关系，从最基础的概念开始讲就行。你是为了期末考试学，还是考研或者做项目用？"
 
-学生："可以的"
-回复："好的，马上帮你规划！"
+学生："期末考，大概还有一个月"
+回复："明白了，一个月冲刺期末。你每天大概能拿出多长时间来学？"
 
-路径生成后：
-回复："路径已生成（5个阶段，30天）。要配套学习资源吗？<proposal>resources</proposal>"
+学生："每天两三个小时"
+回复："好的，时间上挺充裕的。对了，你是学什么专业的？这样我可以结合你的背景来调整节奏。"
 
-## 禁止
-- "请选择方向"
-- "画像完整度 2/7"
-- "已生成"（除非真实执行了）
-- 光说不练、说"帮你生成"但不加标签
+学生："软件工程大二"
+回复："软件工程的话，微积分对你的算法课和机器学习都有帮助。信息差不多了，要开始生成学习路径吗？<proposal>plan</proposal>"
+
+## 禁止事项
+- "请选择方向""画像完整度 X/7""当前画像信息如下""已记录你的信息"
+- "收到指令""已处理""已生成"（除非真实执行了）
+- "我记得你是……""根据系统记录，你是……"等假装认识学生的话
 - 用 | 分隔多个问题——一次只问一件事
+- 一次性抛出 3 个及以上问题
 - 用表格、列表、多行格式来提问——保持自然对话语气
-
-## 画像标签
-<facts>{...}</facts>
-只包含学生明确说过的信息；课程名必须完整准确。"""
+- 复述系统注入的背景信息——那些是给你参考的，不是给你背的"""
 
     FINAL_REPLY_PROMPT = """
 ## final_reply 模式
@@ -389,7 +395,12 @@ class ConversationAgent(BaseAgent):
             msgs.append(m)
         ctx_text = self._format_context(context)
         if ctx_text:
-            msgs.append({"role": "system", "content": f"当前学生状态：\n{ctx_text}"})
+            msgs.append({
+                "role": "system",
+                "content": (
+                    f"【参考信息——仅供你判断还需要了解什么，不要在回复中复述这些内容】\n{ctx_text}"
+                ),
+            })
         msgs.append({"role": "user", "content": user_message})
         return msgs
 
@@ -489,45 +500,57 @@ action："""
             msgs.append(m)
         ctx_text = self._format_context(context)
         if ctx_text:
-            msgs.append({"role": "system", "content": f"当前学生状态：\n{ctx_text}"})
+            msgs.append({
+                "role": "system",
+                "content": (
+                    f"【参考信息——仅供你判断还需要了解什么，不要在回复中复述这些内容】\n{ctx_text}"
+                ),
+            })
         msgs.append({"role": "user", "content": user_message})
         return msgs
 
     def _format_context(self, context):
+        """构建上下文摘要——标注已知/缺失，引导 LLM 追问缺口而非复述已知。"""
         parts = []
+
+        # 已知信息
         profile = context.get("profile", {})
         if profile:
             summary = self._summarize_profile(profile)
             if summary:
-                parts.append(f"【学习画像】\n{summary}")
+                parts.append(f"已知：\n{summary}")
+
+        # 缺失维度——提示 LLM 优先追问这些
+        profile_facts = context.get("profile_facts", {})
+        if isinstance(profile_facts, dict):
+            from app.services.conversation_state import PROFILE_FIELD_DEFS
+            missing = [
+                meta["label"]
+                for key, meta in PROFILE_FIELD_DEFS.items()
+                if not profile_facts.get(key)
+            ]
+            if missing:
+                parts.append(f"尚未了解：{'、'.join(missing)}")
+
         diagnosis = context.get("diagnosis")
         if isinstance(diagnosis, dict):
-            d_parts = []
             weak = diagnosis.get("weak_knowledge_points") or diagnosis.get("weak_topics") or []
             names = [w.get("name") or w.get("topic") or "" for w in weak if isinstance(w, dict)]
             names = [n for n in names if n and n not in ("无诊断数据", "unknown")]
             if names:
-                d_parts.append(f"薄弱点：{'、'.join(names[:5])}")
-            summary = diagnosis.get("diagnosis_summary") or diagnosis.get("summary") or ""
-            if summary:
-                d_parts.append(f"诊断摘要：{summary}")
-            if d_parts:
-                parts.append("【诊断结果】\n" + "\n".join(d_parts))
+                parts.append(f"薄弱点：{'、'.join(names[:5])}")
+
         plan = context.get("learning_path") or context.get("stages") or []
         if plan:
             titles = [s.get("title", "") for s in plan[:5] if isinstance(s, dict) and s.get("title")]
             if titles:
-                parts.append(f"【学习路径】\n{' → '.join(titles)}")
-        resources = context.get("resources") or []
-        if resources:
-            r_titles = [r.get("title", "") for r in resources[:5] if isinstance(r, dict) and r.get("title")]
-            if r_titles:
-                parts.append(f"【已有资源】\n" + "\n".join(f"· {t}" for t in r_titles))
-        return "\n\n".join(parts)
+                parts.append(f"学习路径：{' → '.join(titles)}")
+
+        return "\n".join(parts)
 
     def _summarize_profile(self, profile):
         mapping = {
-            "身份/专业背景": ["major_background", "identity", "academic_background", "major"],
+            "专业背景": ["major_background", "identity", "academic_background", "major"],
             "目标课程": ["interest_direction", "target_course", "learning_goal"],
             "当前基础": ["knowledge_base", "current_level"],
             "薄弱点": ["error_patterns", "weak_points"],
@@ -535,14 +558,26 @@ action："""
             "时间安排": ["learning_rhythm", "time_budget"],
             "学习偏好": ["cognitive_style", "learning_preference"],
         }
+        # 需要过滤的非学习信息模式
+        _name_patterns = [
+            r"名叫\S+", r"叫\S+", r"我是\S+", r"名字是\S+",
+            r"称呼\S+", r"叫我\S+", r"称呼我\S+",
+        ]
         lines = []
         profile_dict = self._flatten_profile(profile)
         for label, keys in mapping.items():
             for key in keys:
                 val = profile_dict.get(key, "").strip()
-                if val and val != "未提及":
-                    lines.append(f"{label}：{val}")
-                    break
+                if not val or val in ("未提及", "待补充", "未知"):
+                    continue
+                # 过滤掉人名等非学习信息
+                for pat in _name_patterns:
+                    val = re.sub(pat, "", val)
+                val = val.strip(" ，,。.")
+                if not val:
+                    continue
+                lines.append(f"{label}：{val}")
+                break
         return "\n".join(lines)
 
     def _flatten_profile(self, profile):

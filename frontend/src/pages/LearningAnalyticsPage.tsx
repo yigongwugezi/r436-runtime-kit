@@ -4,6 +4,8 @@ import { TrendingUp, TrendingDown, Zap, Target, BookOpen, Clock, Brain, AlertCir
 import { PageLoading, PageEmpty, PageError, RefreshOverlay } from '../components/common/PageState';
 import { formatDuration } from '../utils/format';
 import { useLearningAnalytics } from '../hooks/useLearningAnalytics';
+import { useNotificationPoller } from '../hooks/useNotificationPoller';
+import { useChatStore } from '../store/chatStore';
 import type { RecommendationItem } from '../types/analytics';
 import { useSubjectStore } from '../store/subjectStore';
 
@@ -21,7 +23,10 @@ function Ring({ pct }: { pct: number }) {
 export default function LearningAnalyticsPage() {
   const nav = useNavigate();
   const subjectId = useSubjectStore(s => s.activeSubject?.id ?? s.activeClassSubject?.subject);
+  const sessionId = useChatStore(s => s.dataSessionId);
   const { analytics, loading, error, refetch } = useLearningAnalytics();
+  // Poll for closed-loop assessment notifications
+  useNotificationPoller(sessionId || '');
   if (!subjectId) return <PageEmpty icon={<TrendingUp className="w-8 h-8" />} title="请先选择科目" description="在左侧边栏选择一个科目后查看学习分析" />;
   if (loading && !analytics) return <PageLoading text="正在分析学习数据…" />;
   if (error && !analytics) return <PageError title="加载分析数据失败" description={error} onRetry={refetch} />;

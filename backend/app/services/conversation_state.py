@@ -27,7 +27,11 @@ from app.utils.errors import MissingSessionIdError
 
 logger = logging.getLogger(__name__)
 from app.services.profile_extractor import GRADE_PATTERNS, MAJOR_ALIASES, extract_profile_facts
-from app.utils.profile_normalizer import normalize_profile_dimensions
+from app.utils.profile_normalizer import (
+    normalize_profile_dimensions,
+    detect_course_category,
+    get_active_dimensions,
+)
 
 
 PROFILE_FIELD_DEFS: dict[str, dict[str, Any]] = {
@@ -81,6 +85,8 @@ PLAN_READY_FIELDS = {"background", "target_course"}
 LOW_VALUE_BACKGROUND_WORDS = {
     "男生", "女生", "男", "女", "男孩子", "女孩子", "普通人", "学生", "大学生",
 }
+# 常见中文姓氏——用于判断提取的内容是否像人名而非学习背景
+_COMMON_SURNAMES = set("王李张刘陈杨黄赵周吴徐孙马胡朱郭何罗高林郑梁谢宋唐许邓冯韩曹曾彭萧蔡潘田董袁于余叶蒋杜苏魏吕丁任卢姚钟姜崔谭廖范汪陆金石戴贾韦夏付方白邹孟熊秦邱江尹薛闫段雷侯龙史陶黎贺顾毛郝龚邵万钱严覃武莫孔向汤温康施文牛樊葛邢安齐易乔伍庞余".replace(" ", ""))
 BACKGROUND_VALUE_HINTS = {
     "专业", "工程", "计算机", "软件", "人工智能", "电子", "信息", "自动化",
     "数学", "统计", "大一", "大二", "大三", "大四", "研究生", "本科", "高职", "课程",
@@ -534,7 +540,7 @@ class ConversationStore:
             "## 对话历史(最近几轮)\n" + history_text + "\n\n"
             "## 用户最新消息\n" + message + "\n\n"
             "## 需要提取的维度\n"
-            "- background: 身份/专业背景\n"
+            "- background: 身份/专业背景（只提取专业、年级、学校等学习相关信息，严禁提取人名、昵称、称呼）\n"
             "- target_course: 目标课程/知识方向\n"
             "- knowledge_base: 已有基础\n"
             "- weak_points: 薄弱点\n"
@@ -547,7 +553,8 @@ class ConversationStore:
             "3. 零基础是基础水平,完全只是程度副词\n"
             "4. 疑问句中的'是什么'、'的是什么'、'这个'绝对不要提取为课程名\n"
             "5. 如果用户只是在提问没说出具体课程,target_course留空\n"
-            "6. 只返回JSON: {\"updates\": {...}, \"conflicts\": []}\n"
+            "6. 绝对不要提取人名、昵称、称呼（如'小明''张三'等）到 background 或任何字段\n"
+            "7. 只返回JSON: {\"updates\": {...}, \"conflicts\": []}\n"
         )
 
         try:
@@ -628,7 +635,7 @@ class ConversationStore:
                 background_value = match.group(1)
                 if self._is_learning_background(background_value):
                     set_fact("background", background_value)
-                else:
+                elif not self._looks_like_name_intro(background_value):
                     add_supplemental("personal_background", background_value)
                 break
 
@@ -900,11 +907,17 @@ class ConversationStore:
             "readyToPlan": ready_to_plan,
         }
 
-    def next_questions(self, state: ConversationState, limit: int = 2) -> list[str]:
+    def next_questions(self, state: ConversationState, limit: int | None = None) -> list[str]:
+        """返回尚未收集的画像维度的问题列表。
+
+        按优先级排序，limit 为 None 时返回全部缺失维度。
+        调用方应自然地逐轮融入对话，而非一次性全部抛出。
+        """
         missing = self.missing_fields(state)
         priority = ["background", "target_course", "knowledge_base", "weak_points", "learning_goal", "time_budget", "preference"]
         ordered = sorted(missing, key=lambda item: priority.index(item["key"]) if item["key"] in priority else 99)
-        return [item["question"] for item in ordered[:limit]]
+        result = [item["question"] for item in ordered]
+        return result if limit is None else result[:limit]
 
     def known_lines(self, state: ConversationState) -> list[str]:
         lines = []
@@ -971,7 +984,30 @@ class ConversationStore:
             return False
         if len(cleaned) <= 2 and not any(hint in cleaned for hint in BACKGROUND_VALUE_HINTS):
             return False
-        return any(hint in cleaned for hint in BACKGROUND_VALUE_HINTS)
+        if not any(hint in cleaned for hint in BACKGROUND_VALUE_HINTS):
+            return False
+        # 额外过滤：如果值中包含明显的名字模式（如"我叫小明"），拒绝
+        if self._looks_like_name_intro(cleaned):
+            return False
+        return True
+
+    @staticmethod
+    def _looks_like_name_intro(value: str) -> bool:
+        """检测文本是否像'自我介绍名字'而非学习背景。
+        例如：'我叫小明'、'叫我小王'、'名字是张三' 等。
+        """
+        name_intro_patterns = [
+            r"我叫\S", r"叫我\S", r"名字是\S", r"称呼我?\S",
+            r"我是(?:一名|一个)?(?:男生|女生|男孩子|女孩子|普通人|学生)$",
+        ]
+        for pat in name_intro_patterns:
+            if re.search(pat, value):
+                return True
+        # 短文本 + 常见姓氏开头 + 无学习关键词 = 很可能是名字
+        if len(value) <= 4 and not any(hint in value for hint in BACKGROUND_VALUE_HINTS):
+            if value[0] in _COMMON_SURNAMES:
+                return True
+        return False
 
     def _fact_conflict_reason(self, key: str, old_value: str, new_value: str) -> str:
         if not old_value or old_value == new_value:

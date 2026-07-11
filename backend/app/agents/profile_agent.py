@@ -10,6 +10,9 @@ from app.utils.profile_normalizer import (
     PROFILE_DIMENSION_ORDER,
     clamp_confidence,
     clamp_score,
+    detect_course_category,
+    get_active_dimensions,
+    get_active_dimension_labels,
 )
 
 
@@ -21,20 +24,29 @@ class ProfileAgent(BaseAgent):
     profile_dimensions = PROFILE_DIMENSION_ORDER
     _MISSING_VALUES = {"", "未知", "未提及", "暂无", "无", "待补充", "无诊断数据", "暂无诊断数据", "unknown", "none", "待诊断", "未诊断"}
 
+    def _get_active_dimensions(self, context: dict[str, Any]) -> list[str]:
+        """根据课程上下文返回应激活的画像维度。"""
+        course_context = context.get("course") or {}
+        return get_active_dimensions(course_context if course_context else None)
+
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
+        active_dims = self._get_active_dimensions(context)
         return {
-            "profile": self._build_profile(context),
+            "profile": self._build_profile(context, active_dims),
             "agent_step": self.agent_step(),
+            "active_dimensions": active_dims,
         }
 
     def validate_result(self, result: dict[str, Any]) -> None:
         profile = result.get("profile")
         if not isinstance(profile, dict):
             raise AgentValidationError("profile must be a dict")
-        # 只校验已存在的维度格式，不强制要求全部 9 个维度（§4.2）
+        active_dims = result.get("active_dimensions", self.profile_dimensions)
         for key in profile:
             if key not in self.profile_dimensions:
                 continue
+            if key not in active_dims:
+                continue  # 非激活维度不校验
             item = profile.get(key)
             if not isinstance(item, dict):
                 raise AgentValidationError(f"{key} must be a dict")
@@ -42,8 +54,10 @@ class ProfileAgent(BaseAgent):
                 if field not in item:
                     raise AgentValidationError(f"{key}.{field} is required")
 
-    def _build_profile(self, context: dict[str, Any]) -> dict[str, Any]:
-        fallback = self._profile_from_context(context)
+    def _build_profile(self, context: dict[str, Any], active_dims: list[str] | None = None) -> dict[str, Any]:
+        if active_dims is None:
+            active_dims = self._get_active_dimensions(context)
+        fallback = self._profile_from_context(context, active_dims)
         if self.llm_client is None:
             return self._merge_profile_facts(fallback, context)
 
@@ -54,8 +68,8 @@ class ProfileAgent(BaseAgent):
                         "role": "system",
                         "content": (
                             "你是 EduAgent 的学习画像提取智能体。"
-                            "只输出一个 JSON 对象，必须包含以下 9 个顶级键："
-                            f"{', '.join(self.profile_dimensions)}。"
+                            "只输出一个 JSON 对象，必须包含以下顶级键："
+                            f"{', '.join(active_dims)}。"
                             "每个维度含 key、label、value、score、confidence、explanation、evidence、source。"
                             "score 为 0-100 的整数，confidence 为 0-1 的小数。"
                             "source 可选值：user_input、inferred、llm_generated、diagnosis、feedback。"
@@ -66,8 +80,8 @@ class ProfileAgent(BaseAgent):
                 ],
             )
             parsed = self._load_json(content)
-            self._ensure_complete_llm_profile(parsed)
-            normalized = self._normalize_llm_profile(parsed)
+            self._ensure_complete_llm_profile(parsed, active_dims)
+            normalized = self._normalize_llm_profile(parsed, active_dims)
             return self._merge_profile_facts(normalized, context)
         except Exception:
             return self._merge_profile_facts(fallback, context)
@@ -96,10 +110,12 @@ class ProfileAgent(BaseAgent):
             f"{chr(10).join(weak_lines) if weak_lines else '- 暂无'}\n"
         )
 
-    def _ensure_complete_llm_profile(self, profile: dict[str, Any]) -> None:
+    def _ensure_complete_llm_profile(self, profile: dict[str, Any], active_dims: list[str] | None = None) -> None:
+        if active_dims is None:
+            active_dims = self.profile_dimensions
         if not isinstance(profile, dict):
             raise ValueError("profile must be a dict")
-        for key in self.profile_dimensions:
+        for key in active_dims:
             item = profile.get(key)
             if not isinstance(item, dict):
                 raise ValueError(f"missing dimension: {key}")
@@ -107,9 +123,11 @@ class ProfileAgent(BaseAgent):
                 if field not in item:
                     raise ValueError(f"missing field: {key}.{field}")
 
-    def _normalize_llm_profile(self, profile: dict[str, Any]) -> dict[str, Any]:
+    def _normalize_llm_profile(self, profile: dict[str, Any], active_dims: list[str] | None = None) -> dict[str, Any]:
+        if active_dims is None:
+            active_dims = self.profile_dimensions
         normalized: dict[str, Any] = {}
-        for key in self.profile_dimensions:
+        for key in active_dims:
             item = profile.get(key, {})
             value = str(item.get("value", "")).strip()
             explanation = str(item.get("explanation", "")).strip()
@@ -155,7 +173,9 @@ class ProfileAgent(BaseAgent):
             )
         return profile
 
-    def _profile_from_context(self, context: dict[str, Any]) -> dict[str, Any]:
+    def _profile_from_context(self, context: dict[str, Any], active_dims: list[str] | None = None) -> dict[str, Any]:
+        if active_dims is None:
+            active_dims = self._get_active_dimensions(context)
         facts = context.get("profile_facts") or {}
         if not isinstance(facts, dict):
             facts = {}
@@ -167,7 +187,6 @@ class ProfileAgent(BaseAgent):
         learning_goal = str(facts.get("learning_goal", "")).strip() or self._learning_goal(text, course_text, time_budget)
         preference = str(facts.get("preference", "")).strip() or self._cognitive_style(text)
         background = str(facts.get("background", "")).strip() or self._background_from_text(text)
-        coding_ability = str(facts.get("programming_ability", "")).strip() or self._coding_ability(text, knowledge_base)
         interest_direction = self._clean_profile_fact("target_course", facts.get("target_course", "")) or self._interest_direction(text, course_text, weak_points)
 
         profile = {
@@ -176,11 +195,16 @@ class ProfileAgent(BaseAgent):
             "learning_goal": self._direct_dimension("learning_goal", learning_goal, "当前学习目标"),
             "cognitive_style": self._style_dimension(preference),
             "error_patterns": self._error_dimension(weak_points, course_text),
-            "coding_ability": self._coding_dimension(coding_ability),
             "learning_progress": self._progress_dimension(text, course_text, knowledge_base),
             "interest_direction": self._interest_dimension(interest_direction),
             "learning_rhythm": self._rhythm_dimension(time_budget),
         }
+
+        # coding_ability 只在 CS 相关课程时构建
+        if "coding_ability" in active_dims:
+            coding_ability = str(facts.get("programming_ability", "")).strip() or self._coding_ability(text, knowledge_base)
+            profile["coding_ability"] = self._coding_dimension(coding_ability)
+
         return profile
 
     def _direct_dimension(self, key: str, value: str, fallback_explanation: str) -> dict[str, Any]:

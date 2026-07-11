@@ -1257,12 +1257,13 @@ def _is_bare_confirmation(message: str) -> bool:
     }
 
 def _casual_reply(session_id: str) -> str:
+    """LLM 完全不可用时的最终兜底回复——极简、自然。"""
     if not session_id:
         raise ValueError("session_id is required for _casual_reply")
     state = conversation_store.get(session_id)
     if state.messages:
         return "还有什么想了解的？或者说说你最近学得怎么样？"
-    return "你好！想学什么课？之前有没有接触过相关内容？每天大概能花多少时间？随便聊聊就好。"
+    return "你好！想学什么？之前有没有接触过相关内容？随便聊聊就好。"
 
 
 def _date_query_reply() -> str:
@@ -2033,23 +2034,19 @@ def _ensure_session_linked(
 
     Creates or updates the session row as a side effect so that subsequent
     ``list_sessions`` and analytics queries can filter by subject/learner.
+
+    Handles race conditions gracefully: if a concurrent request already created
+    the session, we fall back to an update instead of failing.
     """
     if not subject_id and not learner_id:
         return
     try:
+        from sqlalchemy.exc import IntegrityError
+
         db = SessionLocal()
         sess = db.get(SessionModel, session_id)
-        if sess is None:
-            from app.db.repository import get_or_create_learner
-            learner = get_or_create_learner(db, learner_id)
-            sess = SessionModel(
-                id=session_id,
-                learner_id=learner.id,
-                subject_id=subject_id or None,
-            )
-            db.add(sess)
-            db.commit()
-        else:
+
+        if sess is not None:
             changed = False
             if learner_id and not sess.learner_id:
                 sess.learner_id = learner_id
@@ -2059,6 +2056,33 @@ def _ensure_session_linked(
                 changed = True
             if changed:
                 db.commit()
+            return
+
+        # Session doesn't exist yet — try to create it
+        from app.db.repository import get_or_create_learner
+        learner = get_or_create_learner(db, learner_id)
+        sess = SessionModel(
+            id=session_id,
+            learner_id=learner.id,
+            subject_id=subject_id or None,
+        )
+        db.add(sess)
+        try:
+            db.commit()
+        except IntegrityError:
+            # Race condition: another request created it first
+            db.rollback()
+            sess = db.get(SessionModel, session_id)
+            if sess is not None:
+                changed = False
+                if learner_id and not sess.learner_id:
+                    sess.learner_id = learner_id
+                    changed = True
+                if subject_id and not sess.subject_id:
+                    sess.subject_id = subject_id
+                    changed = True
+                if changed:
+                    db.commit()
     except Exception:
         logger.warning("Failed to link session %s to subject/learner", session_id, exc_info=True)
     finally:
@@ -4782,4 +4806,70 @@ def get_profile_recommendations(sessionId: str = "") -> dict[str, Any]:
         return _product_response({"recommendations": recs}, session_id=session_id, source="db")
     finally:
         db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Notification endpoints — closed-loop assessment notifications
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@router.get("/notifications")
+def get_notifications(sessionId: str = "") -> dict[str, Any]:
+    """Return pending assessment-loop notifications for a session.
+
+    Notifications are consumed (removed) on read — the frontend should
+    display them and then the next poll returns an empty list.
+    """
+    session_id = _require_session_id(sessionId)
+    try:
+        from app.services.assessment_loop import notification_store
+
+        items = notification_store.pop_all(session_id)
+        return _product_response(
+            {"notifications": items, "hasMore": False},
+            session_id=session_id,
+            source="assessment_loop",
+        )
+    except Exception:
+        return _product_response(
+            {"notifications": [], "hasMore": False},
+            session_id=session_id,
+            source="assessment_loop",
+        )
+
+
+@router.get("/notifications/pending")
+def has_pending_notifications(sessionId: str = "") -> dict[str, Any]:
+    """Check whether there are pending notifications without consuming them."""
+    session_id = _require_session_id(sessionId)
+    try:
+        from app.services.assessment_loop import notification_store
+
+        has = notification_store.has_pending(session_id)
+        return _product_response(
+            {"hasPending": has},
+            session_id=session_id,
+            source="assessment_loop",
+        )
+    except Exception:
+        return _product_response(
+            {"hasPending": False},
+            session_id=session_id,
+            source="assessment_loop",
+        )
+
+
+@router.post("/notifications/ack")
+def ack_notifications(payload: dict[str, Any]) -> dict[str, Any]:
+    """Acknowledge/clear all notifications for a session."""
+    session_id = str(payload.get("sessionId", "")).strip()
+    if not session_id:
+        return _product_response(None, status="error", message="sessionId required", source="assessment_loop")
+    try:
+        from app.services.assessment_loop import notification_store
+
+        notification_store.pop_all(session_id)  # consume and discard
+        return _product_response({"acknowledged": True}, session_id=session_id, source="assessment_loop")
+    except Exception:
+        return _product_response({"acknowledged": False}, session_id=session_id, source="assessment_loop")
 

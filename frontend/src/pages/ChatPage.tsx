@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { imageAttachmentKey, useChatStore, detectOrphanedStreaming } from '../store/chatStore';
 import { useStreamChat } from '../hooks/useStreamChat';
+import { useNotificationPoller } from '../hooks/useNotificationPoller';
 import { getSessionMessages, getQuickCommands, getAgents, recoverGeneration, uploadMultimodalImage, saveMultimodalResource, prepareKnowledgeCandidates } from '../api/chat';
 import type { AgentInfo } from '../api/chat';
 import { DEFAULT_QUICK_COMMANDS } from '../utils/constants';
@@ -532,6 +533,8 @@ export default function ChatPage() {
     selectImageAttachment,
   } = useChatStore() as any;
   const { send, abort } = useStreamChat();
+  // Closed-loop assessment notifications — poll every 30s, pause during streaming
+  useNotificationPoller(currentSessionId || '', !isStreaming);
   const [input, setInput] = useState(''); const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [messagesLoaded, setMessagesLoaded] = useState(false); const [menuOpen, setMenuOpen] = useState(false); const [historyOpen, setHistoryOpen] = useState(false);
   const [selectedImage, setSelectedImage] = useState<{ file: File; preview: string } | null>(null);

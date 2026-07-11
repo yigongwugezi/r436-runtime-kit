@@ -46,7 +46,24 @@ async def lifespan(app: FastAPI):
         except ModuleNotFoundError as exc:
             logger.warning("RAG disabled because optional dependency is missing: %s", exc)
 
+    # ── Closed-loop assessment scheduler ────────────────────────────
+    try:
+        from app.services.assessment_loop import start_background_scheduler, stop_background_scheduler
+
+        start_background_scheduler()
+        logger.info("Assessment loop scheduler started")
+    except Exception as exc:
+        logger.warning("Assessment loop scheduler failed to start: %s", exc)
+
     yield
+
+    # ── Shutdown ────────────────────────────────────────────────────
+    try:
+        from app.services.assessment_loop import stop_background_scheduler
+
+        stop_background_scheduler()
+    except Exception:
+        pass
 
 
 app = FastAPI(

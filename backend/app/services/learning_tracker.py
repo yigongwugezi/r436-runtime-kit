@@ -93,6 +93,7 @@ class LearningTracker:
 
     def log(self, event: dict[str, Any], session_id: str | None = None) -> dict[str, Any]:
         sid = self._require_session_id(session_id, event)
+        event_type = str(event.get("event", "generic"))
         normalized = {
             **event,
             "sessionId": sid,
@@ -126,6 +127,29 @@ class LearningTracker:
 
         # Always keep in-memory cache for backward compat
         self._events.append(normalized)
+
+        # ── Closed-loop assessment hook ────────────────────────────
+        # Fire-and-forget: record event for re-assessment scheduling.
+        # resource_complete events also check if batch threshold is met
+        # to trigger an automatic mid-session diagnosis.
+        try:
+            from app.services.assessment_loop import (
+                record_learning_event,
+                run_resource_completion_check,
+            )
+
+            record_learning_event(sid, event_type)
+            if event_type == "resource_complete":
+                resource_id = str(event.get("resourceId", ""))
+                # Run in background thread so event logging is not delayed
+                import threading
+                threading.Thread(
+                    target=lambda: run_resource_completion_check(sid, resource_id),
+                    daemon=True,
+                ).start()
+        except Exception:
+            pass  # Non-critical — assessment loop is best-effort
+
         return normalized
 
     def recent(self, session_id: str | None = None, limit: int = 10) -> list[dict[str, Any]]:

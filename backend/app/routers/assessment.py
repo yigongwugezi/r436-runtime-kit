@@ -7,6 +7,7 @@ Generation, grading, and weak-point recording are added in later increments.
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Annotated
@@ -283,6 +284,42 @@ def _record_quiz_weaknesses(
         pass  # Non-critical — weakness display still works from results
 
     return weaknesses
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Post-submit closed-loop assessment trigger
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _trigger_post_submit_assessment(
+    session_id: str,
+    quiz_title: str = "",
+    quiz_score: int | None = None,
+    weak_points: list[dict] | None = None,
+) -> None:
+    """Fire-and-forget: run diagnosis + recommendation update after quiz submission.
+
+    Runs in a daemon thread so the HTTP response is never delayed.
+    """
+    if not session_id:
+        return
+
+    def _run() -> None:
+        try:
+            from app.services.assessment_loop import run_post_quiz_assessment
+
+            run_post_quiz_assessment(
+                session_id=session_id,
+                quiz_title=quiz_title,
+                quiz_score=quiz_score,
+                weak_points=weak_points,
+            )
+        except Exception:
+            logger.exception(
+                "Post-submit assessment failed for session=%s", session_id,
+            )
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -779,6 +816,14 @@ def submit_quiz(
         weak_points = _record_quiz_weaknesses(
             db, body.session_id, linked, results,
             quiz_title=quiz.title,
+        )
+
+        # ── Trigger closed-loop assessment (fire-and-forget) ────
+        _trigger_post_submit_assessment(
+            session_id=body.session_id,
+            quiz_title=quiz.title,
+            quiz_score=avg_score,
+            weak_points=weak_points,
         )
 
         return {
@@ -1356,6 +1401,14 @@ def submit_exam_set(
         )
 
         suggestion = "mastered" if avg_score >= 80 else ("in_progress" if avg_score >= 50 else "needs_review")
+
+        # ── Trigger closed-loop assessment (fire-and-forget) ────
+        _trigger_post_submit_assessment(
+            session_id=body.session_id,
+            quiz_title=exam_set.title,
+            quiz_score=avg_score,
+            weak_points=weak_points,
+        )
 
         return {
             "status": "success",

@@ -1,3 +1,0 @@
-{"id":"chat:01KWV6GE8P3QG9KSXHBPPW9ZA5","ts":"2026-07-06T07:50:27.862735+00:00","surface":"chat","kind":"preference_stated","payload":{"op":"add","text":"用户名叫小明。","target_id":null,"reason":null},"session_id":null,"turn_id":null}
-{"id":"chat:01KWV6GHJZWFB07YRH7H6WVT0X","ts":"2026-07-06T07:50:31.263189+00:00","surface":"chat","kind":"preference_stated","payload":{"op":"add","text":"用户名叫小明。","target_id":null,"reason":null},"session_id":null,"turn_id":null}
-{"id":"chat:01KWV6HCJ14318N4656SYVJSW2","ts":"2026-07-06T07:50:58.881878+00:00","surface":"chat","kind":"preference_stated","payload":{"op":"add","text":"用户叫小明，是大二软件工程专业学生。","target_id":null,"reason":null},"session_id":null,"turn_id":null}

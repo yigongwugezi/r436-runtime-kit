@@ -1,6 +1,7 @@
 {
   "course_id": "data_structures",
   "course_name": "数据结构",
+  "category": "cs",
   "aliases": ["数据结构", "DS", "栈", "队列", "链表", "二叉树", "图算法", "查找排序"],
   "target_students": ["计算机类专业", "软件工程", "人工智能", "准备课程考试的学生"],
   "difficulty": "introductory",
