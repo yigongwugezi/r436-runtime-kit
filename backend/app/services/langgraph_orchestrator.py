@@ -70,6 +70,44 @@ def _summarize_known_facts(facts: dict[str, str]) -> str:
     return "；".join(parts) if parts else "暂无"
 
 
+def _build_chat_persona(facts: dict[str, str]) -> str:
+    """Build persona instructions that override DeepTutor's default tutor persona.
+
+    Tells DeepTutor to act as a friendly profile-gathering assistant rather
+    than a tutor who asks templated questions.  Injected via persona_context
+    which DeepTutor eagerly places in the system prompt.
+    """
+    filled = {k for k, v in facts.items() if v and str(v).strip() and str(v).strip() not in ("未提及", "待补充", "未知", "", "无")}
+    total = len(_LABEL_MAP)
+    missing_labels = [_LABEL_MAP[k] for k in _LABEL_MAP if k not in filled]
+    filled_pct = len(filled) / max(1, total)
+
+    if filled_pct == 0:
+        return (
+            "你是一个友好的学习助手,正在第一次了解学生。"
+            "自然地打个招呼,然后像朋友聊天一样了解学生想学什么。"
+            "绝对不要用 | 分隔多个问题。每次只问一件事。"
+            "不要问[你的数学基础如何|目标是什么|节奏怎样]这种模板三连问。"
+        )
+    elif filled_pct < 0.5:
+        next_hint = f"接下来最需要了解的是:{'/'.join(missing_labels[:3])}。" if missing_labels else ""
+        return (
+            "你是一个友好的学习助手。你已经了解了一些学生的信息(见memory_context),"
+            f"但还有很多不清楚。{next_hint}"
+            "请在回复中自然地追问其中1个方向,像朋友聊天一样一句话带过。"
+            "绝对不要用 | 分隔多个问题。不要列问题清单。不要用[你目前...如何]这种模板句式。"
+        )
+    else:
+        missing_str = "/".join(missing_labels) if missing_labels else "基本了解全了"
+        return (
+            "你是一个友好的学习助手。你已经比较了解这个学生了"
+            f"(还差:{missing_str})。"
+            "如果学生表达了明确的学习意愿且信息差不多了,可以自然地确认一下"
+            "要不要开始生成学习路径。但不要主动催促。"
+            "不要用 | 分隔多个问题。不要用模板句式。"
+        )
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Retry policy — generalized from the old hardcoded _after_review
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -247,10 +285,12 @@ async def _conversation_node(state: dict) -> dict:
             # ── Build profile context for DeepTutor ──
             profile_facts = state.get("profile_facts", {}) or {}
             profile_context = _build_profile_context(profile_facts)
+            persona_context = _build_chat_persona(profile_facts)
 
             reply = await deeptutor.chat(
                 msg, state.get("messages", []) or [],
                 profile_context=profile_context,
+                persona_context=persona_context,
             )
         except Exception:
             reply = ""
@@ -442,6 +482,7 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
     if intent in chat_only_intents():
         profile_facts = state.get("profile_facts", {}) or {}
         profile_context = _build_profile_context(profile_facts)
+        persona_context = _build_chat_persona(profile_facts)
         logger.info(
             "Chat intent=%s session=%s facts=%d ctx_len=%d",
             intent, state.get("session_id", "?"),
@@ -454,6 +495,7 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
                 state.get("user_message", ""),
                 state.get("messages", []) or [],
                 profile_context=profile_context,
+                persona_context=persona_context,
             )
         except Exception:
             reply = ""

@@ -299,6 +299,13 @@ def get_llm_client(provider: str | None = None) -> BaseLLMClient:
     if provider is None:
         provider = settings.llm_provider
 
+    # ── Auto-upgrade from mock when a real API key is available ──
+    if provider == "mock":
+        api_key = os.environ.get("LLM_API_KEY") or settings.deepseek_api_key
+        if api_key:
+            logger.info("LLM provider auto-upgraded from mock to deepseek (API key found)")
+            provider = "deepseek"
+
     if provider in _llm_client_cache:
         return _llm_client_cache[provider]
 

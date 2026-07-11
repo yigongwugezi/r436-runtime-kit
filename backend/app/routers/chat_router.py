@@ -108,6 +108,14 @@ def _ensure_session(session_id: str) -> None:
 async def _run_chat(message: str, session_id: str) -> tuple[str, dict[str, Any]]:
     conversation_store.append_message(session_id, "user", message)
     state_obj = conversation_store.get(session_id)
+    # ── Log extracted facts for debugging profile capture ──
+    facts_before = dict(state_obj.facts)
+    filled = {k: v for k, v in facts_before.items() if v and str(v).strip()}
+    logger.info(
+        "Profile facts after extract: session=%s filled=%d/%d facts=%s",
+        session_id, len(filled), 7,
+        {k: str(v)[:40] for k, v in filled.items()},
+    )
     state = {
         "messages": [{"role": m["role"], "content": m["content"]} for m in state_obj.messages[-20:]],
         "session_id": session_id,

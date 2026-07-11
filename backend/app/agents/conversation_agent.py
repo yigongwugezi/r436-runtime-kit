@@ -176,15 +176,12 @@ class ConversationAgent(BaseAgent):
         rule_reason = rule_result.get("reason", "")
         needs_clarification = rule_result.get("needs_clarification", False)
         action = rule_action
-        deterministic_none = rule_action == "none" and rule_reason != "unclassified_fallback"
 
-        if action == "none" and not deterministic_none and self.llm_client:
-            for attempt in range(2):
-                llm_action = self._llm_classify_action(user_message, context)
-                if llm_action and llm_action != "full_workflow":
-                    action = llm_action
-                    break
-                time.sleep(0.3)
+        # ── Rule engine is authoritative for agent triggers ──
+        # The rewritten rule_fallback uses exact multi-word phrase matching
+        # and is far more reliable than LLM classification.  We deliberately
+        # do NOT fall back to LLM classification here — it was causing
+        # false positives like classifying "多放几道例题" as generate_questions.
 
         llm_reply = ""
         facts = {}
@@ -208,13 +205,13 @@ class ConversationAgent(BaseAgent):
                 context.get("profile_facts", {}).pop("_pending_adjustment", None)
                 return result
 
-        if action in ("none", "tutoring", "") and not deterministic_none:
+        if action in ("none", "tutoring", ""):
             dt = self._try_deeptutor_reply(user_message, self._history)
             if dt and len(dt) > 5:
                 llm_reply = re.sub(r'<[^>]+>', '', dt).strip()
 
         exec_action = ""
-        if not llm_reply and not deterministic_none:
+        if not llm_reply:
             try:
                 for attempt in range(3):
                     try:
@@ -746,8 +743,9 @@ action："""
         _GEN_QUESTION = [
             "出几道题", "出点题", "出些题", "给我出题", "帮我出题",
             "生成题目", "生成试题", "生成练习题", "生成几道题",
-            "我要做题", "我要练习", "给我练习", "来几道题", "来点题",
+            "给我练习", "来几道题", "来点题", "来几道练习题",
             "做练习题", "做题练习", "出题给我", "给我出几道",
+            "我想做题", "我想练习", "我想做几道", "我想练几道",
         ]
         if any(p in compact for p in _GEN_QUESTION):
             return self._fallback_result("generate_questions", "question_generation_request")
