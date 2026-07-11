@@ -152,6 +152,10 @@ class ConversationAgent(BaseAgent):
         else:
             user_message = str(context.get("user_message", "")).strip()
 
+        # ── Store session_id + profile_facts for _try_deeptutor_reply ──
+        self._current_session_id = str(context.get("session_id", ""))
+        self._current_profile_facts = dict(profile_facts) if isinstance(profile_facts, dict) else {}
+
         if not user_message:
             return self._make_result(
                 reply="你好！我是你的学习助手，有什么可以帮助你的？",
@@ -617,7 +621,47 @@ action："""
         if any(kw in user_message for kw in vid_script_kw):
             return generate_video_script(user_message)
 
-        return deeptutor_call("chat", user_message, history or [])
+        # ── Build student profile context for DeepTutor ──
+        profile_context = self._build_profile_context_for_dt()
+
+        return deeptutor_call("chat", user_message, history or [], profile_context)
+
+    def _build_profile_context_for_dt(self) -> str:
+        """Build a concise student-profile summary for DeepTutor's memory_context.
+
+        Uses the profile_facts stored during _run_intent() — these come directly
+        from the orchestrator's state and reflect the latest conversation.
+        """
+        facts = getattr(self, "_current_profile_facts", {}) or {}
+        if not facts:
+            return ""
+
+        label_map = {
+            "background": "专业/年级",
+            "target_course": "想学的课程",
+            "knowledge_base": "已有基础",
+            "weak_points": "薄弱点",
+            "learning_goal": "学习目标",
+            "time_budget": "时间安排",
+            "preference": "学习偏好",
+        }
+        known_parts = []
+        missing_parts = []
+        for key, label in label_map.items():
+            value = str(facts.get(key, "")).strip()
+            if value and value not in ("未提及", "待补充", "未知", "", "无"):
+                known_parts.append(f"{label}：{value}")
+            else:
+                missing_parts.append(label)
+
+        if not known_parts:
+            return ""
+
+        ctx = "【学生画像】已知：" + "；".join(known_parts) + "。"
+        if missing_parts:
+            ctx += f"尚未了解：{'、'.join(missing_parts)}。"
+        ctx += "请在对话中自然地融入你对学生的了解，不要复述这些信息。"
+        return ctx
 
     def _call_llm(self, messages):
         if not self.llm_client:
@@ -656,50 +700,22 @@ action："""
         return text, action, facts
 
     def _rule_fallback(self, message, context):
+        """Conservative intent classifier -- default to 'none' (casual chat).
+
+        ONLY triggers agent actions on unambiguous, explicit user requests.
+        Single-character keyword matches (like "题") are deliberately avoided
+        to prevent false positives from conversational words like "问题".
+        """
         text = message.strip().lower()
         compact = re.sub(r"\s+", "", text)
-        confirm_words = {"可以", "好的", "行", "嗯", "好", "ok", "yes", "对", "是的", "嗯嗯", "没错", "就这样", "按这个来"}
+
+        # ── Trivial / greeting ──────────────────────────────────────
         if text in EXACT_CASUAL or len(compact) <= 2:
             return self._fallback_result("none", "short_or_casual_message")
 
-        # Mindmap check before explicit_generation
-        if any(w in text for w in ["思维导图", "脑图"]):
-            return self._fallback_result("resources", "mindmap_request")
-
-        # Video/animation → route to DeepTutor (handles script + rendering)
-        if any(w in text for w in ["视频", "动画", "微课", "短片"]):
-            return self._fallback_result("none", "video_request")
-
-        # Full workflow triggers
-        if any(phrase in compact for phrase in ("完整方案","全套方案","全部方案","整套方案")):
-            return self._fallback_result("full_workflow", "full_workflow_request")
-        if "全套" in text and "方案" in text:
-            return self._fallback_result("full_workflow", "full_workflow_request")
-        if "完整" in text and "方案" in text:
-            return self._fallback_result("full_workflow", "full_workflow_request")
-
-        wants_profile = any(w in compact for w in ("学习画像", "画像", "评估基础", "分析基础"))
-        wants_plan = any(w in compact for w in ("学习路径", "路径", "学习计划", "计划", "规划"))
-        wants_resources = any(w in compact for w in ("学习资源", "资源", "资料", "练习"))
-        if wants_profile and wants_plan and wants_resources:
-            return self._fallback_result("full_workflow", "profile_plan_resource_request")
-
-        explicit_generation = (
-            any(phrase in compact for phrase in (
-                "开始生成学习方案", "帮我生成学习方案", "帮我制定学习计划",
-                "给我制定学习路径", "按这些信息生成", "就按这个生成",
-                "给我生成学习路径", "生成吧", "开始吧",
-            ))
-            or (
-                any(word in compact for word in ("生成", "制定", "规划", "计划", "路径", "方案"))
-                and not re.search(r"(?:想学|想学习|我要学|要学习|学习)\s*[\u4e00-\u9fffA-Za-z+#]{2,12}$", compact)
-            )
-        )
-
-        if explicit_generation:
-            return self._fallback_result("plan", "explicit_generation_request")
-
-        if any(cw in compact for cw in confirm_words):
+        # ── Confirmations (after system asked "要生成...吗？") ──────
+        confirm_words = {"可以", "好的", "行", "嗯", "好", "ok", "yes", "对", "是的", "嗯嗯", "没错", "就这样", "按这个来"}
+        if any(cw == compact or cw == text for cw in confirm_words):
             last_proposal = context.get("last_proposal")
             if last_proposal == "plan":
                 return self._fallback_result("plan", "contextual_plan_confirmation")
@@ -713,32 +729,48 @@ action："""
                 return self._fallback_result("plan,resources,generate_questions", "contextual_generation_confirmation")
             return self._fallback_result("none", "confirmation_without_generation_context", needs_clarification=True)
 
-        if text in EXACT_CASUAL or len(compact) <= 2:
-            return self._fallback_result("none", "short_or_casual_message")
+        # ── Explicit multi-word triggers only (no single-char matching) ──
+        _GEN_PLAN = [
+            "帮我规划", "帮我制定学习", "给我规划", "给我制定学习",
+            "生成学习路径", "生成学习计划", "制定学习计划", "制定学习路径",
+            "开始生成学习方案", "帮我生成学习方案", "就按这个生成",
+            "生成吧", "开始吧", "按这些信息生成",
+        ]
+        if any(p in compact for p in _GEN_PLAN):
+            return self._fallback_result("plan", "explicit_generation_request")
 
+        _GEN_FULL = ["完整方案", "全套方案", "全部方案", "整套方案", "生成全套", "全部生成"]
+        if any(p in compact for p in _GEN_FULL):
+            return self._fallback_result("full_workflow", "full_workflow_request")
 
-            return self._fallback_result("resources", "mindmap_request")
-        if any(w in text for w in ["出题", "做题", "测验", "考题", "题目", "题", "练习"]):
+        _GEN_QUESTION = [
+            "出几道题", "出点题", "出些题", "给我出题", "帮我出题",
+            "生成题目", "生成试题", "生成练习题", "生成几道题",
+            "我要做题", "我要练习", "给我练习", "来几道题", "来点题",
+            "做练习题", "做题练习", "出题给我", "给我出几道",
+        ]
+        if any(p in compact for p in _GEN_QUESTION):
             return self._fallback_result("generate_questions", "question_generation_request")
 
-        if any(w in text for w in ["批改", "判分", "帮我看看", "对不对", "检查下", "改了", "改卷"]):
+        _GRADE = ["帮我批改", "帮我判分", "帮我看看对不对", "帮我看下对不对"]
+        if any(p in compact for p in _GRADE):
             return self._fallback_result("grade_answer", "grading_request")
 
-        if any(w in text for w in ["资源", "资料", "推荐"]):
+        _RESOURCE = ["思维导图", "脑图", "生成资源", "给我资源", "给我资料"]
+        if any(p in compact for p in _RESOURCE):
             return self._fallback_result("resources", "resource_request")
 
-        if any(w in text for w in ["路径", "规划", "计划", "安排", "怎么学", "该干什么", "下一步", "接下来"]):
-            return self._fallback_result("plan", "planning_request")
-
-        if any(w in text for w in ["薄弱", "诊断", "不会", "不懂", "哪里差"]):
+        _DIAG = ["帮我诊断", "分析薄弱点", "看看哪里薄弱", "我哪里差"]
+        if any(p in compact for p in _DIAG):
             return self._fallback_result("diagnose", "diagnosis_request")
 
-        if any(w in text for w in ["生成完整方案", "制定完整计划", "全部生成"]):
-            return self._fallback_result("plan,resources,generate_questions", "explicit_full_request")
-        if any(w in text for w in ["方案", "制定"]):
-            return self._fallback_result("none", "ambiguous_generation_needs_clarification")
+        # ── Video / multimedia → handled by DeepTutor ──
+        if any(w in text for w in ["视频", "动画", "微课", "短片"]):
+            return self._fallback_result("none", "video_request")
 
+        # ── Everything else → casual chat ──
         return self._fallback_result("none", "unclassified_fallback")
+
 
     def _fallback_result(self, action, reason, needs_clarification=False):
         return {

@@ -30,23 +30,28 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _raw_call(capability: str, message: str, history: list | None = None, timeout: int = 120) -> str:
+def _raw_call(capability: str, message: str, history: list | None = None, timeout: int = 120, profile_context: str = "") -> str:
     """Thin synchronous wrapper — kept private.  Prefer the facade methods below."""
     from app.services.deeptutor_client import deeptutor_call
 
-    return deeptutor_call(capability, message, history)
+    return deeptutor_call(capability, message, history, profile_context)
 
 
-async def _raw_call_async(capability: str, message: str, history: list | None = None, system_prompt: str | None = None) -> str:
+async def _raw_call_async(
+    capability: str,
+    message: str,
+    history: list | None = None,
+    system_prompt: str | None = None,
+    profile_context: str = "",
+) -> str:
     """Thin async wrapper — kept private."""
     from app.services.deeptutor_client import deeptutor_call_async
 
     if system_prompt:
-        # Prepend system prompt as a system message
         h = list(history or [])
         h.insert(0, {"role": "system", "content": system_prompt})
-        return await deeptutor_call_async(capability, message, h)
-    return await deeptutor_call_async(capability, message, history)
+        return await deeptutor_call_async(capability, message, h, profile_context)
+    return await deeptutor_call_async(capability, message, history, profile_context)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -62,18 +67,32 @@ class DeepTutorFacade:
 
     # ── Chat / general ──────────────────────────────────────────────────
 
-    async def chat(self, message: str, history: list | None = None, system_prompt: str | None = None) -> str:
-        """General-purpose chat via DeepTutor.  Returns empty string on failure."""
+    async def chat(
+        self,
+        message: str,
+        history: list | None = None,
+        system_prompt: str | None = None,
+        profile_context: str = "",
+    ) -> str:
+        """General-purpose chat via DeepTutor.  Returns empty string on failure.
+
+        Args:
+            message: User message.
+            history: Conversation history.
+            system_prompt: Prepended to history as a system message.
+            profile_context: Student profile injected into DeepTutor's
+                memory_context for personalisation.
+        """
         try:
-            return await _raw_call_async("chat", message, history, system_prompt=system_prompt)
+            return await _raw_call_async("chat", message, history, system_prompt=system_prompt, profile_context=profile_context)
         except Exception as e:
             logger.warning("DeepTutor chat failed: %s", e)
             return ""
 
-    def chat_sync(self, message: str, history: list | None = None) -> str:
+    def chat_sync(self, message: str, history: list | None = None, profile_context: str = "") -> str:
         """Synchronous version of :meth:`chat`."""
         try:
-            return _raw_call("chat", message, history)
+            return _raw_call("chat", message, history, profile_context=profile_context)
         except Exception as e:
             logger.warning("DeepTutor chat sync failed: %s", e)
             return ""

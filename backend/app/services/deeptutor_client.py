@@ -30,8 +30,22 @@ def _setup_config():
         return False
 
 
-async def deeptutor_call_async(capability: str, message: str, history: list | None = None) -> str:
-    """Proper async DeepTutor call — no nest_asyncio, no asyncio.run."""
+async def deeptutor_call_async(
+    capability: str,
+    message: str,
+    history: list | None = None,
+    profile_context: str = "",
+) -> str:
+    """Proper async DeepTutor call — no nest_asyncio, no asyncio.run.
+
+    Args:
+        capability: DeepTutor capability name ("chat", "mastery_path", etc.)
+        message: User message or prompt.
+        history: Conversation history in OpenAI format.
+        profile_context: Student profile text injected into DeepTutor's
+            memory_context so it knows the student's background, goals,
+            and weak points.
+    """
     if not _setup_config():
         return ""
     try:
@@ -39,7 +53,10 @@ async def deeptutor_call_async(capability: str, message: str, history: list | No
         from deeptutor.core.context import UnifiedContext
         from deeptutor.core.stream import StreamEventType
         ctx = UnifiedContext(
-            user_message=message, conversation_history=history or [], language="zh",
+            user_message=message,
+            conversation_history=history or [],
+            language="zh",
+            memory_context=profile_context or "",
             enabled_tools=["reason","brainstorm","read_memory","write_memory","ask_user","exec"] if capability == "chat" else [],
         )
         if capability and capability != "chat":
@@ -55,12 +72,16 @@ async def deeptutor_call_async(capability: str, message: str, history: list | No
 
 
 # Synchronous wrappers for sync agent use
-def deeptutor_call(capability: str, message: str, history: list | None = None) -> str:
+def deeptutor_call(
+    capability: str,
+    message: str,
+    history: list | None = None,
+    profile_context: str = "",
+) -> str:
     import asyncio, concurrent.futures
-    async def _call(): return await deeptutor_call_async(capability, message, history)
+    async def _call(): return await deeptutor_call_async(capability, message, history, profile_context)
     try:
         loop = asyncio.get_running_loop()
-        # Already in async context — run in thread
         with concurrent.futures.ThreadPoolExecutor() as pool:
             return pool.submit(asyncio.run, _call()).result(timeout=120)
     except RuntimeError:
