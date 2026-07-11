@@ -5,8 +5,9 @@ import { useChatStore } from '../store/chatStore';
 import { ChevronRight, Sparkles, MessageCircle, Send, Brain, BookOpen, ArrowLeft, ArrowRight, Target, Lightbulb, Layers, Clock, GraduationCap, Hash, CheckCircle2, Check, X, Loader2, HelpCircle } from 'lucide-react';
 import Markdown, { splitSections } from '../utils/markdown';
 import { generateSectionQuiz, submitQuizAttempt } from '../api/assessment';
-import type { Chapter, PathNode, Section, ContentStatus } from '../types/learningPath';
+import type { Chapter, LearningStage, PathNode, Section, ContentStatus } from '../types/learningPath';
 import type { LinkedQuestion, QuizResult, WeakPoint } from '../types/assessment';
+import SectionResourceWorkspace from '../components/learning/SectionResourceWorkspace';
 
 const sectionStatusStyle: Record<ContentStatus, { dot: string; bar: string }> = {
   not_started:  { dot: 'bg-surface-300 ring-surface-100', bar: 'bg-surface-300' },
@@ -39,11 +40,32 @@ function legacyNodeSection(node: PathNode): Section {
   };
 }
 
+function legacyStageSection(stage: { id: string; title: string }, sectionId: string): Section {
+  return {
+    id: sectionId,
+    title: `学习《${stage.title}》核心内容`,
+    goal: `掌握${stage.title}的核心内容。`,
+    estimatedMinutes: 45,
+    status: 'not_started',
+    knowledgePoints: [{
+      id: stage.id,
+      name: stage.title,
+      type: 'concept',
+      mastery: 0,
+      status: 'not_started',
+    }],
+    lectureIds: [],
+  };
+}
+
 export default function LecturePage() {
   const { chapterId, sectionId } = useParams<{ chapterId?: string; sectionId?: string }>();
   const nav = useNavigate();
   const { path, updateKnowledgePoint } = useLearningPath();
   const sessionId = useChatStore((s) => s.dataSessionId);
+  const [lecture, setLecture] = useState('');
+  const [lectureLoaded, setLectureLoaded] = useState(false);
+  const [generating, setGenerating] = useState(false);
 
   // ── 当前章节与小节 ──
   const chapterCtx = useMemo(() => {
@@ -64,15 +86,37 @@ export default function LecturePage() {
           stage,
         };
       }
+      // Older generated paths only retain stage tasks. Keep their existing
+      // route IDs usable without changing the persisted learning-path shape.
+      if (sectionId && sectionId.startsWith(`${stage.id}_`)) {
+        return {
+          chapter: {
+            id: stage.id,
+            title: stage.title,
+            order: stage.order,
+            status: 'not_started' as ContentStatus,
+            sections: [legacyStageSection(stage, sectionId)],
+          },
+          stage,
+        };
+      }
+    }
+    const routeStageId = sectionId?.match(/^(.*)_node_\d+$/)?.[1];
+    if (sectionId && routeStageId) {
+      const stageTitle = lecture.match(/^#\s*学习《(.+?)》核心内容/m)?.[1] || '当前章节';
+      const routeStage: LearningStage = {
+        id: routeStageId, title: stageTitle, order: 0, description: '', nodes: [], chapters: [], objective: '', estimatedDays: 0,
+      };
+      return {
+        chapter: { id: routeStageId, title: stageTitle, order: 0, status: 'not_started' as ContentStatus, sections: [legacyStageSection(routeStage, sectionId)] },
+        stage: routeStage,
+      };
     }
     return null;
-  }, [path, chapterId, sectionId]);
+  }, [path, chapterId, sectionId, lecture]);
 
   const sections = chapterCtx?.chapter.sections ?? [];
   const [activeSectionId, setActiveSectionId] = useState(sectionId || sections[0]?.id || '');
-  const [lecture, setLecture] = useState('');
-  const [lectureLoaded, setLectureLoaded] = useState(false);
-  const [generating, setGenerating] = useState(false);
   const [chatMsg, setChatMsg] = useState('');
   const [chatReply, setChatReply] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
@@ -702,17 +746,19 @@ export default function LecturePage() {
           )}
 
           {rightTab === 'resources' && (
-            <div className="p-4 space-y-3">
-              <div className="p-3 rounded-xl bg-surface-50 border border-surface-100">
-                <p className="text-[10px] font-medium text-surface-400 uppercase tracking-wide mb-2">思维导图</p>
-                {chapterCtx?.chapter.mindmapId ? (
-                  <a onClick={() => nav(`/resources/${chapterCtx.chapter.mindmapId}`)}
-                    className="flex items-center gap-2 text-sm font-medium text-amber-700 hover:text-amber-800 cursor-pointer"><Brain size={16} />查看章节思维导图</a>
-                ) : (
-                  <p className="text-xs text-surface-400">暂未生成，在路径页章节详情中生成</p>
-                )}
-              </div>
-              <div className="p-3 rounded-xl bg-surface-50 border border-surface-100">
+            <div className="space-y-3">
+              <SectionResourceWorkspace
+                sessionId={sessionId}
+                pathId={path?.id || ''}
+                stageId={chapterCtx?.stage.id || ''}
+                chapterId={chapterCtx?.chapter.id || ''}
+                chapterTitle={chapterCtx?.chapter.title || ''}
+                section={currentSection}
+                lectureContent={lecture}
+                sections={sections}
+                legacyMindmapId={chapterCtx?.chapter.mindmapId}
+              />
+              <div className="mx-4 mb-4 p-3 rounded-xl bg-surface-50 border border-surface-100">
                 <p className="text-[10px] font-medium text-surface-400 uppercase tracking-wide mb-2">讲义状态</p>
                 {lecture ? (
                   <p className="text-xs text-emerald-600 flex items-center gap-1.5"><CheckCircle2 size={13} />已生成</p>
@@ -720,7 +766,7 @@ export default function LecturePage() {
                   <p className="text-xs text-surface-400">选择小节后点击「生成讲义」</p>
                 )}
               </div>
-              <div className="p-3 rounded-xl bg-surface-50 border border-surface-100">
+              <div className="mx-4 mb-4 p-3 rounded-xl bg-surface-50 border border-surface-100">
                 <p className="text-[10px] font-medium text-surface-400 uppercase tracking-wide mb-2">章节统计</p>
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   <div className="text-center p-2 bg-white rounded-lg"><p className="font-bold text-surface-700">{sections.length}</p><p className="text-[10px] text-surface-400">小节</p></div>
