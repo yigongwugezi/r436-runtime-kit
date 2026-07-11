@@ -15,19 +15,31 @@ const MODE_DESC: Record<string, string> = {
 
 export default function ModePicker({ options, course, defaultMode }: Props) {
   const [selected, setSelected] = useState<string | null>(null);
-  const { send } = useStreamChat();
+  const { send, isStreaming } = useStreamChat();
 
-  if (selected) {
-    const prompt = selected === '教材式'
+  const handlePick = (opt: string) => {
+    if (selected || isStreaming) return;
+    setSelected(opt);
+    const prompt = opt === '教材式'
       ? `帮我按章节系统学${course}`
-      : selected === '日课式'
+      : opt === '日课式'
         ? `帮我规划${course}的每日学习计划`
         : `帮我专攻${course}的薄弱点`;
+    send(prompt);
+  };
+
+  if (selected || isStreaming) {
     return (
-      <div className="my-3 p-4 bg-blue-50 rounded-2xl border border-blue-200 animate-fade-in">
-        <p className="text-xs text-blue-600 font-medium">
-          已选择「{selected}」模式，开始生成…
-        </p>
+      <div className="my-3 p-4 bg-emerald-50 rounded-2xl border border-emerald-200 animate-fade-in">
+        <div className="flex items-center gap-2">
+          <div className="w-5 h-5 rounded-full bg-emerald-200 flex items-center justify-center">
+            <svg className="w-3 h-3 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+          </div>
+          <p className="text-xs text-emerald-700 font-medium">
+            {selected ? `已选择「${selected}」模式，正在生成…` : '正在生成学习路径…'}
+          </p>
+        </div>
+        <p className="text-[10px] text-emerald-500 mt-1.5 ml-7">生成完成后可在学习路径页面查看结果</p>
       </div>
     );
   }
@@ -43,15 +55,7 @@ export default function ModePicker({ options, course, defaultMode }: Props) {
           return (
             <button
               key={opt}
-              onClick={() => {
-                setSelected(opt);
-                const prompt = opt === '教材式'
-                  ? `帮我按章节系统学${course}`
-                  : opt === '日课式'
-                    ? `帮我规划${course}的每日学习计划`
-                    : `帮我专攻${course}的薄弱点`;
-                send(prompt);
-              }}
+              onClick={() => handlePick(opt)}
               className={`px-4 py-2.5 rounded-xl text-sm font-medium transition-all active:scale-[0.97]
                 ${isDefault
                   ? 'bg-blue-500 text-white shadow-lg shadow-blue-200 hover:bg-blue-600'

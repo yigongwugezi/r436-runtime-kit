@@ -795,6 +795,15 @@ action："""
         if any(p in compact for p in _DIAG):
             return self._fallback_result("diagnose", "diagnosis_request")
 
+        # ── Path adjustment triggers ──
+        _ADJUST = [
+            "调整路径", "调整计划", "修改路径", "修改计划", "改一下路径",
+            "调整一下", "修改一下", "加快", "放慢", "多加点", "多加一些",
+            "再加", "加一些练习", "多给点", "重新规划", "重新调整",
+        ]
+        if any(p in compact for p in _ADJUST):
+            return self._fallback_result("plan", "path_adjustment", plan_mode="adjust")
+
         # ── Video / multimedia → handled by DeepTutor ──
         if any(w in text for w in ["视频", "动画", "微课", "短片"]):
             return self._fallback_result("none", "video_request")

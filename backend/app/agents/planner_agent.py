@@ -36,7 +36,7 @@ class PlannerAgent(BaseAgent):
         mode = str(context.get("mode", "plan"))
         existing = context.get("existing_path")
 
-        if mode == "adjust" and existing:
+        if plan_mode == "adjust":
             return self._run_adjustment(context, diagnosis, profile)
 
         weak_points = self._extract_weak_points(diagnosis)
