@@ -5,7 +5,7 @@ import { useChatStore } from '../store/chatStore';
 import { ChevronRight, Sparkles, MessageCircle, Send, Brain, BookOpen, ArrowLeft, ArrowRight, Target, Lightbulb, Layers, Clock, GraduationCap, Hash, CheckCircle2, Check, X, Loader2, HelpCircle } from 'lucide-react';
 import Markdown, { splitSections } from '../utils/markdown';
 import { generateSectionQuiz, submitQuizAttempt } from '../api/assessment';
-import type { Chapter, PathNode, Section, ContentStatus } from '../types/learningPath';
+import type { Chapter, LearningStage, PathNode, Section, ContentStatus } from '../types/learningPath';
 import type { LinkedQuestion, QuizResult, WeakPoint } from '../types/assessment';
 import SectionResourceWorkspace from '../components/learning/SectionResourceWorkspace';
 
@@ -40,11 +40,32 @@ function legacyNodeSection(node: PathNode): Section {
   };
 }
 
+function legacyStageSection(stage: { id: string; title: string }, sectionId: string): Section {
+  return {
+    id: sectionId,
+    title: `学习《${stage.title}》核心内容`,
+    goal: `掌握${stage.title}的核心内容。`,
+    estimatedMinutes: 45,
+    status: 'not_started',
+    knowledgePoints: [{
+      id: stage.id,
+      name: stage.title,
+      type: 'concept',
+      mastery: 0,
+      status: 'not_started',
+    }],
+    lectureIds: [],
+  };
+}
+
 export default function LecturePage() {
   const { chapterId, sectionId } = useParams<{ chapterId?: string; sectionId?: string }>();
   const nav = useNavigate();
   const { path, updateKnowledgePoint } = useLearningPath();
   const sessionId = useChatStore((s) => s.dataSessionId);
+  const [lecture, setLecture] = useState('');
+  const [lectureLoaded, setLectureLoaded] = useState(false);
+  const [generating, setGenerating] = useState(false);
 
   // ── 当前章节与小节 ──
   const chapterCtx = useMemo(() => {
@@ -65,15 +86,37 @@ export default function LecturePage() {
           stage,
         };
       }
+      // Older generated paths only retain stage tasks. Keep their existing
+      // route IDs usable without changing the persisted learning-path shape.
+      if (sectionId && sectionId.startsWith(`${stage.id}_`)) {
+        return {
+          chapter: {
+            id: stage.id,
+            title: stage.title,
+            order: stage.order,
+            status: 'not_started' as ContentStatus,
+            sections: [legacyStageSection(stage, sectionId)],
+          },
+          stage,
+        };
+      }
+    }
+    const routeStageId = sectionId?.match(/^(.*)_node_\d+$/)?.[1];
+    if (sectionId && routeStageId) {
+      const stageTitle = lecture.match(/^#\s*学习《(.+?)》核心内容/m)?.[1] || '当前章节';
+      const routeStage: LearningStage = {
+        id: routeStageId, title: stageTitle, order: 0, description: '', nodes: [], chapters: [], objective: '', estimatedDays: 0,
+      };
+      return {
+        chapter: { id: routeStageId, title: stageTitle, order: 0, status: 'not_started' as ContentStatus, sections: [legacyStageSection(routeStage, sectionId)] },
+        stage: routeStage,
+      };
     }
     return null;
-  }, [path, chapterId, sectionId]);
+  }, [path, chapterId, sectionId, lecture]);
 
   const sections = chapterCtx?.chapter.sections ?? [];
   const [activeSectionId, setActiveSectionId] = useState(sectionId || sections[0]?.id || '');
-  const [lecture, setLecture] = useState('');
-  const [lectureLoaded, setLectureLoaded] = useState(false);
-  const [generating, setGenerating] = useState(false);
   const [chatMsg, setChatMsg] = useState('');
   const [chatReply, setChatReply] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
