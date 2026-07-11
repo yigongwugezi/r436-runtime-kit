@@ -24,7 +24,7 @@ export default function ReviewQueuePage() {
     setError('');
     try {
       const res = await fetch(
-        `${import.meta.env.VITE_API_BASE || ''}/api/questions/review-queue?status=${filter}`,
+        `${import.meta.env.VITE_API_BASE_URL || ''}/api/questions/review-queue?status=${filter}`,
         { headers: { Authorization: `Bearer ${localStorage.getItem('token') || ''}` } }
       );
       const data = await res.json();
@@ -46,7 +46,7 @@ export default function ReviewQueuePage() {
     setActionLoading(questionId);
     try {
       const res = await fetch(
-        `${import.meta.env.VITE_API_BASE || ''}/api/questions/review-action`,
+        `${import.meta.env.VITE_API_BASE_URL || ''}/api/questions/review-action`,
         {
           method: 'POST',
           headers: {

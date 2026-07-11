@@ -18,6 +18,21 @@ const log = createLogger('DebugPanel');
  *   - 数据来源（db/agent/mock/none）
  * =================================================================== */
 
+// 从 VITE_API_BASE_URL 提取 host:port，用于拦截 fetch 时的 URL 检测和显示
+const API_HOST = (import.meta.env.VITE_API_BASE_URL || '')
+  .replace(/^https?:\/\//, '')
+  .replace(/\/$/, '');
+
+function isApiUrl(url: string): boolean {
+  if (API_HOST && url.includes(API_HOST)) return true;
+  return url.includes('/api/');
+}
+
+function apiDisplayUrl(url: string): string {
+  if (!API_HOST) return url;
+  return url.split(API_HOST)[1] || url;
+}
+
 // 拦截 fetch 记录 API 调用（仅在开发环境生效）
 const apiCalls: { method: string; url: string; time: number; ok: boolean }[] = [];
 const originalFetch = window.fetch;
@@ -25,30 +40,30 @@ if (import.meta.env.DEV) {
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     // 只记录后端 API 调用
-    if (url.includes('localhost:8001') || url.includes('/api/')) {
+    if (isApiUrl(url)) {
       const start = Date.now();
       try {
         const response = await originalFetch(input, init);
         apiCalls.unshift({
           method: init?.method || 'GET',
-          url: url.split('localhost:8001')[1] || url,
+          url: apiDisplayUrl(url),
           time: start,
           ok: response.ok,
         });
         if (!response.ok) {
-          log.warn(`API ${init?.method || 'GET'} ${url.split('localhost:8001')[1] || url} → ${response.status}`);
+          log.warn(`API ${init?.method || 'GET'} ${apiDisplayUrl(url)} → ${response.status}`);
         }
         if (apiCalls.length > 20) apiCalls.pop();
         return response;
       } catch (err) {
         apiCalls.unshift({
           method: init?.method || 'GET',
-          url: url.split('localhost:8001')[1] || url,
+          url: apiDisplayUrl(url),
           time: start,
           ok: false,
         });
         if (apiCalls.length > 20) apiCalls.pop();
-        log.error(`API 请求失败 ${init?.method || 'GET'} ${url.split('localhost:8001')[1] || url}`, err);
+        log.error(`API 请求失败 ${init?.method || 'GET'} ${apiDisplayUrl(url)}`, err);
         throw err;
       }
     }
