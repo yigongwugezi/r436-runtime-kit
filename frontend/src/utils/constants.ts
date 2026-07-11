@@ -28,4 +28,9 @@ export const RESOURCE_TYPE_LABELS: Record<string, string> = {
   case_study: '实操案例',
   video: '教学视频',
   ppt: 'PPT 大纲',
+  summary_card: '总结卡片',
+  concept_comparison: '概念对比',
+  worked_example: '例题详解',
+  mistake_checklist: '易错点清单',
+  review_notes: '复习笔记',
 };

@@ -21,7 +21,7 @@ def main() -> None:
         data = service.generate(session_id="test", path_id="path_1", stage_id="stage_1", chapter_id="chapter_1", section_id="section_1", section_title="数组与链表", lecture_content="数组和链表的操作成本。", knowledge_points=["数组", "链表"], resource_type=resource_type)
         assert "major_background" not in data["content"] and "数组与链表" in data["content"]
         saved = service.persist(db, "test", data)
-        assert saved.related_section_id == "section_1" and saved.source == "agent_generated"
+        assert saved.related_section_id == "section_1" and saved.related_chapter_id == "chapter_1" and saved.source == "agent_generated"
         assert service.existing(db, "test", "section_1", resource_type).id == data["id"]
         data["content"] += "\n\n重新生成版本。"
         assert "重新生成版本" in service.persist(db, "test", data).content  # same ID overwrites
