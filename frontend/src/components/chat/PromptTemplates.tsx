@@ -46,8 +46,9 @@ export default function PromptTemplates({ onSelect }: Props) {
       {
         group: '规划模式',
         items: [
-          { icon: '📚', label: '教材模式（系统学）', prompt: courseName ? `帮我系统学${course}，按章节来` : '帮我系统学，按章节来' },
-          { icon: '🎯', label: '精进模式（补短板）', prompt: courseName ? `帮我专攻${course}的薄弱点` : '帮我专项突破薄弱点' },
+          { icon: '', label: '教材式（数理）', prompt: courseName ? `帮我按章节系统学${courseName}` : '帮我按章节系统学' },
+          { icon: '', label: '日课式（语言）', prompt: courseName ? `帮我规划${courseName}的每日学习计划` : '帮我规划每日学习计划' },
+          { icon: '', label: '精进式（补短）', prompt: courseName ? `帮我专攻${courseName}的薄弱点` : '帮我专项突破薄弱点' },
         ],
       },
     ];

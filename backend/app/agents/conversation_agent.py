@@ -251,8 +251,11 @@ class ConversationAgent(BaseAgent):
 
         extra = {}
         plan_mode = rule_result.get("plan_mode", "")
+        path_mode = rule_result.get("path_mode", "")
         if plan_mode:
             extra["plan_mode"] = plan_mode
+        if path_mode:
+            extra["path_mode"] = path_mode
         result = self._make_result(reply=llm_reply, action=action, facts=facts, extra=extra or None)
         result["llm_retry_count"] = llm_retry_count
         if context.get("_llm_proposal"):
@@ -749,10 +752,22 @@ action："""
             "系统学", "按章节", "从头学", "从基础开始",
             "完整学", "系统学习", "按教材",
         ]
+        _DAILY_PATH = [
+            "英语", "日语", "韩语", "法语", "德语", "西语",
+            "背单词", "学英语", "学日语", "语言",
+        ]
+        _PROJECT_PATH = [
+            "做项目", "项目驱动", "项目实战", "做一个",
+            "编程", "开发", "写一个", "搭建",
+        ]
         if any(p in compact for p in _FOCUS_PLAN):
             return self._fallback_result("plan", "focus_plan_request", plan_mode="focus")
         if any(p in compact for p in _TEXTBOOK_PLAN):
             return self._fallback_result("plan", "textbook_plan_request", plan_mode="textbook")
+        if any(p in compact for p in _DAILY_PATH):
+            return self._fallback_result("plan", "daily_path_request", plan_mode="textbook", path_mode="daily")
+        if any(p in compact for p in _PROJECT_PATH):
+            return self._fallback_result("plan", "project_path_request", plan_mode="textbook", path_mode="project")
 
         _GEN_FULL = ["完整方案", "全套方案", "全部方案", "整套方案", "生成全套", "全部生成"]
         if any(p in compact for p in _GEN_FULL):
@@ -788,7 +803,7 @@ action："""
         return self._fallback_result("none", "unclassified_fallback")
 
 
-    def _fallback_result(self, action, reason, needs_clarification=False, plan_mode=""):
+    def _fallback_result(self, action, reason, needs_clarification=False, plan_mode="", path_mode=""):
         result = {
             "reply": "",
             "action": action,
@@ -803,6 +818,8 @@ action："""
         }
         if plan_mode:
             result["plan_mode"] = plan_mode
+        if path_mode:
+            result["path_mode"] = path_mode
         return result
 
     def _has_generation_confirmation_context(self, context):

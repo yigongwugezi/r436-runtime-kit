@@ -100,6 +100,21 @@ class LearningTracker:
             "timestamp": event.get("timestamp") or time.time(),
         }
 
+        # ── Mode-specific event auto-forwarding ──
+        # When resource_complete / section_complete carries content_type or task_type,
+        # automatically emit a corresponding mode-specific event.
+        _CONTENT_TYPE_TO_MODE_EVENT = {
+            "memory_drill": "vocabulary_review",
+            "step_through": "code_practice",
+        }
+        _TASK_TYPE_TO_MODE_EVENT = {
+            "vocabulary": "vocabulary_review",
+            "listening": "listening_practice",
+            "speaking": "speaking_practice",
+            "writing": "writing_practice",
+            "grammar": "grammar_exercise",
+        }
+
         # ── Deduplication check ───────────────────────────────────
         if self._is_duplicate_event(event, sid):
             logger.debug(
@@ -127,6 +142,35 @@ class LearningTracker:
 
         # Always keep in-memory cache for backward compat
         self._events.append(normalized)
+
+        # ── Auto-forward mode-specific event ──────────────────────
+        if event_type in ("resource_complete", "section_complete"):
+            meta = event.get("metadata", {}) if isinstance(event.get("metadata"), dict) else {}
+            content_type = str(meta.get("content_type", "") or meta.get("contentType", ""))
+            task_type = str(meta.get("task_type", "") or meta.get("taskType", ""))
+            mode_event_type = (
+                _TASK_TYPE_TO_MODE_EVENT.get(task_type) or
+                _CONTENT_TYPE_TO_MODE_EVENT.get(content_type)
+            )
+            if mode_event_type:
+                mode_normalized = {
+                    "event": mode_event_type,
+                    "sessionId": sid,
+                    "resourceId": normalized.get("resourceId"),
+                    "timestamp": normalized.get("timestamp"),
+                    "metadata": {"source_event": event_type, "content_type": content_type, "task_type": task_type},
+                }
+                if self._db_enabled:
+                    db2 = None
+                    try:
+                        db2 = self._db_session()
+                        log_event(db2, sid, mode_event_type, normalized.get("resourceId"), mode_normalized.get("metadata"))
+                    except Exception:
+                        pass
+                    finally:
+                        if db2 is not None:
+                            db2.close()
+                self._events.append(mode_normalized)
 
         # ── Closed-loop assessment hook ────────────────────────────
         # Fire-and-forget: record event for re-assessment scheduling.

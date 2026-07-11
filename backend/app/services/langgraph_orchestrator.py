@@ -99,9 +99,24 @@ def _build_chat_persona(facts: dict[str, str]) -> str:
         )
     else:
         missing_str = "/".join(missing_labels) if missing_labels else "基本了解全了"
+        course = str(facts.get("target_course", ""))
+        # Detect if language/subject type for mode suggestion
+        is_lang = any(w in course for w in ["英语","日语","韩语","法语","德语","语言","雅思","托福"])
+        mode_hint = ""
+        if course:
+            mode_hint = (
+                f"学生想学{course}。信息差不多了，可以确认一下要不要生成计划。"
+                "如果确认要生成，必须先问学生选学习模式，用这个格式输出：\n"
+                "[[mode-pick:教材式,日课式,精进式|course:{course}|default:"
+                + ("日课式" if is_lang else "教材式") +
+                "]]\n"
+                "这会让前端渲染成三个按钮供学生点击选择。"
+                "输出这个标签之后不要再输出别的模式选择文字。"
+            )
         return (
             "你是一个友好的学习助手。你已经比较了解这个学生了"
             f"(还差:{missing_str})。"
+            + mode_hint +
             "如果学生表达了明确的学习意愿且信息差不多了,可以自然地确认一下"
             "要不要开始生成学习路径。但不要主动催促。"
             "不要用 | 分隔多个问题。不要用模板句式。"
@@ -206,9 +221,10 @@ async def _run_conversation_agent(context: dict[str, Any], factory: AgentFactory
             "reply": str(result.get("reply", "")),
             "facts": result.get("facts", {}),
             "plan_mode": str(result.get("plan_mode", "")),
+            "path_mode": str(result.get("path_mode", "")),
         }
     except Exception:
-        return {"action": "none", "reply": "", "facts": {}, "plan_mode": ""}
+        return {"action": "none", "reply": "", "facts": {}, "plan_mode": "", "path_mode": ""}
 
 
 def _emit_feedback_signal(state: dict) -> dict[str, Any]:
@@ -482,8 +498,11 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
         state["intent"] = intent
         state["_conversation_reply"] = ca_result["reply"]
         plan_mode = ca_result.get("plan_mode", "")
+        path_mode = ca_result.get("path_mode", "")
         if plan_mode:
             state["plan_mode"] = plan_mode
+        if path_mode:
+            state["path_mode"] = path_mode
 
     # ── Chat-only intents (no agent execution needed) ──
     if intent in chat_only_intents():

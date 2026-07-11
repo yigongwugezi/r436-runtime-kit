@@ -3,11 +3,30 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useLearningPath } from '../hooks/useLearningPath';
 import { useChatStore } from '../store/chatStore';
 import { ChevronRight, Sparkles, MessageCircle, Send, Brain, BookOpen, ArrowLeft, ArrowRight, Target, Lightbulb, Layers, Clock, GraduationCap, Hash, CheckCircle2, Check, X, Loader2, HelpCircle } from 'lucide-react';
-import Markdown, { splitSections } from '../utils/markdown';
+import Markdown from '../utils/markdown';
 import { generateSectionQuiz, submitQuizAttempt } from '../api/assessment';
 import type { Chapter, LearningStage, PathNode, Section, ContentStatus } from '../types/learningPath';
 import type { LinkedQuestion, QuizResult, WeakPoint } from '../types/assessment';
 import SectionResourceWorkspace from '../components/learning/SectionResourceWorkspace';
+import SectionContentRouter, { type ContentType, type SectionContent } from '../components/learning/SectionContentRouter';
+import { logStudyEvent } from '../api/feedback';
+
+const CONTENT_TYPE_OPTIONS: { value: ContentType; label: string; icon: string }[] = [
+  { value: 'lecture', label: '讲义', icon: '📖' },
+  { value: 'memory_drill', label: '闪卡', icon: '🃏' },
+  { value: 'step_through', label: '分步', icon: '🪜' },
+];
+
+function detectContentType(md: string): ContentType {
+  const first200 = md.slice(0, 200).toLowerCase();
+  // Memory drill: vocabulary tables, word lists, flashcard patterns
+  if (/单词|词汇|vocabulary|背记|记忆卡|闪卡/.test(first200)) return 'memory_drill';
+  if (/\*\*[^*]+\*\*\s*[—\-–]/.test(md.slice(0, 500)) && md.split('\n').filter(l => /\*\*[^*]+\*\*\s*[—\-–]/.test(l)).length >= 3) return 'memory_drill';
+  // Step through: step-by-step tutorials, derivations
+  if (/第[一二三四五六七八九十\d]+步|step\s*\d|步骤\s*\d/i.test(first200)) return 'step_through';
+  if (md.match(/^#{2,3}\s*(?:Step\s*\d|第[一二三四五六七八九十\d]+步)/gm)?.length ?? 0 >= 2) return 'step_through';
+  return 'lecture';
+}
 
 const sectionStatusStyle: Record<ContentStatus, { dot: string; bar: string }> = {
   not_started:  { dot: 'bg-surface-300 ring-surface-100', bar: 'bg-surface-300' },
@@ -133,8 +152,9 @@ export default function LecturePage() {
   const [quizTotalScore, setQuizTotalScore] = useState<number | null>(null);
   const [quizSuggestion, setQuizSuggestion] = useState('');
   const [quizWeakPoints, setQuizWeakPoints] = useState<WeakPoint[]>([]);
+  const [contentType, setContentType] = useState<ContentType>('lecture');
 
-  // Reset quiz when section changes
+  // Reset quiz + content type when section changes
   useEffect(() => {
     setQuizState('idle');
     setQuizQuestions([]);
@@ -144,9 +164,10 @@ export default function LecturePage() {
     setQuizTotalScore(null);
     setQuizSuggestion('');
     setQuizWeakPoints([]);
+    // Reset content type to whatever the planner specified, or auto-detect
+    const planned = currentSection?.contentType as ContentType | undefined;
+    setContentType(planned || (lecture ? detectContentType(lecture) : 'lecture'));
   }, [activeSectionId]);
-
-  const sectionToc = useMemo(() => lecture ? splitSections(lecture) : [], [lecture]);
 
   useEffect(() => {
     setActiveSectionId(sectionId || sections[0]?.id || '');
@@ -255,6 +276,20 @@ export default function LecturePage() {
 
   const loadingLecture = !lectureLoaded;
 
+  // ── Build section content object for the router ──
+  const sectionContent: SectionContent | null = useMemo(() => {
+    if (!lecture || !currentSection) return null;
+    return {
+      contentType,
+      title: currentSection.title,
+      goal: currentSection.goal || '',
+      content: lecture,
+      knowledgePoints: (currentSection.knowledgePoints || []).map((kp: any) =>
+        typeof kp === 'string' ? { name: kp } : { name: kp.name, type: kp.type }
+      ),
+    };
+  }, [lecture, currentSection, contentType]);
+
   // ── Quiz generation ──
   const handleQuizGenerate = async () => {
     if (!currentSection) return;
@@ -324,6 +359,10 @@ export default function LecturePage() {
       {/* ══ 左：章节 + 小节 ══ */}
       <div className="w-44 lg:w-52 xl:w-56 bg-white border-r border-surface-200 flex flex-col flex-shrink-0">
         <div className="p-4 bg-gradient-to-b from-surface-50 to-white border-b border-surface-100">
+          <button onClick={() => nav('/path')}
+            className="flex items-center gap-1.5 text-xs text-surface-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg px-2 py-1 -ml-2 mb-2 transition-colors">
+            <ArrowLeft size={14} />返回学习路径
+          </button>
           <div className="flex items-center gap-2 mb-2">
             <div className="w-7 h-7 rounded-lg bg-blue-100 flex items-center justify-center"><Hash size={13} className="text-blue-600" /></div>
             <p className="text-xs font-bold text-surface-800 leading-snug flex-1">{chapterCtx?.chapter.title || '讲义'}</p>
@@ -379,8 +418,6 @@ export default function LecturePage() {
             <div className="flex items-start justify-between gap-4">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5 text-[10px] text-surface-400 mb-2">
-                  <button onClick={() => nav('/path')} className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-surface-100 hover:text-blue-600 transition-colors">学习路径</button>
-                  <ChevronRight size={10} />
                   <span className="text-surface-500 truncate max-w-[200px]">{chapterCtx?.chapter.title}</span>
                 </div>
                 <h2 className="text-lg font-bold text-surface-900">{currentSection?.title || '选择小节'}</h2>
@@ -403,6 +440,25 @@ export default function LecturePage() {
                 )}
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
+                {/* ── Content type selector ── */}
+                {lecture && (
+                  <div className="flex items-center gap-0.5 bg-surface-100 rounded-xl p-0.5 mr-1">
+                    {CONTENT_TYPE_OPTIONS.map(opt => (
+                      <button
+                        key={opt.value}
+                        onClick={() => setContentType(opt.value)}
+                        className={`flex items-center gap-1 px-2.5 py-1.5 rounded-[10px] text-[10px] font-medium transition-all
+                          ${contentType === opt.value
+                            ? 'bg-white text-surface-800 shadow-sm'
+                            : 'text-surface-400 hover:text-surface-600'}`}
+                        title={opt.label}
+                      >
+                        <span className="text-xs">{opt.icon}</span>
+                        <span className="hidden sm:inline">{opt.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <button onClick={() => setShowRightPanel(!showRightPanel)}
                   className={`w-8 h-8 rounded-lg border transition-colors flex items-center justify-center ${showRightPanel ? 'bg-violet-50 border-violet-200 text-violet-500' : 'bg-white border-surface-200 text-surface-400 hover:bg-surface-50'}`}
                   title={showRightPanel ? '折叠功能面板' : '展开功能面板'}>
@@ -602,29 +658,30 @@ export default function LecturePage() {
             </div>
           )}
 
-          {/* ── Lecture content ── */}
-          {lecture ? (
-            <div className="flex gap-0">
-              <div className="flex-1 min-w-0 px-5 py-4 space-y-5">
-                {sectionToc.map((sec) => (
-                  <section key={sec.id} id={sec.id} className="bg-white rounded-2xl p-6 shadow-soft border border-surface-100">
-                    <Markdown content={sec.content} />
-                  </section>
-                ))}
-              </div>
-              {sectionToc.length > 1 && (
-                <div className="w-40 flex-shrink-0 hidden xl:block pr-2 pt-4">
-                  <div className="sticky top-4">
-                    <p className="text-[10px] font-bold text-surface-400 uppercase tracking-wider mb-2">页面目录</p>
-                    <nav className="space-y-0.5">
-                      {sectionToc.map((sec) => (
-                        <a key={sec.id} href={`#${sec.id}`}
-                          className="block text-[11px] text-surface-500 hover:text-blue-600 py-1.5 px-2 rounded-lg hover:bg-blue-50 transition-all truncate">{sec.title}</a>
-                      ))}
-                    </nav>
-                  </div>
-                </div>
-              )}
+          {/* ── Section content — routed by content_type ── */}
+          {sectionContent ? (
+            <div className="px-5 py-4">
+              <SectionContentRouter
+                content={sectionContent}
+                onComplete={() => {
+                  if (currentSection?.id && updateKnowledgePoint) {
+                    (currentSection.knowledgePoints || []).forEach((kp: any) => {
+                      updateKnowledgePoint(kp.id || kp.name, { status: 'mastered' });
+                    });
+                  }
+                  // Emit section_complete with content_type for mode-specific analytics
+                  logStudyEvent({
+                    sessionId: sessionId || '',
+                    event: 'section_complete',
+                    resourceId: activeSectionId,
+                    metadata: {
+                      title: currentSection?.title || '',
+                      content_type: contentType,
+                      task_type: (currentSection as any)?.task_type || '',
+                    },
+                  }).catch(() => {});
+                }}
+              />
             </div>
           ) : loadingLecture ? (
             <div className="flex items-center justify-center h-full">

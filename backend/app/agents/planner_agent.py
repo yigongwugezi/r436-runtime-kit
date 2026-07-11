@@ -45,19 +45,27 @@ class PlannerAgent(BaseAgent):
         total_days = self._infer_days(time_text, profile)
         diag_meta = self._build_diagnosis_meta(diagnosis, weak_points, total_days, profile, time_text)
 
-        # ── Auto-detect planning mode ──
+        # ── Determine planning mode (focus vs textbook) ──
         plan_mode = context.get("plan_mode", "") or self._detect_plan_mode(
             context, weak_points, diagnosis,
         )
+
+        # ── Determine path structure mode ──
+        # textbook: stages→chapters→sections (math, physics, history)
+        # daily:    周→日→任务 (languages, exam prep)
+        # project:  阶段→实操→项目 (coding, design)
+        path_mode = context.get("path_mode", "textbook")
 
         # ── Mode A: Focused sprint — target specific weak points ──
         if plan_mode == "focus":
             return self._run_focus_mode(context, profile, diagnosis, weak_points, total_days)
 
-        # ── Mode B: Textbook — full chapter-structured curriculum ──
+        # ── Mode B: Generate path with appropriate structure ──
         chapters = None
         try:
-            chapters = self._generate_chapters(context, profile, planning_points, total_days, diag_meta)
+            chapters = self._generate_chapters(
+                context, profile, planning_points, total_days, diag_meta, path_mode,
+            )
         except Exception:
             pass
 
@@ -463,19 +471,99 @@ class PlannerAgent(BaseAgent):
             pass
         return []
 
-    def _generate_chapters(self, context, profile, planning_points, total_days, diag_meta):
+    def _generate_chapters(self, context, profile, planning_points, total_days, diag_meta, path_mode="textbook"):
         course = str(context.get('course_id', '') or '')
         weak = [p.get('name','') for p in planning_points[:10]]
         from app.config import settings
         max_tokens = settings.path_max_tokens
-        prompt = f"""你是课程设计师。为「{course}」设计一份内容全面、粒度合理的教科书级学习路径。
+
+        if path_mode == "daily":
+            prompt = f"""你是课程设计师。为「{course}」设计一份{total_days}天的每日学习计划。
+薄弱知识点：{','.join(weak) if weak else '待诊断'}。
+
+这是语言类/积累型学科，不要按教材章节来。而是按「周→日→任务」组织，每天的学习内容可以并行叠加（如：词汇+听力+阅读可以同一天进行）。
+每天的任务需要标注 task_type：
+- vocabulary: 单词/词汇记忆
+- listening: 听力训练
+- reading: 阅读理解
+- grammar: 语法专项
+- speaking: 口语练习
+- writing: 写作训练
+- review: 复习/测验
+
+按 weeks→days→tasks 层级输出JSON：
+{{"weeks":[{{"week":1,"title":"第1周：xxx","days":[{{"day":1,"tasks":[{{"title":"任务名称","task_type":"vocabulary","estimated_minutes":30,"goal":"学习目标","content":[{{"type":"text","value":"任务描述"}}]}}]}}]}}]}}"""
+        else:
+            prompt = f"""你是课程设计师。为「{course}」设计一份内容全面、粒度合理的教科书级学习路径。
 总学时：{total_days}天。薄弱知识点：{','.join(weak) if weak else '待诊断'}。
 
 小节划分原则：根据内容自然拆分，不要强行合并不相关的概念。比如"数组和广义表"一章可以拆成数组定义、数组实现、矩阵压缩存储、广义表定义、广义表存储、广义表递归算法等——具体情况具体分析。不能太概括，但也不必纠结数量。
 知识点type取：concept|procedure|memory。
 
+每个 section 需要标注 content_type 表示该小节的交互形式：
+- lecture: 讲义/概念讲解（数学推导、历史事件、物理原理等）
+- memory_drill: 记忆训练（单词、化学方程式、历史年代等需要背诵的内容）
+- step_through: 分步推导/渐进式教程（数学解题、代码实现、实验步骤等）
+
 按 stages→chapters→sections→knowledge_points 层级输出JSON：
-{{"stages":[{{"stage_id":"s0","title":"阶段标题","order":0,"chapters":[{{"chapter_id":"ch0","title":"章节标题","order":0,"sections":[{{"section_id":"sec0","title":"1.1 节标题","goal":"学习目标","estimated_minutes":45,"knowledge_points":[{{"name":"知识点","type":"concept"}},{{"name":"知识点","type":"procedure"}}]}}]}}]}}]}}"""
+{{"stages":[{{"stage_id":"s0","title":"阶段标题","order":0,"chapters":[{{"chapter_id":"ch0","title":"章节标题","order":0,"sections":[{{"section_id":"sec0","title":"1.1 节标题","goal":"学习目标","content_type":"lecture","estimated_minutes":45,"knowledge_points":[{{"name":"知识点","type":"concept"}},{{"name":"知识点","type":"procedure"}}]}}]}}]}}]}}"""
+        if self.llm_client:
+            try:
+                raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.3, max_tokens=max_tokens)
+                s, e = raw.find("{"), raw.rfind("}") + 1
+                if s >= 0 and e > s:
+                    data = json.loads(raw[s:e])
+                    if path_mode == "daily":
+                        weeks = data.get("weeks", [])
+                        return self._convert_daily_to_stages(context, weeks)
+                    stages = data.get("stages") or data.get("chapters") or []
+                    return self._rewrite_chapter_ids(context, stages)
+            except: pass
+        return None
+
+    def _convert_daily_to_stages(self, context: dict, weeks: list) -> list:
+        """Convert daily-plan weeks→days→tasks into stages→chapters→sections."""
+        stages = []
+        for w in weeks:
+            days = w.get("days", [])
+            stage = {
+                "stage_id": f"week_{w.get('week', 1)}",
+                "title": w.get("title", f"第{w.get('week', 1)}周"),
+                "order": w.get("week", 1) - 1,
+                "chapters": [],
+                "path_mode": "daily",
+            }
+            for d in days:
+                tasks = d.get("tasks", [])
+                chapter = {
+                    "chapter_id": f"day_{w.get('week',1)}_{d.get('day',1)}",
+                    "title": f"Day {d.get('day', 1)}",
+                    "order": d.get("day", 1) - 1,
+                    "sections": [],
+                }
+                for t in tasks:
+                    task_type = t.get("task_type", "vocabulary")
+                    ct_map = {
+                        "vocabulary": "memory_drill", "grammar": "lecture",
+                        "listening": "lecture", "reading": "lecture",
+                        "speaking": "lecture", "writing": "lecture",
+                        "review": "lecture",
+                    }
+                    section = {
+                        "section_id": f"task_{w.get('week',1)}_{d.get('day',1)}_{task_type}",
+                        "title": t.get("title", ""),
+                        "goal": t.get("goal", ""),
+                        "estimated_minutes": t.get("estimated_minutes", 30),
+                        "content_type": ct_map.get(task_type, "lecture"),
+                        "task_type": task_type,
+                        "knowledge_points": [],
+                    }
+                    chapter["sections"].append(section)
+                if chapter["sections"]:
+                    stage["chapters"].append(chapter)
+            if stage["chapters"]:
+                stages.append(stage)
+        return self._rewrite_chapter_ids(context, stages)
         if self.llm_client:
             try:
                 raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.3, max_tokens=max_tokens)

@@ -9,6 +9,7 @@ import { useChatStore } from '../store/chatStore';
 import type { ExamSet } from '../types/assessment';
 import { PageLoading, PageEmpty, PageError } from '../components/common/PageState';
 import { getCurrentLearner } from '../store/authStore';
+import PathModeRouter from '../components/learning/PathModeViews';
 
 const statusStyle: Record<string, { bg: string; border: string; text: string; icon: string }> = {
   mastered: { bg: 'bg-success-50', border: 'border-success-200', text: 'text-success-700', icon: 'text-success-500' },
@@ -225,6 +226,51 @@ export default function LearningPathPage() {
 
   const isDetailView = !!activeStageId;
 
+  // ── Daily/Focus modes → use PathModeRouter. Textbook → keep original UI ──
+  const isDailyOrFocus = stages.some((s: any) =>
+    (s as any).path_mode === 'daily' || (s as any).plan_mode === 'focus'
+  );
+  if (isDailyOrFocus) {
+    return (
+      <div className="animate-fade-in flex-1 flex flex-col">
+        <div className="flex items-center justify-between mb-5 flex-shrink-0">
+          <div>
+            <h2 className="font-display text-2xl font-bold text-surface-800">学习路径</h2>
+            <p className="text-surface-500 mt-1">
+              {(() => {
+                for (const s of stages) {
+                  if ((s as any).path_mode === 'daily') return '每日任务式学习计划';
+                  if ((s as any).plan_mode === 'focus') return '精进突破冲刺计划';
+                }
+                return '结构化进阶学习路线';
+              })()}
+            </p>
+          </div>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 px-4 py-2 bg-surface-50 rounded-xl">
+              <Target size={18} className="text-primary-500" />
+              <span className="text-sm font-medium text-surface-600">进度: {progress}%</span>
+            </div>
+            {!isParent && (
+              <button onClick={() => chat.setOpen(true)} className="flex items-center gap-2 px-5 py-2.5 bg-primary-600 text-white rounded-xl font-medium hover:bg-primary-700 transition-colors">
+                <Zap size={18} />完善路径
+              </button>
+            )}
+          </div>
+        </div>
+        <PathModeRouter
+          stages={stages as any}
+          path={path}
+          progress={progress}
+          totalNodes={totalNodes}
+          masteredNodes={masteredNodes}
+          onNavigateChapter={(chId) => nav(`/lecture/${encodeURIComponent(chId)}`)}
+          onNavigateSection={(secId) => nav(`/lecture/section/${encodeURIComponent(secId)}`)}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="animate-fade-in flex-1 flex flex-col">
       {/* Header */}
@@ -269,7 +315,7 @@ export default function LearningPathPage() {
 
       {/* ── Exam Sets section ── */}
       {!isParent && (
-        <div className="bg-white rounded-2xl p-5 shadow-soft mb-4 flex-shrink-0">
+        <div className="bg-white rounded-2xl p-5 shadow-soft mb-4">
           <div className="flex items-center justify-between mb-3">
             <h3 className="font-display text-sm font-semibold text-surface-700 flex items-center gap-2">
               <ClipboardList size={16} className="text-accent-500" />题集
@@ -291,11 +337,10 @@ export default function LearningPathPage() {
               </button>
             </div>
           </div>
-
           {examSets.length === 0 ? (
             <p className="text-xs text-surface-400">暂无题集，点击上方按钮生成</p>
           ) : (
-            <div className="space-y-2 max-h-48 overflow-y-auto">
+            <div className="space-y-2">
               {examSets.map(es => (
                 <div key={es.id}
                   className="flex items-center gap-3 p-3 rounded-xl border border-surface-200 hover:border-accent-300 hover:shadow-soft transition-all cursor-pointer"
@@ -332,7 +377,7 @@ export default function LearningPathPage() {
       {/* Main content - 两栏，撑满剩余高度 */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 flex-1 min-h-0">
         {/* 左侧：学习节点图 */}
-        <div className="lg:col-span-2 bg-white rounded-2xl p-6 shadow-soft flex flex-col min-h-0">
+        <div className="lg:col-span-2 bg-white rounded-2xl p-6 shadow-soft flex flex-col">
           {isDetailView ? (
             <div className="animate-fade-in flex-1 overflow-auto">
               <button onClick={handleBackToGraph} className="flex items-center gap-1.5 text-sm text-surface-500 hover:text-primary-600 transition-colors mb-4">
@@ -354,26 +399,26 @@ export default function LearningPathPage() {
 
               {/* -- 章节列表（新格式） -- */}
               { activeStage?.chapters?.length > 0 && (
-                <div className="grid grid-cols-1 gap-2.5 mb-4">
+                <div className="grid grid-cols-1 gap-3 mb-4">
                   {activeStage.chapters.map((ch: any, ci: number) => {
                     const secCount = ch.sections?.length ?? 0;
                     const totalKps = ch.sections?.reduce((s: number, sec: any) => s + (sec.knowledgePoints?.length ?? 0), 0) ?? 0;
                     return (
                       <div key={ch.id}
                         onClick={() => nav(`/lecture/${encodeURIComponent(ch.id)}`)}
-                        className="flex items-center gap-3 p-3.5 rounded-xl cursor-pointer transition-all border border-surface-200 bg-surface-50 hover:border-primary-300 hover:shadow-elevated group">
-                        <div className="w-9 h-9 rounded-lg bg-primary-100 text-primary-600 flex items-center justify-center flex-shrink-0 font-bold text-sm">{ci + 1}</div>
+                        className="flex items-center gap-4 p-5 rounded-xl cursor-pointer transition-all border border-surface-200 bg-surface-50 hover:border-primary-300 hover:shadow-elevated group">
+                        <div className="w-11 h-11 rounded-xl bg-primary-100 text-primary-600 flex items-center justify-center flex-shrink-0 font-bold text-base">{ci + 1}</div>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
                             <p className="text-sm font-semibold text-surface-800 truncate group-hover:text-primary-600 transition-colors">{ch.title}</p>
                           </div>
-                          <div className="flex items-center gap-2 mt-0.5 text-[10px] text-surface-400">
-                            <span className="flex items-center gap-0.5"><BookOpen size={10} />{secCount} 小节</span>
+                          <div className="flex items-center gap-2 mt-1 text-xs text-surface-400">
+                            <span className="flex items-center gap-0.5"><BookOpen size={12} />{secCount} 小节</span>
                             <span>{totalKps} 知识点</span>
                             {ch.mindmapId && <span className="text-accent-500">思维导图</span>}
                           </div>
                         </div>
-                        <ExternalLink size={14} className="text-surface-300 group-hover:text-primary-400 transition-colors" />
+                        <ExternalLink size={16} className="text-surface-300 group-hover:text-primary-400 transition-colors" />
                       </div>
                     );
                   })}
@@ -382,7 +427,7 @@ export default function LearningPathPage() {
 
               {/* -- 知识点列表（仅旧格式兜底） -- */}
               { (!activeStage?.chapters || activeStage.chapters.length === 0) && (
-                <div className="grid grid-cols-1 gap-2.5">
+                <div className="grid grid-cols-1 gap-3">
                   {activeStage?.nodes?.map((node: any, ni: number) => {
                   const nc = nb(node.status || 'available');
                   const nStatus = node.status || 'available';
@@ -392,20 +437,20 @@ export default function LearningPathPage() {
                     <div
                       key={node.id}
                       onClick={() => handleNodeClick(node.id)}
-                      className={`flex items-center gap-3 p-3.5 rounded-xl cursor-pointer transition-all border ${nc} hover:shadow-elevated hover:border-primary-300 group`}
+                      className={`flex items-center gap-4 p-5 rounded-xl cursor-pointer transition-all border ${nc} hover:shadow-elevated hover:border-primary-300 group`}
                     >
-                      <div className={`w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 ${nodeStatusColor(nStatus)}`}>
-                        {nodeStatusIcon(nStatus, 18)}
+                      <div className={`w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0 ${nodeStatusColor(nStatus)}`}>
+                        {nodeStatusIcon(nStatus, 20)}
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                          <span className="text-[10px] text-surface-400 font-medium w-4 text-right">{ni + 1}</span>
+                          <span className="text-xs text-surface-400 font-medium w-5 text-right">{ni + 1}</span>
                           <p className="text-sm font-semibold text-surface-800 truncate group-hover:text-primary-600 transition-colors">{node.topic}</p>
                           {node.isKeyPoint && (
                             <span className="text-[10px] px-1.5 py-0.5 bg-warning-100 text-warning-700 rounded-full font-medium flex-shrink-0">重点</span>
                           )}
                         </div>
-                        <div className="flex items-center gap-3 mt-1 text-[10px] text-surface-400">
+                        <div className="flex items-center gap-3 mt-1.5 text-xs text-surface-400">
                           {resourceCount > 0 ? (
                             <>
                               <span className="flex items-center gap-1"><BookOpen size={10} />{resourceCount} 个资源</span>

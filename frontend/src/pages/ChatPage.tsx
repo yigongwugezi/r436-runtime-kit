@@ -17,6 +17,7 @@ import ChatHistorySidebar from '../components/chat/ChatHistorySidebar';
 import ChatClarification from '../components/chat/ChatClarification';
 import PromptTemplates from '../components/chat/PromptTemplates';
 import AgentExecutionDetails from '../components/chat/AgentExecutionDetails';
+import ModePicker, { parseModePickTag, stripModePickTag } from '../components/chat/ModePicker';
 
 /** Agent 通用阶段映射 —— 后端 agent_id → 中文标签 */
 const AGENT_LABELS: Record<string, string> = {
@@ -469,7 +470,19 @@ function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onCla
             </div>
           ) : (
             <div className="text-sm leading-relaxed">
-              {msg.content ? <Markdown content={msg.content} /> : msg.streaming ? <span className="text-surface-400">思考中…</span> : null}
+              {(() => {
+                const content = msg.content || '';
+                const modePick = parseModePickTag(content);
+                const cleanContent = stripModePickTag(content);
+                return (
+                  <>
+                    {cleanContent ? <Markdown content={cleanContent} /> : msg.streaming ? <span className="text-surface-400">思考中…</span> : null}
+                    {modePick && !msg.streaming && (
+                      <ModePicker options={modePick.options} course={modePick.course} defaultMode={modePick.defaultMode} />
+                    )}
+                  </>
+                );
+              })()}
               {msg.multimodalResult && <MultimodalResultView result={msg.multimodalResult} />}
               {msg.streaming && msg.content && <span className="inline-block w-1.5 h-4 bg-primary-400 animate-pulse rounded ml-0.5 align-text-bottom" />}
               {msg.error && <div className="mt-2 p-3 bg-error-50 rounded-xl flex items-start gap-2"><AlertCircle className="w-4 h-4 text-error-400 flex-shrink-0 mt-0.5" /><div><p className="text-xs text-error-600 font-medium">生成失败</p><p className="text-xs text-error-400 mt-0.5">{msg.error}</p></div></div>}

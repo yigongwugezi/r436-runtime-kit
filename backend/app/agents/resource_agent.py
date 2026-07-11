@@ -41,6 +41,15 @@ class ResourceAgent(BaseAgent):
         course_name = (course.get("course_name") or
                        context.get("profile_facts", {}).get("target_course") or
                        context.get("course_id", "目标课程"))
+
+        # ── Detect path mode for resource type selection ──
+        path_mode = context.get("path_mode", "")
+        if not path_mode:
+            for s in stages:
+                if isinstance(s, dict) and s.get("path_mode"):
+                    path_mode = str(s.get("path_mode"))
+                    break
+        self._path_mode = path_mode  # store for use in prompts
         course_name = str(course_name).strip()
 
         # ── DeepTutor: lecture + mindmap + reading ──
@@ -269,10 +278,8 @@ class ResourceAgent(BaseAgent):
                     "每份讲义必须包含例题——概念讲解后紧跟例题演示，解析步骤要详细。\n"
                     "练习题由练习中心处理，你专注做学习材料（讲义、导图、阅读、代码案例等）。\n"
                     "不要偷工减料，不要跳过任何任务。宁多勿少，宁深勿浅。\n\n"
-                    "## 资源类型（提示）\n"
-                    "练习题和测验题由练习中心单独生成，你专注学习材料即可。\n"
-                    "根据课程特点自由决定类型：lecture(讲义), mindmap(思维导图), reading(阅读材料), practice(实操案例)等。\n"
-                    "不同学科用不同组合，不套固定模板。\n\n"
+                    "## 资源类型（按课程模式选择）\n"
+                    + self._mode_resource_guide() + "\n\n"
                     "## 内容深度\n"
                     "简单概念 → 精炼讲义附1-2道基础例题\n"
                     "核心难点 → 拆分为上下篇 + 每篇3-5道例题 + 阶梯难度\n"
@@ -332,6 +339,36 @@ class ResourceAgent(BaseAgent):
         if not resources:
             return []
         return self._normalize_llm_resources(resources, stages, knowledge_points, course, rag_evidence)
+
+    def _mode_resource_guide(self) -> str:
+        """Return mode-specific resource type instructions for the LLM prompt."""
+        pm = getattr(self, "_path_mode", "") or ""
+        if pm == "daily":
+            return (
+                "这是语言类/每日学习模式。不要生成讲义！生成以下类型的资源：\n"
+                "- memory_drill: 单词闪卡/词汇表（**word** — 释义 格式）\n"
+                "- listening: 听力训练材料（对话文本+理解题）\n"
+                "- reading: 阅读理解文章+问答\n"
+                "- grammar: 语法讲解+例句+练习\n"
+                "- speaking: 口语对话模板+场景练习\n"
+                "- writing: 写作模板+范文\n"
+                "- review: 复习测验/错题回顾\n"
+                "练习题和测验题由练习中心单独生成，你专注学习材料即可。"
+            )
+        if pm == "project":
+            return (
+                "这是编程/项目驱动模式。生成以下类型的资源：\n"
+                "- lecture: 概念讲解（简明扼要）\n"
+                "- practice: 代码实操案例（含完整可运行代码+注释）\n"
+                "- mindmap: 技术栈关系图\n"
+                "- reading: 最佳实践/设计模式文章\n"
+                "练习题和测验题由练习中心单独生成，你专注学习材料即可。"
+            )
+        return (
+            "练习题和测验题由练习中心单独生成，你专注学习材料即可。\n"
+            "根据课程特点自由决定类型：lecture(讲义), mindmap(思维导图), reading(阅读材料), practice(实操案例)等。\n"
+            "不同学科用不同组合，不套固定模板。"
+        )
 
     @staticmethod
     def _parse_json(text: str) -> dict:

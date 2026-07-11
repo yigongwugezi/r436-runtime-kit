@@ -534,6 +534,33 @@ class ConversationStore:
             for m in state.messages[-6:]
         )
 
+        # ── Detect course type for mode-specific extraction ──
+        # Check BOTH stored facts AND current message (covers first message before facts are stored)
+        target = str(state.facts.get("target_course", "")).strip()
+        msg_lower = message.lower()
+        lang_kw = ["英语","日语","韩语","法语","德语","西语","语言","雅思","托福","gre","toefl","ielts","英文","日文"]
+        prog_kw = ["python","java","c++","编程","前端","后端","开发","代码","写一个","搭建"]
+        is_language = any(w in target for w in lang_kw) or any(w in msg_lower for w in lang_kw)
+        is_programming = any(w in target for w in prog_kw) or any(w in msg_lower for w in prog_kw)
+
+        extra_dims = ""
+        extra_rules = ""
+        if is_language:
+            extra_dims = (
+                "- current_level: 当前语言水平（如：零基础/初级/中级/高级、CET4/CET6/专八、雅思6.5等）\n"
+                "- target_score: 目标分数或等级\n"
+                "- weak_skill: 薄弱技能（听力/阅读/写作/口语/词汇/语法中哪项最弱）\n"
+                "- daily_vocab_goal: 每日背词量目标\n"
+            )
+            extra_rules = "8. 语言类课程：水平描述要具体(如CET4 425分)，不要只说'一般'\n"
+        elif is_programming:
+            extra_dims = (
+                "- coding_level: 编程水平（零基础/学过语法/能写小项目/熟练）\n"
+                "- preferred_language: 偏好的编程语言\n"
+                "- project_goal: 想做什麼项目或方向\n"
+            )
+            extra_rules = "8. 编程类课程：区分'学过语法不会用'和'能独立开发'\n"
+
         prompt = (
             "你是一个学习画像提取器。从用户消息中提取以下维度的信息。\n\n"
             "## 已有画像\n" + known_facts + "\n\n"
@@ -546,7 +573,8 @@ class ConversationStore:
             "- weak_points: 薄弱点\n"
             "- learning_goal: 学习目标\n"
             "- time_budget: 时间安排\n"
-            "- preference: 学习偏好\n\n"
+            "- preference: 学习偏好\n" +
+            extra_dims + "\n"
             "## 规则\n"
             "1. 只提取用户明确提到的信息,不要推测\n"
             "2. 课程名要完整准确,如微积分、数据结构、Python\n"
@@ -554,7 +582,8 @@ class ConversationStore:
             "4. 疑问句中的'是什么'、'的是什么'、'这个'绝对不要提取为课程名\n"
             "5. 如果用户只是在提问没说出具体课程,target_course留空\n"
             "6. 绝对不要提取人名、昵称、称呼（如'小明''张三'等）到 background 或任何字段\n"
-            "7. 只返回JSON: {\"updates\": {...}, \"conflicts\": []}\n"
+            "7. 只返回JSON: {\"updates\": {...}, \"conflicts\": []}\n" +
+            extra_rules
         )
 
         try:

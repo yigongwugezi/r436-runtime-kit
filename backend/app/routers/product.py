@@ -4739,7 +4739,28 @@ def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
 
     kp_names = ", ".join(kp.get("name", str(kp)) if isinstance(kp, dict) else str(kp) for kp in (knowledge_points or [])[:8])
 
-    prompt = f"""你是 EduAgent 智能助教，请为学生解答问题。
+    # ── Detect tutoring mode from student's course ──
+    tutor_persona = "你是 EduAgent 智能助教，请为学生解答问题。"
+    try:
+        state = conversation_store.get(session_id)
+        course = str(state.facts.get("target_course", "")).strip()
+        if any(w in course for w in ["英语","日语","韩语","法语","德语","语言","雅思","托福"]):
+            tutor_persona = (
+                "你是 EduAgent 语言导师。你的角色是语言陪练——"
+                "用目标语言与学生互动，纠正语法和发音，提供地道表达。"
+                "初级学生用中英双语解释，中高级学生尽量用目标语言回复。"
+                "回答中给出例句和用法说明。"
+            )
+        elif any(w in course for w in ["Python","Java","C++","编程","前端","后端","开发"]):
+            tutor_persona = (
+                "你是 EduAgent 编程导师。你的角色是帮助理解概念和调试代码。"
+                "用实际代码示例讲解，解释为什么这样写而不是那样写。"
+                "鼓励学生先思考再给答案，用引导式提问帮助理解。"
+            )
+    except Exception:
+        pass
+
+    prompt = f"""{tutor_persona}
 
 {profile_text if profile_text else ""}
 

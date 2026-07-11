@@ -928,12 +928,20 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
         else:
             break
 
+    # ── Mode-specific metrics ──
+    mode_metrics: dict[str, int] = {}
+    for mode_evt in ("vocabulary_review", "listening_practice", "speaking_practice",
+                     "writing_practice", "grammar_exercise", "code_practice", "project_milestone"):
+        if event_counts.get(mode_evt, 0) > 0:
+            mode_metrics[mode_evt] = event_counts[mode_evt]
+
     return {
         "eventCount": len(events),
         "totalStudyMinutes": total_minutes,
         "todayStudyMinutes": today_study_minutes,
         "streak": streak,
         "activeResourceCount": len(resource_counts),
+        "modeMetrics": mode_metrics if mode_metrics else None,
         "viewedResources": event_counts.get("resource_view", 0),
         "completedResources": event_counts.get("resource_complete", 0),
         "practiceCount": event_counts.get("practice_result", 0),

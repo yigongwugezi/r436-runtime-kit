@@ -98,6 +98,38 @@ def _try_section_resource_chat(message: str, session_id: str, payload: dict[str,
     return reply, result
 
 
+def _auto_save_profile(state_obj: Any) -> None:
+    """Persist current facts as a profile snapshot after every message."""
+    from app.db.engine import SessionLocal
+    from app.db.repository import save_profile_snapshot
+    facts = getattr(state_obj, "facts", {}) or {}
+    if not facts:
+        return
+    dims = []
+    label_map = {
+        "background": ("身份/专业背景", "background"),
+        "target_course": ("目标课程", "target_course"),
+        "knowledge_base": ("已有基础", "knowledge_base"),
+        "weak_points": ("薄弱点", "weak_points"),
+        "learning_goal": ("学习目标", "learning_goal"),
+        "time_budget": ("时间安排", "time_budget"),
+        "preference": ("学习偏好", "preference"),
+    }
+    for key, (label, _) in label_map.items():
+        val = str(facts.get(key, "")).strip()
+        if val and val not in ("未提及", "待补充", "未知", "", "无"):
+            dims.append({"key": key, "label": label, "value": val, "score": 60, "confidence": 0.8, "source": "conversation_extract"})
+    if not dims:
+        return
+    try:
+        db = SessionLocal()
+        save_profile_snapshot(db, state_obj.session_id, dimensions=dims)
+    except Exception:
+        pass
+    finally:
+        db.close()
+
+
 def _ensure_session(session_id: str) -> None:
     if not session_id or not session_id.strip():
         from app.utils.errors import MissingSessionIdError
@@ -137,6 +169,8 @@ async def _run_chat(message: str, session_id: str) -> tuple[str, dict[str, Any]]
             v = str(facts.get(lk,"")).strip()
             if v and len(v)>=2 and v not in {"的是什么","什么","啥","未知","未提及","无","none"}:
                 state_obj.facts[fk] = v
+    # ── Auto-persist profile snapshot after every message ──
+    _auto_save_profile(state_obj)
     # Clear one-shot feedback signal after consumption, store new signal for next request
     if state_obj.feedback_signal is not None:
         state_obj.feedback_signal = None
@@ -192,6 +226,7 @@ def _try_multimodal_chat(message: str, session_id: str, payload: dict[str, Any])
     reply = multimodal_payload["reply"]["content"]
     conversation_store.append_message(session_id, "assistant", reply)
     conversation_store.set_result(session_id, multimodal_payload)
+    _auto_save_profile(conversation_store.get(session_id))
     return multimodal_payload
 
 

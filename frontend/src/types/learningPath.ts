@@ -54,6 +54,8 @@ export interface Section {
   status: ContentStatus;
   knowledgePoints: KnowledgePoint[];
   lectureIds: string[];
+  /** 内容交互形式: lecture | memory_drill | step_through */
+  contentType?: string;
 }
 
 export interface KnowledgePoint {
