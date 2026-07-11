@@ -205,9 +205,10 @@ async def _run_conversation_agent(context: dict[str, Any], factory: AgentFactory
             "action": str(result.get("action", "none")),
             "reply": str(result.get("reply", "")),
             "facts": result.get("facts", {}),
+            "plan_mode": str(result.get("plan_mode", "")),
         }
     except Exception:
-        return {"action": "none", "reply": "", "facts": {}}
+        return {"action": "none", "reply": "", "facts": {}, "plan_mode": ""}
 
 
 def _emit_feedback_signal(state: dict) -> dict[str, Any]:
@@ -256,6 +257,9 @@ async def _intent_node(state: dict) -> dict:
     state["intent"] = ca_result["action"]
     state["_conversation_reply"] = ca_result["reply"]
     state["_conversation_facts"] = ca_result["facts"]
+    plan_mode = ca_result.get("plan_mode", "")
+    if plan_mode:
+        state["plan_mode"] = plan_mode
     state.setdefault("agent_steps", []).append({"node": "intent_router", "intent": state["intent"]})
     logger.info("Intent: %s", state["intent"])
     return state
@@ -477,6 +481,9 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
         intent = ca_result["action"]
         state["intent"] = intent
         state["_conversation_reply"] = ca_result["reply"]
+        plan_mode = ca_result.get("plan_mode", "")
+        if plan_mode:
+            state["plan_mode"] = plan_mode
 
     # ── Chat-only intents (no agent execution needed) ──
     if intent in chat_only_intents():

@@ -1,36 +1,10 @@
-import { useState } from 'react';
-import { Sparkles, ChevronDown, ChevronUp, Zap } from 'lucide-react';
+import { useState, useMemo } from 'react';
+import { ChevronDown, ChevronUp, Zap } from 'lucide-react';
+import { useSubjectStore } from '../../store/subjectStore';
 
 /* ===================================================================
- * 快捷输入模板
- * 输入框上方可折叠的面板，点击模板填入输入框
+ * 快捷输入模板 — 动态适配当前科目
  * =================================================================== */
-const TEMPLATES = [
-  {
-    group: '学习规划',
-    items: [
-      { icon: '🎯', label: '构建学习画像', prompt: '我想开始学习，帮我构建学习画像' },
-      { icon: '🗺️', label: '规划学习路径', prompt: '帮我规划一个两周的机器学习学习路径' },
-      { icon: '📊', label: '诊断知识短板', prompt: '帮我诊断一下在人工智能方面的知识短板' },
-    ],
-  },
-  {
-    group: '学习资源',
-    items: [
-      { icon: '📝', label: '生成练习题', prompt: '根据我的画像生成一套神经网络基础练习题' },
-      { icon: '🧠', label: '生成思维导图', prompt: '帮我生成人工智能导论的知识思维导图' },
-      { icon: '💻', label: '实操案例', prompt: '给我一个Python实现神经网络的实操案例' },
-    ],
-  },
-  {
-    group: '进度与反馈',
-    items: [
-      { icon: '📈', label: '反馈学习进度', prompt: '反馈我的学习进度' },
-      { icon: '❓', label: '解释知识点', prompt: '帮我解释一下反向传播算法' },
-      { icon: '📋', label: '推荐学习资源', prompt: '帮我推荐学习资源' },
-    ],
-  },
-];
 
 interface Props {
   onSelect: (prompt: string) => void;
@@ -38,6 +12,46 @@ interface Props {
 
 export default function PromptTemplates({ onSelect }: Props) {
   const [open, setOpen] = useState(false);
+  const activeSubject = useSubjectStore((s) => s.activeSubject);
+  const activeClassSubject = useSubjectStore((s) => s.activeClassSubject);
+  const courseName = activeSubject?.name || activeClassSubject?.name || '';
+
+  const templates = useMemo(() => {
+    const course = courseName || '这门课';
+    return [
+      {
+        group: '学习规划',
+        items: [
+          { icon: '🎯', label: '了解我的基础', prompt: courseName ? `我想学${course}，帮我了解一下我的基础` : '我想开始学习，帮我了解一下我的基础' },
+          { icon: '🗺️', label: '规划学习路径', prompt: courseName ? `帮我规划${course}的学习路径` : '帮我规划学习路径' },
+          { icon: '📊', label: '诊断薄弱点', prompt: courseName ? `帮我诊断一下在${course}方面的薄弱点` : '帮我诊断一下我的薄弱点' },
+        ],
+      },
+      {
+        group: '学习资源',
+        items: [
+          { icon: '📝', label: '生成练习题', prompt: courseName ? `根据我的学习情况，出几道${course}的练习题` : '根据我的学习情况，出几道练习题' },
+          { icon: '🧠', label: '生成思维导图', prompt: courseName ? `帮我生成${course}的知识思维导图` : '帮我生成知识思维导图' },
+          { icon: '📖', label: '讲解知识点', prompt: courseName ? `帮我详细讲解${course}的一个知识点` : '帮我详细讲解一个知识点' },
+        ],
+      },
+      {
+        group: '进度与反馈',
+        items: [
+          { icon: '📈', label: '查看学习进度', prompt: '帮我看看最近的学习进度怎么样' },
+          { icon: '❓', label: '我不理解某个概念', prompt: '我有一个概念不太理解，帮我讲一下' },
+          { icon: '📋', label: '推荐学习资源', prompt: '根据我的学习情况推荐一些资源' },
+        ],
+      },
+      {
+        group: '规划模式',
+        items: [
+          { icon: '📚', label: '教材模式（系统学）', prompt: courseName ? `帮我系统学${course}，按章节来` : '帮我系统学，按章节来' },
+          { icon: '🎯', label: '精进模式（补短板）', prompt: courseName ? `帮我专攻${course}的薄弱点` : '帮我专项突破薄弱点' },
+        ],
+      },
+    ];
+  }, [courseName]);
 
   return (
     <div className="mb-2">
@@ -47,12 +61,12 @@ export default function PromptTemplates({ onSelect }: Props) {
       >
         {open ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
         <Zap className="w-3 h-3" />
-        快捷输入模板
+        推荐话题
       </button>
 
       {open && (
         <div className="mt-2 p-3 bg-gray-50 border border-gray-100 rounded-xl space-y-2 animate-fade-in-up">
-          {TEMPLATES.map((group) => (
+          {templates.map((group) => (
             <div key={group.group}>
               <p className="text-[10px] font-semibold text-gray-400 mb-1.5">{group.group}</p>
               <div className="flex flex-wrap gap-1.5">

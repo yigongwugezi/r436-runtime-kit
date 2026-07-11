@@ -1,11 +1,11 @@
-/** 系统默认快捷指令 */
+/** 系统默认快捷指令 — 通用模板，具体科目由 PromptTemplates 动态替换 */
 export const DEFAULT_QUICK_COMMANDS = [
-  { id: 'q1', icon: '🎯', label: '构建学习画像', prompt: '我想开始学习，帮我构建学习画像' },
-  { id: 'q2', icon: '📊', label: '诊断知识短板', prompt: '帮我诊断一下我在人工智能方面的知识短板' },
-  { id: 'q3', icon: '🗺️', label: '规划学习路径', prompt: '为我规划一个两周的机器学习学习路径' },
-  { id: 'q4', icon: '📝', label: '生成练习题', prompt: '根据我的画像生成一套神经网络基础练习题' },
-  { id: 'q5', icon: '🧠', label: '生成思维导图', prompt: '帮我生成人工智能导论的知识思维导图' },
-  { id: 'q6', icon: '💻', label: '实操案例', prompt: '给我一个Python实现神经网络的实操案例' },
+  { id: 'q1', icon: '🎯', label: '了解我的基础', prompt: '我想开始学习，帮我了解一下我的基础' },
+  { id: 'q2', icon: '📊', label: '诊断薄弱点', prompt: '帮我诊断一下薄弱点' },
+  { id: 'q3', icon: '🗺️', label: '规划学习路径', prompt: '帮我规划学习路径' },
+  { id: 'q4', icon: '📝', label: '生成练习题', prompt: '根据我的学习情况，出几道练习题' },
+  { id: 'q5', icon: '🧠', label: '生成思维导图', prompt: '帮我生成知识思维导图' },
+  { id: 'q6', icon: '📖', label: '讲解知识点', prompt: '帮我详细讲解一个知识点' },
 ];
 
 export const DEFAULT_SESSION_TITLE = '新对话';

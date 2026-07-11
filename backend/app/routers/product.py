@@ -1905,37 +1905,41 @@ def delete_chat_session(session_id: str) -> dict[str, Any]:
 
 
 @router.get("/chat/quick-commands")
-def quick_commands() -> dict[str, Any]:
-    """Return quick-command suggestions for the chat input.
-
-    Commands are dynamically enriched with available course names from the
-    catalog so the frontend always shows relevant prompts.
-    """
-    base_commands = [
-        {"id": "ai_intro", "label": "AI 入门", "icon": "Brain", "prompt": "我是大二学生，想两周入门人工智能"},
-        {"id": "nn", "label": "神经网络", "icon": "Brain", "prompt": "我想重点学习神经网络，希望多给图解和代码"},
-        {"id": "data_structures", "label": "数据结构", "icon": "BookOpen", "prompt": "我是软件工程大二学生，想复习数据结构，为了考试通过"},
+def quick_commands(sessionId: str = "") -> dict[str, Any]:
+    """Return quick-command suggestions personalised to the current session."""
+    session_id = str(sessionId).strip() if sessionId else ""
+    course_name = ""
+    if session_id:
+        try:
+            state = conversation_store.get(session_id)
+            course_name = str(state.facts.get("target_course", "")).strip()
+        except Exception:
+            pass
+    if not course_name:
+        try:
+            for course in course_catalog.list_courses()[:1]:
+                course_name = course.get("course_name", "")
+        except Exception:
+            pass
+    subject = course_name or "这门课"
+    commands = [
+        {"id": "profile", "label": "了解我的基础", "icon": "User",
+         "prompt": f"我想学{subject}，帮我了解一下我的基础" if course_name else "我想开始学习，帮我了解一下我的基础"},
+        {"id": "plan", "label": "规划学习路径", "icon": "Map",
+         "prompt": f"帮我规划{subject}的学习路径" if course_name else "帮我规划学习路径"},
+        {"id": "diagnose", "label": "诊断薄弱点", "icon": "Activity",
+         "prompt": f"帮我诊断一下在{subject}方面的薄弱点" if course_name else "帮我诊断一下薄弱点"},
+        {"id": "questions", "label": "生成练习题", "icon": "Edit3",
+         "prompt": f"根据我的学习情况，出几道{subject}的练习题" if course_name else "根据我的学习情况，出几道练习题"},
+        {"id": "mindmap", "label": "生成思维导图", "icon": "Share2",
+         "prompt": f"帮我生成{subject}的知识思维导图" if course_name else "帮我生成知识思维导图"},
+        {"id": "explain", "label": "讲解知识点", "icon": "HelpCircle",
+         "prompt": f"帮我详细讲解{subject}的一个知识点" if course_name else "帮我详细讲解一个知识点"},
     ]
-
-    # Enrich with available courses from the catalog
-    try:
-        for course in course_catalog.list_courses()[:2]:
-            name = course.get("course_name", "")
-            if name and not any(c["label"] == name for c in base_commands):
-                base_commands.append({
-                    "id": f"course_{course.get('course_id', '')}",
-                    "label": name,
-                    "icon": "BookOpen",
-                    "prompt": f"我想学习{name}，请帮我生成个性化学习方案",
-                })
-    except Exception:
-        logger.warning("Failed to enrich quick commands from course catalog")
-
     return _product_response(
-        {"commands": base_commands},
-        source="catalog",
+        {"commands": commands, "courseName": course_name or None},
+        source="profile" if course_name else "catalog",
     )
-
 
 @router.get("/chat/agents")
 def list_agents() -> dict[str, Any]:

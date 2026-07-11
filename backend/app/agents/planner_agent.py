@@ -45,67 +45,333 @@ class PlannerAgent(BaseAgent):
         total_days = self._infer_days(time_text, profile)
         diag_meta = self._build_diagnosis_meta(diagnosis, weak_points, total_days, profile, time_text)
 
-        # ── Try chapter-based planning first ──
+        # ── Auto-detect planning mode ──
+        plan_mode = context.get("plan_mode", "") or self._detect_plan_mode(
+            context, weak_points, diagnosis,
+        )
+
+        # ── Mode A: Focused sprint — target specific weak points ──
+        if plan_mode == "focus":
+            return self._run_focus_mode(context, profile, diagnosis, weak_points, total_days)
+
+        # ── Mode B: Textbook — full chapter-structured curriculum ──
+        chapters = None
         try:
             chapters = self._generate_chapters(context, profile, planning_points, total_days, diag_meta)
-            if chapters:
-                return self._make_chapter_result(chapters, total_days, diag_meta)
         except Exception:
             pass
 
-        # ── Try DeepTutor mastery_path capability ──
+        # ── Step 2: If no chapters, try DeepTutor for structure ──
+        if not chapters:
+            chapters = self._try_deeptutor_as_structure(context, total_days)
+
+        # ── Step 3: LLM pipeline as last resort ──
+        if not chapters:
+            chapters = self._llm_pipeline_fallback(context, profile, planning_points, total_days, diag_meta)
+
+        if not chapters:
+            return self._fallback_path(context, planning_points, total_days, profile, diag_meta)
+
+        # ── Step 4: Personalize with DeepTutor ──
+        personalized = self._personalize_with_deeptutor(
+            chapters, context, profile, diagnosis, weak_points, total_days,
+        )
+        chapters = personalized if personalized else chapters
+
+        return self._make_chapter_result(chapters, total_days, diag_meta)
+
+
+    # ── Mode detection: textbook vs focus sprint ──
+
+    def _detect_plan_mode(self, context: dict, weak_points: list, diagnosis: dict) -> str:
+        """Auto-detect whether the user wants textbook learning or a focused sprint.
+
+        Focus mode when:
+        - User explicitly asks to strengthen specific weak areas
+        - Diagnosis has clear weak points with high priority
+        - Message contains focus keywords like 强化/补/不会/薄弱/专攻
+
+        Textbook mode when:
+        - User says 学X/入门X/系统学X (learning a whole subject)
+        - No specific weak points identified
+        - Message contains 入门/系统/从头/全面
+        """
+        msg = str(context.get("user_message", "") or "")
+        facts = context.get("profile_facts", {}) or {}
+        user_msg = str(facts.get("_raw_user_message", msg))
+
+        # ── Explicit focus signals ──
+        focus_keywords = [
+            "强化", "补一补", "补一下", "专攻", "重点学", "突击",
+            "不太会", "搞不懂", "不熟练", "总是错", "薄弱",
+            "帮我加强", "专门练", "针对", "就学",
+        ]
+        textbook_keywords = [
+            "入门", "从头", "系统学", "全面", "学完", "学一遍",
+            "开始学", "想学", "我要学", "学这门",
+        ]
+
+        has_focus_signal = any(kw in user_msg for kw in focus_keywords)
+        has_textbook_signal = any(kw in user_msg for kw in textbook_keywords)
+        has_strong_weak_points = any(
+            w.get("priority") == "high" for w in weak_points
+        ) if weak_points else False
+
+        # Clear focus intent → focus mode
+        if has_focus_signal and not has_textbook_signal:
+            return "focus"
+
+        # Clear textbook intent → textbook mode
+        if has_textbook_signal and not has_focus_signal:
+            return "textbook"
+
+        # Both or neither → use weak points as tiebreaker
+        if has_strong_weak_points and weak_points and len(weak_points) >= 2:
+            return "focus"
+
+        return "textbook"
+
+    # ── Mode A: Focus sprint ──
+
+    def _run_focus_mode(
+        self, context: dict, profile: dict, diagnosis: dict,
+        weak_points: list, total_days: int,
+    ) -> dict[str, Any]:
+        """Generate a focused sprint plan targeting specific weak points.
+
+        Skips chapter structure entirely — produces a flat list of
+        sprint stages ordered by priority.
+        """
+        weak_names = [w.get("name", w.get("topic", "")) for w in weak_points[:8]]
+        facts = context.get("profile_facts", {})
+        course = facts.get("target_course", "") or str(context.get("course_id", ""))
+
+        # ── Try DeepTutor for personalised sprint plan ──
+        try:
+            from app.services.deeptutor_client import deeptutor_call
+
+            prompt = (
+                f"学生正在学{course or '一门课'}，发现以下薄弱点需要重点突破：\n"
+                + "\n".join(f"- {n}" for n in weak_names if n)
+                + f"\n\n可用时间：{total_days} 天。"
+                + "请设计一个精进突破计划，不要按教材章节顺序，"
+                + "而是按薄弱点的优先级和依赖关系排列。"
+                + "每个阶段聚焦一个薄弱点，包含：该补什么前置知识、核心练习、检验标准。"
+                + "\n\n输出 JSON："
+                + '{"sprints":[{"title":"阶段标题","focus":"薄弱点名称",'
+                + '"reason":"为什么要先攻克这个","estimated_days":3,'
+                + '"tasks":["具体任务1","具体任务2"],'
+                + '"success_criteria":"怎样算掌握了"}]}'
+            )
+            raw = deeptutor_call("chat", prompt)
+            import json as _json
+            s, e = raw.find("{"), raw.rfind("}") + 1
+            if s >= 0 and e > s:
+                parsed = _json.loads(raw[s:e])
+                sprints = parsed.get("sprints", [])
+                if sprints:
+                    stages = []
+                    for i, sp in enumerate(sprints):
+                        days = int(sp.get("estimated_days", max(1, total_days // max(1, len(sprints)))))
+                        stages.append({
+                            "stage_id": f"sprint_{i}",
+                            "title": sp.get("title", f"突破{sp.get('focus','')}"),
+                            "order": i,
+                            "goal": sp.get("success_criteria", ""),
+                            "duration": f"第{i+1}阶段（{days}天）",
+                            "estimated_days": days,
+                            "tasks": sp.get("tasks", []),
+                            "focus": sp.get("focus", ""),
+                            "reason": sp.get("reason", ""),
+                            "plan_mode": "focus",
+                        })
+                    return {
+                        "learning_path": stages,
+                        "stages": stages,
+                        "estimatedDays": total_days,
+                        "plan_mode": "focus",
+                        "plan_summary": f"精进突破计划：{' → '.join(weak_names[:5])}",
+                        "agent_step": {"agent_id": self.agent_id, "agent_name": self.agent_name, "status": "completed"},
+                    }
+        except Exception as e:
+            logger.debug("Focus mode DeepTutor failed: %s", e)
+
+        # ── Fallback: simple priority-ordered sprint ──
+        stages = []
+        for i, w in enumerate(weak_points[:5]):
+            name = w.get("name", w.get("topic", f"薄弱点{i+1}"))
+            reason = w.get("reason", "")
+            days = max(1, total_days // max(1, len(weak_points[:5])))
+            stages.append({
+                "stage_id": f"sprint_{i}",
+                "title": f"突破：{name}",
+                "order": i,
+                "goal": f"掌握{name}，能做对相关题型",
+                "duration": f"第{i+1}阶段（{days}天）",
+                "estimated_days": days,
+                "tasks": [f"复习{name}的核心概念", f"做{name}的专项练习", "整理错题"],
+                "focus": name,
+                "reason": reason,
+                "plan_mode": "focus",
+            })
+        return {
+            "learning_path": stages,
+            "stages": stages,
+            "estimatedDays": total_days,
+            "plan_mode": "focus",
+            "plan_summary": f"精进突破计划：{' → '.join(weak_names[:5])}",
+            "agent_step": {"agent_id": self.agent_id, "agent_name": self.agent_name, "status": "completed"},
+        }
+
+    # ── Step 2: DeepTutor as structure source (when chapter generation fails) ──
+
+    def _try_deeptutor_as_structure(self, context: dict, total_days: int) -> list | None:
+        """Use DeepTutor mastery_path to generate the initial stage structure."""
         try:
             from app.services.deeptutor_client import deeptutor_call
             course = str(context.get("course_id", "") or "")
             message = str(context.get("user_message", "") or "")
-            prompt = f"为学生规划学习路径。课程：{course}。需求：{message}"
+            prompt = (
+                f"为学生规划学习路径。课程：{course}。需求：{message}。"
+                f"请按 stages→chapters→sections→knowledge_points 层级输出，"
+                f"每个 stage 包含多个 chapter，每个 chapter 包含多个 section。"
+            )
             dt_result = deeptutor_call("mastery_path", prompt)
             if dt_result and len(dt_result) > 50:
                 stages = self._parse_mastery_path(dt_result)
                 if stages:
-                    result = self._make_result(stages, self._infer_days(self._collect_time_text(context), context.get("profile", {})), {})
-                    return result
+                    return self._rewrite_chapter_ids(context, stages)
         except Exception as e:
-            logger.debug("mastery_path skip: %s", e)
+            logger.debug("DeepTutor structure failed: %s", e)
+        return None
 
-        if diag_meta["needs_more_diagnosis"] and not weak_points and not planning_points:
+    # ── Step 3: LLM pipeline fallback ──
+
+    def _llm_pipeline_fallback(self, context, profile, planning_points, total_days, diag_meta):
+        """Original 4-stage LLM pipeline: architect → creator → reviewer → refiner."""
+        if diag_meta.get("needs_more_diagnosis") and not planning_points:
+            diagnosis = context.get("diagnosis", {})
             planning_points = [self._make_probe_point(diagnosis)]
 
-        # Stage 1: Architect
         architect_plan = self._stage_architect(context, profile, planning_points, total_days, diag_meta)
         if not architect_plan:
-            return self._fallback_path(context, planning_points, total_days, profile, diag_meta)
+            return None
 
-        # Stage 2: Creator
         detailed_stages = self._stage_creator(context, profile, architect_plan, total_days)
         if not detailed_stages:
-            return self._fallback_path(context, planning_points, total_days, profile, diag_meta)
+            return None
 
-        # Stage 3-4: Review-Refine loop with backtracking (max 2 rounds)
-        revision_count = 0
         for round_num in range(2):
             review = self._stage_reviewer(detailed_stages, profile, total_days)
             if not review.get("needs_revision"):
                 break
-            revision_count += 1
             detailed_stages = self._stage_refine(detailed_stages, review, profile, total_days)
-            # If still failing after refine, backtrack to architect
             if round_num == 1 and review.get("needs_revision"):
                 logger.info("Backtracking to architect after failed reviews")
-                architect_plan = self._stage_architect(context, profile, planning_points, total_days, diag_meta)
-                if architect_plan:
-                    detailed_stages = self._stage_creator(context, profile, architect_plan, total_days) or detailed_stages
+                arch2 = self._stage_architect(context, profile, planning_points, total_days, diag_meta)
+                if arch2:
+                    detailed_stages = self._stage_creator(context, profile, arch2, total_days) or detailed_stages
 
-        result = self._make_result(detailed_stages, total_days, diag_meta)
-        result["review_tasks"] = self._generate_review_tasks(detailed_stages)
-        result["planner_metadata"] = {
-            "stages": len(detailed_stages),
-            "reviewed": True,
-            "revisions": revision_count,
-            "backtracked": revision_count >= 2,
-            "revision_notes": review.get("notes", ""),
-        }
-        return result
+        return detailed_stages
+
+    # ── Step 4: Personalize chapter structure with DeepTutor ──
+
+    def _personalize_with_deeptutor(
+        self, chapters: list, context: dict, profile: dict,
+        diagnosis: dict, weak_points: list, total_days: int,
+    ) -> list | None:
+        """Use DeepTutor to adjust chapter pacing/emphasis based on student profile.
+
+        Sends the chapter skeleton + student context to DeepTutor and asks it
+        to suggest personalised adjustments: which topics to spend more time on,
+        where to insert review days, and difficulty adaptations.
+        """
+        try:
+            from app.services.deeptutor_client import deeptutor_call
+        except Exception:
+            return None
+
+        # ── Build a compact summary of the chapter structure ──
+        chapter_summary_parts = []
+        for stage in chapters:
+            st_title = stage.get("title", "")
+            for ch in stage.get("chapters", []):
+                ch_title = ch.get("title", "")
+                sec_titles = [s.get("title", "") for s in ch.get("sections", [])[:5]]
+                chapter_summary_parts.append(
+                    f"  {st_title} > {ch_title}: {'; '.join(sec_titles)}"
+                )
+        chapter_text = "\n".join(chapter_summary_parts[:30])
+
+        # ── Build student context ──
+        facts = context.get("profile_facts", {})
+        target = facts.get("target_course", "") or str(context.get("course_id", ""))
+        knowledge = facts.get("knowledge_base", "")
+        goal = facts.get("learning_goal", "")
+        time_info = facts.get("time_budget", "")
+        weak_names = [w.get("name", w.get("topic", "")) for w in weak_points[:5]]
+        weak_str = "、".join(weak_names) if weak_names else "待诊断"
+
+        prompt = (
+            f"你是学习路径个性化专家。学生正在学「{target}」，共 {total_days} 天。\n"
+            f"学生基础：{knowledge or '未知'}。目标：{goal or '未知'}。\n"
+            f"时间安排：{time_info or '未知'}。薄弱点：{weak_str}。\n\n"
+            f"以下是当前的章节结构（骨架）：\n{chapter_text}\n\n"
+            f"请基于学生情况给出个性化调整建议，返回 JSON：\n"
+            f'{{"adjustments": [\n'
+            f'  {{"chapter_title": "章节名", "action": "spend_more_time|spend_less_time|insert_review|skip", '
+            f'"reason": "调整原因", "suggested_minutes": 45}}\n'
+            f'], "overall_pacing": "aggressive|moderate|gentle", '
+            f'"focus_areas": ["重点1", "重点2"]}}\n\n'
+            f"只输出 JSON，不要 Markdown 包裹。"
+        )
+
+        try:
+            raw = deeptutor_call("chat", prompt)
+            import json as _json
+            s, e = raw.find("{"), raw.rfind("}") + 1
+            if s >= 0 and e > s:
+                parsed = _json.loads(raw[s:e])
+                adjustments = parsed.get("adjustments", [])
+                if not adjustments:
+                    return None
+
+                # ── Apply adjustments to chapters ──
+                adj_map: dict[str, dict] = {
+                    a.get("chapter_title", ""): a for a in adjustments
+                }
+                for stage in chapters:
+                    for ch in stage.get("chapters", []):
+                        ch_title = ch.get("title", "")
+                        adj = adj_map.get(ch_title)
+                        if not adj:
+                            continue
+                        action = adj.get("action", "")
+                        if action == "spend_more_time":
+                            for sec in ch.get("sections", []):
+                                sec["estimated_minutes"] = adj.get(
+                                    "suggested_minutes",
+                                    sec.get("estimated_minutes", 45),
+                                )
+                            ch["_dt_action"] = "spend_more_time"
+                            ch["_dt_reason"] = adj.get("reason", "")
+                        elif action == "insert_review":
+                            ch["_dt_review_day"] = True
+                            ch["_dt_reason"] = adj.get("reason", "")
+                        elif action == "skip":
+                            ch["_dt_skip"] = True
+                            ch["_dt_reason"] = adj.get("reason", "")
+
+                logger.info(
+                    "DeepTutor personalised %d chapters (total adjustments: %d)",
+                    sum(1 for s in chapters for c in s.get("chapters", []) if c.get("_dt_action")),
+                    len(adjustments),
+                )
+                return chapters
+        except Exception as e:
+            logger.debug("DeepTutor personalisation failed: %s", e)
+
+        return None
 
 
     # ── 动态调整（M5）──

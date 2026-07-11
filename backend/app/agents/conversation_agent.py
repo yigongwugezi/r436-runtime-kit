@@ -249,7 +249,11 @@ class ConversationAgent(BaseAgent):
 
         self._save_history(user_message, llm_reply, context)
 
-        result = self._make_result(reply=llm_reply, action=action, facts=facts)
+        extra = {}
+        plan_mode = rule_result.get("plan_mode", "")
+        if plan_mode:
+            extra["plan_mode"] = plan_mode
+        result = self._make_result(reply=llm_reply, action=action, facts=facts, extra=extra or None)
         result["llm_retry_count"] = llm_retry_count
         if context.get("_llm_proposal"):
             result["_llm_proposal"] = context["_llm_proposal"]
@@ -736,6 +740,20 @@ action："""
         if any(p in compact for p in _GEN_PLAN):
             return self._fallback_result("plan", "explicit_generation_request")
 
+        # ── Mode-specific plan triggers ──
+        _FOCUS_PLAN = [
+            "帮我强化", "专项突破", "重点突破", "突击", "专攻",
+            "针对性训练", "帮我补", "精进", "重点攻克",
+        ]
+        _TEXTBOOK_PLAN = [
+            "系统学", "按章节", "从头学", "从基础开始",
+            "完整学", "系统学习", "按教材",
+        ]
+        if any(p in compact for p in _FOCUS_PLAN):
+            return self._fallback_result("plan", "focus_plan_request", plan_mode="focus")
+        if any(p in compact for p in _TEXTBOOK_PLAN):
+            return self._fallback_result("plan", "textbook_plan_request", plan_mode="textbook")
+
         _GEN_FULL = ["完整方案", "全套方案", "全部方案", "整套方案", "生成全套", "全部生成"]
         if any(p in compact for p in _GEN_FULL):
             return self._fallback_result("full_workflow", "full_workflow_request")
@@ -770,8 +788,8 @@ action："""
         return self._fallback_result("none", "unclassified_fallback")
 
 
-    def _fallback_result(self, action, reason, needs_clarification=False):
-        return {
+    def _fallback_result(self, action, reason, needs_clarification=False, plan_mode=""):
+        result = {
             "reply": "",
             "action": action,
             "fallback_used": True,
@@ -783,6 +801,9 @@ action："""
             "pipeline_required": action not in ("none", "unsafe"),
             "target_agents": ["full_workflow"] if action == "full_workflow" else [],
         }
+        if plan_mode:
+            result["plan_mode"] = plan_mode
+        return result
 
     def _has_generation_confirmation_context(self, context):
         history = context.get("conversation_history") or self._history

@@ -19,8 +19,8 @@ export default function Home() {
   const { completedCount: taskCompleted, totalCount: taskTotal } = useDailyTasks();
   const user = getCurrentLearner();
 
-  const streak = profile?.history?.streak || 0;
-  const totalHours = profile?.history?.totalStudyMinutes ? Math.round(profile.history.totalStudyMinutes / 60) : 0;
+  const streak = analytics?.streak || 0;
+  const totalHours = analytics?.totalStudyMinutes ? Math.round(analytics.totalStudyMinutes / 60) : 0;
   const completedResources = analytics?.completedResources || 0;
   const viewedResources = analytics?.viewedResources || 0;
   const quizAccuracy = analytics?.quizAccuracy != null ? Math.round(analytics.quizAccuracy) : null;
