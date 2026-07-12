@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useLocation } from 'react-router-dom';
 import * as learningPathApi from '../api/learningPath';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
@@ -56,7 +55,6 @@ function mapPathHierarchy(
 }
 
 export function useLearningPath() {
-  const location = useLocation();
   const subjectId = useSubjectStore((s) => s.activeSubject?.id ?? s.activeClassSubject?.subject);
   const sessionId = useChatStore((state) => state.dataSessionId);
   const dataVersion = useChatStore((state) => state.dataVersion);
@@ -64,18 +62,25 @@ export function useLearningPath() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const lastVersionRef = useRef<number>(0);
+  const hasDataRef = useRef(false);
+  const initialLoadRef = useRef(true);
 
-  const fetchPath = useCallback(async () => {
+  const fetchPath = useCallback(async (force: boolean = false) => {
     if (!subjectId || !sessionId) { setLoading(false); return; }
-    setLoading(true); setError(null); setPath(null);
+    if (force) hasDataRef.current = false;
+    if (force || !hasDataRef.current) { setLoading(true); setError(null); }
     try {
       const res = await learningPathApi.getLearningPath({ sessionId, subjectId });
-      setPath(res?.path ?? null);
-      if (!res?.path) setError('学习路径数据为空');
+      const p = res?.path ?? null;
+      setPath(p);
+      hasDataRef.current = !!p;
+      if (!p && !hasDataRef.current) setError('学习路径数据为空');
     } catch (e) {
-      setPath(null);
-      setError(e instanceof Error ? e.message : '加载学习路径失败');
-    } finally { setLoading(false); }
+      if (!hasDataRef.current) { setPath(null); setError(e instanceof Error ? e.message : '加载学习路径失败'); }
+    } finally {
+      if (force || !hasDataRef.current) setLoading(false);
+      initialLoadRef.current = false;
+    }
   }, [sessionId, subjectId]);
 
   const generatePath = useCallback(async (params: { subjectId?: string; targetTopics?: string[] }) => {
@@ -169,8 +174,8 @@ export function useLearningPath() {
     });
   }, [sessionId, subjectId, cascadeStatus]);
 
-  useEffect(() => { fetchPath(); const onVisible = () => { if (document.visibilityState === 'visible') fetchPath(); }; document.addEventListener('visibilitychange', onVisible); return () => document.removeEventListener('visibilitychange', onVisible); }, [sessionId, subjectId, location.key, fetchPath]);
-  useEffect(() => { if (dataVersion <= 0 || dataVersion === lastVersionRef.current) return; lastVersionRef.current = dataVersion; fetchPath(); }, [dataVersion, fetchPath]);
+  useEffect(() => { fetchPath(true); }, [sessionId, subjectId]);
+  useEffect(() => { if (dataVersion <= 0 || dataVersion === lastVersionRef.current) return; lastVersionRef.current = dataVersion; fetchPath(true); }, [dataVersion, fetchPath]);
 
   return { path, loading, error, fetchPath, generatePath, updateNode, updateNodeStatus, updateKnowledgePoint, updateChapterStatus, updateSectionStatus };
 }

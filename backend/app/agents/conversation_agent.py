@@ -236,6 +236,7 @@ class ConversationAgent(BaseAgent):
         VALID_EXECUTE_ACTIONS = {
             "plan", "resources", "generate_questions", "diagnose",
             "grade_answer", "profile", "full_workflow",
+            "assess", "tutor",
         }
         if exec_action and exec_action in VALID_EXECUTE_ACTIONS:
             if action in ("none", "tutoring", ""):
@@ -477,7 +478,7 @@ action："""
                 max_tokens=20,
             )
             raw = raw.strip().lower()
-            valid = {"diagnose", "plan", "resources", "generate_questions", "grade_answer", "none"}
+            valid = {"diagnose", "plan", "resources", "generate_questions", "grade_answer", "none", "assess", "tutor"}
             for action in valid:
                 if action in raw:
                     return action
@@ -683,7 +684,7 @@ action："""
             action = action_match.group(1).strip()
             text = re.sub(r'<action>.*?</action>', '', text, flags=re.DOTALL).strip()
 
-        valid_actions = {"diagnose", "plan", "resources", "profile", "knowledge", "none", "unsafe"}
+        valid_actions = {"diagnose", "plan", "resources", "profile", "knowledge", "none", "unsafe", "assess", "tutor"}
         if action not in valid_actions:
             action = "none"
 
@@ -794,6 +795,22 @@ action："""
         _DIAG = ["帮我诊断", "分析薄弱点", "看看哪里薄弱", "我哪里差"]
         if any(p in compact for p in _DIAG):
             return self._fallback_result("diagnose", "diagnosis_request")
+
+        # ── Combined assessment (批改+诊断+画像+规划+资源) ──
+        _ASSESS = [
+            "综合评估", "全面诊断", "综合诊断", "评估一下",
+            "测一下水平", "测评", "学习评估", "效果评估",
+        ]
+        if any(p in compact for p in _ASSESS):
+            return self._fallback_result("assess", "combined_assessment_request")
+
+        # ── Intelligent tutoring (借力画像+诊断+资源的辅导) ──
+        _TUTOR = [
+            "给我讲讲", "帮我理解", "解释一下", "我不懂",
+            "不太明白", "帮我分析一下", "教教我", "给我解释",
+        ]
+        if any(p in compact for p in _TUTOR):
+            return self._fallback_result("tutor", "intelligent_tutoring_request")
 
         # ── Path adjustment triggers ──
         _ADJUST = [

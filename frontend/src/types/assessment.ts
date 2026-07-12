@@ -123,6 +123,7 @@ export interface SectionQuizGenerateRequest {
   knowledgePoints: string[];
   lectureSummary?: string;
   difficulty?: string;
+  requirements?: string;
   pathId?: string;
   stageId?: string;
   chapterId?: string;

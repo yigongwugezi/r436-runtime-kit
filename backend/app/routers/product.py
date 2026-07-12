@@ -31,7 +31,7 @@ from app.agents.diagnosis_agent import DiagnosisAgent
 from app.agents.multimodal_agent import MultimodalAgent
 from app.config import settings
 from app.db.engine import SessionLocal
-from app.db.models import DailyTaskModel, LearnerModel, ResourceModel, SessionModel
+from app.db.models import AnswerRecordModel, DailyTaskModel, LearnerModel, PracticeQuestionModel, ResourceModel, SessionModel
 from app.db.repository import (
     get_bookmarked_ids,
     get_daily_tasks as repo_get_daily_tasks,
@@ -4151,6 +4151,31 @@ def question_sets(sessionId: str = "") -> dict[str, Any]:
         return _product_response({"sets": result}, session_id=session_id, source="db")
     finally:
         db.close()
+
+
+@router.delete("/questions/sets/{set_id}")
+def delete_question_set(set_id: str, sessionId: str = "") -> dict[str, Any]:
+    """删除一个题目集及其所有题目和答题记录。"""
+    session_id = _resolve_session_id(sessionId, "")
+    db = SessionLocal()
+    try:
+        from app.db.repository import get_questions as repo_get_questions, get_answer_history
+        # Find all questions in this set
+        qs = [q for q in repo_get_questions(db, session_id, limit=500) if q.question_set_id == set_id]
+        if not qs:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="题目集不存在")
+        qids = [q.question_id for q in qs]
+        # Delete answer records for these questions
+        db.query(AnswerRecordModel).filter(AnswerRecordModel.question_id.in_(qids)).delete(synchronize_session=False)
+        # Delete practice questions
+        db.query(PracticeQuestionModel).filter(PracticeQuestionModel.question_id.in_(qids)).delete(synchronize_session=False)
+        db.commit()
+        return {"status": "success", "data": {"deleted": True, "count": len(qids)}}
+    finally:
+        db.close()
+
+
 @router.get("/questions/weak")
 def weak_questions(sessionId: str = "", errorType: str = "", limit: int = 20) -> dict[str, Any]:
     """错题本：查询作答错误的题目及判卷结果。"""
@@ -4504,6 +4529,7 @@ def generate_section_lecture(section_id: str, payload: dict[str, Any]) -> dict[s
     path_id = str(payload.get("pathId", "")).strip()
     knowledge_points = payload.get("knowledgePoints", [])
     resource_type = str(payload.get("type", "lecture")).strip()
+    requirements = str(payload.get("requirements", "")).strip()
 
     if not section_title:
         return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
@@ -4514,9 +4540,32 @@ def generate_section_lecture(section_id: str, payload: dict[str, Any]) -> dict[s
         kp_lines = "\n".join(f"- {kp.get('name', kp) if isinstance(kp, dict) else str(kp)}" for kp in knowledge_points[:10])
 
     if resource_type == "reading":
-        prompt = f"""为「{section_title}」编写一份拓展阅读材料。涵盖：背景知识、实际应用案例、进阶话题、推荐书单/论文。Markdown格式，800字以上。"""
+        lecture_excerpt = str(payload.get("lectureContent", "")).strip()
+        lecture_ctx = f"\n\n## 本节讲义内容（供参考，请基于此拓展）\n{lecture_excerpt}" if lecture_excerpt else ""
+        prompt = f"""你是一位资深教育专家，请基于以下讲义内容为「{section_title}」编写一份拓展阅读材料。
+
+要求：
+1. 深入挖掘讲义中涉及但未展开的背景知识、历史渊源
+2. 提供与本节知识点相关的实际工业/科研应用案例（至少2个）
+3. 介绍进阶话题和学习路径，引导学有余力的学生进一步探索
+4. 推荐3-5本经典书籍或论文，附简短推荐理由
+5. 每个案例/话题至少写150字，总字数800字以上
+6. 内容必须与讲义紧密相关，切忌泛泛而谈
+
+Markdown格式，结构清晰，用小标题组织。{lecture_ctx}"""
     elif resource_type == "practice":
-        prompt = f"""为「{section_title}」编写一份代码实操案例。包含：完整可运行代码、详细注释、输入输出示例、常见错误和解决方案。Markdown格式，代码用```包裹。"""
+        lecture_excerpt = str(payload.get("lectureContent", "")).strip()
+        lecture_ctx = f"\n\n## 本节讲义内容（供参考，请基于此设计案例）\n{lecture_excerpt}" if lecture_excerpt else ""
+        prompt = f"""你是一位资深编程导师，请基于以下讲义内容为「{section_title}」编写一份实操案例。
+
+要求：
+1. 设计与讲义知识点紧密对应的编程练习（至少2个独立案例）
+2. 每个案例包含：场景描述、完整可运行代码、详细注释、输入输出示例
+3. 指出常见错误和解决方案
+4. 代码要能真正运行，不要留空占位符（如 # TODO）
+5. 每个案例至少200字说明 + 完整代码
+
+Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
     else:
         prompt = f"""你是一位资深大学教师，请为小节「{section_title}」编写一份达到正式出版教材水准的讲义。
 
@@ -4630,10 +4679,13 @@ graph TD
         except Exception:
             pass
 
+    # ── 用户定制需求 ──
+    req_context = f"\n\n## 学生特殊要求（必须严格遵循，优先级最高）\n{requirements}" if requirements else ""
+
     client = _llm_client()
     try:
         raw = client.chat(
-            messages=[{"role": "user", "content": prompt + kb_context}],
+            messages=[{"role": "user", "content": prompt + kb_context + req_context}],
             temperature=0.3, max_tokens=settings.lecture_max_tokens,
         )
     except Exception as e:
@@ -4798,6 +4850,7 @@ def generate_all_section_resources(section_id: str, payload: dict[str, Any]) -> 
     stage_id = str(payload.get("stageId", "")).strip()
     kps = payload.get("knowledgePoints", [])
     kp_names = [kp.get("name", str(kp)) if isinstance(kp, dict) else str(kp) for kp in (kps or [])[:8]]
+    requirements = str(payload.get("requirements", "")).strip()
 
     if not session_id or not section_title:
         return _product_response(None, session_id=session_id, status="error", message="sessionId and sectionTitle required", source="agent")
@@ -4827,7 +4880,7 @@ def generate_all_section_resources(section_id: str, payload: dict[str, Any]) -> 
     # ── Agent 3: Resource (receives profile + knowledge) ──
     try:
         ra = get_agent_class("resource_agent")(llm_client=_llm_client())
-        rr = ra.run({
+        resource_ctx = {
             "session_id": session_id,
             "profile_facts": dict(state_obj.facts),
             "profile": results.get("profile", {}),
@@ -4837,7 +4890,10 @@ def generate_all_section_resources(section_id: str, payload: dict[str, Any]) -> 
                     "sections": [{"section_id": section_id, "title": section_title, "goal": section_goal,
                         "knowledge_points": [{"name": n} for n in kp_names]}]}]}],
             "path_mode": "textbook",
-        })
+        }
+        if requirements:
+            resource_ctx["user_message"] = f"生成资源时遵循学生要求：{requirements}"
+        rr = ra.run(resource_ctx)
         results["resources"] = rr.get("resources", [])
         results["agents_run"].append("resource_agent")
     except Exception as e:
@@ -4846,10 +4902,13 @@ def generate_all_section_resources(section_id: str, payload: dict[str, Any]) -> 
     # ── Agent 4: QuestionAgent (quiz) ──
     try:
         qa = get_agent_class("question_agent")(llm_client=_llm_client())
+        qa_msg = f"为{section_title}生成3-5道练习题，知识点：{', '.join(kp_names)}"
+        if requirements:
+            qa_msg += f"。学生特殊要求：{requirements}"
         qr = qa.run({
             "session_id": session_id,
             "profile_facts": dict(state_obj.facts),
-            "user_message": f"为{section_title}生成3-5道练习题，知识点：{', '.join(kp_names)}",
+            "user_message": qa_msg,
             "course": {"chapters": [{"title": section_title, "knowledge_points": kp_names}]},
             "diagnosis": {"weak_knowledge_points": [
                 {"name": n, "priority": "medium"} for n in kp_names[:3]
@@ -5066,15 +5125,20 @@ def tutor_video(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """生成小节讲解短视频（调用 MultimodalAgent）。"""
     session_id = _payload_session_id(payload)
     section_title = str(payload.get("sectionTitle", "")).strip()
+    requirements = str(payload.get("requirements", "")).strip()
 
     if not section_title:
         return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
+
+    user_msg = f"为小节「{section_title}」生成微课讲解视频"
+    if requirements:
+        user_msg += f"。学生特殊要求：{requirements}"
 
     try:
         from app.services.spark_provider import SparkVideoProvider
         provider = SparkVideoProvider()
         result = provider.run({
-            "user_message": f"为小节「{section_title}」生成微课讲解视频",
+            "user_message": user_msg,
             "subject_name": section_title,
         })
         return _product_response({"video": _public_tutor_video(result)}, session_id=session_id, source="agent")
