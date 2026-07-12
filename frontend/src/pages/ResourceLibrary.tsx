@@ -4,9 +4,12 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Search, BookOpen, Brain, Code, FileText, Lightbulb, Play, Presentation, Clock, Star, ChevronRight, BookmarkPlus, BookmarkCheck, CheckCircle2, X, LayoutGrid, List, ChevronDown, MoreHorizontal, RotateCcw, ListChecks, Download, SlidersHorizontal, MessageSquare, Send, ArrowLeft } from 'lucide-react';
 import { useResources } from '../hooks/useResources';
 import { useChatStore } from '../store/chatStore';
+import { useSubjectStore } from '../store/subjectStore';
 import { getCurrentLearner } from '../store/authStore';
 import { getResourceById, updateStudyStatus, autoAdvanceNode, getResourceKnowledgeGraph, batchUpdateStudyStatus, batchSetBookmark, batchExportResources } from '../api/resources';
 import { submitFeedback, logStudyEvent } from '../api/feedback';
+import { getTextbook } from '../api/textbooks';
+import type { Textbook } from '../types/textbook';
 import type { Resource, ResourceType } from '../types/resource';
 import { RESOURCE_TYPE_LABELS } from '../utils/constants';
 import { timeAgo, formatDuration } from '../utils/format';
@@ -30,7 +33,7 @@ const colorMap: Record<string, { bg: string; text: string }> = {
 };
 const diffBadge: Record<string, string> = { easy: 'bg-success-100 text-success-700', medium: 'bg-warning-100 text-warning-700', hard: 'bg-error-100 text-error-700' };
 const diffLabel: Record<string, string> = { easy: '基础', medium: '进阶', hard: '挑战' };
-const TYPES = ['', 'lecture', 'mindmap', 'quiz', 'reading', 'case_study', 'video', 'ppt'];
+const TYPES = ['', 'lecture', 'mindmap', 'quiz', 'reading', 'case_study', 'video', 'ppt', 'textbook'];
 const SORTS = [{ v: 'default', l: '推荐' }, { v: 'newest', l: '最新' }, { v: 'easiest', l: '最简单' }, { v: 'hardest', l: '最困难' }];
 const resourceLabel = (resource: Resource) => RESOURCE_TYPE_LABELS[resource.taskId || ''] || RESOURCE_TYPE_LABELS[resource.type] || resource.type;
 const resourceIcon = (resource: Resource) => icons[resource.taskId || ''] || icons[resource.type];
@@ -495,6 +498,16 @@ export default function ResourceLibrary() {
   const { resources, total, loading, error, applyFilter, toggleBookmark, refetch } = useResources(initialFilter);
   const sessionId = useChatStore(s => s.currentSessionId);
   const isParent = getCurrentLearner()?.role === 'parent';
+  const activeSubject = useSubjectStore((s) => s.activeSubject);
+
+  // ── Textbook ──
+  const [textbook, setTextbook] = useState<Textbook | null>(null);
+  useEffect(() => {
+    if (!activeSubject?.id) { setTextbook(null); return; }
+    getTextbook(activeSubject.id)
+      .then((tb) => setTextbook(tb))
+      .catch(() => setTextbook(null));
+  }, [activeSubject?.id]);
 
   // 详情视图状态
   const [detailResource, setDetailResource] = useState<Resource | null>(null);
@@ -594,18 +607,44 @@ export default function ResourceLibrary() {
 
   // 列表视图
   return (
-    <ResourceListView
-      resources={resources}
-      total={total}
-      loading={loading}
-      error={error}
-      onRefetch={refetch}
-      onToggleBookmark={toggleBookmark}
-      onApplyFilter={applyFilter}
-      sessionId={sessionId}
-      activeTaskId={searchParams.get('taskId') || undefined}
-      activeStageId={searchParams.get('relatedStageId') || undefined}
-      isReadOnly={isParent}
-    />
+    <div>
+      {/* Textbook card (shown when textbook exists for active subject) */}
+      {textbook && textbook.status === 'ready' && (
+        <div className="mb-4">
+          <div
+            onClick={() => nav(`/textbook/${activeSubject?.id}`)}
+            className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-2xl border border-blue-200 p-5 cursor-pointer hover:shadow-md transition-all flex items-center gap-4"
+          >
+            <div className="w-14 h-14 rounded-2xl bg-blue-100 flex items-center justify-center flex-shrink-0">
+              <BookOpen size={28} className="text-blue-600" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="px-2 py-0.5 rounded-lg bg-blue-100 text-blue-700 text-xs font-medium">教材</span>
+                <span className="text-[10px] text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">已解析</span>
+              </div>
+              <h4 className="font-semibold text-surface-800">{textbook.title || textbook.filename}</h4>
+              <p className="text-xs text-surface-500 mt-0.5">
+                {textbook.pageCount} 页 · {(textbook.chaptersJson?.length ?? 0)} 章 · {textbook.author ? `作者: ${textbook.author}` : '点击浏览教材内容'}
+              </p>
+            </div>
+            <ChevronRight size={18} className="text-surface-400 flex-shrink-0" />
+          </div>
+        </div>
+      )}
+      <ResourceListView
+        resources={resources}
+        total={total}
+        loading={loading}
+        error={error}
+        onRefetch={refetch}
+        onToggleBookmark={toggleBookmark}
+        onApplyFilter={applyFilter}
+        sessionId={sessionId}
+        activeTaskId={searchParams.get('taskId') || undefined}
+        activeStageId={searchParams.get('relatedStageId') || undefined}
+        isReadOnly={isParent}
+      />
+    </div>
   );
 }

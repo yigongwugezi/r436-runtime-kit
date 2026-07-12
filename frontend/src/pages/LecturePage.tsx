@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useLearningPath } from '../hooks/useLearningPath';
 import { useChatStore } from '../store/chatStore';
+import { useSubjectStore } from '../store/subjectStore';
 import { useLectureStore } from '../store/lectureStore';
 import { ChevronLeft, ChevronRight, Sparkles, MessageCircle, Send, Brain, BookOpen, ArrowLeft, ArrowRight, Target, Lightbulb, Layers, Clock, GraduationCap, Hash, CheckCircle2, Check, X, Loader2, HelpCircle, RefreshCw } from 'lucide-react';
 import Markdown from '../utils/markdown';
@@ -10,6 +11,10 @@ import type { Chapter, LearningStage, PathNode, Section, ContentStatus } from '.
 import type { LinkedQuestion, QuizResult, WeakPoint } from '../types/assessment';
 import SectionResourceWorkspace from '../components/learning/SectionResourceWorkspace';
 import SectionContentRouter, { type ContentType, type SectionContent } from '../components/learning/SectionContentRouter';
+import TextbookViewer from '../components/learning/TextbookViewer';
+import TextbookTocPanel from '../components/learning/TextbookTocPanel';
+import { getTextbookTOC } from '../api/textbooks';
+import type { TextbookTOC } from '../types/textbook';
 import GeneratePanel, { type GeneratePanelHandle } from '../components/learning/GeneratePanel';
 import { logStudyEvent } from '../api/feedback';
 
@@ -94,7 +99,7 @@ export default function LecturePage() {
   const [generating, setGenerating] = useState(false);
   const [chatMsg, setChatMsg] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
-  const [rightTab, setRightTab] = useState<'generate' | 'resources' | 'tutor'>('tutor');
+  const [rightTab, setRightTab] = useState<'tutor' | 'resources' | 'toc' | 'generate'>('tutor');
   const [genAll, setGenAll] = useState(false);
   const [prevLecture, setPrevLecture] = useState('');           // 控制返回按钮显示
   const originalLectureRef = useRef('');                         // 永远指向原始讲义，不会被子卡片覆盖
@@ -137,13 +142,28 @@ export default function LecturePage() {
   }, [path, chapterId, sectionId, lecture]);
 
   const sections = chapterCtx?.chapter.sections ?? [];
-
   // ── Quiz state（优先从缓存恢复）──
   const [quizQuestions, setQuizQuestions] = useState<LinkedQuestion[]>(cachedQuiz?.questions || []);
   const [quizId, setQuizId] = useState(cachedQuiz?.quizId || '');
   const [quizAnswers, setQuizAnswers] = useState<Record<string, string>>(cachedQuiz?.answers || {});
   const [quizResults, setQuizResults] = useState<QuizResult[]>(cachedQuiz?.results || []);
   const [quizTotalScore, setQuizTotalScore] = useState<number | null>(cachedQuiz?.totalScore ?? null);
+
+  // ── Textbook mode state ──
+  const activeSubject = useSubjectStore((s) => s.activeSubject);
+  const isTextbookMode = !!activeSubject?.textbookId;
+  const [textbookToc, setTextbookToc] = useState<TextbookTOC | null>(null);
+
+  // Load textbook TOC when in textbook mode
+  useEffect(() => {
+    if (!isTextbookMode || !activeSubject?.id) {
+      setTextbookToc(null);
+      return;
+    }
+    getTextbookTOC(activeSubject.id)
+      .then((toc) => setTextbookToc(toc))
+      .catch(() => setTextbookToc(null));
+  }, [isTextbookMode, activeSubject?.id]);
   const [quizState, setQuizState] = useState<'idle' | 'generating' | 'answering' | 'submitted'>('idle');
   const [quizSuggestion, setQuizSuggestion] = useState('');
   const [quizWeakPoints, setQuizWeakPoints] = useState<WeakPoint[]>([]);
@@ -261,6 +281,20 @@ export default function LecturePage() {
     setChatMsg(''); setChatLoading(true); setQuotedText(''); setQuotePos(null);
     const ck = `${sessionId}:${activeSectionId}`;
     store.setChatReply(ck, '');
+
+    // In textbook mode, use extracted textbook content as lecture reference
+    let lectureExcerpt = lecture.slice(0, 1000);
+    if (isTextbookMode && activeSubject?.id && currentSection.textbookSectionId) {
+      try {
+        const { getTextbookContent } = await import('../api/textbooks');
+        const content = await getTextbookContent(activeSubject.id, {
+          sectionId: currentSection.textbookSectionId,
+        });
+        if (content?.content) {
+          lectureExcerpt = content.content.slice(0, 1500);
+        }
+      } catch { /* fall back to empty/generated lecture */ }
+    }
     try {
       const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/tutor/ask`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -270,7 +304,7 @@ export default function LecturePage() {
           sectionTitle: currentSection.title,
           sectionGoal: currentSection.goal || '',
           knowledgePoints: currentSection.knowledgePoints || [],
-          lectureExcerpt: lecture.slice(0, 1000),
+          lectureExcerpt,
           actionType,
         }),
       });
@@ -278,7 +312,7 @@ export default function LecturePage() {
       if (data?.data?.reply) store.setChatReply(ck, data.data.reply);
       else if (data?.status === 'error') store.setChatReply(ck, `出错了：${data.message}`);
     } catch {} finally { setChatLoading(false); }
-  }, [sessionId, currentSection, activeSectionId, lecture]);
+  }, [sessionId, currentSection, activeSectionId, lecture, isTextbookMode, activeSubject?.id]);
 
   const handleGenerateVideo = useCallback(async (cardId?: string, requirements?: string) => {
     if (!sessionId || !currentSection) return;
@@ -340,12 +374,27 @@ export default function LecturePage() {
     const title = requirements ? `${currentSection.title || '练习题目'}（${requirements.slice(0, 20)}${requirements.length > 20 ? '…' : ''}）` : (currentSection.title || '练习题目');
     const cid = cardId || generatePanelRef.current?.beginRecord('quiz', title, requirements) || '';
     const kpNames = (currentSection.knowledgePoints || []).map((kp: any) => kp.name || kp).filter(Boolean);
+    setQuizState('generating');
+
+    // In textbook mode, use extracted textbook content as lecture notes reference
+    let lectureSummary = lecture.slice(0, 1500);
+    if (isTextbookMode && activeSubject?.id && currentSection.textbookSectionId) {
+      try {
+        const { getTextbookContent } = await import('../api/textbooks');
+        const content = await getTextbookContent(activeSubject.id, {
+          sectionId: currentSection.textbookSectionId,
+        });
+        if (content?.content) {
+          lectureSummary = content.content.slice(0, 2000);
+        }
+      } catch { /* fall back to empty/generated lecture */ }
+    }
     try {
       const res = await generateSectionQuiz(activeSectionId, {
         sessionId: sessionId || `lecture_${activeSectionId}`,
         title: currentSection.title || '当前小节',
         knowledgePoints: kpNames.length > 0 ? kpNames.slice(0, 5) : [chapterCtx?.chapter.title || '', currentSection.title || ''].filter(Boolean),
-        lectureSummary: lecture.slice(0, 1500),
+        lectureSummary,
         difficulty: 'medium',
         pathId: path?.id || '',
         stageId: chapterCtx?.stage.id || '',
@@ -762,8 +811,15 @@ export default function LecturePage() {
             </div>
           )}
 
-          {/* ── Section content — routed by content_type ── */}
-          {quizState !== 'idle' ? null : sectionContent ? (
+          {/* ── Textbook mode: PDF viewer ── */}
+          {isTextbookMode && activeSubject && currentSection ? (
+            <TextbookViewer
+              subjectId={activeSubject.id}
+              pageStart={currentSection.textbookPageStart ?? 1}
+              pageEnd={currentSection.textbookPageEnd ?? (currentSection.textbookPageStart ?? 1) + 5}
+            />
+          ) : quizState !== 'idle' ? null : sectionContent ? (
+            /* ── Section content — routed by content_type ── */
             <div className="px-5 py-4 relative" onMouseUp={handleTextSelection}>
               <SectionContentRouter
                 content={sectionContent}
@@ -801,7 +857,8 @@ export default function LecturePage() {
             <div className="flex items-center justify-center h-full">
               <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
             </div>
-          ) : (
+          ) : !isTextbookMode ? (
+            /* ── No textbook mode: show generate lecture prompt ── */
             <div className="flex flex-col items-center justify-center h-full gap-5">
               <div className="relative">
                 <div className="w-24 h-24 rounded-3xl bg-gradient-to-br from-blue-100 via-violet-100 to-amber-100 flex items-center justify-center shadow-lg shadow-blue-100">
@@ -820,7 +877,7 @@ export default function LecturePage() {
                 <Sparkles size={15} />{generating ? '生成中…' : '开始生成讲义'}
               </button>
             </div>
-          )}
+          ) : null}
         </div>
       </div>
 
@@ -834,9 +891,12 @@ export default function LecturePage() {
         </button>
         <div className="flex border-b border-surface-200 flex-shrink-0">
           {([
+            ...(isTextbookMode
+              ? [{ key: 'toc' as const, label: '教材目录', icon: <BookOpen size={12} />, color: 'blue' }]
+              : []),
             { key: 'generate' as const, label: '生成', icon: <Sparkles size={12} />, color: 'slate' },
-            { key: 'resources' as const, label: '资源', icon: <Lightbulb size={12} />, color: 'slate' },
-            { key: 'tutor' as const, label: '辅导', icon: <MessageCircle size={12} />, color: 'slate' },
+            { key: 'tutor' as const, label: '智能辅导', icon: <MessageCircle size={12} />, color: 'violet' },
+            { key: 'resources' as const, label: '相关资源', icon: <Lightbulb size={12} />, color: 'amber' },
           ]).map(tab => (
             <button key={tab.key} onClick={() => setRightTab(tab.key)}
               className={`flex-1 flex items-center justify-center gap-1 py-2.5 text-[10px] font-medium transition-all border-b-2 ${rightTab === tab.key ? `border-${tab.color}-500 text-${tab.color}-700 bg-${tab.color}-50` : 'border-transparent text-surface-400 hover:text-surface-600'}`}>
@@ -846,6 +906,26 @@ export default function LecturePage() {
         </div>
 
         <div className="flex-1 flex flex-col min-h-0 overflow-y-auto">
+          {rightTab === 'toc' && isTextbookMode && activeSubject && (
+            <TextbookTocPanel
+              chapters={textbookToc?.chapters ?? []}
+              currentSectionId={currentSection?.textbookSectionId}
+              currentPageStart={currentSection?.textbookPageStart}
+              onSectionClick={(_chId, secId, pageStart) => {
+                // Find the learning path section that matches this textbook section
+                for (const stage of path?.stages ?? []) {
+                  for (const ch of stage.chapters ?? []) {
+                    for (const sec of ch.sections) {
+                      if ((sec as any).textbookSectionId === secId) {
+                        nav(`/lecture/section/${sec.id}`);
+                        return;
+                      }
+                    }
+                  }
+                }
+              }}
+            />
+          )}
           {rightTab === 'tutor' && (
             <div className="flex flex-col flex-1 min-h-0">
               {!chatReply && !chatLoading && currentSection && (
@@ -917,23 +997,6 @@ export default function LecturePage() {
                 sections={sections}
                 legacyMindmapId={chapterCtx?.chapter.mindmapId}
               />
-              <div className="mx-4 mb-4 p-3 rounded-xl bg-surface-50 border border-surface-100">
-                <p className="text-[10px] font-medium text-surface-400 uppercase tracking-wide mb-2">讲义状态</p>
-                {lecture ? (
-                  <p className="text-xs text-emerald-600 flex items-center gap-1.5"><CheckCircle2 size={13} />已生成</p>
-                ) : (
-                  <p className="text-xs text-surface-400">选择小节后点击「生成讲义」</p>
-                )}
-              </div>
-              <div className="mx-4 mb-4 p-3 rounded-xl bg-surface-50 border border-surface-100">
-                <p className="text-[10px] font-medium text-surface-400 uppercase tracking-wide mb-2">章节统计</p>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div className="text-center p-2 bg-white rounded-lg"><p className="font-bold text-surface-700">{sections.length}</p><p className="text-[10px] text-surface-400">小节</p></div>
-                  <div className="text-center p-2 bg-white rounded-lg"><p className="font-bold text-surface-700">{totalKps}</p><p className="text-[10px] text-surface-400">知识点</p></div>
-                  <div className="text-center p-2 bg-white rounded-lg"><p className="font-bold text-surface-700">{masteredKps}</p><p className="text-[10px] text-surface-400">已掌握</p></div>
-                  <div className="text-center p-2 bg-white rounded-lg"><p className="font-bold text-surface-700">{Math.round(totalMin / 60)}h</p><p className="text-[10px] text-surface-400">总时长</p></div>
-                </div>
-              </div>
             </div>
           )}
 

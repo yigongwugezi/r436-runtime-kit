@@ -1,14 +1,16 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSubjectStore } from '../store/subjectStore';
 import { useLearningAnalytics } from '../hooks/useLearningAnalytics';
 import { useProfile } from '../hooks/useProfile';
 import { getCurrentLearner } from '../store/authStore';
-import { PlayCircle, FileText, BrainCircuit, Code2, Trophy, Flame, Clock, ChevronRight, Sparkles, Plus, Trash2, Users, UserPlus, BookOpen, Settings } from 'lucide-react';
+import { PlayCircle, FileText, BrainCircuit, Code2, Trophy, Flame, Clock, ChevronRight, Sparkles, Plus, Trash2, Users, UserPlus, BookOpen, Settings, Upload, Loader2, CheckCircle2 } from 'lucide-react';
 import DailyTaskPanel from '../components/tasks/DailyTaskPanel';
 import { useDailyTasks } from '../hooks/useDailyTasks';
 import Modal from '../components/common/Modal';
 import { getJoinedClassSubjects, joinClassSubject, getMyClassSubjects } from '../api/classSubjects';
+import { uploadTextbook, getTextbook } from '../api/textbooks';
+import type { Textbook } from '../types/textbook';
 import type { ClassSubject } from '../types/classSubject';
 
 export default function Home() {
@@ -47,7 +49,91 @@ export default function Home() {
 
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState('');
-  const submitCreate = async () => { const n = newName.trim(); if (!n) return; try { const s = await create(n); setNewName(''); setShowCreate(false); setActive(s); nav('/chat'); } catch { /* error already in store */ } };
+  const [useTextbook, setUseTextbook] = useState(false);
+  const [textbookFile, setTextbookFile] = useState<File | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [textbookStatus, setTextbookStatus] = useState<'idle' | 'uploading' | 'processing' | 'ready' | 'error'>('idle');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const submitCreate = async () => {
+    const n = newName.trim();
+    if (!n) return;
+    setCreating(true);
+    try {
+      const s = await create(n);
+      setNewName('');
+
+      // Upload textbook if selected
+      if (useTextbook && textbookFile && s.id) {
+        try {
+          setTextbookStatus('uploading');
+          const tb = await uploadTextbook(s.id, textbookFile);
+          setUseTextbook(false);
+          setTextbookFile(null);
+
+          // Poll until processing completes
+          if (tb.status === 'uploading' || tb.status === 'processing') {
+            setTextbookStatus('processing');
+            let attempts = 0;
+            const maxAttempts = 40; // ~2 minutes at 3s intervals
+            const poll = setInterval(async () => {
+              attempts++;
+              try {
+                const updated = await getTextbook(s.id);
+                if (!updated) {
+                  clearInterval(poll);
+                  setTextbookStatus('error');
+                  return;
+                }
+                if (updated.status === 'ready') {
+                  clearInterval(poll);
+                  setTextbookStatus('ready');
+                  setCreating(false);
+                  // Short delay so the student sees "解析完成", then navigate
+                  setTimeout(() => {
+                    setShowCreate(false);
+                    setTextbookStatus('idle');
+                    setActive(s);
+                    nav('/chat');
+                  }, 1200);
+                } else if (updated.status === 'error') {
+                  clearInterval(poll);
+                  setTextbookStatus('error');
+                  setCreating(false);
+                } else if (attempts >= maxAttempts) {
+                  clearInterval(poll);
+                  // Timeout — still allow navigation
+                  setTextbookStatus('ready');
+                  setCreating(false);
+                  setTimeout(() => {
+                    setShowCreate(false);
+                    setTextbookStatus('idle');
+                    setActive(s);
+                    nav('/chat');
+                  }, 800);
+                }
+              } catch {
+                clearInterval(poll);
+                setTextbookStatus('error');
+              }
+            }, 3000);
+            return; // Don't navigate yet — polling will handle it
+          }
+        } catch {
+          // Subject created but textbook upload failed — still navigate
+          setTextbookStatus('idle');
+        }
+      }
+
+      setShowCreate(false);
+      setActive(s);
+      nav('/chat');
+    } catch {
+      /* error already in store */
+    } finally {
+      if (textbookStatus === 'idle') setCreating(false);
+    }
+  };
 
   // ── 班级科目 ──────────────────────────────────────────────────────
   const [classSubjects, setClassSubjects] = useState<ClassSubject[]>([]);
@@ -220,10 +306,127 @@ export default function Home() {
                   </div>
                 )}
                 {showCreate && (
-                  <div className="flex items-center gap-2 mb-4 animate-fade-in">
-                    <input value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => e.key==='Enter'&&submitCreate()} placeholder="科目名称" autoFocus maxLength={30} className="flex-1 px-4 py-2.5 bg-surface-50 border border-surface-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 transition-all" />
-                    <button onClick={submitCreate} disabled={!newName.trim()} className="px-4 py-2.5 bg-primary-600 text-white rounded-xl text-sm font-medium hover:bg-primary-700 disabled:opacity-50 transition-colors whitespace-nowrap">创建</button>
-                    <button onClick={() => setShowCreate(false)} className="px-3 py-2.5 text-sm text-surface-400 hover:text-surface-600 whitespace-nowrap">取消</button>
+                  <div className="mb-4 p-4 bg-surface-50 border border-surface-200 rounded-xl animate-fade-in space-y-3">
+                    {/* ── Textbook processing status (shown after upload starts) ── */}
+                    {textbookStatus !== 'idle' ? (
+                      <div className="py-3">
+                        {/* Processing indicator */}
+                        {(textbookStatus === 'uploading' || textbookStatus === 'processing') && (
+                          <div className="flex flex-col items-center gap-3">
+                            <div className="flex items-center gap-2">
+                              <Loader2 size={20} className="text-blue-500 animate-spin" />
+                              <span className="text-sm font-medium text-surface-700">
+                                {textbookStatus === 'uploading' ? '正在上传教材…' : '正在解析教材内容…'}
+                              </span>
+                            </div>
+                            <p className="text-xs text-surface-400 text-center max-w-xs">
+                              {textbookStatus === 'uploading'
+                                ? '正在将PDF文件上传至服务器'
+                                : 'AI 正在识别教材的章、节结构，请耐心等待'}
+                            </p>
+                            <div className="w-48 h-1.5 bg-surface-200 rounded-full overflow-hidden">
+                              <div className="h-full bg-blue-500 rounded-full animate-pulse" style={{ width: textbookStatus === 'uploading' ? '30%' : '70%' }} />
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Ready state */}
+                        {textbookStatus === 'ready' && (
+                          <div className="flex flex-col items-center gap-2 py-1">
+                            <div className="flex items-center gap-2 text-emerald-600">
+                              <CheckCircle2 size={20} />
+                              <span className="text-sm font-semibold">教材解析完成！</span>
+                            </div>
+                            <p className="text-xs text-surface-400">即将进入学习页面…</p>
+                          </div>
+                        )}
+
+                        {/* Error state */}
+                        {textbookStatus === 'error' && (
+                          <div className="flex flex-col items-center gap-3">
+                            <div className="flex items-center gap-2 text-amber-600">
+                              <span className="text-sm font-medium">教材解析失败</span>
+                            </div>
+                            <p className="text-xs text-surface-400 text-center max-w-xs">
+                              教材已上传但自动解析未成功，您可以在科目设置中重新触发解析，或直接开始学习
+                            </p>
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => {
+                                  setTextbookStatus('idle');
+                                  setShowCreate(false);
+                                  // Find the newly created subject and navigate
+                                  const subjects = useSubjectStore.getState().subjects;
+                                  const newest = subjects[0]; // subjects are ordered by created_at desc
+                                  if (newest) {
+                                    setActive(newest);
+                                    nav('/chat');
+                                  }
+                                }}
+                                className="px-4 py-2 bg-primary-600 text-white rounded-xl text-sm font-medium hover:bg-primary-700 transition-colors"
+                              >
+                                继续进入学习
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <>
+                        {/* Subject name input */}
+                        <div className="flex items-center gap-2">
+                          <input value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => e.key==='Enter'&&submitCreate()} placeholder="科目名称" autoFocus maxLength={30} className="flex-1 px-4 py-2.5 bg-white border border-surface-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 transition-all" />
+                          <button onClick={submitCreate} disabled={!newName.trim() || creating} className="px-4 py-2.5 bg-primary-600 text-white rounded-xl text-sm font-medium hover:bg-primary-700 disabled:opacity-50 transition-colors whitespace-nowrap flex items-center gap-1">
+                            {creating && <Loader2 size={14} className="animate-spin" />}
+                            创建
+                          </button>
+                          <button onClick={() => { setShowCreate(false); setUseTextbook(false); setTextbookFile(null); }} className="px-3 py-2.5 text-sm text-surface-400 hover:text-surface-600 whitespace-nowrap">取消</button>
+                        </div>
+
+                        {/* Textbook toggle */}
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => { setUseTextbook(!useTextbook); setTextbookFile(null); }}
+                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                              useTextbook
+                                ? 'bg-blue-100 text-blue-700 border border-blue-200'
+                                : 'bg-white text-surface-500 border border-surface-200 hover:bg-surface-100'
+                            }`}
+                          >
+                            <BookOpen size={12} />
+                            使用教材参考
+                          </button>
+                          <span className="text-[10px] text-surface-400">
+                            {useTextbook ? 'AI 将按教材章节规划学习路径' : 'AI 自主规划学习路径'}
+                          </span>
+                        </div>
+
+                        {/* File upload (when textbook mode is active) */}
+                        {useTextbook && (
+                          <div className="flex items-center gap-2">
+                            <input
+                              ref={fileInputRef}
+                              type="file"
+                              accept="application/pdf"
+                              onChange={(e) => setTextbookFile(e.target.files?.[0] ?? null)}
+                              className="hidden"
+                            />
+                            <button
+                              onClick={() => fileInputRef.current?.click()}
+                              className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-surface-200 rounded-lg text-xs text-surface-600 hover:bg-surface-100 transition-colors"
+                            >
+                              <Upload size={12} />
+                              {textbookFile ? textbookFile.name : '选择 PDF 教材'}
+                            </button>
+                            {textbookFile && (
+                              <span className="text-[10px] text-emerald-600">
+                                {(textbookFile.size / (1024 * 1024)).toFixed(1)} MB
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    )}
                   </div>
                 )}
                 <div className="space-y-3 max-h-[260px] overflow-y-auto pr-1">

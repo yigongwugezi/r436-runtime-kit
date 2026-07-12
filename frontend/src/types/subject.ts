@@ -10,6 +10,7 @@ export interface Subject {
   id: string;
   name: string;
   description?: string;
+  textbookId?: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -19,6 +20,7 @@ export interface SubjectResponse {
   id: string;
   name: string;
   description: string | null;
+  textbook_id?: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -40,6 +42,7 @@ export function subjectFromResponse(raw: SubjectResponse): Subject {
     id: raw.id,
     name: raw.name,
     description: raw.description ?? undefined,
+    textbookId: raw.textbook_id ?? null,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
   };
