@@ -14,6 +14,7 @@ from app.services.spark_provider import (
     SparkImageProvider,
     SparkVideoProvider,
 )
+from app.services.multimodal_provider import SparkVisionProvider
 
 
 class ToolRegistry:
@@ -41,6 +42,9 @@ class ToolRegistry:
             "video_generation": "SparkVideoProvider",        # 科大讯飞星火视频
             "micro_lesson_video": "SparkVideoProvider",
             "video_script_generation": "SparkVideoProvider",
+            # Spark vision as alternative to Qwen VL
+            "image_understanding_spark": "SparkVisionProvider",
+            "image_to_mindmap_spark": "SparkVisionProvider",
             # Fallback to Qwen/Wan when Spark not configured
             "image_generation_qwen": "QwenImageProvider",
             "video_generation_wan": "WanVideoProvider",
@@ -73,4 +77,5 @@ def default_registry() -> ToolRegistry:
     registry.register_tool("WanVideoProvider", WanVideoProvider())
     registry.register_tool("SparkImageProvider", SparkImageProvider())
     registry.register_tool("SparkVideoProvider", SparkVideoProvider())
+    registry.register_tool("SparkVisionProvider", SparkVisionProvider())
     return registry

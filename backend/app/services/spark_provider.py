@@ -22,8 +22,10 @@ SPARK_API_KEY = settings.spark_api_key
 SPARK_API_SECRET = settings.spark_api_secret
 
 
-def _build_auth_url(host_url: str) -> str:
+def _build_auth_url(host_url: str, api_key: str = "", api_secret: str = "") -> str:
     """构建带 HMAC 签名的请求 URL."""
+    key = api_key or SPARK_API_KEY
+    secret = api_secret or SPARK_API_SECRET
     url_parsed = parse.urlparse(host_url)
     host = url_parsed.hostname or ""
     path = url_parsed.path or "/"
@@ -34,14 +36,14 @@ def _build_auth_url(host_url: str) -> str:
     signature_origin = f"host: {host}\ndate: {date_str}\nPOST {path} HTTP/1.1"
     signature = base64.b64encode(
         hmac.new(
-            SPARK_API_SECRET.encode(),
+            secret.encode(),
             signature_origin.encode(),
             digestmod=hashlib.sha256,
         ).digest()
     ).decode()
 
     authorization = (
-        f'api_key="{SPARK_API_KEY}", algorithm="hmac-sha256", '
+        f'api_key="{key}", algorithm="hmac-sha256", '
         f'headers="host date request-line", signature="{signature}"'
     )
     auth = base64.b64encode(authorization.encode()).decode()

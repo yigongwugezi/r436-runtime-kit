@@ -924,6 +924,88 @@ class QwenVisionProvider:
             return _response(status="failed", provider=self.provider, warnings=[str(exc)], trace=failed_trace)
 
 
+class SparkVisionProvider:
+    name = "SparkVisionProvider"
+    provider = "spark_vision"
+
+    SPARK_VISION_URL = "wss://spark-api.cn-huabei-1.xf-yun.com/v2.1/image"
+
+    def run(self, context: dict[str, Any]) -> dict[str, Any]:
+        from app.config import settings
+        import asyncio, json as _json, base64 as _b64
+
+        app_id = settings.spark_vision_app_id or settings.spark_app_id
+        api_key = settings.spark_vision_api_key or settings.spark_api_key
+        api_secret = settings.spark_vision_api_secret or settings.spark_api_secret
+        if not app_id or not api_key:
+            return _response(status="provider_not_configured", provider=self.provider,
+                warnings=["Spark vision provider not configured."],
+                trace={"required_env": ["SPARK_VISION_APP_ID", "SPARK_VISION_API_KEY", "SPARK_VISION_API_SECRET"]})
+
+        image, image_warning, image_kind = image_input_from_context(context)
+        task_type = _text(context.get("task_type")) or "image_understanding"
+        if not image:
+            return _response(status="needs_input", provider=self.provider,
+                warnings=[image_warning or "missing image input"],
+                trace={"task_type": task_type})
+
+        prompt = _vision_prompt(task_type)
+
+        async def _ws_call():
+            from app.services.spark_provider import _build_auth_url
+            import websockets
+
+            url = _build_auth_url(
+                self.SPARK_VISION_URL.replace("wss://", "https://"),
+                api_key=api_key, api_secret=api_secret,
+            )
+            url = url.replace("https://", "wss://")
+            payload = {
+                "header": {"app_id": app_id},
+                "parameter": {"chat": {"domain": "imagev3", "temperature": 0.1}},
+                "payload": {"message": {"text": [
+                    {"role": "user", "content": image if image_kind == "base64" else _b64.b64encode(image.encode()).decode() if isinstance(image, str) else image, "content_type": "image"},
+                    {"role": "user", "content": prompt, "content_type": "text"},
+                ]}},
+            }
+            async with websockets.connect(url, max_size=10*1024*1024) as ws:
+                await ws.send(_json.dumps(payload))
+                raw_text = ""
+                async for msg in ws:
+                    data = _json.loads(msg)
+                    code = data.get("header", {}).get("code", -1)
+                    if code != 0:
+                        break
+                    choices = data.get("payload", {}).get("choices", {})
+                    status = choices.get("status", 2)
+                    content_list = choices.get("text", []) if isinstance(choices, dict) else []
+                    for c in content_list:
+                        if isinstance(c, dict) and c.get("content"):
+                            raw_text += str(c["content"])
+                    if status == 2:  # completed
+                        break
+                return raw_text
+
+        try:
+            raw_text = asyncio.run(_ws_call())
+        except Exception as e:
+            return _response(status="failed", provider=self.provider, warnings=[str(e)])
+
+        if not raw_text:
+            return _response(status="failed", provider=self.provider, warnings=["empty response from Spark vision"])
+
+        try:
+            parsed = parse_safe(raw_text)
+        except Exception:
+            parsed = {}
+        result = _ensure_review_fields(
+            _normalize_task_result(task_type, parsed, raw_text),
+            parsed, raw_text,
+            parsed.get("detected_text"), parsed.get("question_text"), parsed.get("answer"))
+        return _response(status="success", provider=self.provider, result=result,
+            trace={"task_type": task_type})
+
+
 class QwenImageProvider:
     name = "QwenImageProvider"
     provider = "qwen_image"

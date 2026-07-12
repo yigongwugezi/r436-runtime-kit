@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     spark_api_key: str = ""
     spark_api_secret: str = ""
     spark_image_host_url: str = "https://spark-api.cn-huabei-1.xf-yun.com/v2.1/tti"
+    spark_vision_app_id: str = ""
+    spark_vision_api_key: str = ""
+    spark_vision_api_secret: str = ""
 
     # Web search provider settings
     search_provider: str = "mock"       # "mock" | "duckduckgo" | "tavily"
