@@ -21,6 +21,7 @@ class FakeClient:
             Item("数组教程", "https://www.youtube.com/watch?v=abc", "数组和链表 walkthrough。"),
             Item("链表短视频", "https://www.youtube.com/shorts/xyz", "同平台结果，受数量限制。"),
             Item("复杂度课程视频", "https://vimeo.com/123456", "时间复杂度课程讲解。"),
+            Item("无关视频", "https://vimeo.com/987654", "不含当前知识点。"),
             Item("YouTube 搜索页", "https://www.youtube.com/results?search_query=array", "不是具体视频。"),
             Item("B站首页", "https://www.bilibili.com/", "不是具体视频。"),
             Item("无效", "javascript:alert(1)", "不能展示。"),
@@ -51,6 +52,7 @@ def main() -> None:
     assert all(item["resource_type"] == "video" for item in result["resources"])
     assert {item["platform"] for item in result["resources"]} >= {"bilibili", "youtube", "vimeo"}
     assert all("/results" not in item["url"] and item["url"] != "https://www.bilibili.com" for item in result["resources"])
+    assert all(item["title"] != "无关视频" for item in result["resources"])
     assert all(item["reason"] and item["relevance_score"] <= 1 for item in result["resources"])
 
     mixed = service.recommend(session_id="test", section_id="s1", section_title="数组与链表", knowledge_points=[], resource_types=["video", "course"])

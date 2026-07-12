@@ -28,6 +28,7 @@ interface Props {
 
 const resourceTypes: GeneratedSectionResourceType[] = ['summary_card', 'concept_comparison', 'worked_example', 'mistake_checklist', 'review_notes'];
 const platformLabels: Record<string, string> = { bilibili: 'B站', youtube: 'YouTube', vimeo: 'Vimeo', mooc: '公开课' };
+const trustLabels: Record<string, string> = { official: '官方来源', educational: '教育来源', general: '普通来源' };
 
 function safeExternalUrl(url: string): boolean {
   try { return ['http:', 'https:'].includes(new URL(url).protocol); } catch { return false; }
@@ -146,10 +147,11 @@ export default function SectionResourceWorkspace(props: Props) {
     {/* ── 推送结果 ── */}
     {recommendations && (
       <div className="space-y-1.5">
+        {!recommendations.resources.length && <p className="rounded-lg bg-surface-50 px-3 py-2 text-[11px] text-surface-500">未找到与当前小节匹配的公开资源，请调整小节知识点后重试。</p>}
         {recommendations.resources.filter(r => resourceFilter === 'all' || r.resource_type === resourceFilter).map(r => (
           <div key={r.url} className="rounded-lg bg-surface-50 p-2.5">
             <p className="text-xs font-medium text-surface-700 line-clamp-2">{r.title}</p>
-            <p className="mt-0.5 text-[10px] text-surface-400">{r.platform ? platformLabels[r.platform] || r.platform : r.resource_type} · {r.source} · {r.trust_level}</p>
+            <p className="mt-0.5 text-[10px] text-surface-400">{r.platform ? platformLabels[r.platform] || r.platform : r.resource_type} · {r.source} · {trustLabels[r.trust_level] || r.trust_level}</p>
             <p className="mt-1 text-[11px] text-surface-500 line-clamp-2">{r.snippet}</p>
             <p className="mt-1 text-[10px] text-surface-500 line-clamp-2">推荐理由：{r.reason}</p>
             {safeExternalUrl(r.url) && <a href={r.url} target="_blank" rel="noopener noreferrer"

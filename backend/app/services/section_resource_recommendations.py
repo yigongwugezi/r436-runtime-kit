@@ -154,6 +154,8 @@ class SectionResourceRecommendationService:
                 continue
             trust = self._trust_level(source)
             matched = [term for term in terms if term and term.lower() in f"{title} {snippet}".lower()]
+            if requested == {"video"} and not matched:
+                continue
             score = min(0.98, 0.50 + min(0.24, len(matched) * 0.08) + {"official": 0.16, "educational": 0.10, "general": 0.04}[trust] + (0.03 if platform else 0) - min(0.12, rank * 0.01))
             source_counts[source] = source_counts.get(source, 0) + 1
             if platform:
