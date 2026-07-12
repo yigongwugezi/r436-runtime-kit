@@ -27,6 +27,7 @@ interface Props {
 }
 
 const resourceTypes: GeneratedSectionResourceType[] = ['summary_card', 'concept_comparison', 'worked_example', 'mistake_checklist', 'review_notes'];
+const platformLabels: Record<string, string> = { bilibili: 'B站', youtube: 'YouTube', vimeo: 'Vimeo', mooc: '公开课' };
 
 function safeExternalUrl(url: string): boolean {
   try { return ['http:', 'https:'].includes(new URL(url).protocol); } catch { return false; }
@@ -66,7 +67,7 @@ export default function SectionResourceWorkspace(props: Props) {
     try {
       setRecommendations(await recommendSectionResources(section.id, {
         sessionId, sectionTitle: section.title, knowledgePoints: section.knowledgePoints,
-        language: 'zh-CN', resourceTypes: resourceFilter === 'all' ? ['video', 'article', 'course', 'document'] : [resourceFilter],
+        language: 'zh-CN', resourceTypes: resourceFilter === 'all' ? ['video', 'article', 'course', 'document', 'paper'] : [resourceFilter],
       }));
     } catch {
       setRecommendations({ query: [], resources: [], status: 'failed', warnings: ['外部资源检索失败，请稍后重试。'] });
@@ -115,13 +116,11 @@ export default function SectionResourceWorkspace(props: Props) {
     <div className="grid grid-cols-2 gap-1.5">
       {[
         { key: 'all', label: '全部' },
-        { key: 'document', label: '课程讲义' },
         { key: 'video', label: '教学视频' },
-        { key: 'article', label: '练习题库' },
-        { key: 'course', label: '实操案例' },
+        { key: 'article', label: '文章' },
+        { key: 'course', label: '课程' },
+        { key: 'document', label: '文档' },
         { key: 'paper', label: '学术论文' },
-        { key: 'document', label: '拓展阅读' },
-        { key: 'video', label: '动画演示' },
       ].map(({ key, label }) => (
         <button key={label}
           onClick={async () => {
@@ -150,11 +149,12 @@ export default function SectionResourceWorkspace(props: Props) {
         {recommendations.resources.filter(r => resourceFilter === 'all' || r.resource_type === resourceFilter).map(r => (
           <div key={r.url} className="rounded-lg bg-surface-50 p-2.5">
             <p className="text-xs font-medium text-surface-700 line-clamp-2">{r.title}</p>
-            <p className="mt-0.5 text-[10px] text-surface-400">{r.resource_type} · {r.source}</p>
+            <p className="mt-0.5 text-[10px] text-surface-400">{r.platform ? platformLabels[r.platform] || r.platform : r.resource_type} · {r.source} · {r.trust_level}</p>
             <p className="mt-1 text-[11px] text-surface-500 line-clamp-2">{r.snippet}</p>
+            <p className="mt-1 text-[10px] text-surface-500 line-clamp-2">推荐理由：{r.reason}</p>
             {safeExternalUrl(r.url) && <a href={r.url} target="_blank" rel="noopener noreferrer"
               className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-medium text-surface-500 hover:text-surface-700">
-              打开 <ExternalLink size={10} /></a>}
+              {r.resource_type === 'video' ? '打开视频' : '打开原文'} <ExternalLink size={10} /></a>}
           </div>
         ))}
       </div>
