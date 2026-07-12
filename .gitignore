@@ -37,6 +37,7 @@ work/
 backend/data/*.db
 backend/data/*.db-shm
 backend/data/*.db-wal
+backend/data/textbooks/
 !backend/data/.gitkeep
 
 # RAG / Vector DB (FAISS index + HuggingFace cache)
