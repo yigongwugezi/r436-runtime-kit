@@ -36,7 +36,7 @@ class PlannerAgent(BaseAgent):
         mode = str(context.get("mode", "plan"))
         existing = context.get("existing_path")
 
-        if plan_mode == "adjust":
+        if mode == "adjust":
             return self._run_adjustment(context, diagnosis, profile)
 
         weak_points = self._extract_weak_points(diagnosis)
@@ -59,6 +59,25 @@ class PlannerAgent(BaseAgent):
         # ── Mode A: Focused sprint — target specific weak points ──
         if plan_mode == "focus":
             return self._run_focus_mode(context, profile, diagnosis, weak_points, total_days)
+
+        # ── Mode T: Textbook-driven path — use imported textbook structure ──
+        textbook_chapters = context.get("textbook_chapters")
+        if not textbook_chapters:
+            # Auto-load from DB using session context
+            session_id = context.get("session_id", "")
+            if session_id:
+                textbook_chapters = self._load_textbook_chapters(session_id)
+
+        if textbook_chapters and isinstance(textbook_chapters, list) and len(textbook_chapters) > 0:
+            logger.info(
+                "Using textbook-driven path with %d chapters",
+                len(textbook_chapters),
+            )
+            chapters = self._build_path_from_textbook(
+                textbook_chapters, profile, total_days, diag_meta,
+            )
+            if chapters:
+                return self._make_chapter_result(chapters, total_days, diag_meta)
 
         # ── Mode B: Generate path with appropriate structure ──
         chapters = None
@@ -138,6 +157,176 @@ class PlannerAgent(BaseAgent):
             return "focus"
 
         return "textbook"
+
+    # ── Load textbook chapters from DB if available ──
+
+    @staticmethod
+    def _load_textbook_chapters(session_id: str) -> list[dict] | None:
+        """Load textbook chapters from DB for the session's subject.
+
+        Returns the chapters_json list or None if no textbook is linked.
+        """
+        try:
+            from app.db.engine import SessionLocal
+            from app.db.models import PersonalSubjectModel, SessionModel, TextbookModel
+
+            db = SessionLocal()
+            try:
+                session = db.get(SessionModel, session_id)
+                if session is None or not session.subject_id:
+                    return None
+
+                subject = db.get(PersonalSubjectModel, session.subject_id)
+                if subject is None or not subject.textbook_id:
+                    return None
+
+                textbook = db.get(TextbookModel, subject.textbook_id)
+                if textbook is None or not textbook.chapters_json:
+                    return None
+
+                if textbook.status != "ready":
+                    logger.info(
+                        "Textbook %s status is %s — not ready for path planning",
+                        textbook.id, textbook.status,
+                    )
+                    return None
+
+                logger.info(
+                    "Loaded textbook %s for subject %s: %d chapters",
+                    textbook.id, subject.id, len(textbook.chapters_json),
+                )
+                return list(textbook.chapters_json)
+            finally:
+                db.close()
+        except Exception:
+            logger.exception("Failed to load textbook chapters for session %s", session_id)
+            return None
+
+    # ── Mode T: Textbook-driven path building ──
+
+    def _build_path_from_textbook(
+        self,
+        textbook_chapters: list[dict],
+        profile: dict,
+        total_days: int,
+        diag_meta: dict,
+    ) -> list[dict] | None:
+        """Convert imported textbook chapter structure into learning path stages.
+
+        Each textbook chapter becomes a path stage containing one chapter
+        with the textbook's sections as its learning sections.
+
+        Textbook chapter JSON schema (from chapters_json):
+          [{chapter_id, title, order, start_page, end_page,
+            sections: [{section_id, title, order, start_page, end_page,
+                        estimated_minutes, knowledge_points}]}]
+        """
+        if not textbook_chapters:
+            return None
+
+        stages = []
+        for ch in textbook_chapters:
+            ch_title = ch.get("title", "")
+            ch_order = ch.get("order", len(stages))
+            ch_id = ch.get("chapter_id", f"tb_ch_{ch_order:02d}")
+
+            sections = []
+            for sec in ch.get("sections", []):
+                sec_title = sec.get("title", "")
+                sec_order = sec.get("order", len(sections))
+                sec_id = sec.get("section_id", f"{ch_id}_sec_{sec_order:02d}")
+
+                # Build section ID using the canonical factory
+                section_factory_id = make_section_id(
+                    make_chapter_id(
+                        make_stage_id(make_path_id("textbook"), ch_order),
+                        0,
+                    ),
+                    sec_order,
+                )
+
+                kps = []
+                for kp_idx, kp_name in enumerate(sec.get("knowledge_points", [])):
+                    if isinstance(kp_name, str) and kp_name.strip():
+                        kps.append({
+                            "id": make_kp_id(section_factory_id, kp_idx),
+                            "name": kp_name.strip(),
+                            "type": "concept",
+                            "mastery": 0,
+                            "status": "not_started",
+                        })
+
+                sections.append({
+                    "id": section_factory_id,
+                    "title": sec_title,
+                    "goal": sec.get("goal", "") or f"掌握{sec_title}的核心内容",
+                    "estimatedMinutes": sec.get("estimated_minutes", 45),
+                    "knowledgePoints": kps,
+                    "lectureIds": [],
+                    "contentType": "lecture",
+                    "status": "not_started",
+                    # Textbook-specific fields
+                    "textbookPageStart": sec.get("start_page", 1),
+                    "textbookPageEnd": sec.get("end_page", 1),
+                    "textbookSectionId": sec_id,
+                })
+
+            if not sections:
+                # Chapter with no sections: create one default section
+                sec_id = make_section_id(
+                    make_chapter_id(
+                        make_stage_id(make_path_id("textbook"), ch_order), 0,
+                    ), 0,
+                )
+                sections.append({
+                    "id": sec_id,
+                    "title": ch_title,
+                    "goal": f"掌握{ch_title}的核心内容",
+                    "estimatedMinutes": 60,
+                    "knowledgePoints": [
+                        {
+                            "id": make_kp_id(sec_id, 0),
+                            "name": ch_title,
+                            "type": "concept",
+                            "mastery": 0,
+                            "status": "not_started",
+                        }
+                    ],
+                    "lectureIds": [],
+                    "contentType": "lecture",
+                    "status": "not_started",
+                    "textbookPageStart": ch.get("start_page", 1),
+                    "textbookPageEnd": ch.get("end_page", 1),
+                    "textbookSectionId": ch_id,
+                })
+
+            stage_id = make_stage_id(make_path_id("textbook"), ch_order)
+            chapter_id = make_chapter_id(stage_id, 0)
+
+            stages.append({
+                "id": stage_id,
+                "title": ch_title,
+                "order": ch_order,
+                "description": f"学习{ch_title}",
+                "nodes": [],
+                "chapters": [{
+                    "id": chapter_id,
+                    "title": ch_title,
+                    "order": 0,
+                    "status": "not_started",
+                    "sections": sections,
+                    "mindmapId": None,
+                }],
+                "objective": f"完成{ch_title}的学习",
+                "estimatedDays": max(1, total_days // max(1, len(textbook_chapters))),
+            })
+
+        logger.info(
+            "Built textbook-driven path: %d stages, %d sections",
+            len(stages),
+            sum(len(s.get("chapters", [{}])[0].get("sections", [])) for s in stages),
+        )
+        return stages
 
     # ── Mode A: Focus sprint ──
 

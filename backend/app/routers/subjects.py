@@ -61,6 +61,7 @@ def _subject_dict(ps: PersonalSubjectModel) -> dict:
         "id": ps.id,
         "name": ps.name,
         "description": ps.description,
+        "textbook_id": ps.textbook_id,
         "created_at": int(ps.created_at.timestamp() * 1000) if ps.created_at else 0,
         "updated_at": int(ps.updated_at.timestamp() * 1000) if ps.updated_at else 0,
     }
@@ -322,6 +323,29 @@ def delete_subject(
             raise HTTPException(status_code=404, detail="科目不存在")
         if ps.learner_id != auth.learner_id:
             raise HTTPException(status_code=403, detail="无权删除此科目")
+
+        # ── Clean up linked textbook files from server disk ──────────
+        # Only delete the server-side cached/processed copies.
+        # The student's original local PDF is never touched.
+        if ps.textbook_id:
+            from app.db.models import TextbookModel, TextbookPageContentModel
+            from app.services.textbook_processor import delete_textbook_files
+
+            tb = db.get(TextbookModel, ps.textbook_id)
+            if tb is not None:
+                # Remove per-page extracted content
+                db.query(TextbookPageContentModel).filter(
+                    TextbookPageContentModel.textbook_id == tb.id
+                ).delete()
+                # Remove textbook DB record
+                db.delete(tb)
+                db.flush()
+                # Remove server-side cached/processed files (PDF copy, rendered pages)
+                delete_textbook_files(tb.id)
+                logger.info(
+                    "Cleaned up textbook %s files for subject %s",
+                    tb.id, subject_id,
+                )
 
         # Clean up linked sessions so old data doesn't leak if the subject
         # is re-created.  SessionModel cascades messages, profile snapshots,

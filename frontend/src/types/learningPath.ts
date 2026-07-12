@@ -56,6 +56,13 @@ export interface Section {
   lectureIds: string[];
   /** 内容交互形式: lecture | memory_drill | step_through */
   contentType?: string;
+  /** ── Textbook-linked fields ── */
+  /** PDF start page for this section */
+  textbookPageStart?: number;
+  /** PDF end page for this section */
+  textbookPageEnd?: number;
+  /** Reference into TextbookModel.chapters_json section_id */
+  textbookSectionId?: string;
 }
 
 export interface KnowledgePoint {

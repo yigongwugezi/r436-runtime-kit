@@ -87,6 +87,11 @@ class Settings(BaseSettings):
 
     project_root: Path = Field(default_factory=lambda: Path(__file__).resolve().parents[2])
 
+    # ── Textbook Import ──────────────────────────────────────────────
+    textbook_storage_path: str = "./data/textbooks"
+    textbook_max_upload_size: int = 100 * 1024 * 1024  # 100 MB
+    textbook_max_parse_chars: int = 80000  # max chars sent to LLM for chapter recognition
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

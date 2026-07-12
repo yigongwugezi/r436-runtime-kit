@@ -2,7 +2,7 @@
 // Resource types
 // ================================================================
 
-/** 资源类型 — 7 种资源 */
+/** 资源类型 — 8 种资源 */
 export type ResourceType =
   | 'lecture'     // 课程讲义
   | 'mindmap'     // 思维导图
@@ -10,7 +10,8 @@ export type ResourceType =
   | 'reading'     // 拓展阅读
   | 'case_study'  // 实操案例
   | 'video'       // 教学视频/动画
-  | 'ppt';        // PPT大纲
+  | 'ppt'         // PPT大纲
+  | 'textbook';   // 教材
 
 /** 数据来源类型 */
 export type DataSource = 'user_input' | 'agent_generated' | 'system_inferred' | 'fallback';
