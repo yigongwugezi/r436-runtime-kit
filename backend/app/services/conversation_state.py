@@ -316,7 +316,9 @@ class ConversationStore:
                     for point in result.get("diagnosis", {}).get("weak_knowledge_points", [])
                 ]
                 readiness = self.readiness(state)
-                prefs = result.get("preferences") or {}
+                prefs = dict(result.get("preferences") or {})
+                if isinstance(result.get("profile_v2"), dict):
+                    prefs["profile_v2"] = result["profile_v2"]
                 if not prefs:
                     pref_fact = state.facts.get("preference", "")
                     if pref_fact:

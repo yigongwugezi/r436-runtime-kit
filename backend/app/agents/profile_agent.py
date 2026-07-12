@@ -14,6 +14,7 @@ from app.utils.profile_normalizer import (
     get_active_dimensions,
     get_active_dimension_labels,
 )
+from app.services.profile_v2 import build_profile_v2
 
 
 @register_agent
@@ -31,8 +32,15 @@ class ProfileAgent(BaseAgent):
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         active_dims = self._get_active_dimensions(context)
+        profile = self._build_profile(context, active_dims)
         return {
-            "profile": self._build_profile(context, active_dims),
+            "profile": profile,
+            "profile_v2": build_profile_v2(
+                dimensions=[{"key": key, **item} for key, item in profile.items() if isinstance(item, dict)],
+                facts=context.get("profile_facts") if isinstance(context.get("profile_facts"), dict) else {},
+                course=context.get("course") if isinstance(context.get("course"), dict) else None,
+                weaknesses=context.get("diagnosis", {}).get("weak_knowledge_points", []),
+            ),
             "agent_step": self.agent_step(),
             "active_dimensions": active_dims,
         }

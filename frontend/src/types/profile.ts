@@ -12,6 +12,50 @@ export interface StudentProfile {
   weaknesses: KnowledgeGap[];
   preferences: LearningPreferences;
   history: StudyHistory;
+  profileV2?: LearnerProfileV2;
+}
+
+export interface LearnerProfileV2 {
+  profile_version: 2;
+  subject_context: Record<string, any>;
+  general_states: ProfileStateV2[];
+  subject_dimensions: SubjectDimensionV2[];
+  knowledge_mastery: KnowledgeMasteryV2[];
+  evidence_summary: Record<string, number>;
+  profile_completeness: number;
+  updated_at: string;
+}
+
+export interface ProfileStateV2 {
+  key: string;
+  label: string;
+  status: 'assessed' | 'tentative' | 'unassessed';
+  self_report: number | null;
+  system_estimate: number | null;
+  level: string;
+  confidence: 'low' | 'medium' | 'high';
+  evidence: Array<{ source: string; detail: string }>;
+  updated_at: string;
+}
+
+export interface SubjectDimensionV2 {
+  key: string;
+  label: string;
+  status: 'unassessed' | 'tentative' | 'basic' | 'developing' | 'proficient' | 'advanced';
+  score: number | null;
+  confidence: 'low' | 'medium' | 'high';
+  evidence: Array<{ source: string; detail: string }>;
+  recommended_action: string;
+  updated_at: string;
+}
+
+export interface KnowledgeMasteryV2 {
+  knowledge_id: string;
+  label: string;
+  status: 'unassessed' | 'learning' | 'partial' | 'mastered' | 'weak';
+  confidence: 'low' | 'medium' | 'high';
+  evidence: Array<{ source: string; detail: string }>;
+  updated_at: string;
 }
 
 /** 维度数据来源类型 */
