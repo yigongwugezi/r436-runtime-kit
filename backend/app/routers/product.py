@@ -641,7 +641,7 @@ def _chapters_to_frontend(chapters: list[dict[str, Any]]) -> list[dict[str, Any]
                     "mastery": kp.get("mastery", 0),
                     "status": _normalize_content_status(kp.get("status", "not_started")),
                 })
-            sections.append({
+            s: dict[str, Any] = {
                 "id": sec.get("section_id", ""),
                 "title": sec.get("title", ""),
                 "goal": sec.get("goal", ""),
@@ -649,7 +649,15 @@ def _chapters_to_frontend(chapters: list[dict[str, Any]]) -> list[dict[str, Any]
                 "status": _normalize_content_status(sec.get("status", "not_started")),
                 "knowledgePoints": kps,
                 "lectureIds": sec.get("lectureIds", []),
-            })
+            }
+            # Propagate textbook page range fields if present
+            if sec.get("textbookPageStart"):
+                s["textbookPageStart"] = sec["textbookPageStart"]
+            if sec.get("textbookPageEnd"):
+                s["textbookPageEnd"] = sec["textbookPageEnd"]
+            if sec.get("textbookSectionId"):
+                s["textbookSectionId"] = sec["textbookSectionId"]
+            sections.append(s)
         result.append({
             "id": ch.get("chapter_id", ""),
             "title": ch.get("title", ""),

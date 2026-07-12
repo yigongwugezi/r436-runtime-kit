@@ -5,6 +5,7 @@ export interface ExternalSectionResource {
   url: string;
   source: string;
   resource_type: 'video' | 'article' | 'course' | 'paper' | 'document';
+  platform?: 'bilibili' | 'youtube' | 'vimeo' | 'mooc' | 'other' | null;
   snippet: string;
   reason: string;
   relevance_score: number;

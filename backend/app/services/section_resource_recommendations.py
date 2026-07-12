@@ -33,7 +33,8 @@ class SectionResourceRecommendationService:
         points = self._point_names(knowledge_points)
         weak_names = self._point_names(weak_points)
         query_points = list(dict.fromkeys([*points, *weak_names]))
-        queries = self._queries(section_title, query_points, resource_types, profile)
+        requested = {str(kind).lower() for kind in resource_types or []}
+        queries = self._queries(section_title, query_points, requested, profile, language)
         warnings: list[str] = []
         raw_items: list[Any] = []
 
@@ -53,7 +54,9 @@ class SectionResourceRecommendationService:
                 "warnings": list(dict.fromkeys(warnings or ["未找到可用的外部学习资源。"])),
             }
 
-        resources = self._deduplicate_and_rank(raw_items, section_title, query_points, weak_points, language, profile)
+        resources = self._deduplicate_and_rank(
+            raw_items, section_title, query_points, weak_points, language, profile, requested
+        )
         return {
             "query": queries,
             "resources": resources[:5],
@@ -72,13 +75,31 @@ class SectionResourceRecommendationService:
         return names[:6]
 
     @staticmethod
-    def _queries(title: str, points: list[str], resource_types: list[str] | None, profile: dict[str, Any] | None = None) -> list[str]:
+    def _queries(
+        title: str,
+        points: list[str],
+        requested: set[str],
+        profile: dict[str, Any] | None = None,
+        language: str = "zh-CN",
+    ) -> list[str]:
         topic = " ".join([title, *points[:4]]).strip() or "学习资料"
         context = (profile or {}).get("subject_context") if isinstance(profile, dict) else {}
         preferences = context.get("content_preferences", []) if isinstance(context, dict) else []
         level_hint = "入门 示例" if "example_first" in preferences else "教程 讲解"
+        if requested == {"video"}:
+            example_hint = "示例" if "example_first" in preferences else "讲解"
+            if language.lower().startswith("zh"):
+                return [
+                    f"{topic} 入门 {example_hint} 视频 site:bilibili.com/video",
+                    f"{topic} tutorial walkthrough site:youtube.com/watch",
+                    f"{topic} course video site:vimeo.com",
+                ]
+            return [
+                f"{topic} beginner tutorial walkthrough site:youtube.com/watch",
+                f"{topic} 入门 {example_hint} 视频 site:bilibili.com/video",
+                f"{topic} course video site:vimeo.com",
+            ]
         queries = [f"{topic} {level_hint}", f"{topic} 官方文档 大学课程"]
-        requested = {str(kind).lower() for kind in resource_types or []}
         if requested & {"video", "course", "paper", "document"}:
             labels = {"video": "视频", "course": "公开课", "paper": "论文", "document": "文档"}
             suffix = " ".join(labels[kind] for kind in ("video", "course", "paper", "document") if kind in requested)
@@ -101,10 +122,12 @@ class SectionResourceRecommendationService:
         weak_points: list[Any] | None,
         language: str,
         profile: dict[str, Any] | None = None,
+        requested: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         seen_urls: set[str] = set()
         seen_titles: set[str] = set()
         source_counts: dict[str, int] = {}
+        platform_counts: dict[str, int] = {}
         resources: list[dict[str, Any]] = []
         terms = [section_title, *points, *self._point_names(weak_points)]
 
@@ -123,18 +146,34 @@ class SectionResourceRecommendationService:
                 continue
             if title.startswith(("http://", "https://")) or len(title) < 4:
                 continue
+            platform = self._video_platform(url)
+            resource_type = "video" if platform else self._resource_type(url, title)
+            if requested and resource_type not in requested:
+                continue
+            if platform and platform_counts.get(platform, 0) >= 2:
+                continue
             trust = self._trust_level(source)
             matched = [term for term in terms if term and term.lower() in f"{title} {snippet}".lower()]
-            score = min(0.98, 0.50 + min(0.24, len(matched) * 0.08) + {"official": 0.16, "educational": 0.10, "general": 0.04}[trust] - min(0.12, rank * 0.01))
+            if requested == {"video"} and not matched:
+                continue
+            score = min(0.98, 0.50 + min(0.24, len(matched) * 0.08) + {"official": 0.16, "educational": 0.10, "general": 0.04}[trust] + (0.03 if platform else 0) - min(0.12, rank * 0.01))
             source_counts[source] = source_counts.get(source, 0) + 1
+            if platform:
+                platform_counts[platform] = platform_counts.get(platform, 0) + 1
             reason = f"匹配当前小节“{section_title}”"
             if matched:
                 reason += f"及知识点“{'、'.join(matched[:2])}”"
+            if platform:
+                reason += "，标题和摘要指向可直接打开的讲解视频"
+                preferences = ((profile or {}).get("subject_context") or {}).get("content_preferences", [])
+                if "example_first" in preferences:
+                    reason += "，适合优先通过示例理解"
             resources.append({
                 "title": title,
                 "url": url,
                 "source": source,
-                "resource_type": self._resource_type(url, title),
+                "resource_type": resource_type,
+                "platform": platform,
                 "snippet": snippet,
                 "reason": reason + "。",
                 "relevance_score": round(score, 2),
@@ -146,8 +185,6 @@ class SectionResourceRecommendationService:
     @staticmethod
     def _resource_type(url: str, title: str) -> str:
         text = f"{url} {title}".lower()
-        if any(host in text for host in ("youtube.com", "youtu.be", "bilibili.com", "vimeo.com")):
-            return "video"
         if "arxiv.org" in text or ".pdf" in text or "paper" in text:
             return "paper"
         if any(host in text for host in ("ocw.", "coursera.", "edx.", "mooc", "course")):
@@ -155,6 +192,29 @@ class SectionResourceRecommendationService:
         if any(host in text for host in ("docs.", "developer.", "readthedocs", "w3.org")):
             return "document"
         return "article"
+
+    @staticmethod
+    def _video_platform(url: str) -> str | None:
+        """Recognize concrete public video pages, never platform home or search pages."""
+        parsed = urlparse(url)
+        host = parsed.netloc.lower().removeprefix("www.")
+        path = parsed.path.rstrip("/")
+        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        if host.endswith("bilibili.com") and path.startswith("/video/"):
+            return "bilibili"
+        if host == "b23.tv" and path:
+            return "bilibili"
+        if host.endswith("youtube.com") and ((path == "/watch" and bool(query.get("v"))) or path.startswith("/shorts/")):
+            return "youtube"
+        if host == "youtu.be" and path:
+            return "youtube"
+        if host.endswith("vimeo.com") and re.fullmatch(r"/[0-9]+", path):
+            return "vimeo"
+        if any(name in host for name in ("icourse163", "coursera", "edx", "mooc")) and any(
+            marker in path.lower() for marker in ("video", "lecture", "learn")
+        ):
+            return "mooc"
+        return None
 
     @staticmethod
     def _trust_level(source: str) -> str:

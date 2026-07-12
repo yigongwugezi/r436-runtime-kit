@@ -91,6 +91,7 @@ def init_db() -> None:
         },
         "learning_paths": {
             "description": "TEXT",
+            "textbook_id": "VARCHAR(64)",
         },
         "resources": {
             "knowledge_points": "JSON",
@@ -160,6 +161,9 @@ def init_db() -> None:
         },
         "answer_records": {
             "attempt_id": "VARCHAR(64)",
+        },
+        "personal_subjects": {
+            "textbook_id": "VARCHAR(64)",
         },
     }
     for table, columns in migrations.items():

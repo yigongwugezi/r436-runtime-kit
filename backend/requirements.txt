@@ -21,3 +21,7 @@ faiss-cpu>=1.8.0,<2.0.0
 # need to *build* the RAG index or *query* it with the embedding model.
 llama-index-embeddings-huggingface>=0.5.0,<1.0.0
 sentence-transformers>=3.0.0,<4.0.0
+
+# ── Textbook PDF processing ──────────────────────────────────────────
+pymupdf4llm>=0.0.15,<1.0.0
+python-multipart>=0.0.9,<1.0.0

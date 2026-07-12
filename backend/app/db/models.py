@@ -197,6 +197,9 @@ class LearningPathModel(Base):
     stages: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     overall_progress: Mapped[int] = mapped_column(Integer, default=0)
     estimated_days: Mapped[int] = mapped_column(Integer, default=14)
+    textbook_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None
+    )  # linked textbook ID (no FK — textbooks may be deleted independently)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
@@ -707,10 +710,84 @@ class PersonalSubjectModel(Base):
     )
     name: Mapped[str] = mapped_column(String(128), default="")
     description: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    textbook_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("textbooks.id", ondelete="SET NULL"), nullable=True, default=None, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     learner: Mapped["LearnerModel"] = relationship("LearnerModel")
+    textbook: Mapped[Optional["TextbookModel"]] = relationship("TextbookModel", foreign_keys=[textbook_id])
+
+
+# ── Textbook ──────────────────────────────────────────────────────────────
+
+
+class TextbookModel(Base):
+    """A PDF textbook uploaded for a personal subject.
+
+    Stores metadata about the uploaded file, processing status, and the
+    LLM-recognized chapter/section structure as JSON.
+
+    One textbook per subject (unique constraint on subject_id).
+    """
+
+    __tablename__ = "textbooks"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    subject_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("personal_subjects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+        unique=True,
+    )
+    learner_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("learners.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    title: Mapped[str | None] = mapped_column(String(256), nullable=True, default=None)
+    author: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
+    filename: Mapped[str] = mapped_column(String(256), default="")
+    file_path: Mapped[str] = mapped_column(String(512), default="")
+    file_size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    mime_type: Mapped[str] = mapped_column(String(64), default="application/pdf")
+    page_count: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(
+        String(16), default="uploading"
+    )  # uploading | processing | ready | error
+    parse_error: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    # Full chapter/section structure from LLM parsing:
+    # [{chapter_id, title, order, start_page, end_page,
+    #   sections: [{section_id, title, order, start_page, end_page,
+    #               estimated_minutes, knowledge_points}]}]
+    chapters_json: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    subject: Mapped["PersonalSubjectModel"] = relationship(
+        "PersonalSubjectModel", foreign_keys=[subject_id]
+    )
+
+
+class TextbookPageContentModel(Base):
+    """Per-page extracted markdown text from a textbook PDF.
+
+    Used by quiz generation, smart tutor, and other AI features
+    as the equivalent of generated lecture notes.
+    """
+
+    __tablename__ = "textbook_page_contents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    textbook_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("textbooks.id", ondelete="CASCADE"), index=True
+    )
+    page_number: Mapped[int] = mapped_column(Integer, default=1)  # 1-indexed
+    content: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    page_label: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, default=None
+    )  # e.g. "xiv", "12"
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
 # ── User Preferences ────────────────────────────────────────────────────────

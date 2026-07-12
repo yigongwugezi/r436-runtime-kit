@@ -60,6 +60,20 @@ class PlannerAgent(BaseAgent):
         if plan_mode == "focus":
             return self._run_focus_mode(context, profile, diagnosis, weak_points, total_days)
 
+        # ── Load textbook chapters for LLM context (if available) ──
+        textbook_chapters = context.get("textbook_chapters")
+        if not textbook_chapters:
+            session_id = context.get("session_id", "")
+            if session_id:
+                textbook_chapters = self._load_textbook_chapters(session_id)
+
+        # Build textbook context prompt for LLM
+        if textbook_chapters and isinstance(textbook_chapters, list) and len(textbook_chapters) > 0:
+            textbook_context = self._build_textbook_context_prompt(textbook_chapters)
+            context["textbook_context"] = textbook_context
+        else:
+            textbook_chapters = None
+
         # ── Mode B: Generate path with appropriate structure ──
         chapters = None
         try:
@@ -78,13 +92,23 @@ class PlannerAgent(BaseAgent):
             chapters = self._llm_pipeline_fallback(context, profile, planning_points, total_days, diag_meta)
 
         if not chapters:
-            return self._fallback_path(context, planning_points, total_days, profile, diag_meta)
+            # If textbook is available, use it as the fallback instead of generic rule-based path
+            if textbook_chapters:
+                chapters = self._build_path_from_textbook(
+                    textbook_chapters, profile, total_days, diag_meta,
+                )
+            if not chapters:
+                return self._fallback_path(context, planning_points, total_days, profile, diag_meta)
 
         # ── Step 4: Personalize with DeepTutor ──
         personalized = self._personalize_with_deeptutor(
             chapters, context, profile, diagnosis, weak_points, total_days,
         )
         chapters = personalized if personalized else chapters
+
+        # ── Resolve textbook section IDs to page ranges ──
+        if textbook_chapters and chapters:
+            chapters = self._resolve_textbook_pages(chapters, textbook_chapters)
 
         return self._make_chapter_result(chapters, total_days, diag_meta)
 
@@ -138,6 +162,257 @@ class PlannerAgent(BaseAgent):
             return "focus"
 
         return "textbook"
+
+    # ── Load textbook chapters from DB if available ──
+
+    @staticmethod
+    def _load_textbook_chapters(session_id: str) -> list[dict] | None:
+        """Load textbook chapters from DB for the session's subject.
+
+        Returns the chapters_json list or None if no textbook is linked.
+        """
+        try:
+            from app.db.engine import SessionLocal
+            from app.db.models import PersonalSubjectModel, SessionModel, TextbookModel
+
+            db = SessionLocal()
+            try:
+                session = db.get(SessionModel, session_id)
+                if session is None or not session.subject_id:
+                    return None
+
+                subject = db.get(PersonalSubjectModel, session.subject_id)
+                if subject is None or not subject.textbook_id:
+                    return None
+
+                textbook = db.get(TextbookModel, subject.textbook_id)
+                if textbook is None or not textbook.chapters_json:
+                    return None
+
+                if textbook.status != "ready":
+                    logger.info(
+                        "Textbook %s status is %s — not ready for path planning",
+                        textbook.id, textbook.status,
+                    )
+                    return None
+
+                logger.info(
+                    "Loaded textbook %s for subject %s: %d chapters",
+                    textbook.id, subject.id, len(textbook.chapters_json),
+                )
+                return list(textbook.chapters_json)
+            finally:
+                db.close()
+        except Exception:
+            logger.exception("Failed to load textbook chapters for session %s", session_id)
+            return None
+
+    # ── Textbook context helpers ──
+
+    @staticmethod
+    def _build_textbook_context_prompt(textbook_chapters: list[dict]) -> str:
+        """Build a concise textbook structure summary for LLM prompt injection.
+
+        Includes section_id and page ranges for each section so the LLM
+        can output explicit textbook_section_ids in its response.
+        """
+        lines = ["【教材参考】"]
+        for ch in textbook_chapters:
+            ch_title = ch.get("title", "")
+            ch_start = ch.get("start_page", 0)
+            ch_end = ch.get("end_page", 0)
+            page_info = f"({ch_start}-{ch_end}页)" if ch_start > 0 else ""
+            lines.append(f"\n- {ch_title} {page_info}")
+            for sec in ch.get("sections", []):
+                sec_id = sec.get("section_id", "")
+                sec_title = sec.get("title", "")
+                sec_start = sec.get("start_page", 0)
+                sec_end = sec.get("end_page", 0)
+                if sec_title:
+                    lines.append(
+                        f"    [{sec_id}] {sec_title} (第{sec_start}-{sec_end}页)"
+                    )
+        lines.append(
+            "\n请参考以上教材结构来规划学习路径。你可以：\n"
+            "- 只选择与学生目标相关的章节\n"
+            "- 调整章节学习顺序\n"
+            "- 跳过不相关的内容\n\n"
+            "重要：请在输出的每个 section 中指定 textbook_section_ids 字段（字符串数组），\n"
+            "填入该学习小节对应的教材小节ID（即上面方括号中的ID，如 sec_01_01）。\n"
+            "一个学习小节可以对应一个或多个教材小节。"
+        )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _resolve_textbook_pages(
+        llm_chapters: list[dict], textbook_chapters: list[dict]
+    ) -> list[dict]:
+        """Resolve LLM-assigned textbook_section_ids to actual page ranges.
+
+        The LLM outputs textbook_section_ids on each section (e.g. ["sec_01_01"]).
+        We look up those IDs in the textbook data to get start_page/end_page.
+
+        This is deterministic — no title matching needed.
+        """
+        # Build ID → section data lookup
+        tb_section_by_id: dict[str, dict] = {}
+        for ch in textbook_chapters:
+            for sec in ch.get("sections", []):
+                sec_id = sec.get("section_id", "")
+                if sec_id:
+                    tb_section_by_id[sec_id] = sec
+
+        for stage in llm_chapters:
+            for ch in stage.get("chapters", []):
+                for sec in ch.get("sections", []):
+                    sec_ids = sec.get("textbook_section_ids", [])
+                    if not sec_ids:
+                        continue
+                    # Collect page ranges from ALL assigned textbook sections
+                    pages: list[tuple[int, int]] = []
+                    primary_id = ""
+                    for sid in sec_ids:
+                        tb_sec = tb_section_by_id.get(sid)
+                        if tb_sec:
+                            pages.append((
+                                tb_sec.get("start_page", 1),
+                                tb_sec.get("end_page", 1),
+                            ))
+                            if not primary_id:
+                                primary_id = sid
+                    if pages:
+                        sec["textbookPageStart"] = min(p[0] for p in pages)
+                        sec["textbookPageEnd"] = max(p[1] for p in pages)
+                        sec["textbookSectionId"] = primary_id
+
+        return llm_chapters
+
+    # ── Mode T: Textbook-driven path building ──
+
+    def _build_path_from_textbook(
+        self,
+        textbook_chapters: list[dict],
+        profile: dict,
+        total_days: int,
+        diag_meta: dict,
+    ) -> list[dict] | None:
+        """Convert imported textbook chapter structure into learning path stages.
+
+        Each textbook chapter becomes a path stage containing one chapter
+        with the textbook's sections as its learning sections.
+
+        Textbook chapter JSON schema (from chapters_json):
+          [{chapter_id, title, order, start_page, end_page,
+            sections: [{section_id, title, order, start_page, end_page,
+                        estimated_minutes, knowledge_points}]}]
+        """
+        if not textbook_chapters:
+            return None
+
+        stages = []
+        for ch in textbook_chapters:
+            ch_title = ch.get("title", "")
+            ch_order = ch.get("order", len(stages))
+            ch_id = ch.get("chapter_id", f"tb_ch_{ch_order:02d}")
+
+            sections = []
+            for sec in ch.get("sections", []):
+                sec_title = sec.get("title", "")
+                sec_order = sec.get("order", len(sections))
+                sec_id = sec.get("section_id", f"{ch_id}_sec_{sec_order:02d}")
+
+                # Build section ID using the canonical factory
+                section_factory_id = make_section_id(
+                    make_chapter_id(
+                        make_stage_id(make_path_id("textbook"), ch_order),
+                        0,
+                    ),
+                    sec_order,
+                )
+
+                kps = []
+                for kp_idx, kp_name in enumerate(sec.get("knowledge_points", [])):
+                    if isinstance(kp_name, str) and kp_name.strip():
+                        kps.append({
+                            "id": make_kp_id(section_factory_id, kp_idx),
+                            "name": kp_name.strip(),
+                            "type": "concept",
+                            "mastery": 0,
+                            "status": "not_started",
+                        })
+
+                sections.append({
+                    "id": section_factory_id,
+                    "title": sec_title,
+                    "goal": sec.get("goal", "") or f"掌握{sec_title}的核心内容",
+                    "estimatedMinutes": sec.get("estimated_minutes", 45),
+                    "knowledge_points": kps,
+                    "lectureIds": [],
+                    "contentType": "lecture",
+                    "status": "not_started",
+                    # Textbook-specific fields
+                    "textbookPageStart": sec.get("start_page", 1),
+                    "textbookPageEnd": sec.get("end_page", 1),
+                    "textbookSectionId": sec_id,
+                })
+
+            if not sections:
+                # Chapter with no sections: create one default section
+                sec_id = make_section_id(
+                    make_chapter_id(
+                        make_stage_id(make_path_id("textbook"), ch_order), 0,
+                    ), 0,
+                )
+                sections.append({
+                    "id": sec_id,
+                    "title": ch_title,
+                    "goal": f"掌握{ch_title}的核心内容",
+                    "estimatedMinutes": 60,
+                    "knowledgePoints": [
+                        {
+                            "id": make_kp_id(sec_id, 0),
+                            "name": ch_title,
+                            "type": "concept",
+                            "mastery": 0,
+                            "status": "not_started",
+                        }
+                    ],
+                    "lectureIds": [],
+                    "contentType": "lecture",
+                    "status": "not_started",
+                    "textbookPageStart": ch.get("start_page", 1),
+                    "textbookPageEnd": ch.get("end_page", 1),
+                    "textbookSectionId": ch_id,
+                })
+
+            stage_id = make_stage_id(make_path_id("textbook"), ch_order)
+            chapter_id = make_chapter_id(stage_id, 0)
+
+            stages.append({
+                "id": stage_id,
+                "title": ch_title,
+                "order": ch_order,
+                "description": f"学习{ch_title}",
+                "status": "not_started",
+                "nodes": [],
+                "chapters": [{
+                    "id": chapter_id,
+                    "title": ch_title,
+                    "order": 0,
+                    "status": "not_started",
+                    "sections": sections,
+                    "mindmapId": None,
+                }],
+                "objective": f"完成{ch_title}的学习",
+                "estimatedDays": max(1, total_days // max(1, len(textbook_chapters))),
+            })
+
+        logger.info(
+            "Built textbook-driven path: %d stages, %d sections",
+            len(stages),
+            sum(len(s.get("chapters", [{}])[0].get("sections", [])) for s in stages),
+        )
+        return stages
 
     # ── Mode A: Focus sprint ──
 
@@ -494,9 +769,10 @@ class PlannerAgent(BaseAgent):
 按 weeks→days→tasks 层级输出JSON：
 {{"weeks":[{{"week":1,"title":"第1周：xxx","days":[{{"day":1,"tasks":[{{"title":"任务名称","task_type":"vocabulary","estimated_minutes":30,"goal":"学习目标","content":[{{"type":"text","value":"任务描述"}}]}}]}}]}}]}}"""
         else:
+            textbook_context = str(context.get("textbook_context", ""))
+            textbook_block = f"\n\n{textbook_context}\n" if textbook_context else ""
             prompt = f"""你是课程设计师。为「{course}」设计一份内容全面、粒度合理的教科书级学习路径。
-总学时：{total_days}天。薄弱知识点：{','.join(weak) if weak else '待诊断'}。
-
+总学时：{total_days}天。薄弱知识点：{','.join(weak) if weak else '待诊断'}。{textbook_block}
 小节划分原则：根据内容自然拆分，不要强行合并不相关的概念。比如"数组和广义表"一章可以拆成数组定义、数组实现、矩阵压缩存储、广义表定义、广义表存储、广义表递归算法等——具体情况具体分析。不能太概括，但也不必纠结数量。
 知识点type取：concept|procedure|memory。
 
@@ -506,7 +782,8 @@ class PlannerAgent(BaseAgent):
 - step_through: 分步推导/渐进式教程（数学解题、代码实现、实验步骤等）
 
 按 stages→chapters→sections→knowledge_points 层级输出JSON：
-{{"stages":[{{"stage_id":"s0","title":"阶段标题","order":0,"chapters":[{{"chapter_id":"ch0","title":"章节标题","order":0,"sections":[{{"section_id":"sec0","title":"1.1 节标题","goal":"学习目标","content_type":"lecture","estimated_minutes":45,"knowledge_points":[{{"name":"知识点","type":"concept"}},{{"name":"知识点","type":"procedure"}}]}}]}}]}}]}}"""
+{{"stages":[{{"stage_id":"s0","title":"阶段标题","order":0,"chapters":[{{"chapter_id":"ch0","title":"章节标题","order":0,"sections":[{{"section_id":"sec0","title":"1.1 节标题","goal":"学习目标","content_type":"lecture","estimated_minutes":45,"textbook_section_ids":["sec_01_01"],"knowledge_points":[{{"name":"知识点","type":"concept"}},{{"name":"知识点","type":"procedure"}}]}}]}}]}}]}}
+textbook_section_ids 字段为必填——请从教材参考中选取对应小节的ID填入。若该节无对应教材小节，请填 []。"""
         if self.llm_client:
             try:
                 raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.3, max_tokens=max_tokens)
@@ -615,7 +892,9 @@ class PlannerAgent(BaseAgent):
                         "title": sec.get("title", f"{sec_index + 1}.{sec_index + 1}"),
                         "goal": sec.get("goal", ""),
                         "estimated_minutes": sec.get("estimated_minutes", 45),
+                        "content_type": sec.get("content_type", "lecture"),
                         "knowledge_points": kps,
+                        "textbook_section_ids": sec.get("textbook_section_ids", []),
                     })
                 rewritten_stage["chapters"].append(rewritten_ch)
             rewritten.append(rewritten_stage)
