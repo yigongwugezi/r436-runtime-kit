@@ -21,7 +21,7 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.middleware.auth import AuthContext, reject_parent
@@ -60,6 +60,7 @@ from app.schemas.feedback import FeedbackSignal
 from app.utils.errors import InvalidEventTypeError, MissingSessionIdError, NotFoundError
 from app.utils.profile_facts import apply_state_facts_to_result, profile_item
 from app.utils.profile_normalizer import PROFILE_DIMENSION_LABELS, normalize_profile_dimensions
+from app.services.profile_v2 import INTEREST_QUESTIONS, assess_interest, build_profile_v2, update_context as update_profile_v2_context, update_self_report
 from app.services.conversation_state import conversation_store
 from app.services.course_catalog import course_catalog
 from app.services.learning_tracker import learning_tracker
@@ -2007,6 +2008,37 @@ def generation_progress(task_id: str) -> dict[str, Any]:
 # Profile endpoints — read from DB, trigger via POST
 # ═══════════════════════════════════════════════════════════════════════
 
+def _profile_v2(session_id: str, legacy: dict[str, Any] | None = None) -> dict[str, Any]:
+    state = conversation_store.get(session_id)
+    legacy = legacy or ag_get_profile(session_id) or {}
+    prefs = legacy.get("preferences") if isinstance(legacy.get("preferences"), dict) else {}
+    course = course_catalog.match_course(str(state.facts.get("target_course") or ""))
+    return build_profile_v2(
+        dimensions=legacy.get("dimensions") if isinstance(legacy.get("dimensions"), list) else [],
+        facts=state.facts,
+        course=course,
+        weaknesses=legacy.get("weaknesses") if isinstance(legacy.get("weaknesses"), list) else [],
+        existing=prefs.get("profile_v2") if isinstance(prefs, dict) else None,
+    )
+
+
+def _save_profile_v2(session_id: str, profile_v2: dict[str, Any]) -> None:
+    legacy = ag_get_profile(session_id) or {}
+    prefs = dict(legacy.get("preferences") or {})
+    prefs["profile_v2"] = profile_v2
+    db = SessionLocal()
+    try:
+        save_profile_snapshot(
+            db,
+            session_id,
+            dimensions=legacy.get("dimensions") if isinstance(legacy.get("dimensions"), list) else [],
+            weaknesses=legacy.get("weaknesses") if isinstance(legacy.get("weaknesses"), list) else [],
+            preferences=prefs,
+            readiness_score=legacy.get("readiness_score"),
+        )
+    finally:
+        db.close()
+
 
 def _require_session_id(value: Any) -> str:
     session_id = str(value or "").strip()
@@ -2153,7 +2185,7 @@ def get_profile(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
                 "updatedAt": int(time.time() * 1000),
                 "source": "db",
                 "readiness": readiness,
-            }},
+            }, "profileV2": _profile_v2(session_id, {"dimensions": dims, "weaknesses": db_profile.get("weaknesses", []), "preferences": {**_default_prefs, **db_prefs}})},
             session_id=session_id, subject_id=subjectId, source="db",
         )
 
@@ -2164,10 +2196,11 @@ def get_profile(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
         readiness = conversation_store.readiness(state)
         profile["source"] = "agent_generated"
         profile["readiness"] = readiness
-        return _product_response({"profile": profile}, session_id=session_id, subject_id=subjectId, source="agent")
+        return _product_response({"profile": profile, "profileV2": state.last_result.get("profile_v2") or _profile_v2(session_id, profile)}, session_id=session_id, subject_id=subjectId, source="agent")
 
     # No data at all — return empty structure
-    return _product_response({"profile": _empty_profile(session_id)}, session_id=session_id, subject_id=subjectId, source="none")
+    empty = _empty_profile(session_id)
+    return _product_response({"profile": empty, "profileV2": _profile_v2(session_id, empty)}, session_id=session_id, subject_id=subjectId, source="none")
 
 
 @router.post("/profile/build")
@@ -2187,7 +2220,40 @@ def build_profile(payload: dict[str, Any], auth: AuthContext = Depends(reject_pa
     readiness = conversation_store.readiness(state)
     profile["readiness"] = readiness
 
-    return _product_response({"profile": profile}, session_id=session_id, source="agent")
+    return _product_response({"profile": profile, "profileV2": result.get("profile_v2") or _profile_v2(session_id, profile)}, session_id=session_id, source="agent")
+
+
+@router.patch("/profile/v2/context")
+def update_profile_context(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
+    session_id = _payload_session_id(payload)
+    updates = payload.get("context")
+    if not isinstance(updates, dict):
+        raise HTTPException(status_code=400, detail="context required")
+    profile_v2 = update_profile_v2_context(_profile_v2(session_id), updates)
+    _save_profile_v2(session_id, profile_v2)
+    return _product_response({"profileV2": profile_v2}, session_id=session_id, source="user_input")
+
+
+@router.patch("/profile/v2/self-report")
+def update_profile_self_report(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
+    session_id = _payload_session_id(payload)
+    updates = payload.get("selfReport")
+    if not isinstance(updates, dict):
+        raise HTTPException(status_code=400, detail="selfReport required")
+    profile_v2 = update_self_report(_profile_v2(session_id), updates)
+    _save_profile_v2(session_id, profile_v2)
+    return _product_response({"profileV2": profile_v2}, session_id=session_id, source="user_input")
+
+
+@router.post("/profile/v2/assess/interest")
+def assess_profile_interest(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
+    session_id = _payload_session_id(payload)
+    answers = payload.get("answers")
+    if not isinstance(answers, list):
+        return _product_response({"questions": INTEREST_QUESTIONS}, session_id=session_id, source="rule_based")
+    profile_v2 = assess_interest(_profile_v2(session_id), answers)
+    _save_profile_v2(session_id, profile_v2)
+    return _product_response({"profileV2": profile_v2, "questions": INTEREST_QUESTIONS}, session_id=session_id, source="rule_based")
 
 
 @router.patch("/profile")
@@ -2220,6 +2286,8 @@ def update_profile(payload: dict[str, Any], auth: AuthContext = Depends(reject_p
             if not isinstance(dim, dict):
                 continue
             dim_key = dim.get("key", "")
+            if dim_key == "coding_ability":
+                raise HTTPException(status_code=400, detail="能力维度不能直接编辑，请通过练习或诊断更新")
             fact_key = _DIM_TO_FACT.get(dim_key)
             if fact_key:
                 dim_value = str(dim.get("value", dim.get("description", ""))).strip()
@@ -4908,6 +4976,7 @@ def generate_section_resource(section_id: str, payload: dict[str, Any]) -> dict[
             lecture_content=str(payload.get("lectureContent") or (lecture.content if lecture else "") or ""),
             knowledge_points=payload.get("knowledgePoints") if isinstance(payload.get("knowledgePoints"), list) else context.get("knowledge_points", []),
             resource_type=resource_type,
+            profile=_profile_v2(session_id),
         )
         saved = service.persist(db, session_id, resource)
         return _product_response({"resource": service.serialize(saved), "reused": False}, session_id=session_id, source="agent")

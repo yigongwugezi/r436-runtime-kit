@@ -12,7 +12,7 @@ export function useProfile() {
   const dataVersion = useChatStore((state) => state.dataVersion);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const lastReadKeyRef = useRef<string | undefined>(undefined);
+  const lastReadKeyRef = useRef<string | undefined | null>(null);
   const lastVersionRef = useRef<number>(0);
 
   const fetchProfile = useCallback(async () => {
@@ -62,8 +62,8 @@ export function useProfile() {
 
   // 科目切换时重新获取画像
   useEffect(() => {
-    const readKey = subjectId ? `${sessionId}:${subjectId}` : undefined;
-    if (readKey && lastReadKeyRef.current !== readKey) {
+    const readKey = subjectId && sessionId ? `${sessionId}:${subjectId}` : undefined;
+    if (lastReadKeyRef.current !== readKey) {
       lastReadKeyRef.current = readKey;
       fetchProfile();
     }
@@ -81,5 +81,5 @@ export function useProfile() {
   const profile = subjectId ? store.profiles[subjectId] ?? null : null;
   const profileError = subjectId ? store.errorMap[subjectId] ?? null : null;
 
-  return { profile, loading, error: error || profileError, fetchProfile, buildProfile };
+  return { profile, profileV2: profile?.profileV2 ?? null, loading, error: error || profileError, fetchProfile, buildProfile };
 }

@@ -73,6 +73,8 @@ class Settings(BaseSettings):
     tavily_api_key: str = ""
     search_max_results: int = 5
     search_timeout: int = 10            # seconds for HTTP request
+    search_total_timeout: int = 15      # seconds across all real search backends
+    search_proxy: str = ""              # optional HTTP/SOCKS proxy for web search only
     search_cache_ttl: int = 300         # in-memory cache TTL in seconds
 
     # ── RAG / Vector Search ───────────────────────────────────────────

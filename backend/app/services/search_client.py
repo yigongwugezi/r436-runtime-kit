@@ -124,42 +124,67 @@ class MockSearchClient(BaseSearchClient):
         return True
 
 
-# ── DuckDuckGo client ──────────────────────────────────────────────────────
+# ── DDGS client ────────────────────────────────────────────────────────────
 
 
 class DuckDuckGoSearchClient(BaseSearchClient):
-    """Free search provider using the ``duckduckgo_search`` library.
+    """Free real search through ``ddgs`` with bounded backend fallback."""
 
-    No API key required.  Rate limiting is handled internally by the library.
-    """
+    _BACKENDS = ("auto", "bing", "brave")
 
-    def __init__(self, timeout: int = 10) -> None:
+    def __init__(self, timeout: int = 10, total_timeout: int = 15, proxy: str | None = None) -> None:
         self.timeout = timeout
+        self.total_timeout = max(timeout, total_timeout)
+        self.proxy = proxy if proxy is not None else self._configured_proxy()
+
+    @staticmethod
+    def _configured_proxy() -> str:
+        import os
+
+        return (
+            settings.search_proxy.strip()
+            or os.getenv("HTTP_PROXY", "").strip()
+            or os.getenv("HTTPS_PROXY", "").strip()
+            or os.getenv("ALL_PROXY", "").strip()
+        )
 
     def search(self, query: str, max_results: int = 5, **kwargs) -> SearchResponse:
         try:
-            from duckduckgo_search import DDGS  # type: ignore[import-untyped]
-
-            raw: list[dict[str, str]] = []
-            with DDGS() as ddgs:
-                raw = list(ddgs.text(query, max_results=max_results))
+            from ddgs import DDGS  # type: ignore[import-untyped]
         except ImportError:
             raise SearchError(
-                "DuckDuckGo search requires 'duckduckgo_search' package. "
-                "Install it with: pip install duckduckgo_search"
+                "Real search requires the 'ddgs' package. Install it with: pip install ddgs"
             )
-        except Exception as exc:
-            raise SearchError(
-                f"DuckDuckGo search failed: {exc}", cause=exc
-            ) from exc
 
+        deadline = time.monotonic() + self.total_timeout
+        last_error: Exception | None = None
+        for backend in self._BACKENDS:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                raw = DDGS(proxy=self.proxy or None, timeout=max(1, int(remaining))).text(
+                    query,
+                    backend=backend,
+                    max_results=max_results,
+                )
+                if raw:
+                    return self._response(query, raw, backend)
+            except Exception as exc:
+                last_error = exc
+                logger.info("DDGS backend %s failed: %s", backend, exc)
+
+        raise SearchError(f"DDGS search failed after real backends: {last_error or 'no results'}", cause=last_error)
+
+    @staticmethod
+    def _response(query: str, raw: list[dict[str, object]], backend: str) -> SearchResponse:
         results = [
             SearchResultItem(
-                title=item.get("title", ""),
-                url=item.get("href", ""),
-                snippet=item.get("body", ""),
-                content=item.get("body", ""),
-                source="duckduckgo",
+                title=str(item.get("title", "")),
+                url=str(item.get("href") or item.get("url") or ""),
+                snippet=str(item.get("body") or item.get("snippet") or ""),
+                content=str(item.get("body") or item.get("snippet") or ""),
+                source=f"ddgs:{backend}",
             )
             for item in raw
         ]
@@ -168,18 +193,14 @@ class DuckDuckGoSearchClient(BaseSearchClient):
             query=query,
             results=results,
             total_estimated=len(results),
-            source="duckduckgo",
+            source=f"ddgs:{backend}",
         )
 
     def is_available(self) -> bool:
         try:
-            from duckduckgo_search import DDGS  # type: ignore[import-untyped]
-
-            with DDGS() as ddgs:
-                next(ddgs.text("test", max_results=1), None)
-            return True
+            return bool(self.search("test", max_results=1).results)
         except Exception:
-            logger.debug("DuckDuckGo availability check failed", exc_info=True)
+            logger.debug("DDGS availability check failed", exc_info=True)
             return False
 
 
@@ -347,7 +368,10 @@ def get_search_client(provider: str = "mock") -> BaseSearchClient:
     if provider == "mock":
         return MockSearchClient()
     if provider == "duckduckgo":
-        return DuckDuckGoSearchClient(timeout=settings.search_timeout)
+        return DuckDuckGoSearchClient(
+            timeout=settings.search_timeout,
+            total_timeout=settings.search_total_timeout,
+        )
     if provider == "tavily":
         return TavilySearchClient(
             api_key=settings.tavily_api_key,

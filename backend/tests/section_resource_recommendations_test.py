@@ -29,10 +29,11 @@ class UnavailableClient:
 
 def main() -> None:
     service = SectionResourceRecommendationService(client=FakeClient())
-    result = service.recommend(session_id="test", section_id="s1", section_title="数组与链表", knowledge_points=["时间复杂度"], weak_points=[{"topic": "链表"}], resource_types=["video"])
+    result = service.recommend(session_id="test", section_id="s1", section_title="数组与链表", knowledge_points=["时间复杂度"], weak_points=[{"topic": "链表"}], resource_types=["video"], profile={"subject_context": {"content_preferences": ["example_first"]}})
     assert result["status"] == "completed"
     assert len(result["query"]) == 3 and len(result["resources"]) == 2
     assert any("链表" in query for query in result["query"])
+    assert any("入门" in query and "示例" in query for query in result["query"])
     assert result["resources"][0]["url"].startswith("https://")
     assert all("example.com" not in item["url"] for item in result["resources"])
     assert {item["resource_type"] for item in result["resources"]} == {"course", "video"}

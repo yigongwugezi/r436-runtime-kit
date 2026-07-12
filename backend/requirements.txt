@@ -4,7 +4,7 @@ uvicorn[standard]>=0.30.0,<1.0.0
 pydantic>=2.8.0,<3.0.0
 pydantic-settings>=2.4.0,<3.0.0
 sqlalchemy>=2.0,<3.0
-duckduckgo_search>=7.0.0,<8.0.0
+ddgs>=9.14.0,<10.0.0
 langgraph>=0.2.0,<1.0.0
 
 # ── RAG / Vector Search (core — always installed) ───────────────────
