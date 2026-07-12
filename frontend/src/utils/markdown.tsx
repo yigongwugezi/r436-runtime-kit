@@ -55,33 +55,63 @@ function MermaidBlock({ definition }: { definition: string }) {
 
   useEffect(() => {
     let cancelled = false;
+    // Normalize: strip surrounding ```mermaid fences if any, trim
+    const cleaned = definition.replace(/^```mermaid\s*\n?/i, '').replace(/\n?```\s*$/, '').trim();
     const id = `mermaid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    mermaid.render(id, definition).then(({ svg: rendered }) => {
+    mermaid.render(id, cleaned).then(({ svg: rendered }) => {
       if (!cancelled) {
-        // mermaid 有时不抛异常但渲染出错误信息
-        if (rendered.includes('error') || rendered.includes('Syntax error')) {
+        if (rendered.includes('Syntax error') || rendered.includes('Parse error')) {
+          console.warn('Mermaid syntax error in:', cleaned.slice(0, 100));
           setError(true);
         } else {
           setSvg(rendered);
         }
       }
-    }).catch(() => {
-      if (!cancelled) setError(true);
+    }).catch((e) => {
+      if (!cancelled) {
+        console.warn('Mermaid render failed:', e, 'def:', cleaned.slice(0, 100));
+        setError(true);
+      }
     });
     return () => { cancelled = true; };
   }, [definition]);
 
-  // 解析 mermaid 文本提取节点名
+  // 解析 mermaid 文本提取节点标签
   const fallbackNodes = definition.split('\n')
-    .filter(l => l.trim() && !l.trim().startsWith('%') && !l.trim().startsWith('mindmap') && !l.trim().startsWith('graph'))
-    .map(l => l.replace(/^[-\s]*/, '').replace(/[\[\](){}]/g, '').trim())
+    .filter(l => l.trim() && !l.match(/^(graph|mindmap|flowchart|%%|\s*$)/i))
+    .map(l => {
+      // Extract [中文标签] or "中文标签" or just the text after -->
+      const m = l.match(/\[(.+?)\]/) || l.match(/"(.+?)"/) || l.match(/-->\s*(.+)/);
+      return m ? m[1].replace(/[\[\](){}]/g, '').trim() : l.replace(/^[A-Z]+\d*\s*-->\s*/, '').replace(/[\[\](){}]/g, '').trim();
+    })
     .filter(Boolean);
 
-  if (error || (!svg && fallbackNodes.length > 0 && definition.length < 50)) {
+  if (error || !svg) {
+    // Build an indented tree from graph TD arrows
+    const lines = definition.split('\n').filter(l => l.trim() && !l.match(/^(graph|mindmap|flowchart|%%|\s*$)/i));
+    const tree: { node: string; children: string[] }[] = [];
+    const seen = new Set<string>();
+    for (const l of lines) {
+      const m = l.match(/([A-Z]+\d*)\s*-->\s*(?:[\|].+?[\|]\s*)?([A-Z]+\d*)/) || l.match(/([A-Z]+\d*)\[([^\]]+)\]/);
+      if (m) {
+        const id = m[1];
+        const label = m[2] ? m[2].replace(/[\[\]]/g, '') : id;
+        if (!seen.has(id)) { seen.add(id); tree.push({ node: label, children: [] }); }
+      }
+    }
     return (
       <div className="my-4 p-4 bg-surface-50 border border-surface-200 rounded-xl">
         <p className="text-[10px] font-semibold text-surface-400 uppercase tracking-wide mb-2">知识结构图</p>
-        {fallbackNodes.length > 0 ? (
+        {tree.length > 0 ? (
+          <div className="space-y-0.5">
+            {tree.slice(0, 15).map((n, i) => (
+              <div key={i} className="text-xs text-surface-500 flex items-center gap-1.5">
+                <span className="w-1 h-1 rounded-full bg-surface-300 flex-shrink-0" />
+                {n.node}
+              </div>
+            ))}
+          </div>
+        ) : fallbackNodes.length > 0 ? (
           <ul className="space-y-0.5">
             {fallbackNodes.slice(0, 15).map((node, i) => (
               <li key={i} className="text-xs text-surface-500 flex items-center gap-1.5">

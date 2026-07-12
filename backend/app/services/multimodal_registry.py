@@ -59,13 +59,14 @@ class ToolRegistry:
     def select_tool(self, task_type: str) -> tuple[str | None, Any | None]:
         name = self._task_map.get(task_type)
         tool = self.get_tool(name) if name else None
-        # 如果 Spark 没配置，自动回退到备用 provider
-        if tool and hasattr(tool, 'run'):
+        if tool is not None:
             return name, tool
-        if name and name.startswith("Spark"):
-            fallback = self._task_map.get(task_type + "_qwen") or self._task_map.get(task_type + "_wan")
-            if fallback:
-                return fallback, self.get_tool(fallback)
+        # Auto-fallback: try suffixed alternatives
+        for suffix in ("_spark", "_qwen", "_wan"):
+            fname = self._task_map.get(task_type + suffix)
+            ftool = self.get_tool(fname) if fname else None
+            if ftool is not None:
+                return fname, ftool
         return name, tool
 
 

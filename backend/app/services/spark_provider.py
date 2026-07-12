@@ -46,8 +46,9 @@ def _build_auth_url(host_url: str, api_key: str = "", api_secret: str = "") -> s
         f'api_key="{key}", algorithm="hmac-sha256", '
         f'headers="host date request-line", signature="{signature}"'
     )
+    from urllib.parse import quote
     auth = base64.b64encode(authorization.encode()).decode()
-    return f"{host_url}?authorization={auth}&date={date_str}&host={host}"
+    return f"{host_url}?authorization={quote(auth)}&date={quote(date_str)}&host={quote(host)}"
 
 
 def _request(url: str, body: dict) -> dict | None:

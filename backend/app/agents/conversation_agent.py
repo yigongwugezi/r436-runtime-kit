@@ -804,6 +804,22 @@ action："""
         if any(p in compact for p in _ADJUST):
             return self._fallback_result("plan", "path_adjustment", plan_mode="adjust")
 
+        # ── Image generation triggers ──
+        _GEN_IMAGE = [
+            "生成一张图", "生成图片", "画一张", "画个图", "配图",
+            "生成配图", "帮我画", "帮我生成图", "做张图",
+        ]
+        if any(p in compact for p in _GEN_IMAGE):
+            return self._fallback_result("resources", "image_generation_request")
+
+        # ── Video generation triggers ──
+        _GEN_VIDEO = [
+            "生成视频", "做个视频", "生成讲解视频", "教学视频",
+            "微课视频", "动画讲解", "生成动画",
+        ]
+        if any(p in compact for p in _GEN_VIDEO):
+            return self._fallback_result("resources", "video_generation_request")
+
         # ── Video / multimedia → handled by DeepTutor ──
         if any(w in text for w in ["视频", "动画", "微课", "短片"]):
             return self._fallback_result("none", "video_request")

@@ -1,10 +1,12 @@
 import logging
+import os
 import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.db import init_db
@@ -36,6 +38,12 @@ async def lifespan(app: FastAPI):
     init_db()
     conversation_store.enable_db()
     learning_tracker.enable_db()
+
+    # Push settings to os.environ for multimodal providers that read via os.getenv
+    for key in ("QWEN_API_KEY", "QWEN_BASE_URL", "QWEN_VL_MODEL", "QWEN_IMAGE_MODEL", "WAN_API_KEY", "WAN_VIDEO_MODEL"):
+        val = getattr(settings, key.lower(), "") or ""
+        if val and not os.environ.get(key):
+            os.environ[key] = val
 
     # ── RAG background init (non-blocking) ──────────────────────────
     if settings.rag_enabled:
@@ -186,6 +194,12 @@ app.include_router(questions.router, prefix="/api")
 app.include_router(assessment.router, prefix="/api")
 app.include_router(class_subjects.router, prefix="/api")
 app.include_router(subjects.router, prefix="/api")
+
+# ── Static files for generated images ──
+import os as _os
+_static_dir = _os.path.join(_os.path.dirname(__file__), "..", "data", "static")
+_os.makedirs(_os.path.join(_static_dir, "images"), exist_ok=True)
+app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
 # ── RAG router (guarded by settings.rag_enabled) ─────────────────────
 if settings.rag_enabled:

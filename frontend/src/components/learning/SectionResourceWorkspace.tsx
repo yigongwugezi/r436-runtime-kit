@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ExternalLink, FilePlus2, Loader2, RefreshCw, Search, Sparkles } from 'lucide-react';
+import { ExternalLink, FilePlus2, Loader2, RefreshCw, Search, Sparkles, FileText } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import Markdown from '../../utils/markdown';
 import MermaidDiagram from '../../utils/mermaid';
@@ -103,42 +103,62 @@ export default function SectionResourceWorkspace(props: Props) {
 
   return <div className="p-4 space-y-4">
     {notice && <p className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">{notice}</p>}
-    <section className="rounded-xl border border-amber-100 bg-amber-50/40 p-3 space-y-2">
-      <p className="text-[10px] font-medium text-surface-400 uppercase tracking-wide">外部资源推荐</p>
-      <button onClick={search} disabled={searching || !section} className="w-full inline-flex justify-center items-center gap-1.5 rounded-lg bg-amber-500 px-3 py-2 text-xs font-medium text-white disabled:opacity-50">
-        {searching ? <Loader2 size={13} className="animate-spin" /> : <Search size={13} />}{searching ? '搜索中…' : recommendations ? '重新搜索' : '搜索相关资源'}
-      </button>
-      {recommendations?.warnings.map((warning, index) => <p key={index} className="text-xs text-amber-700">{warning}</p>)}
-      {recommendations && <select value={resourceFilter} onChange={(event) => setResourceFilter(event.target.value as typeof resourceFilter)} className="w-full rounded-lg border border-amber-100 bg-white px-2 py-1.5 text-[11px] text-surface-600">
-        <option value="all">全部类型</option><option value="video">视频</option><option value="article">文章</option><option value="course">课程</option><option value="paper">论文</option><option value="document">文档</option>
-      </select>}
-      <div className="space-y-2">
-        {recommendations?.resources.filter((resource) => resourceFilter === 'all' || resource.resource_type === resourceFilter).map((resource) => <div key={resource.url} className="rounded-lg bg-white p-2.5 border border-amber-100">
-          <p className="text-xs font-semibold text-surface-700 line-clamp-2">{resource.title}</p>
-          <p className="mt-1 text-[10px] text-surface-400">{resource.resource_type} · {resource.source} · {resource.trust_level}</p>
-          <p className="mt-1 text-[11px] text-surface-500 line-clamp-3">{resource.snippet}</p>
-          <p className="mt-1 text-[10px] text-amber-700">{resource.reason}</p>
-          {safeExternalUrl(resource.url) && <a href={resource.url} target="_blank" rel="noopener noreferrer" className="mt-2 inline-flex items-center gap-1 text-[11px] font-medium text-blue-600 hover:text-blue-700">打开原文 <ExternalLink size={11} /></a>}
-        </div>)}
-      </div>
-    </section>
 
-    <section className="rounded-xl border border-blue-100 bg-blue-50/40 p-3 space-y-2">
-      <p className="text-[10px] font-medium text-surface-400 uppercase tracking-wide">生成学习资源</p>
-      <div className="grid grid-cols-1 gap-1.5">
-        {resourceTypes.map((type) => <button key={type} onClick={() => generate(type)} disabled={Boolean(generating) || !section} className="inline-flex items-center gap-1.5 rounded-lg bg-white px-2.5 py-2 text-left text-[11px] font-medium text-blue-700 border border-blue-100 hover:bg-blue-100 disabled:opacity-50">
-          {generating === type ? <Loader2 size={12} className="animate-spin" /> : <FilePlus2 size={12} />}{generatedResourceLabels[type]}
-        </button>)}
-      </div>
-      {preview && <div className="rounded-lg bg-white border border-blue-100 p-2.5"><p className="mb-1 text-[11px] font-semibold text-surface-700">已保存到资源库：{preview.title}</p><div className="max-h-40 overflow-auto text-xs"><Markdown content={preview.content} /></div><button onClick={() => nav(`/resources/${preview.id}`)} className="mt-2 text-[11px] font-medium text-blue-600">打开完整内容</button></div>}
-    </section>
+    {/* ── 一键推送 ── */}
+    <button onClick={search} disabled={searching || !section}
+      className="w-full flex items-center justify-center gap-2 px-3 py-3 rounded-xl bg-surface-800 text-white text-xs font-semibold hover:bg-surface-900 disabled:opacity-40 transition-colors">
+      <Search size={14} />{searching ? '搜索中…' : recommendations ? '重新推送' : '一键推送'}
+    </button>
+    <p className="text-[10px] text-surface-400 text-center -mt-3 mb-1">基于画像 + 知识点智能匹配</p>
 
-    <section className="rounded-xl border border-violet-100 bg-violet-50/40 p-3 space-y-2">
-      <p className="text-[10px] font-medium text-surface-400 uppercase tracking-wide">章节思维导图</p>
-      <button onClick={generateMindmap} disabled={mindmapLoading || !chapterId} className="w-full inline-flex justify-center items-center gap-1.5 rounded-lg bg-violet-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-50">
-        {mindmapLoading ? <Loader2 size={13} className="animate-spin" /> : mindmap ? <RefreshCw size={13} /> : <Sparkles size={13} />}{mindmap ? '重新生成思维导图' : '生成章节思维导图'}
-      </button>
-      {mindmap ? <div className="rounded-lg bg-white border border-violet-100 p-2 overflow-auto"><MermaidDiagram definition={mindmap.mermaidDef} /><button onClick={() => nav(`/resources/${mindmap.id}`)} className="mt-2 text-[11px] font-medium text-violet-600">已保存到资源库，打开完整导图</button></div> : legacyMindmapId ? <button onClick={() => nav(`/resources/${legacyMindmapId}`)} className="text-xs font-medium text-violet-600">查看已有章节思维导图</button> : <p className="text-xs text-surface-400">暂未生成</p>}
-    </section>
+    {/* ── 分类推送 ── */}
+    <div className="grid grid-cols-2 gap-1.5">
+      {[
+        { key: 'all', label: '全部' },
+        { key: 'document', label: '课程讲义' },
+        { key: 'video', label: '教学视频' },
+        { key: 'article', label: '练习题库' },
+        { key: 'course', label: '实操案例' },
+        { key: 'paper', label: '学术论文' },
+        { key: 'document', label: '拓展阅读' },
+        { key: 'video', label: '动画演示' },
+      ].map(({ key, label }) => (
+        <button key={label}
+          onClick={async () => {
+            setResourceFilter(key as any);
+            if (!sessionId || !section) return;
+            setSearching(true);
+            try {
+              setRecommendations(await recommendSectionResources(section.id, {
+                sessionId, sectionTitle: section.title, knowledgePoints: section.knowledgePoints,
+                language: 'zh-CN',
+                resourceTypes: key === 'all' ? ['video','article','course','document','paper'] : [key],
+              }));
+            } catch { setRecommendations({ query: [], resources: [], status: 'failed', warnings: ['检索失败'] }); }
+            finally { setSearching(false); }
+          }}
+          disabled={searching || !section}
+          className="flex items-center justify-center gap-1 px-2.5 py-2 rounded-lg bg-surface-50 text-surface-600 text-[10px] font-medium hover:bg-surface-100 disabled:opacity-30 transition-colors">
+          {label}
+        </button>
+      ))}
+    </div>
+
+    {/* ── 推送结果 ── */}
+    {recommendations && (
+      <div className="space-y-1.5">
+        {recommendations.resources.filter(r => resourceFilter === 'all' || r.resource_type === resourceFilter).map(r => (
+          <div key={r.url} className="rounded-lg bg-surface-50 p-2.5">
+            <p className="text-xs font-medium text-surface-700 line-clamp-2">{r.title}</p>
+            <p className="mt-0.5 text-[10px] text-surface-400">{r.resource_type} · {r.source}</p>
+            <p className="mt-1 text-[11px] text-surface-500 line-clamp-2">{r.snippet}</p>
+            {safeExternalUrl(r.url) && <a href={r.url} target="_blank" rel="noopener noreferrer"
+              className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-medium text-surface-500 hover:text-surface-700">
+              打开 <ExternalLink size={10} /></a>}
+          </div>
+        ))}
+      </div>
+    )}
+
   </div>;
 }

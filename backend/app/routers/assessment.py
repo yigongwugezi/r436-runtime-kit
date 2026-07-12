@@ -531,8 +531,27 @@ def generate_section_quiz(
         kp_text = "\n".join(f"- {kp}" for kp in body.knowledge_points[:8])
         summary = body.lecture_summary[:2000] if body.lecture_summary else "暂无讲义摘要"
 
+        # ── Inject student profile for personalization ──
+        profile_hint = ""
+        try:
+            from app.services.conversation_state import conversation_store
+            state = conversation_store.get(body.session_id)
+            facts = state.facts
+            parts = []
+            if facts.get("knowledge_base"):
+                parts.append(f"学生基础: {facts['knowledge_base']}")
+            if facts.get("weak_points"):
+                parts.append(f"薄弱点: {facts['weak_points']}")
+            if facts.get("learning_goal"):
+                parts.append(f"学习目标: {facts['learning_goal']}")
+            if parts:
+                profile_hint = "学生画像: " + "; ".join(parts) + "\n请针对学生的薄弱点适当增加相关题目的数量和深度。\n\n"
+        except Exception:
+            pass
+
         prompt = f"""你是 EduAgent 的试题生成智能体。根据以下小节内容生成 {3 + (body.difficulty == 'hard') * 2}～{4 + (body.difficulty == 'easy') * 2} 道练习题。
 
+{profile_hint}
 ## 小节标题
 {body.title}
 

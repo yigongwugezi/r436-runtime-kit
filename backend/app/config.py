@@ -67,6 +67,14 @@ class Settings(BaseSettings):
     spark_vision_app_id: str = ""
     spark_vision_api_key: str = ""
     spark_vision_api_secret: str = ""
+    # Qwen / DashScope
+    qwen_api_key: str = ""
+    qwen_base_url: str = ""
+    qwen_vl_model: str = ""
+    qwen_image_model: str = ""
+    # Wan Video
+    wan_api_key: str = ""
+    wan_video_model: str = ""
 
     # Web search provider settings
     search_provider: str = "mock"       # "mock" | "duckduckgo" | "tavily"

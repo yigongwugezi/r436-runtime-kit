@@ -4503,6 +4503,7 @@ def generate_section_lecture(section_id: str, payload: dict[str, Any]) -> dict[s
     stage_id = str(payload.get("stageId", "")).strip()
     path_id = str(payload.get("pathId", "")).strip()
     knowledge_points = payload.get("knowledgePoints", [])
+    resource_type = str(payload.get("type", "lecture")).strip()
 
     if not section_title:
         return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
@@ -4512,7 +4513,12 @@ def generate_section_lecture(section_id: str, payload: dict[str, Any]) -> dict[s
     if isinstance(knowledge_points, list) and knowledge_points:
         kp_lines = "\n".join(f"- {kp.get('name', kp) if isinstance(kp, dict) else str(kp)}" for kp in knowledge_points[:10])
 
-    prompt = f"""你是一位资深大学教师，请为小节「{section_title}」编写一份达到正式出版教材水准的讲义。
+    if resource_type == "reading":
+        prompt = f"""为「{section_title}」编写一份拓展阅读材料。涵盖：背景知识、实际应用案例、进阶话题、推荐书单/论文。Markdown格式，800字以上。"""
+    elif resource_type == "practice":
+        prompt = f"""为「{section_title}」编写一份代码实操案例。包含：完整可运行代码、详细注释、输入输出示例、常见错误和解决方案。Markdown格式，代码用```包裹。"""
+    else:
+        prompt = f"""你是一位资深大学教师，请为小节「{section_title}」编写一份达到正式出版教材水准的讲义。
 
 学习目标：{section_goal or '掌握本节知识点'}
 
@@ -4574,15 +4580,20 @@ def generate_section_lecture(section_id: str, payload: dict[str, Any]) -> dict[s
 | 缓存 | 高速小容量存储器 | CPU 三级缓存 |
 | 寄存器 | CPU 内部最快存储 | 通用寄存器 |
 
-Mermaid 示例：
+Mermaid 示例(必须严格照此格式，用 ```mermaid 包裹，graph TD 语法):
 ```mermaid
-mindmap
-  root((核心主题))
-    子概念1
-      细节A
-    子概念2
-      细节B
-```"""
+graph TD
+  A[核心主题] --> B[子概念1]
+  A --> C[子概念2]
+  B --> D[细节A]
+  C --> E[细节B]
+```
+铁律:
+- 必须用 ```mermaid 和 ``` 包裹
+- 只用 graph TD, 禁止 mindmap/flowchart
+- 节点 ID 英文字母+数字, 标签中文放[方括号]
+- 禁止中文节点 ID
+- 禁止 root/::id1/::icon 等语法"""
 
     # 从知识库获取课程内容作为上下文
     kb_context = ""
@@ -4629,6 +4640,18 @@ mindmap
         logger.warning("Lecture generation failed for section %s: %s", section_id, e)
         return _product_response(None, session_id=session_id, status="error", message=f"生成失败: {e}", source="agent")
 
+    # 后处理：切开场白
+    if raw.startswith("好的") or raw.startswith("作为"):
+        raw = re.sub(r"^[^\n#]*?\n", "", raw, count=1)
+    raw = raw.lstrip("\n")
+    # 后处理：裸 mermaid 语法补包裹
+    if "```mermaid" not in raw:
+        if re.search(r"^\s*(graph |mindmap|flowchart )", raw, re.MULTILINE):
+            raw = re.sub(r"(^\s*(graph |mindmap|flowchart ))",
+                         r"```mermaid\n\1", raw, flags=re.MULTILINE) + "\n```\n"
+        elif re.search(r"^\s*root", raw, re.MULTILINE):
+            raw = re.sub(r"(^\s*root)", r"```mermaid\nmindmap\n\1",
+                         raw, flags=re.MULTILINE) + "\n```\n"
     # 后处理：清洗空表头等常见格式问题
     raw = _clean_markdown(raw)
     if not _is_valid_section_lecture(raw, section_title, knowledge_points if isinstance(knowledge_points, list) else []):
@@ -4765,6 +4788,123 @@ def _public_tutor_video(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@router.post("/sections/{section_id}/generate-all")
+def generate_all_section_resources(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Multi-agent pipeline: profile → knowledge → resource for a section."""
+    session_id = _payload_session_id(payload)
+    section_title = str(payload.get("sectionTitle", "")).strip()
+    section_goal = str(payload.get("sectionGoal", "")).strip()
+    chapter_id = str(payload.get("chapterId", "")).strip()
+    stage_id = str(payload.get("stageId", "")).strip()
+    kps = payload.get("knowledgePoints", [])
+    kp_names = [kp.get("name", str(kp)) if isinstance(kp, dict) else str(kp) for kp in (kps or [])[:8]]
+
+    if not session_id or not section_title:
+        return _product_response(None, session_id=session_id, status="error", message="sessionId and sectionTitle required", source="agent")
+
+    state_obj = conversation_store.get(session_id)
+    results: dict[str, Any] = {"agents_run": [], "resources": []}
+
+    # ── Agent 1: Profile ──
+    try:
+        from app.agents.base import get_agent_class
+        pa = get_agent_class("profile_agent")(llm_client=_llm_client())
+        pr = pa.run({"profile_facts": dict(state_obj.facts), "user_message": f"分析学习{section_title}的背景", "session_id": session_id})
+        results["profile"] = pr.get("profile", {})
+        results["agents_run"].append("profile_agent")
+    except Exception as e:
+        logger.warning("ProfileAgent failed: %s", e)
+
+    # ── Agent 2: Knowledge ──
+    try:
+        ka = get_agent_class("knowledge_agent")(llm_client=_llm_client())
+        kr = ka.run({"profile_facts": dict(state_obj.facts), "user_message": f"检索{section_title}相关知识", "session_id": session_id, "knowledge_points": kp_names})
+        results["knowledge"] = kr.get("knowledge_context", {})
+        results["agents_run"].append("knowledge_agent")
+    except Exception as e:
+        logger.warning("KnowledgeAgent failed: %s", e)
+
+    # ── Agent 3: Resource (receives profile + knowledge) ──
+    try:
+        ra = get_agent_class("resource_agent")(llm_client=_llm_client())
+        rr = ra.run({
+            "session_id": session_id,
+            "profile_facts": dict(state_obj.facts),
+            "profile": results.get("profile", {}),
+            "knowledge_context": results.get("knowledge", {}),
+            "learning_path": [{"stage_id": stage_id or section_id, "title": section_title,
+                "chapters": [{"chapter_id": chapter_id or section_id, "title": section_title,
+                    "sections": [{"section_id": section_id, "title": section_title, "goal": section_goal,
+                        "knowledge_points": [{"name": n} for n in kp_names]}]}]}],
+            "path_mode": "textbook",
+        })
+        results["resources"] = rr.get("resources", [])
+        results["agents_run"].append("resource_agent")
+    except Exception as e:
+        logger.warning("ResourceAgent failed: %s", e)
+
+    # ── Agent 4: QuestionAgent (quiz) ──
+    try:
+        qa = get_agent_class("question_agent")(llm_client=_llm_client())
+        qr = qa.run({
+            "session_id": session_id,
+            "profile_facts": dict(state_obj.facts),
+            "user_message": f"为{section_title}生成3-5道练习题，知识点：{', '.join(kp_names)}",
+            "course": {"chapters": [{"title": section_title, "knowledge_points": kp_names}]},
+            "diagnosis": {"weak_knowledge_points": [
+                {"name": n, "priority": "medium"} for n in kp_names[:3]
+            ]},
+        })
+        questions = qr.get("questions", [])
+        if questions:
+            results["quiz_questions"] = questions
+            results["agents_run"].append("question_agent")
+    except Exception as e:
+        logger.warning("QuestionAgent failed: %s", e)
+
+    # ── Agent 5: Video via DeepTutor ──
+    try:
+        from app.services.deeptutor_client import generate_video_script
+        video_script = generate_video_script(f"{section_title}: {section_goal}")
+        if video_script and len(video_script) > 50:
+            import uuid as _uuid
+            results["resources"].append({
+                "resource_id": _uuid.uuid4().hex[:12],
+                "type": "video", "title": f"{section_title} - 教学视频脚本",
+                "content": video_script, "format": "text", "difficulty": "medium",
+                "source": "deeptutor", "quality_status": "passed",
+            })
+            results["agents_run"].append("video_generation")
+    except Exception as e:
+        logger.warning("Video generation failed: %s", e)
+
+    # ── Persist ──
+    try:
+        db = SessionLocal()
+        from app.db.repository import upsert_resource
+        for r in results.get("resources", []):
+            upsert_resource(db, session_id, {
+                "id": r.get("resource_id", f"res_{hash(r.get('title',''))}"),
+                "type": r.get("type", "lecture"), "title": r.get("title", ""),
+                "description": r.get("description", ""), "content": r.get("content", ""),
+                "format": r.get("format", "text"), "difficulty": r.get("difficulty", "medium"),
+                "source": "agent_generated",
+                "related_stage_id": stage_id, "related_chapter_id": chapter_id, "related_section_id": section_id,
+            })
+        db.commit()
+    except Exception:
+        pass
+    finally:
+        db.close()
+
+    lecture_content = next((r.get("content", "") for r in results.get("resources", []) if r.get("type") == "lecture"), "")
+    return _product_response({
+        "agents_run": results["agents_run"],
+        "resource_count": len(results.get("resources", [])),
+        "lecture_content": lecture_content,
+    }, session_id=session_id, source="multi_agent")
+
+
 @router.post("/sections/{section_id}/tutor/ask")
 def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """智辅问答：注入学生画像 + 诊断数据，返回 Markdown 格式回答。"""
@@ -4828,7 +4968,65 @@ def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         pass
 
-    prompt = f"""{tutor_persona}
+    # ── Handle video action: use DeepTutor for script generation ──
+    if action_type == "video":
+        try:
+            from app.services.deeptutor_client import generate_video_script
+            script = generate_video_script(f"{section_title}: {question[:200]}")
+            if script and len(script) > 50:
+                return {"status": "success", "data": {"reply": script, "content_type": "video_script"}}
+        except Exception:
+            pass
+
+    # ── Detect if question contains specific selected text ("""...""") ──
+    sel_match = re.search(r'"""\s*\n?(.+?)\n?\s*"""', question, re.DOTALL)
+    selected_excerpt = sel_match.group(1).strip()[:800] if sel_match else ""
+    is_targeted = bool(selected_excerpt)
+
+    # ── Diagram: Mermaid for precision. AI image as bonus for conceptual topics.
+    diagram_hint = ""
+    if action_type == "diagram":
+        diagram_hint = "\n请用 ```mermaid 绘制图解。graph TD，节点ID英文，标签[中文]。"
+    img_bonus = ""
+    if action_type == "diagram" and is_targeted:
+        _tech_kw = ["指令", "寄存器", "电路", "门", "总线", "时序", "流水线", "编码", "算法", "语法"]
+        if not any(kw in selected_excerpt for kw in _tech_kw):
+            try:
+                from app.services.multimodal_registry import default_registry
+                registry = default_registry()
+                for task in ("image_generation", "image_generation_qwen"):
+                    _, tool = registry.select_tool(task)
+                    if tool:
+                        r = tool.run({"user_message": f"教育配图:{selected_excerpt[:120]}", "session_id": session_id})
+                        if r.get("status") == "success":
+                            b64 = (r.get("result") or {}).get("image_base64") or r.get("image_base64", "")
+                            if b64 and len(b64) > 200:
+                                import base64 as _b64, os as _os, uuid as _uuid, time as _time
+                                d = _os.path.join(_os.path.dirname(__file__), "..", "..", "data", "static", "images")
+                                _os.makedirs(d, exist_ok=True)
+                                fn = f"tutor_{_time.strftime('%H%M%S')}_{_uuid.uuid4().hex[:6]}.png"
+                                with open(_os.path.join(d, fn), "wb") as f:
+                                    f.write(_b64.b64decode(b64))
+                                img_bonus = f"\n\n![配图](/static/images/{fn})"
+                        break
+            except Exception:
+                pass
+
+    # ── Build focused prompt when student selected specific content ──
+    if is_targeted:
+        prompt = f"""{tutor_persona}
+
+学生选中了讲义中的一段内容，请针对这段内容进行解答：
+
+【学生选中的内容】
+{selected_excerpt}
+
+【学生的问题】
+{question}
+
+要求：只针对选中的这段内容回答，不要扩展到整个章节。用 Markdown 格式。{diagram_hint}"""
+    else:
+        prompt = f"""{tutor_persona}
 
 {profile_text if profile_text else ""}
 
@@ -4838,7 +5036,7 @@ def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
 - 知识点：{kp_names}
 {chr(10) + '讲义片段：' + chr(10) + lecture_excerpt if lecture_excerpt else ""}
 
-学生问题：{question}
+学生问题：{question}{diagram_hint}
 
 请用 Markdown 格式回答。如需图解用 ```mermaid 绘制。重点用 > 标注。回答要有针对性——结合学生画像中的薄弱点和学习风格来引导。"""
 
@@ -4859,7 +5057,8 @@ def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             question,
         )
 
-    return _product_response({"reply": raw}, session_id=session_id, source="agent")
+    content_type = "video_script" if action_type == "video" else ("diagram" if action_type == "diagram" else "text")
+    return {"status": "success", "data": {"reply": raw, "content_type": content_type}}
 
 
 @router.post("/sections/{section_id}/tutor/video")
