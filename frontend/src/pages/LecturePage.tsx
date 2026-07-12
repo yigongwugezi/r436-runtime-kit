@@ -1,9 +1,10 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useLearningPath } from '../hooks/useLearningPath';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
-import { ChevronRight, Sparkles, MessageCircle, Send, Brain, BookOpen, ArrowLeft, ArrowRight, Target, Lightbulb, Layers, Clock, GraduationCap, Hash, CheckCircle2, Check, X, Loader2, HelpCircle } from 'lucide-react';
+import { useLectureStore } from '../store/lectureStore';
+import { ChevronRight, Sparkles, MessageCircle, Send, Brain, BookOpen, ArrowLeft, ArrowRight, Target, Lightbulb, Layers, Clock, GraduationCap, Hash, CheckCircle2, Check, X, Loader2, HelpCircle, RefreshCw } from 'lucide-react';
 import Markdown from '../utils/markdown';
 import { generateSectionQuiz, submitQuizAttempt } from '../api/assessment';
 import type { Chapter, LearningStage, PathNode, Section, ContentStatus } from '../types/learningPath';
@@ -14,7 +15,7 @@ import TextbookViewer from '../components/learning/TextbookViewer';
 import TextbookTocPanel from '../components/learning/TextbookTocPanel';
 import { getTextbookTOC } from '../api/textbooks';
 import type { TextbookTOC } from '../types/textbook';
-import GeneratePanel from '../components/learning/GeneratePanel';
+import GeneratePanel, { type GeneratePanelHandle } from '../components/learning/GeneratePanel';
 import { logStudyEvent } from '../api/feedback';
 
 const CONTENT_TYPE_OPTIONS: { value: ContentType; label: string; icon: string }[] = [
@@ -88,9 +89,31 @@ export default function LecturePage() {
   const nav = useNavigate();
   const { path, updateKnowledgePoint } = useLearningPath();
   const sessionId = useChatStore((s) => s.dataSessionId);
-  const [lecture, setLecture] = useState('');
+
+  // ── 从 store 读取持久化状态 ──
+  const store = useLectureStore();
+  const [activeSectionId, setActiveSectionId] = useState(sectionId || '');
+
+  // ── 本地临时状态 ──
   const [lectureLoaded, setLectureLoaded] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [chatMsg, setChatMsg] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const [rightTab, setRightTab] = useState<'tutor' | 'resources' | 'quiz' | 'toc' | 'generate'>('tutor');
+  const [genAll, setGenAll] = useState(false);
+  const [prevLecture, setPrevLecture] = useState('');           // 控制返回按钮显示
+  const originalLectureRef = useRef('');                         // 永远指向原始讲义，不会被子卡片覆盖
+  const [showRightPanel, setShowRightPanel] = useState(true);
+  const generatePanelRef = useRef<GeneratePanelHandle>(null);
+
+  // ── 派生值 ──
+  const cacheKey = `${sessionId || 'anon'}:${activeSectionId}`;
+  const lecture = store.lectureCache[cacheKey] || '';
+  const loadedSectionIds = store.loadedSectionIds;
+  const generatedSectionIds = store.generatedSectionIds;
+  const contentType = store.contentType;
+  const chatReply = store.chatReplyCache[`${sessionId || 'anon'}:${activeSectionId}`] || '';
+  const cachedQuiz = activeSectionId ? store.quizCache[cacheKey] : undefined;
 
   // ── 当前章节与小节 ──
   const chapterCtx = useMemo(() => {
@@ -100,56 +123,28 @@ export default function LecturePage() {
       }
       const legacyNode = sectionId ? stage.nodes?.find(node => node.id === sectionId) : undefined;
       if (legacyNode) {
-        return {
-          chapter: {
-            id: stage.id,
-            title: stage.title,
-            order: stage.order,
-            status: 'not_started' as ContentStatus,
-            sections: [legacyNodeSection(legacyNode)],
-          },
-          stage,
-        };
+        return { chapter: { id: stage.id, title: stage.title, order: stage.order, status: 'not_started' as ContentStatus, sections: [legacyNodeSection(legacyNode)] }, stage };
       }
-      // Older generated paths only retain stage tasks. Keep their existing
-      // route IDs usable without changing the persisted learning-path shape.
       if (sectionId && sectionId.startsWith(`${stage.id}_`)) {
-        return {
-          chapter: {
-            id: stage.id,
-            title: stage.title,
-            order: stage.order,
-            status: 'not_started' as ContentStatus,
-            sections: [legacyStageSection(stage, sectionId)],
-          },
-          stage,
-        };
+        return { chapter: { id: stage.id, title: stage.title, order: stage.order, status: 'not_started' as ContentStatus, sections: [legacyStageSection(stage, sectionId)] }, stage };
       }
     }
     const routeStageId = sectionId?.match(/^(.*)_node_\d+$/)?.[1];
     if (sectionId && routeStageId) {
       const stageTitle = lecture.match(/^#\s*学习《(.+?)》核心内容/m)?.[1] || '当前章节';
-      const routeStage: LearningStage = {
-        id: routeStageId, title: stageTitle, order: 0, description: '', nodes: [], chapters: [], objective: '', estimatedDays: 0,
-      };
-      return {
-        chapter: { id: routeStageId, title: stageTitle, order: 0, status: 'not_started' as ContentStatus, sections: [legacyStageSection(routeStage, sectionId)] },
-        stage: routeStage,
-      };
+      const routeStage = { id: routeStageId, title: stageTitle };
+      return { chapter: { id: routeStageId, title: stageTitle, order: 0, status: 'not_started' as ContentStatus, sections: [legacyStageSection(routeStage, sectionId)] }, stage: { id: routeStageId, title: stageTitle, order: 0, description: '', nodes: [], chapters: [], objective: '', estimatedDays: 0 } as LearningStage };
     }
     return null;
   }, [path, chapterId, sectionId, lecture]);
 
   const sections = chapterCtx?.chapter.sections ?? [];
-  const [activeSectionId, setActiveSectionId] = useState(sectionId || sections[0]?.id || '');
-  const [chatMsg, setChatMsg] = useState('');
-  const [chatReply, setChatReply] = useState('');
-  const [chatLoading, setChatLoading] = useState(false);
-  const [rightTab, setRightTab] = useState<'tutor' | 'resources' | 'quiz' | 'toc' | 'generate'>('tutor');
-  const [genAll, setGenAll] = useState(false);
-  const [prevLecture, setPrevLecture] = useState('');
-  const [generatedSectionIds, setGeneratedSectionIds] = useState<Set<string>>(new Set());
-  const [showRightPanel, setShowRightPanel] = useState(true);
+  // ── Quiz state（优先从缓存恢复）──
+  const [quizQuestions, setQuizQuestions] = useState<LinkedQuestion[]>(cachedQuiz?.questions || []);
+  const [quizId, setQuizId] = useState(cachedQuiz?.quizId || '');
+  const [quizAnswers, setQuizAnswers] = useState<Record<string, string>>(cachedQuiz?.answers || {});
+  const [quizResults, setQuizResults] = useState<QuizResult[]>(cachedQuiz?.results || []);
+  const [quizTotalScore, setQuizTotalScore] = useState<number | null>(cachedQuiz?.totalScore ?? null);
 
   // ── Textbook mode state ──
   const activeSubject = useSubjectStore((s) => s.activeSubject);
@@ -166,31 +161,31 @@ export default function LecturePage() {
       .then((toc) => setTextbookToc(toc))
       .catch(() => setTextbookToc(null));
   }, [isTextbookMode, activeSubject?.id]);
-
-  // ── Quiz state ──
   const [quizState, setQuizState] = useState<'idle' | 'generating' | 'answering' | 'submitted'>('idle');
-  const [quizQuestions, setQuizQuestions] = useState<LinkedQuestion[]>([]);
-  const [quizId, setQuizId] = useState('');
-  const [quizAnswers, setQuizAnswers] = useState<Record<string, string>>({});
-  const [quizResults, setQuizResults] = useState<QuizResult[]>([]);
-  const [quizTotalScore, setQuizTotalScore] = useState<number | null>(null);
   const [quizSuggestion, setQuizSuggestion] = useState('');
   const [quizWeakPoints, setQuizWeakPoints] = useState<WeakPoint[]>([]);
-  const [contentType, setContentType] = useState<ContentType>('lecture');
 
-  // Reset quiz + content type when section changes
+  // Reset quiz & viewing state when section changes
   useEffect(() => {
+    setPrevLecture('');
     setQuizState('idle');
-    setQuizQuestions([]);
-    setQuizId('');
-    setQuizAnswers({});
-    setQuizResults([]);
-    setQuizTotalScore(null);
-    setQuizSuggestion('');
-    setQuizWeakPoints([]);
-    // Reset content type to whatever the planner specified, or auto-detect
+    const qc = store.quizCache[cacheKey];
+    if (qc) {
+      setQuizQuestions(qc.questions); setQuizId(qc.quizId); setQuizAnswers(qc.answers);
+      setQuizResults(qc.results); setQuizTotalScore(qc.totalScore);
+      setQuizSuggestion(qc.suggestion || ''); setQuizWeakPoints(qc.weakPoints || []);
+    } else {
+      setQuizQuestions([]); setQuizId(''); setQuizAnswers({});
+      setQuizResults([]); setQuizTotalScore(null);
+      setQuizSuggestion(''); setQuizWeakPoints([]);
+    }
+    // 如果缓存的讲义是卡片内容（阅读/导图/实操/视频），清掉强制重拉原始讲义
+    const cached = store.lectureCache[cacheKey];
+    if (cached && (cached.includes('点击上方「返回讲义」回到正文') || cached.trimStart().startsWith('```mermaid'))) {
+      store.clearLecture(cacheKey);
+    }
     const planned = currentSection?.contentType as ContentType | undefined;
-    setContentType(planned || (lecture ? detectContentType(lecture) : 'lecture'));
+    store.setContentType(planned || (lecture ? detectContentType(lecture) : 'lecture'));
   }, [activeSectionId]);
 
   useEffect(() => {
@@ -202,24 +197,22 @@ export default function LecturePage() {
   const prevSection = currentIdx > 0 ? sections[currentIdx - 1] : null;
   const nextSection = currentIdx < sections.length - 1 ? sections[currentIdx + 1] : null;
 
-  // ── 加载已有讲义 ──
-  const [loadedSectionIds, setLoadedSectionIds] = useState<Set<string>>(new Set());
+  // ── 加载已有讲义（优先读缓存）──
   useEffect(() => {
-    if (!activeSectionId) return;
-    if (loadedSectionIds.has(activeSectionId)) return;
-    setLecture('');
+    if (!activeSectionId || !sessionId) return;
+    const key = `${sessionId}:${activeSectionId}`;
+    if (store.lectureCache[key]) { setLectureLoaded(true); return; }
     setLectureLoaded(false);
-    const url = `/api/sections/${encodeURIComponent(activeSectionId)}/lecture?sessionId=${encodeURIComponent(sessionId || '')}`;
-    fetch(url)
+    fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/lecture?sessionId=${encodeURIComponent(sessionId)}`)
       .then(r => r.json())
       .then(d => {
-        setLoadedSectionIds(prev => new Set(prev).add(activeSectionId));
+        store.markLoaded(activeSectionId);
         if (d?.data?.lecture?.content) {
-          setLecture(d.data.lecture.content);
-          setGeneratedSectionIds(prev => new Set(prev).add(activeSectionId));
+          store.setLecture(key, d.data.lecture.content);
+          store.markGenerated(activeSectionId);
         }
       })
-      .catch(() => setLoadedSectionIds(prev => new Set(prev).add(activeSectionId)))
+      .catch(() => store.markLoaded(activeSectionId))
       .finally(() => setLectureLoaded(true));
   }, [activeSectionId, sessionId]);
 
@@ -227,9 +220,11 @@ export default function LecturePage() {
   const masteredKps = chapterCtx?.chapter.sections?.reduce((s, sec) => s + (sec.knowledgePoints?.filter(k => k.status === 'mastered').length ?? 0), 0) ?? 0;
   const totalMin = chapterCtx?.chapter.sections?.reduce((s, sec) => s + (sec.estimatedMinutes ?? 45), 0) ?? 0;
 
-  const handleGenerate = useCallback(async () => {
+  const handleGenerate = useCallback(async (cardId?: string, requirements?: string) => {
     if (!currentSection || !sessionId) return;
     setGenerating(true);
+    const title = requirements ? `${currentSection.title || '课程讲义'}（${requirements.slice(0, 20)}${requirements.length > 20 ? '…' : ''}）` : (currentSection.title || '课程讲义');
+    const cid = cardId || generatePanelRef.current?.beginRecord('lecture', title, requirements) || '';
     try {
       const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/lecture/generate`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -242,14 +237,21 @@ export default function LecturePage() {
           pathId: path?.id || '',
           courseId: path?.courseName || '',
           knowledgePoints: currentSection.knowledgePoints || [],
+          requirements: requirements || '',
         }),
       });
       const data = await res.json();
       if (data?.data?.lecture?.content) {
-        setLecture(data.data.lecture.content);
-        setGeneratedSectionIds(prev => new Set(prev).add(activeSectionId));
+        const key = `${sessionId}:${activeSectionId}`;
+        store.setLecture(key, data.data.lecture.content);
+        store.markGenerated(activeSectionId);
+        generatePanelRef.current?.updateRecord(cid, { status: 'ready', content: data.data.lecture.content });
+      } else {
+        generatePanelRef.current?.updateRecord(cid, { status: 'error' });
       }
-    } catch {} finally { setGenerating(false); }
+    } catch {
+      generatePanelRef.current?.updateRecord(cid, { status: 'error' });
+    } finally { setGenerating(false); }
   }, [currentSection, activeSectionId, sessionId, chapterCtx, path]);
 
   const [videoGenerating, setVideoGenerating] = useState(false);
@@ -257,7 +259,9 @@ export default function LecturePage() {
 
   const sendChat = useCallback(async (question: string, actionType = '') => {
     if (!question.trim() || !sessionId || !currentSection) return;
-    setChatMsg(''); setChatLoading(true); setChatReply('');
+    setChatMsg(''); setChatLoading(true);
+    const ck = `${sessionId}:${activeSectionId}`;
+    store.setChatReply(ck, '');
 
     // In textbook mode, use extracted textbook content as lecture reference
     let lectureExcerpt = lecture.slice(0, 1000);
@@ -272,7 +276,6 @@ export default function LecturePage() {
         }
       } catch { /* fall back to empty/generated lecture */ }
     }
-
     try {
       const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/tutor/ask`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -286,26 +289,32 @@ export default function LecturePage() {
         }),
       });
       const data = await res.json();
-      if (data?.data?.reply) setChatReply(data.data.reply);
-      else if (data?.status === 'error') setChatReply(`出错了：${data.message}`);
+      if (data?.data?.reply) store.setChatReply(ck, data.data.reply);
+      else if (data?.status === 'error') store.setChatReply(ck, `出错了：${data.message}`);
     } catch {} finally { setChatLoading(false); }
   }, [sessionId, currentSection, activeSectionId, lecture, isTextbookMode, activeSubject?.id]);
 
-  const handleGenerateVideo = useCallback(async () => {
+  const handleGenerateVideo = useCallback(async (cardId?: string, requirements?: string) => {
     if (!sessionId || !currentSection) return;
     setVideoGenerating(true); setVideoResult(null);
+    const title = requirements ? `${currentSection.title || '讲解视频'}（${requirements.slice(0, 20)}${requirements.length > 20 ? '…' : ''}）` : (currentSection.title || '讲解视频');
+    const cid = cardId || generatePanelRef.current?.beginRecord('video', title, requirements) || '';
     try {
       const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/tutor/video`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId, sectionTitle: currentSection.title }),
+        body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, requirements: requirements || '' }),
       });
       const data = await res.json();
-      setVideoResult(data?.data?.video || {
+      const video = data?.data?.video || {
         status: 'generation_failed',
         userMessage: data?.message || '讲解视频生成失败，请稍后重试。',
-      });
+      };
+      setVideoResult(video);
+      const ok = video.status !== 'generation_failed';
+      generatePanelRef.current?.updateRecord(cid, { status: ok ? 'ready' : 'error', content: video.script || video.url || '' });
     } catch {
       setVideoResult({ status: 'generation_failed', userMessage: '讲解视频生成失败，请稍后重试。' });
+      generatePanelRef.current?.updateRecord(cid, { status: 'error' });
     } finally { setVideoGenerating(false); }
   }, [sessionId, currentSection, activeSectionId]);
 
@@ -330,8 +339,11 @@ export default function LecturePage() {
   }, [lecture, currentSection, contentType]);
 
   // ── Quiz generation ──
-  const handleQuizGenerate = async () => {
+  const handleQuizGenerate = async (cardId?: string, requirements?: string) => {
     if (!currentSection) return;
+    setQuizQuestions([]); setQuizState('generating');
+    const title = requirements ? `${currentSection.title || '练习题目'}（${requirements.slice(0, 20)}${requirements.length > 20 ? '…' : ''}）` : (currentSection.title || '练习题目');
+    const cid = cardId || generatePanelRef.current?.beginRecord('quiz', title, requirements) || '';
     const kpNames = (currentSection.knowledgePoints || []).map((kp: any) => kp.name || kp).filter(Boolean);
     setQuizState('generating');
 
@@ -348,7 +360,6 @@ export default function LecturePage() {
         }
       } catch { /* fall back to empty/generated lecture */ }
     }
-
     try {
       const res = await generateSectionQuiz(activeSectionId, {
         sessionId: sessionId || `lecture_${activeSectionId}`,
@@ -360,6 +371,7 @@ export default function LecturePage() {
         stageId: chapterCtx?.stage.id || '',
         chapterId: chapterCtx?.chapter.id || '',
         sectionId: activeSectionId,
+        requirements: requirements || '',
       }) as any;
       const data = res?.data || res;
       if (data?.questions && data?.quiz) {
@@ -369,15 +381,36 @@ export default function LecturePage() {
         setQuizResults([]);
         setQuizTotalScore(null);
         setQuizState('answering');
+        // 保存到 store 以便跨页面恢复
+        store.setQuiz(`${sessionId}:${activeSectionId}`, { questions: data.questions, quizId: data.quiz.id, answers: {}, results: [], totalScore: null, submitted: false, suggestion: '', weakPoints: [] });
+        generatePanelRef.current?.updateRecord(cid, {
+          status: 'ready',
+          content: 'quiz_stored',
+          quizData: {
+            questions: data.questions,
+            quizId: data.quiz.id,
+            answers: {},
+            results: [],
+            totalScore: null,
+            submitted: false,
+          },
+        });
+      } else {
+        generatePanelRef.current?.updateRecord(cid, { status: 'error' });
       }
     } catch (e: any) {
+      generatePanelRef.current?.updateRecord(cid, { status: 'error' });
       alert('小测生成失败: ' + (e?.message || '请重试'));
       setQuizState('idle');
     }
   };
 
   const handleQuizAnswer = (questionId: string, value: string) => {
-    setQuizAnswers(a => ({ ...a, [questionId]: value }));
+    setQuizAnswers(a => {
+      const updated = { ...a, [questionId]: value };
+      store.updateQuizAnswers(`${sessionId}:${activeSectionId}`, updated);
+      return updated;
+    });
   };
 
   const allAnswered = quizQuestions.every(q => quizAnswers[q.questionId]?.trim());
@@ -394,12 +427,14 @@ export default function LecturePage() {
         answers,
       }) as any;
       const data = res?.data || res;
-      if (data?.results) {
+      if (data?.results && data.results.length > 0) {
         setQuizResults(data.results);
         setQuizTotalScore(data.totalScore ?? null);
         setQuizSuggestion(data.sectionStatusSuggestion || '');
         setQuizWeakPoints(data.weakPoints || []);
         setQuizState('submitted');
+        // 更新 store 中的答题结果
+        store.setQuiz(`${sessionId}:${activeSectionId}`, { questions: quizQuestions, quizId, answers: quizAnswers, results: data.results, totalScore: data.totalScore ?? null, submitted: true, suggestion: data.sectionStatusSuggestion || '', weakPoints: data.weakPoints || [] });
       }
     } catch (e: any) {
       alert('提交失败: ' + (e?.message || '请重试'));
@@ -439,10 +474,16 @@ export default function LecturePage() {
           {sections.map((sec: Section, si: number) => {
             const isActive = sec.id === activeSectionId;
             const st = sectionStatusStyle[(sec.status as ContentStatus) || 'not_started'];
-            const hasLecture = (sec.lectureIds?.length ?? 0) > 0 || generatedSectionIds.has(sec.id);
+            const hasLecture = (sec.lectureIds?.length ?? 0) > 0 || generatedSectionIds.includes(sec.id);
             const kpCount = sec.knowledgePoints?.length ?? 0;
             return (
-              <button key={sec.id} onClick={() => setActiveSectionId(sec.id)}
+              <button key={sec.id} onClick={() => {
+                if (prevLecture && originalLectureRef.current) {
+                  store.setLecture(`${sessionId || ''}:${activeSectionId}`, originalLectureRef.current);
+                }
+                setQuizState('idle'); setPrevLecture('');
+                setActiveSectionId(sec.id);
+              }}
                 className={`w-full text-left px-4 py-3 transition-all group relative ${isActive ? 'bg-blue-50' : 'hover:bg-surface-50'}`}>
                 <div className={`absolute left-0 top-2 bottom-2 w-0.5 rounded-r-full transition-all ${isActive ? 'bg-blue-500' : 'bg-transparent group-hover:bg-surface-200'}`} />
                 <div className="flex items-center gap-2.5">
@@ -475,7 +516,11 @@ export default function LecturePage() {
                   <span className="text-surface-500 truncate max-w-[200px]">{chapterCtx?.chapter.title}</span>
                 </div>
                 {prevLecture && (
-                  <button onClick={() => { setLecture(prevLecture); setPrevLecture(''); }}
+                  <button onClick={() => {
+                    store.setLecture(`${sessionId || ''}:${activeSectionId}`, originalLectureRef.current);
+                    setQuizState('idle');
+                    setPrevLecture('');
+                  }}
                     className="flex items-center gap-1.5 text-xs text-surface-500 hover:text-surface-700 mb-1 transition-colors">
                     <ArrowLeft size={14} />返回讲义
                   </button>
@@ -506,7 +551,7 @@ export default function LecturePage() {
                     {CONTENT_TYPE_OPTIONS.map(opt => (
                       <button
                         key={opt.value}
-                        onClick={() => setContentType(opt.value)}
+                        onClick={() => store.setContentType(opt.value)}
                         className={`flex items-center gap-1 px-2.5 py-1.5 rounded-[10px] text-[10px] font-medium transition-all
                           ${contentType === opt.value
                             ? 'bg-white text-surface-800 shadow-sm'
@@ -526,12 +571,12 @@ export default function LecturePage() {
                 </button>
                 {currentSection && (
                   <>
-                    <button onClick={handleQuizGenerate} disabled={quizState === 'generating'}
+                    <button onClick={() => handleQuizGenerate()} disabled={quizState === 'generating'}
                       className="flex items-center gap-1.5 px-4 py-2.5 bg-accent-500 text-white rounded-xl text-sm font-semibold hover:bg-accent-600 disabled:opacity-50 transition-all shadow-sm"
                       style={{ backgroundColor: '#14b8a6' }}>
                       <HelpCircle size={14} />{quizState === 'generating' ? '...' : '生成小测'}
                     </button>
-                    <button onClick={handleGenerate} disabled={generating || loadingLecture}
+                    <button onClick={() => handleGenerate()} disabled={generating || loadingLecture}
                       className="flex items-center gap-1.5 px-4 py-2.5 bg-gradient-to-r from-blue-600 to-violet-600 text-white rounded-xl text-sm font-semibold hover:from-blue-700 hover:to-violet-700 disabled:opacity-50 transition-all shadow-md shadow-blue-200">
                       <Sparkles size={14} />{generating ? 'AI 正在生成…' : lecture ? '重新生成' : '生成讲义'}
                     </button>
@@ -681,17 +726,23 @@ export default function LecturePage() {
                     )}
 
                     {result && (
-                      <div className={`mt-4 p-3 rounded-xl ${result.isCorrect ? 'bg-success-50/50 border border-success-200' : 'bg-error-50/50 border border-error-200'}`}>
-                        <div className="flex items-center gap-2 mb-1">
+                      <div className={`mt-4 p-4 rounded-xl ${result.isCorrect ? 'bg-success-50/70 border border-success-200' : 'bg-error-50/70 border border-error-200'}`}>
+                        <div className="flex items-center gap-2 mb-2">
                           {result.isCorrect ? <Check className="w-4 h-4 text-success-500" /> : <X className="w-4 h-4 text-error-500" />}
-                          <span className={`text-xs font-medium ${result.isCorrect ? 'text-success-600' : 'text-error-600'}`}>{result.isCorrect ? '正确' : '错误'}</span>
+                          <span className={`text-xs font-semibold ${result.isCorrect ? 'text-success-600' : 'text-error-600'}`}>{result.isCorrect ? '回答正确' : '回答错误'}</span>
                           {result.errorLabel && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-error-100 text-error-600">{result.errorLabel}</span>}
                         </div>
                         {!result.isCorrect && result.correctAnswer && (
-                          <p className="text-xs text-surface-600 mt-1">正确答案：<span className="text-success-600 font-medium">{result.correctAnswer}</span></p>
+                          <p className="text-xs text-surface-700 mb-1">✅ 正确答案：<span className="text-success-600 font-semibold">{result.correctAnswer}</span></p>
                         )}
-                        {result.explanation && <p className="text-xs text-surface-500 mt-1 leading-relaxed">{result.explanation}</p>}
-                        {result.feedback && <p className="text-xs text-primary-600 mt-1">💡 {result.feedback}</p>}
+                        {result.explanation ? (
+                          <p className="text-xs text-surface-600 mt-1 leading-relaxed">📖 {result.explanation}</p>
+                        ) : null}
+                        {result.feedback ? (
+                          <p className="text-xs text-primary-600 mt-1 leading-relaxed">💡 {result.feedback}</p>
+                        ) : isSubmitted ? (
+                          <p className="text-xs text-surface-400 mt-1">得分：{result.score}分</p>
+                        ) : null}
                       </div>
                     )}
                   </div>
@@ -710,8 +761,21 @@ export default function LecturePage() {
               )}
 
               {quizState === 'submitted' && (
-                <div className="flex justify-end pt-2">
-                  <button onClick={() => { setQuizState('idle'); setQuizQuestions([]); setQuizAnswers({}); setQuizResults([]); }}
+                <div className="flex items-center justify-between pt-2">
+                  <button onClick={() => {
+                    const resetAnswers: Record<string, string> = {};
+                    setQuizAnswers(resetAnswers);
+                    setQuizResults([]);
+                    setQuizTotalScore(null);
+                    setQuizSuggestion('');
+                    setQuizWeakPoints([]);
+                    setQuizState('answering');
+                    store.setQuiz(`${sessionId}:${activeSectionId}`, { questions: quizQuestions, quizId, answers: resetAnswers, results: [], totalScore: null, submitted: false, suggestion: '', weakPoints: [] });
+                  }}
+                    className="flex items-center gap-1.5 px-4 py-2 text-sm text-primary-600 hover:text-primary-700 hover:bg-primary-50 rounded-xl transition-colors">
+                    <RefreshCw size={14} />重新答题
+                  </button>
+                  <button onClick={() => { setQuizState('idle'); setPrevLecture(''); }}
                     className="px-4 py-2 text-sm text-surface-500 hover:text-surface-700 hover:bg-surface-100 rounded-xl transition-colors">关闭小测</button>
                 </div>
               )}
@@ -769,7 +833,7 @@ export default function LecturePage() {
                 <p className="text-base font-semibold text-surface-700">准备开始学习</p>
                 <p className="text-sm text-surface-400 mt-1 max-w-xs">点击「生成讲义」，AI 将根据本节知识点创建专属学习材料</p>
               </div>
-              <button onClick={handleGenerate} disabled={generating || loadingLecture}
+              <button onClick={() => handleGenerate()} disabled={generating || loadingLecture}
                 className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-blue-600 to-violet-600 text-white rounded-xl text-sm font-semibold hover:from-blue-700 hover:to-violet-700 disabled:opacity-50 transition-all shadow-md shadow-blue-200">
                 <Sparkles size={15} />{generating ? '生成中…' : '开始生成讲义'}
               </button>
@@ -839,7 +903,7 @@ export default function LecturePage() {
                       <span className="text-xs font-medium text-surface-700">图解结构</span>
                       <p className="text-[10px] text-surface-400 mt-0.5">Mermaid 知识结构图 + 文字梳理</p>
                     </button>
-                    <button onClick={handleGenerateVideo} disabled={videoGenerating}
+                    <button onClick={() => handleGenerateVideo()} disabled={videoGenerating}
                       className="w-full p-2.5 rounded-lg bg-surface-50 hover:bg-surface-100 transition-colors text-left border border-transparent hover:border-surface-200 disabled:opacity-50">
                       <span className="text-xs font-medium text-surface-700">讲解视频</span>
                       <p className="text-[10px] text-surface-400 mt-0.5">{videoGenerating ? '生成中…' : videoResult?.script ? '已生成，点击查看' : '微课视频脚本'}</p>
@@ -933,39 +997,88 @@ export default function LecturePage() {
 
           {rightTab === 'generate' && (
             <GeneratePanel
+              ref={generatePanelRef}
               sessionId={sessionId || ''}
               activeSectionId={activeSectionId}
               currentSection={currentSection}
               chapterCtx={chapterCtx}
-              path={path}
               lecture={lecture}
               generating={generating}
               genAll={genAll}
               onViewContent={(c: any) => {
-                if (!c?.content && c?.type !== 'mindmap') return;
-                setPrevLecture(lecture);
-                if (c.type === 'mindmap') {
-                  setLecture('```mermaid\n' + c.content + '\n```');
-                } else {
-                  setLecture(c.content);
+                if (c.status !== 'ready') return;
+                const sk = `${sessionId || ''}:${activeSectionId}`;
+                // 首次离开讲义时保存原始讲义（连续点卡片不会覆盖）
+                if (!prevLecture) {
+                  originalLectureRef.current = store.lectureCache[sk] || '';
+                }
+                setPrevLecture('1'); // 任意非空值，触发返回按钮显示
+                if (c.type === 'quiz' && c.quizData?.questions?.length) {
+                  const stored = store.quizCache[sk];
+                  const qd = (stored && stored.quizId === c.quizData.quizId) ? stored : c.quizData;
+                  setQuizQuestions(qd.questions || []);
+                  setQuizId(qd.quizId || '');
+                  setQuizAnswers(qd.answers || {});
+                  setQuizResults(qd.results || []);
+                  setQuizTotalScore(qd.totalScore ?? null);
+                  setQuizState(qd.submitted ? 'submitted' : 'answering');
+                } else if (c.type === 'lecture' && c.content) {
+                  store.setLecture(sk, c.content);
+                } else if (c.type === 'mindmap' && c.content) {
+                  store.setLecture(sk, `> 🧠 以下为**思维导图**。点击上方「返回讲义」回到正文。\n\n\`\`\`mermaid\n${c.content}\n\`\`\``);
+                } else if (c.type === 'reading' && c.content) {
+                  store.setLecture(sk, `> 📖 以下为**拓展阅读**内容，与讲义互补。点击上方「返回讲义」回到正文。\n\n${c.content}`);
+                } else if (c.type === 'practice' && c.content) {
+                  store.setLecture(sk, `> 💻 以下为**实操案例**内容。点击上方「返回讲义」回到正文。\n\n${c.content}`);
+                } else if (c.type === 'video' && c.content) {
+                  store.setLecture(sk, `> 🎬 以下为**教学视频**内容。点击上方「返回讲义」回到正文。\n\n${c.content}`);
                 }
               }}
-              onGenerateLecture={handleGenerate}
-              onGenerateQuiz={handleQuizGenerate}
-              onGenerateVideo={handleGenerateVideo}
-              onGenerateReading={async () => {
+              onGenerateLecture={(cardId, req) => handleGenerate(cardId, req)}
+              onGenerateQuiz={(cardId, req) => handleQuizGenerate(cardId, req)}
+              onGenerateVideo={(cardId, req) => handleGenerateVideo(cardId, req)}
+              onGenerateReading={async (cardId: string, requirements?: string) => {
                 if (!activeSectionId || !sessionId || !currentSection) return;
-                try { await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/lecture/generate`, {
-                  method: 'POST', headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal, type: 'reading', knowledgePoints: currentSection.knowledgePoints || [] }),
-                }); } catch {}
+                try {
+                  const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/lecture/generate`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal, type: 'reading', knowledgePoints: currentSection.knowledgePoints || [], lectureContent: lecture.slice(0, 3000), requirements: requirements || '' }),
+                  });
+                  const data = await res.json();
+                  const ok = !!data?.data?.lecture?.content;
+                  generatePanelRef.current?.updateRecord(cardId, { status: ok ? 'ready' : 'error', content: data?.data?.lecture?.content || '' });
+                } catch {
+                  generatePanelRef.current?.updateRecord(cardId, { status: 'error' });
+                }
               }}
-              onGeneratePractice={async () => {
+              onGeneratePractice={async (cardId: string, requirements?: string) => {
                 if (!activeSectionId || !sessionId || !currentSection) return;
-                try { await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/lecture/generate`, {
-                  method: 'POST', headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal, type: 'practice', knowledgePoints: currentSection.knowledgePoints || [] }),
-                }); } catch {}
+                try {
+                  const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/lecture/generate`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal, type: 'practice', knowledgePoints: currentSection.knowledgePoints || [], lectureContent: lecture.slice(0, 3000), requirements: requirements || '' }),
+                  });
+                  const data = await res.json();
+                  const ok = !!data?.data?.lecture?.content;
+                  generatePanelRef.current?.updateRecord(cardId, { status: ok ? 'ready' : 'error', content: data?.data?.lecture?.content || '' });
+                } catch {
+                  generatePanelRef.current?.updateRecord(cardId, { status: 'error' });
+                }
+              }}
+              onGenerateMindmap={async (cardId: string, requirements?: string) => {
+                if (!chapterCtx?.chapter.id || !sessionId) return;
+                try {
+                  const { generateChapterMindmap } = await import('../api/sectionResources');
+                  const r = await generateChapterMindmap(chapterCtx.chapter.id, {
+                    sessionId, regenerate: false,
+                    knowledgePoints: currentSection?.knowledgePoints || [],
+                    requirements: requirements || '',
+                  });
+                  const mm = (r as any)?.mindmap || r;
+                  generatePanelRef.current?.updateRecord(cardId, { status: 'ready', content: mm?.mermaidDef || '' });
+                } catch {
+                  generatePanelRef.current?.updateRecord(cardId, { status: 'error' });
+                }
               }}
               onGenerateAll={async () => {
                 if (!currentSection || !sessionId) return;
@@ -976,7 +1089,7 @@ export default function LecturePage() {
                     body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal || '', chapterId: chapterCtx?.chapter.id || '', stageId: chapterCtx?.stage.id || '', knowledgePoints: currentSection.knowledgePoints || [] }),
                   }).then(r => r.json());
                   const data = res?.data || res;
-                  if (data?.lecture_content) setLecture(data.lecture_content);
+                  if (data?.lecture_content) store.setLecture(`${sessionId}:${activeSectionId}`, data.lecture_content);
                 } catch {} finally { setGenAll(false); }
               }}
             />

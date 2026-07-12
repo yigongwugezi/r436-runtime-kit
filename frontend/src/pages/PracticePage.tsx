@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useChatStore } from '../store/chatStore';
-import { Target, BookOpen, AlertCircle, BarChart3, Play, Loader2, ChevronLeft, ChevronRight, Check, X, RefreshCw, Edit3, Users, GraduationCap, ClipboardList } from 'lucide-react';
+import { Target, BookOpen, AlertCircle, BarChart3, Play, Loader2, ChevronLeft, ChevronRight, Check, X, RefreshCw, Edit3, Users, GraduationCap, ClipboardList, Trash2 } from 'lucide-react';
 import Markdown from '../utils/markdown';
-import { listQuestions, gradeAnswer, getWeakQuestions, getAnswerHistory, getQuestionSets } from '../api/chat';
-import { listExamSets, getExamSetResults, startExamSetAttempt, submitExamSet, listExamSetAttempts, updateAttempt } from '../api/assessment';
+import { listQuestions, gradeAnswer, getWeakQuestions, getAnswerHistory, getQuestionSets, deleteQuestionSet } from '../api/chat';
+import { listExamSets, getExamSetResults, startExamSetAttempt, submitExamSet, listExamSetAttempts, updateAttempt, deleteExamSet } from '../api/assessment';
 import type { ExamSet, Attempt, QuizResult } from '../types/assessment';
 import { getPushedQuestions } from '../api/classSubjects';
 import type { PushedQuestionGroup } from '../types/classSubject';
@@ -247,23 +247,30 @@ export default function PracticePage() {
                 </h3>
                 <div className="space-y-2">
                   {examSets.map(es => (
-                    <button key={es.id} onClick={() => openExamSet(es)}
-                      className="w-full flex items-center gap-4 p-4 bg-white rounded-xl border border-accent-200 hover:border-accent-400 hover:shadow-soft transition-all text-left border-l-4 border-l-accent-400">
-                      <ClipboardList className="w-5 h-5 text-accent-500 flex-shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-surface-700 truncate">{es.title}</p>
-                        <div className="flex items-center gap-2 mt-1">
-                          <span className="text-xs text-surface-400">{es.questionCount} 题 · {es.estimatedMinutes}分钟</span>
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
-                            es.status === 'completed' ? 'bg-success-50 text-success-600' :
-                            es.status === 'in_progress' ? 'bg-primary-50 text-primary-600' : 'bg-surface-100 text-surface-500'
-                          }`}>
-                            {es.status === 'completed' ? '已完成' : es.status === 'in_progress' ? '进行中' : '未开始'}
-                          </span>
+                    <div key={es.id} className="group relative">
+                      <button onClick={() => openExamSet(es)}
+                        className="w-full flex items-center gap-4 p-4 bg-white rounded-xl border border-accent-200 hover:border-accent-400 hover:shadow-soft transition-all text-left border-l-4 border-l-accent-400">
+                        <ClipboardList className="w-5 h-5 text-accent-500 flex-shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-surface-700 truncate">{es.title}</p>
+                          <div className="flex items-center gap-2 mt-1">
+                            <span className="text-xs text-surface-400">{es.questionCount} 题 · {es.estimatedMinutes}分钟</span>
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                              es.status === 'completed' ? 'bg-success-50 text-success-600' :
+                              es.status === 'in_progress' ? 'bg-primary-50 text-primary-600' : 'bg-surface-100 text-surface-500'
+                            }`}>
+                              {es.status === 'completed' ? '已完成' : es.status === 'in_progress' ? '进行中' : '未开始'}
+                            </span>
+                          </div>
                         </div>
-                      </div>
-                      <ChevronRight size={14} className="text-surface-300 flex-shrink-0" />
-                    </button>
+                        <ChevronRight size={14} className="text-surface-300 flex-shrink-0" />
+                      </button>
+                      <button onClick={async (e) => { e.stopPropagation(); if (!confirm('确定删除该题集吗？')) return; try { await deleteExamSet(es.id); setExamSets(prev => prev.filter(x => x.id !== es.id)); } catch { alert('删除失败'); } }}
+                        className="absolute top-2 right-2 w-6 h-6 rounded opacity-0 group-hover:opacity-100 hover:bg-red-100 flex items-center justify-center text-surface-300 hover:text-red-500 transition-all"
+                        title="删除题集">
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
                   ))}
                 </div>
               </div>
@@ -277,26 +284,33 @@ export default function PracticePage() {
               ) : (
                 <div className="space-y-2 overflow-y-auto" style={{ maxHeight: 'calc(100vh - 360px)' }}>
                   {sets.map(s => (
-                    <button key={s.questionSetId} onClick={() => loadSet(s.questionSetId)}
-                      className="w-full flex items-center gap-4 p-4 bg-white rounded-xl border border-surface-200 hover:border-primary-300 hover:shadow-soft transition-all text-left">
-                      <Play className="w-5 h-5 text-primary-500 flex-shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-surface-700 truncate">{s.title}</p>
-                        <div className="flex items-center gap-2 mt-1">
-                          <span className="text-xs text-surface-400">{s.count} 题</span>
-                          {s.completed > 0 && <span className="text-xs text-success-500">{s.completed} 已完成</span>}
-                          {s.knowledgePoints?.slice(0, 2).map((kp: string, i: number) => (
-                            <span key={i} className="text-[10px] px-1.5 py-0.5 rounded-full bg-surface-100 text-surface-500">{kp}</span>
-                          ))}
+                    <div key={s.questionSetId} className="group relative">
+                      <button onClick={() => loadSet(s.questionSetId)}
+                        className="w-full flex items-center gap-4 p-4 bg-white rounded-xl border border-surface-200 hover:border-primary-300 hover:shadow-soft transition-all text-left">
+                        <Play className="w-5 h-5 text-primary-500 flex-shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-surface-700 truncate">{s.title}</p>
+                          <div className="flex items-center gap-2 mt-1">
+                            <span className="text-xs text-surface-400">{s.count} 题</span>
+                            {s.completed > 0 && <span className="text-xs text-success-500">{s.completed} 已完成</span>}
+                            {s.knowledgePoints?.slice(0, 2).map((kp: string, i: number) => (
+                              <span key={i} className="text-[10px] px-1.5 py-0.5 rounded-full bg-surface-100 text-surface-500">{kp}</span>
+                            ))}
+                          </div>
                         </div>
-                      </div>
-                      <div className="text-right flex-shrink-0">
-                        <div className="h-1.5 w-24 bg-surface-100 rounded-full overflow-hidden">
-                          <div className="h-full bg-primary-500 rounded-full" style={{ width: `${s.count > 0 ? (s.completed / s.count) * 100 : 0}%` }} />
+                        <div className="text-right flex-shrink-0">
+                          <div className="h-1.5 w-24 bg-surface-100 rounded-full overflow-hidden">
+                            <div className="h-full bg-primary-500 rounded-full" style={{ width: `${s.count > 0 ? (s.completed / s.count) * 100 : 0}%` }} />
+                          </div>
+                          <span className="text-[10px] text-surface-400">{s.count > 0 ? Math.round((s.completed / s.count) * 100) : 0}%</span>
                         </div>
-                        <span className="text-[10px] text-surface-400">{s.count > 0 ? Math.round((s.completed / s.count) * 100) : 0}%</span>
-                      </div>
-                    </button>
+                      </button>
+                      <button onClick={async (e) => { e.stopPropagation(); if (!confirm('确定删除该题目集吗？')) return; try { await deleteQuestionSet(s.questionSetId, sessionId); setSets(prev => prev.filter(x => x.questionSetId !== s.questionSetId)); } catch { alert('删除失败'); } }}
+                        className="absolute top-2 right-2 w-6 h-6 rounded opacity-0 group-hover:opacity-100 hover:bg-red-100 flex items-center justify-center text-surface-300 hover:text-red-500 transition-all"
+                        title="删除题目集">
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
                   ))}
                 </div>
               )}

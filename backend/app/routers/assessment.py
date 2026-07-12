@@ -120,6 +120,7 @@ class SectionQuizGenerateRequest(BaseModel):
     knowledge_points: list[str] = Field(default_factory=list, alias="knowledgePoints")
     lecture_summary: str = Field(default="", alias="lectureSummary")
     difficulty: str = "medium"
+    requirements: str = ""
     path_id: Annotated[str | None, Field(alias="pathId")] = None
     stage_id: Annotated[str | None, Field(alias="stageId")] = None
     chapter_id: Annotated[str | None, Field(alias="chapterId")] = None
@@ -566,7 +567,7 @@ def generate_section_quiz(
 - 题型混合：选择题（至少1道）、判断题（至少1道）、简答题（可选1道）
 - 选择题的干扰项要有迷惑性但明确错误
 - 每题解析需写清楚正确答案和解题思路
-
+{"## 学生特殊要求（必须严格遵循，优先级最高）\\n" + body.requirements + "\\n" if body.requirements else ""}
 ## 输出格式（只输出 JSON）
 {{"questions": [
   {{"question_id": "q1", "type": "choice", "stem": "...", "options": ["A. ...", "B. ...", "C. ...", "D. ..."], "correct": "A", "explanation": "...", "knowledge_point": "...", "difficulty": "..."}},
@@ -613,7 +614,8 @@ def generate_section_quiz(
             "source": "llm_generated",
         })
 
-        # ── Persist questions (without revealing answers) ──────
+        # ── Persist questions AND build safe return list ────────
+        safe_questions = []
         for q in questions:
             qid = f"q_{uuid.uuid4().hex[:12]}"
             pq = PracticeQuestionModel(
@@ -632,19 +634,16 @@ def generate_section_quiz(
                 quality_status="passed",
             )
             db.add(pq)
-        db.commit()
-
-        # ── Return WITHOUT answers ─────────────────────────────
-        safe_questions = []
-        for q in questions:
+            # Return the DB-assigned UUID so frontend can match on submit
             safe_questions.append({
-                "questionId": q.get("question_id", ""),
+                "questionId": qid,
                 "type": q.get("type", "choice"),
                 "stem": q.get("stem", ""),
                 "options": q.get("options"),
                 "difficulty": q.get("difficulty", body.difficulty),
                 "knowledgePoints": [q.get("knowledge_point", "")] if q.get("knowledge_point") else body.knowledge_points,
             })
+        db.commit()
 
         return {
             "status": "success",
@@ -736,8 +735,13 @@ def submit_quiz(
                     is_correct = student_bool == correct_bool
                 score = 100 if is_correct else 0
                 error_type = None if is_correct else ("concept" if pq.type == "choice" else "misreading")
-                feedback = "回答正确" if is_correct else "回答错误"
-                error_expl = "" if is_correct else (pq.explanation or "")
+                expl = (pq.explanation or "").strip()
+                if is_correct:
+                    feedback = f"回答正确。{expl}" if expl else "回答正确"
+                else:
+                    correct_ans = str(pq.correct or "")
+                    feedback = f"回答错误。正确答案：{correct_ans}。" + (f"\n解析：{expl}" if expl else "")
+                error_expl = "" if is_correct else (expl or f"正确答案是 {correct_ans}")
 
                 ar = AnswerRecordModel(
                     session_id=body.session_id,
@@ -765,21 +769,23 @@ def submit_quiz(
                         grade_result = None
                 except Exception:
                     # If GradingAgent unavailable, use simple fallback
+                    expl = (pq.explanation or "").strip()
                     grade_result = {
                         "total_score": None,
                         "error_type": None,
                         "error_label": "需人工评阅",
-                        "error_explanation": "简答题需LLM评阅，当前不可用",
+                        "error_explanation": expl or "简答题需LLM评阅，当前不可用",
                         "suggestions": [],
                         "strengths": [],
+                        "dimension_feedback": {"reasoning": f"简答题已记录。{expl}" if expl else "简答题已记录，需人工评阅"},
                     }
 
                 score = grade_result.get("total_score", 0) or 0
                 error_type = grade_result.get("error_type")
                 if error_type == "null":
                     error_type = None
-                feedback = grade_result.get("dimension_feedback", {}).get("reasoning", "")
-                error_expl = grade_result.get("error_explanation", "")
+                feedback = grade_result.get("dimension_feedback", {}).get("reasoning", "") or f"参考解析：{pq.explanation}" if pq.explanation else ""
+                error_expl = grade_result.get("error_explanation", "") or (pq.explanation or "")
 
                 ar = AnswerRecordModel(
                     session_id=body.session_id,
@@ -807,7 +813,7 @@ def submit_quiz(
                 "score": score,
                 "maxScore": 100,
                 "correctAnswer": pq.correct,
-                "explanation": pq.explanation,
+                "explanation": pq.explanation or feedback,
                 "feedback": feedback,
                 "errorType": ar.error_type,
                 "errorLabel": ar.error_label,
@@ -1244,7 +1250,8 @@ def generate_exam_set(
             "archive_policy": "archive",
         })
 
-        # ── Persist questions ─────────────────────────────────
+        # ── Persist questions AND build safe return list ──────
+        safe_questions = []
         for q in questions:
             # Always generate unique IDs — LLM may return hardcoded placeholders
             qid = f"q_{uuid.uuid4().hex[:12]}"
@@ -1264,19 +1271,15 @@ def generate_exam_set(
                 quality_status="passed",
             )
             db.add(pq)
-        db.commit()
-
-        # ── Return WITHOUT answers ────────────────────────────
-        safe_questions = []
-        for q in questions:
             safe_questions.append({
-                "questionId": q.get("question_id", ""),
+                "questionId": qid,
                 "type": q.get("type", "choice"),
                 "stem": q.get("stem", ""),
                 "options": q.get("options"),
                 "difficulty": q.get("difficulty", body.difficulty),
                 "knowledgePoints": [q.get("knowledge_point", "")] if q.get("knowledge_point") else [],
             })
+        db.commit()
 
         return {
             "status": "success",
@@ -1340,7 +1343,12 @@ def submit_exam_set(
                     is_correct = student_bool == correct_bool
                 score = 100 if is_correct else 0
                 error_type = None if is_correct else ("concept" if pq.type == "choice" else "misreading")
-                feedback = "回答正确" if is_correct else "回答错误"
+                expl = (pq.explanation or "").strip()
+                if is_correct:
+                    feedback = f"回答正确。{expl}" if expl else "回答正确"
+                else:
+                    correct_ans = str(pq.correct or "")
+                    feedback = f"回答错误。正确答案：{correct_ans}。" + (f"\n解析：{expl}" if expl else "")
             else:
                 # Shortanswer/fill — try GradingAgent LLM
                 grade_result = None
@@ -1368,9 +1376,10 @@ def submit_exam_set(
                     score = 50
                     is_correct = True
                     error_type = None
-                    feedback = "简答题已记录"
+                    expl = (pq.explanation or "").strip()
+                    feedback = f"简答题已记录。{expl}" if expl else "简答题已记录，需人工评阅"
                     error_label = "需人工评阅"
-                    error_expl = "简答题需LLM评阅，当前不可用"
+                    error_expl = expl or "简答题需LLM评阅，当前不可用"
                     suggestions = []
                     strengths = []
 
@@ -1399,7 +1408,7 @@ def submit_exam_set(
                 "score": score,
                 "maxScore": 100,
                 "correctAnswer": pq.correct,
-                "explanation": pq.explanation,
+                "explanation": pq.explanation or feedback,
                 "feedback": feedback,
                 "errorType": error_type,
                 "knowledgePoint": (pq.knowledge_points or [""])[0] if pq.knowledge_points else "",
@@ -1515,5 +1524,56 @@ def list_exam_set_attempts(
             "status": "success",
             "data": {"attempts": [_attempt_dict(a) for a in attempts]},
         }
+    finally:
+        db.close()
+
+
+@router.delete("/exam-sets/{exam_set_id}")
+def delete_exam_set(
+    exam_set_id: str,
+    auth: AuthContext = Depends(require_auth),
+) -> dict:
+    """Delete an exam set and its associated records."""
+    db = SessionLocal()
+    try:
+        es = db.query(ExamSetModel).filter(ExamSetModel.id == exam_set_id).first()
+        if es is None:
+            raise HTTPException(status_code=404, detail="题集不存在")
+        # Delete related answer records, attempts, and practice questions
+        db.query(AnswerRecordModel).filter(
+            AnswerRecordModel.attempt_id.in_(
+                db.query(AttemptModel.attempt_id).filter(AttemptModel.exam_set_id == exam_set_id)
+            )
+        ).delete(synchronize_session=False)
+        db.query(AttemptModel).filter(AttemptModel.exam_set_id == exam_set_id).delete(synchronize_session=False)
+        db.query(PracticeQuestionModel).filter(PracticeQuestionModel.question_set_id == exam_set_id).delete(synchronize_session=False)
+        db.delete(es)
+        db.commit()
+        return {"status": "success", "data": {"deleted": True}}
+    finally:
+        db.close()
+
+
+@router.delete("/quizzes/{quiz_id}")
+def delete_quiz(
+    quiz_id: str,
+    auth: AuthContext = Depends(require_auth),
+) -> dict:
+    """Delete a quiz and its associated records."""
+    db = SessionLocal()
+    try:
+        q = db.query(QuizModel).filter(QuizModel.id == quiz_id).first()
+        if q is None:
+            raise HTTPException(status_code=404, detail="小测不存在")
+        db.query(AnswerRecordModel).filter(
+            AnswerRecordModel.attempt_id.in_(
+                db.query(AttemptModel.attempt_id).filter(AttemptModel.quiz_id == quiz_id)
+            )
+        ).delete(synchronize_session=False)
+        db.query(AttemptModel).filter(AttemptModel.quiz_id == quiz_id).delete(synchronize_session=False)
+        db.query(PracticeQuestionModel).filter(PracticeQuestionModel.question_set_id == quiz_id).delete(synchronize_session=False)
+        db.delete(q)
+        db.commit()
+        return {"status": "success", "data": {"deleted": True}}
     finally:
         db.close()

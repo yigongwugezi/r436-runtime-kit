@@ -163,13 +163,24 @@ assessment_tracker = AssessmentStateTracker()
 # ── Core closed-loop functions ───────────────────────────────────────────
 
 
+def _get_or_create_factory():
+    """Get or create a shared AgentFactory with LLM client for this process."""
+    from app.services.agent_factory import AgentFactory
+    from app.services.llm_client import get_llm_client
+    return AgentFactory(llm_client=get_llm_client())
+
+
 def run_post_quiz_assessment(
     session_id: str,
     quiz_title: str = "",
     quiz_score: int | None = None,
     weak_points: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Run diagnosis + recommendation update after a quiz is submitted.
+    """Run the FULL closed-loop assessment after a quiz is submitted.
+
+    Closed-loop sequence:
+      诊断(DiagnosisAgent) → 画像更新(ProfileAgent) → 路径调整(PlannerAgent)
+      → 资源生成(ResourceAgent) → 推荐(RecommendationEngine)
 
     Called synchronously from the assessment router (fire-and-forget pattern
     recommended so HTTP response is not delayed).
@@ -181,34 +192,141 @@ def run_post_quiz_assessment(
         session_id, quiz_title, quiz_score,
     )
 
+    profile_updated = False
+    path_adjusted = False
+    resources_generated = 0
+
     try:
-        # 1. Gather context
+        # ═══════════════════════════════════════════════════════════
+        # Step 1: Gather context
+        # ═══════════════════════════════════════════════════════════
         diagnosis_context = _build_diagnosis_context(session_id)
 
-        # 2. Run DiagnosisAgent
-        from app.agents.diagnosis_agent import DiagnosisAgent
-        diagnosis_agent = DiagnosisAgent(mock_data={})
+        # ═══════════════════════════════════════════════════════════
+        # Step 2: Run DiagnosisAgent (with LLM)
+        # ═══════════════════════════════════════════════════════════
+        factory = _get_or_create_factory()
+        diagnosis_agent = factory.get("diagnosis_agent")
+        if diagnosis_agent is None:
+            from app.agents.diagnosis_agent import DiagnosisAgent
+            diagnosis_agent = DiagnosisAgent(mock_data={})
         result = diagnosis_agent.run(diagnosis_context)
         new_diagnosis = result.get("diagnosis", {})
 
-        # 3. Extract mastery levels for change detection
+        # Extract mastery levels for change detection
         mastery_levels = new_diagnosis.get("mastery_levels", [])
         new_mastery: dict[str, float] = {
             m.get("name", ""): float(m.get("score", 50))
             for m in mastery_levels
         }
 
-        # 4. Persist diagnosis to conversation state
+        # Persist diagnosis to conversation state
         from app.services.conversation_state import conversation_store
         conversation_store.set_diagnosis(session_id, new_diagnosis)
 
-        # 5. Generate fresh recommendations
+        # ═══════════════════════════════════════════════════════════
+        # Step 3: Update ProfileAgent — 画像随学随新
+        # ═══════════════════════════════════════════════════════════
+        try:
+            profile_agent = factory.get("profile_agent")
+            if profile_agent is not None:
+                profile_context = {
+                    "session_id": session_id,
+                    "user_message": f"小测「{quiz_title}」完成，得分{quiz_score or 'N/A'}",
+                    "profile_facts": diagnosis_context.get("profile_facts", {}),
+                    "diagnosis": new_diagnosis,
+                    "course": diagnosis_context.get("course"),
+                    "weak_points": weak_points or [],
+                }
+                profile_result = profile_agent.run(profile_context)
+                updated_profile = profile_result.get("profile", {})
+                if updated_profile:
+                    conversation_store.set_result(session_id, {
+                        "profile": updated_profile,
+                        "diagnosis": new_diagnosis,
+                    })
+                    profile_updated = True
+                    logger.info(
+                        "ProfileAgent updated for session=%s, dimensions=%d",
+                        session_id, len(updated_profile),
+                    )
+        except Exception:
+            logger.exception("ProfileAgent update failed for session=%s", session_id)
+
+        # ═══════════════════════════════════════════════════════════
+        # Step 4: Check if plan adjustment is needed → PlannerAgent
+        # ═══════════════════════════════════════════════════════════
+        should_adjust = _detect_mastery_change(session_id, new_mastery)
+        if should_adjust:
+            try:
+                planner_agent = factory.get("planner_agent")
+                if planner_agent is not None:
+                    planner_context = {
+                        "session_id": session_id,
+                        "mode": "adjust",
+                        "user_message": f"基于小测「{quiz_title}」结果调整学习路径",
+                        "diagnosis": new_diagnosis,
+                        "profile": diagnosis_context.get("profile", {}),
+                        "profile_facts": diagnosis_context.get("profile_facts", {}),
+                        "learning_path": diagnosis_context.get("learning_path", []),
+                    }
+                    planner_result = planner_agent.run(planner_context)
+                    adjusted_path = planner_result.get("learning_path", [])
+                    if adjusted_path:
+                        # Persist adjusted path into conversation state
+                        existing_result = dict(conversation_store.get(session_id).last_result or {})
+                        existing_result["learning_path"] = adjusted_path
+                        conversation_store.set_result(session_id, existing_result)
+                        path_adjusted = True
+                        logger.info(
+                            "PlannerAgent adjusted path for session=%s, stages=%d",
+                            session_id, len(adjusted_path),
+                        )
+            except Exception:
+                logger.exception("PlannerAgent adjustment failed for session=%s", session_id)
+
+        # ═══════════════════════════════════════════════════════════
+        # Step 5: ResourceAgent — 为薄弱点生成针对性资源
+        # ═══════════════════════════════════════════════════════════
+        weak_kps = new_diagnosis.get("weak_knowledge_points", [])
+        if weak_kps:
+            try:
+                resource_agent = factory.get("resource_agent")
+                if resource_agent is not None:
+                    resource_context = {
+                        "session_id": session_id,
+                        "user_message": f"为以下薄弱知识点生成针对性学习资源：{', '.join(w.get('name', '') for w in weak_kps[:5] if w.get('name'))}",
+                        "diagnosis": new_diagnosis,
+                        "profile": diagnosis_context.get("profile", {}),
+                        "profile_facts": diagnosis_context.get("profile_facts", {}),
+                        "knowledge_points": [w.get("name", "") for w in weak_kps[:5] if w.get("name")],
+                        "resources": diagnosis_context.get("resources", []),
+                    }
+                    resource_result = resource_agent.run(resource_context)
+                    new_resources = resource_result.get("resources", [])
+                    if new_resources:
+                        # Persist generated resources into conversation state
+                        existing_result = dict(conversation_store.get(session_id).last_result or {})
+                        existing_resources = list(existing_result.get("resources", []))
+                        existing_resources.extend(new_resources)
+                        existing_result["resources"] = existing_resources
+                        conversation_store.set_result(session_id, existing_result)
+                        resources_generated = len(new_resources)
+                        logger.info(
+                            "ResourceAgent generated %d resources for session=%s",
+                            resources_generated, session_id,
+                        )
+            except Exception:
+                logger.exception("ResourceAgent generation failed for session=%s", session_id)
+
+        # ═══════════════════════════════════════════════════════════
+        # Step 6: Generate recommendations
+        # ═══════════════════════════════════════════════════════════
         recommendations = _generate_recommendations(session_id, new_diagnosis)
 
-        # 6. Check if plan adjustment is needed
-        should_adjust = _detect_mastery_change(session_id, new_mastery)
-
-        # 7. Notify frontend
+        # ═══════════════════════════════════════════════════════════
+        # Step 7: Notify frontend
+        # ═══════════════════════════════════════════════════════════
         weak_topic_names = [
             w.get("name", w.get("topic", ""))
             for w in (new_diagnosis.get("weak_knowledge_points") or [])[:3]
@@ -228,11 +346,19 @@ def run_post_quiz_assessment(
         if should_adjust:
             notification_store.push(session_id, AssessmentNotification(
                 type="plan_adjusted",
-                title="建议调整学习计划",
+                title="学习路径已自动调整",
                 message=(
-                    "你的知识掌握情况发生了显著变化。"
-                    "建议重新规划学习路径以匹配当前水平。"
+                    "你的知识掌握情况发生了显著变化，"
+                    "学习路径已自动调整以匹配当前水平。"
                 ),
+                session_id=session_id,
+            ))
+
+        if resources_generated > 0:
+            notification_store.push(session_id, AssessmentNotification(
+                type="recommendations_ready",
+                title="针对性学习资源已生成",
+                message=f"基于诊断结果，为你生成了 {resources_generated} 个针对性学习资源。",
                 session_id=session_id,
             ))
 
@@ -244,7 +370,9 @@ def run_post_quiz_assessment(
                 session_id=session_id,
             ))
 
-        # 8. Update tracking state
+        # ═══════════════════════════════════════════════════════════
+        # Step 8: Update tracking state
+        # ═══════════════════════════════════════════════════════════
         assessment_tracker.record_diagnosis(session_id, new_mastery)
 
         return {
@@ -253,6 +381,9 @@ def run_post_quiz_assessment(
             "weak_points_count": len(new_diagnosis.get("weak_knowledge_points", [])),
             "recommendations_count": len(recommendations),
             "plan_adjustment_needed": should_adjust,
+            "profile_updated": profile_updated,
+            "path_adjusted": path_adjusted,
+            "resources_generated": resources_generated,
         }
 
     except Exception:
@@ -261,18 +392,24 @@ def run_post_quiz_assessment(
 
 
 def run_periodic_reassessment(session_id: str) -> dict[str, Any]:
-    """Run a scheduled re-assessment for a session.
+    """Run a scheduled re-assessment for a session — full closed loop.
 
-    Called by the background scheduler.  Checks whether knowledge has decayed
-    and pushes notifications if so.
+    Called by the background scheduler.  Checks whether knowledge has decayed,
+    updates profile, adjusts path, generates resources, and pushes notifications.
     """
     logger.info("Periodic re-assessment triggered for session=%s", session_id)
 
+    profile_updated = False
+    path_adjusted = False
+
     try:
-        # 1. Build context and run diagnosis
+        # 1. Build context and run diagnosis (with LLM)
         diagnosis_context = _build_diagnosis_context(session_id)
-        from app.agents.diagnosis_agent import DiagnosisAgent
-        diagnosis_agent = DiagnosisAgent(mock_data={})
+        factory = _get_or_create_factory()
+        diagnosis_agent = factory.get("diagnosis_agent")
+        if diagnosis_agent is None:
+            from app.agents.diagnosis_agent import DiagnosisAgent
+            diagnosis_agent = DiagnosisAgent(mock_data={})
         result = diagnosis_agent.run(diagnosis_context)
         new_diagnosis = result.get("diagnosis", {})
 
@@ -287,23 +424,64 @@ def run_periodic_reassessment(session_id: str) -> dict[str, Any]:
         from app.services.conversation_state import conversation_store
         conversation_store.set_diagnosis(session_id, new_diagnosis)
 
-        # 4. Detect decay (knowledge forgotten over time)
+        # 4. Update ProfileAgent — 画像随学随新
+        try:
+            profile_agent = factory.get("profile_agent")
+            if profile_agent is not None:
+                profile_result = profile_agent.run({
+                    "session_id": session_id,
+                    "user_message": "定期学习诊断更新",
+                    "profile_facts": diagnosis_context.get("profile_facts", {}),
+                    "diagnosis": new_diagnosis,
+                })
+                updated_profile = profile_result.get("profile", {})
+                if updated_profile:
+                    conversation_store.set_result(session_id, {
+                        "profile": updated_profile,
+                        "diagnosis": new_diagnosis,
+                    })
+                    profile_updated = True
+        except Exception:
+            logger.exception("ProfileAgent update failed in periodic reassessment")
+
+        # 5. Detect decay (knowledge forgotten over time)
         old_mastery = assessment_tracker.get(session_id).last_mastery_snapshot
         decayed_topics = _detect_decay(old_mastery, new_mastery)
 
-        # 5. Generate recommendations
+        # 6. Generate recommendations
         recommendations = _generate_recommendations(session_id, new_diagnosis)
 
-        # 6. Check plan adjustment
+        # 7. Check plan adjustment → PlannerAgent
         should_adjust = _detect_mastery_change(session_id, new_mastery)
+        if should_adjust:
+            try:
+                planner_agent = factory.get("planner_agent")
+                if planner_agent is not None:
+                    planner_result = planner_agent.run({
+                        "session_id": session_id,
+                        "mode": "adjust",
+                        "user_message": "定期诊断发现掌握度变化，调整学习路径",
+                        "diagnosis": new_diagnosis,
+                        "profile": diagnosis_context.get("profile", {}),
+                        "profile_facts": diagnosis_context.get("profile_facts", {}),
+                        "learning_path": diagnosis_context.get("learning_path", []),
+                    })
+                    adjusted_path = planner_result.get("learning_path", [])
+                    if adjusted_path:
+                        existing_result = dict(conversation_store.get(session_id).last_result or {})
+                        existing_result["learning_path"] = adjusted_path
+                        conversation_store.set_result(session_id, existing_result)
+                        path_adjusted = True
+            except Exception:
+                logger.exception("PlannerAgent failed in periodic reassessment")
 
-        # 7. Notify
+        # 8. Notify
         if decayed_topics:
             topic_names = "、".join(decayed_topics[:3])
             notification_store.push(session_id, AssessmentNotification(
                 type="review_needed",
                 title="检测到知识遗忘",
-                message=f"以下知识点掌握度下降：{topic_names}。建议安排复习。",
+                message=f"以下知识点掌握度下降：{topic_names}。已自动调整复习计划。",
                 session_id=session_id,
             ))
 
@@ -317,8 +495,8 @@ def run_periodic_reassessment(session_id: str) -> dict[str, Any]:
         if should_adjust and not decayed_topics:
             notification_store.push(session_id, AssessmentNotification(
                 type="plan_adjusted",
-                title="建议调整学习计划",
-                message="定期检查发现你的学习进度已发生变化，建议更新学习计划。",
+                title="学习路径已调整",
+                message="定期检查发现你的学习进度已发生变化，学习路径已自动更新。",
                 session_id=session_id,
             ))
 
@@ -328,6 +506,9 @@ def run_periodic_reassessment(session_id: str) -> dict[str, Any]:
             "diagnosis_ran": True,
             "decayed_topics": decayed_topics,
             "plan_adjustment_needed": should_adjust,
+            "profile_updated": profile_updated,
+            "path_adjusted": path_adjusted,
+            "recommendations_count": len(recommendations),
         }
 
     except Exception:

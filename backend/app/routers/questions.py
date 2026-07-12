@@ -94,26 +94,77 @@ def _answer_record_dict(r: AnswerRecordModel) -> dict:
 
 
 def _auto_grade(question: StudentQuestionModel, answer: str) -> dict:
-    """Auto-grade a student answer for choice/truefalse questions.
+    """Grade a student answer using GradingAgent for all question types.
 
-    Returns a dict that can be used to create an AnswerRecordModel.
-    Fill/shortanswer questions get a placeholder — real grading needs LLM.
+    For choice/truefalse: fast rule-based grading.
+    For fill/shortanswer: delegates to GradingAgent for LLM-based scoring.
     """
     is_correct = False
     error_type = "null"
     error_label = "无"
 
     if question.type in ("choice", "truefalse"):
-        # Normalize answer for comparison
+        # Fast rule-based for objective questions
         student = answer.strip().upper()
         expected = (question.correct or "").strip().upper()
-        is_correct = student == expected
+        if question.type == "choice":
+            is_correct = student[:1] == expected[:1]
+        else:
+            student_bool = student in ("TRUE", "对", "正确", "YES", "T", "1")
+            correct_bool = expected in ("TRUE", "对", "正确", "YES", "T", "1")
+            is_correct = student_bool == correct_bool
         if not is_correct:
             error_type = "concept"
             error_label = "概念错误" if question.type == "choice" else "判断错误"
     else:
-        # fill / shortanswer — stored without auto-scoring
-        pass
+        # fill / shortanswer — use GradingAgent for LLM-based scoring
+        q_dict = {
+            "question_id": question.question_id,
+            "type": question.type,
+            "stem": question.stem,
+            "options": question.options,
+            "correct": question.correct,
+            "explanation": question.explanation,
+            "reference_answer": question.reference_answer,
+            "scoring_rubric": question.scoring_rubric,
+            "knowledge_points": question.knowledge_points,
+        }
+        try:
+            from app.services.agent_factory import AgentFactory
+            from app.services.llm_client import get_llm_client
+            factory = AgentFactory(llm_client=get_llm_client())
+            ga = factory.get("grading_agent")
+            if ga is not None and ga.llm_client is not None:
+                grade_result = ga._grade_with_llm(q_dict, answer)
+                if grade_result is not None:
+                    return {
+                        "total_score": grade_result.get("total_score", 0),
+                        "dimension_scores": grade_result.get("dimension_scores", {"reasoning": 0, "completeness": 0, "calculation": 0, "expression": 0}),
+                        "dimension_feedback": grade_result.get("dimension_feedback", {}),
+                        "error_type": grade_result.get("error_type", "null"),
+                        "error_label": grade_result.get("error_label", "无"),
+                        "error_explanation": grade_result.get("error_explanation", question.explanation or ""),
+                        "error_action": grade_result.get("error_action", ""),
+                        "suggestions": grade_result.get("suggestions", []),
+                        "strengths": grade_result.get("strengths", []),
+                    }
+            # Fallback: try rule-based grading
+            if ga is not None:
+                fallback = ga._rule_based_grading(q_dict, answer)
+                if fallback is not None:
+                    return {
+                        "total_score": fallback.get("total_score", 0),
+                        "dimension_scores": fallback.get("dimension_scores", {"reasoning": 0, "completeness": 0, "calculation": 0, "expression": 0}),
+                        "dimension_feedback": fallback.get("dimension_feedback", {}),
+                        "error_type": fallback.get("error_type", "null"),
+                        "error_label": fallback.get("error_label", "无"),
+                        "error_explanation": fallback.get("error_explanation", question.explanation or ""),
+                        "error_action": fallback.get("error_action", ""),
+                        "suggestions": fallback.get("suggestions", []),
+                        "strengths": fallback.get("strengths", []),
+                    }
+        except Exception:
+            logger.exception("GradingAgent call failed for question=%s, falling back to placeholder", question.question_id)
 
     total_score = 100 if is_correct else 0
 
@@ -153,58 +204,76 @@ def _auto_grade(question: StudentQuestionModel, answer: str) -> dict:
 
 @router.post("/questions/generate")
 def generate_questions(body: GenerateRequest, auth: AuthContext = Depends(require_auth)) -> dict:
-    """Generate questions via LLM for a session. Currently returns mock data.
+    """Generate questions via QuestionAgent for a session.
 
-    Real AI generation will be integrated when the M2 cognitive diagnosis
-    module is ready.
+    Delegates to QuestionAgent (which uses LLM + DeepTutor) for high-quality
+    question generation tailored to the student's diagnosis and weak points.
+    Falls back to template-based questions if the agent is unavailable.
     """
     question_set_id = f"qs_{uuid.uuid4().hex[:12]}"
-    now = datetime.now(timezone.utc)
 
-    # Build 3 mock questions aligned with the API spec
-    mock_questions = [
-        {
-            "type": "choice",
-            "stem": "以下关于极限的描述，正确的是？",
-            "options": [
-                "A. 极限总是等于函数值",
-                "B. 极限描述了函数在某点附近的变化趋势",
-                "C. 极限不存在时函数一定无定义",
-                "D. 极限只能是有限值",
-            ],
-            "correct": "B",
-            "explanation": "极限的定义描述了自变量趋近某值时函数的变化趋势，与函数在该点的值无关。",
-            "difficulty": "medium",
-            "knowledge_points": ["极限", "函数"],
-        },
-        {
-            "type": "truefalse",
-            "stem": "可导函数一定连续。",
-            "correct": "true",
-            "explanation": "可导性蕴含连续性：若 f'(x₀) 存在，则 f 在 x₀ 处连续。",
-            "difficulty": "easy",
-            "knowledge_points": ["导数", "连续"],
-        },
-        {
-            "type": "fill",
-            "stem": "函数 f(x)=x² 在 x=3 处的导数值为 ___。",
-            "correct": "6",
-            "explanation": "f'(x)=2x，代入 x=3 得 f'(3)=6。",
-            "difficulty": "easy",
-            "knowledge_points": ["导数计算"],
-        },
-    ]
+    # ── Try QuestionAgent first ──
+    generated_questions = []
+    try:
+        from app.services.agent_factory import AgentFactory
+        from app.services.llm_client import get_llm_client
+        factory = AgentFactory(llm_client=get_llm_client())
+        qa = factory.get("question_agent")
+        if qa is not None:
+            qa_result = qa.run({
+                "session_id": body.session_id,
+                "user_message": body.message or "生成练习题",
+                "question_set_id": question_set_id,
+            })
+            generated_questions = qa_result.get("questions", [])
+    except Exception:
+        logger.exception("QuestionAgent generation failed, falling back to template")
+
+    # ── Fallback: template-based questions ──
+    if not generated_questions:
+        generated_questions = [
+            {
+                "type": "choice",
+                "stem": "以下关于极限的描述，正确的是？",
+                "options": [
+                    "A. 极限总是等于函数值",
+                    "B. 极限描述了函数在某点附近的变化趋势",
+                    "C. 极限不存在时函数一定无定义",
+                    "D. 极限只能是有限值",
+                ],
+                "correct": "B",
+                "explanation": "极限的定义描述了自变量趋近某值时函数的变化趋势，与函数在该点的值无关。",
+                "difficulty": "medium",
+                "knowledge_points": ["极限", "函数"],
+            },
+            {
+                "type": "truefalse",
+                "stem": "可导函数一定连续。",
+                "correct": "true",
+                "explanation": "可导性蕴含连续性：若 f'(x₀) 存在，则 f 在 x₀ 处连续。",
+                "difficulty": "easy",
+                "knowledge_points": ["导数", "连续"],
+            },
+            {
+                "type": "fill",
+                "stem": "函数 f(x)=x² 在 x=3 处的导数值为 ___。",
+                "correct": "6",
+                "explanation": "f'(x)=2x，代入 x=3 得 f'(3)=6。",
+                "difficulty": "easy",
+                "knowledge_points": ["导数计算"],
+            },
+        ]
 
     db = SessionLocal()
     try:
         created = []
-        for mq in mock_questions:
+        for mq in generated_questions:
             q = StudentQuestionModel(
                 question_id=f"q_{uuid.uuid4().hex[:12]}",
                 question_set_id=question_set_id,
                 session_id=body.session_id,
-                type=mq["type"],
-                stem=mq["stem"],
+                type=mq.get("type", "choice"),
+                stem=mq.get("stem", ""),
                 options=mq.get("options"),
                 correct=mq.get("correct"),
                 explanation=mq.get("explanation"),
@@ -367,6 +436,13 @@ def grade_answer(
             "suggestions": record.suggestions,
             "strengths": record.strengths,
         }
+
+        # ── Trigger assessment loop event ──
+        try:
+            from app.services.assessment_loop import record_learning_event
+            record_learning_event(body.session_id, "question_graded")
+        except Exception:
+            pass  # Non-critical
 
         return {"status": "success", "data": {"gradingResult": grading_result}}
     finally:

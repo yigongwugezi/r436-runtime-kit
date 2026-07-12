@@ -160,3 +160,9 @@ export async function getQuestionSets(sessionId: string): Promise<any> {
   const { data } = await client.get('/api/questions/sets', { params: { sessionId } });
   return data.data || data;
 }
+
+/** 删除题目集 */
+export async function deleteQuestionSet(setId: string, sessionId: string): Promise<any> {
+  const { data } = await client.delete(`/api/questions/sets/${setId}`, { params: { sessionId } });
+  return data;
+}

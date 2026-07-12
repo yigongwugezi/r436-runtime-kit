@@ -267,3 +267,15 @@ export async function listExamSetAttempts(examSetId: string) {
   );
   return data as { status: string; data: { attempts: Attempt[] } };
 }
+
+/** Delete an exam set and its associated records. */
+export async function deleteExamSet(examSetId: string) {
+  const { data } = await client.delete(`/api/exam-sets/${examSetId}`);
+  return data as { status: string; data: { deleted: boolean } };
+}
+
+/** Delete a quiz and its associated records. */
+export async function deleteQuiz(quizId: string) {
+  const { data } = await client.delete(`/api/quizzes/${quizId}`);
+  return data as { status: string; data: { deleted: boolean } };
+}

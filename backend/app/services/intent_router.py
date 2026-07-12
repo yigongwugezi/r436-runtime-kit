@@ -59,6 +59,18 @@ INTENT_REGISTRY: dict[str, AgentPlan] = {
     "grade_answer":       AgentPlan(agent_ids=["grading_agent"],     node_route="grading",     should_run_agents=True),
     "knowledge":          AgentPlan(agent_ids=["knowledge_agent"],   node_route="knowledge",   should_run_agents=True),
 
+    # ── Combined multi-agent intents (closed-loop) ──
+    "assess": AgentPlan(
+        agent_ids=["grading_agent", "diagnosis_agent", "profile_agent", "planner_agent", "resource_agent"],
+        node_route="grading",
+        should_run_agents=True,
+    ),
+    "tutor": AgentPlan(
+        agent_ids=["profile_agent", "diagnosis_agent", "resource_agent"],
+        node_route="profile",
+        should_run_agents=True,
+    ),
+
     # ── Full workflow ──
     "full_workflow": AgentPlan(
         agent_ids=None,
