@@ -47,6 +47,13 @@ def main() -> None:
     agent = ProfileAgent(mock_data={}, llm_client=None)
     result = agent.run({"user_message": "我想学英语", "profile_facts": {"target_course": "英语"}, "course": {"course_name": "英语"}})
     assert result["profile_v2"]["profile_version"] == 2
+
+    explicit = extract_profile_facts("\u6211\u662f\u5927\u5b66\u751f\uff0c\u60f3\u5728\u4e24\u5468\u5185\u590d\u4e60\u9ad8\u7b49\u6570\u5b66\uff0c\u6bcf\u5929\u53ef\u4ee5\u5b66\u4e60\u4e00\u5c0f\u65f6\u3002\u6211\u7684\u6781\u9650\u57fa\u7840\u4e00\u822c\uff0c\u6bd4\u8f83\u6015\u8bc1\u660e\u9898\uff0c\u559c\u6b22\u5148\u770b\u4f8b\u9898\u518d\u505a\u7ec3\u4e60\u3002").facts
+    explicit_profile = build_profile_v2(facts=explicit, course={"course_name": "\u9ad8\u7b49\u6570\u5b66"})
+    assert explicit_profile["subject_context"]["daily_minutes"] == 60
+    assert set(explicit_profile["subject_context"]["content_preferences"]) == {"example_first", "practice_after_explanation"}
+    assert all(item["score"] is None for item in explicit_profile["subject_dimensions"])
+    assert explicit_profile["profile_completeness"] < 0.83
     print("profile v2: PASS")
 
 

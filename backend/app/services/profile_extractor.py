@@ -322,12 +322,26 @@ def _extract_goal(text: str, result: ExtractedProfileFacts) -> None:
 
 
 def _extract_time_budget(text: str, result: ExtractedProfileFacts) -> None:
+    daily = re.search(r"(?:\u6bcf\u5929|\u6bcf\u65e5|\u4e00\u5929)(?:\u53ef\u4ee5\u5b66\u4e60|\u80fd\u5b66|\u5b66\u4e60)?\s*(\d+)\s*\u5c0f\u65f6", text)
+    if daily:
+        _put_fact(result, "daily_minutes", str(int(daily.group(1)) * 60))
+    else:
+        daily = re.search(r"(?:\u6bcf\u5929|\u6bcf\u65e5|\u4e00\u5929)(?:\u53ef\u4ee5\u5b66\u4e60|\u80fd\u5b66|\u5b66\u4e60)?\s*(\d+)\s*\u5206\u949f", text)
+        if daily:
+            _put_fact(result, "daily_minutes", daily.group(1))
+        else:
+            chinese_daily = re.search(r"(?:\u6bcf\u5929|\u6bcf\u65e5|\u4e00\u5929)(?:\u53ef\u4ee5\u5b66\u4e60|\u80fd\u5b66|\u5b66\u4e60)?\s*(\u4e00|\u4e24|\u4e8c|\u4e09|\u534a)\s*\u5c0f\u65f6", text)
+            if chinese_daily:
+                minutes = {"\u4e00": 60, "\u4e24": 120, "\u4e8c": 120, "\u4e09": 180, "\u534a": 30}[chinese_daily.group(1)]
+                _put_fact(result, "daily_minutes", str(minutes))
     unit = r"(?:\u5c0f\u65f6|\u5206\u949f|\u5929|\u5468|\u4e2a\u6708)"
     match = re.search(rf"(?:\u6bcf\u5929)?\d+\s*{unit}(?:\u5b8c\u6210|\u5b66\u5b8c|\u5de6\u53f3|\u4ee5\u5185|\u4ee5\u4e0a)?", text)
     if not match:
         match = re.search(r"(?:\u4e00\u5468|\u4e24\u5468|\u4e09\u5468|\u4e00\u4e2a\u6708|\u534a\u4e2a\u6708|\u4e24\u5929|\u4e09\u5929|\u56db\u5341\u516b\u5c0f\u65f6)", text)
     if match:
         _put_fact(result, "time_budget", match.group(0))
+        if any(marker in match.group(0) for marker in ("\u5468", "\u671f\u672b", "\u4ee5\u5185")):
+            _put_fact(result, "deadline", match.group(0))
 
 
 def _extract_preference(text: str, result: ExtractedProfileFacts) -> None:
@@ -347,6 +361,13 @@ def _extract_preference(text: str, result: ExtractedProfileFacts) -> None:
             formats.append(label)
     if formats:
         _put_fact(result, "preference", "\u3001".join(dict.fromkeys(formats)))
+    semantic: list[str] = []
+    if "\u5148\u770b\u4f8b\u9898" in text:
+        semantic.append("example_first")
+    if any(word in text for word in ("\u7ec3\u4e60", "\u505a\u9898")) and any(word in text for word in ("\u8bb2\u89e3", "\u4f8b\u9898")):
+        semantic.append("practice_after_explanation")
+    if semantic:
+        _put_fact(result, "content_preferences", ",".join(semantic))
 
 
 def _extract_supplemental(text: str, result: ExtractedProfileFacts) -> None:
