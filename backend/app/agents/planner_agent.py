@@ -841,16 +841,6 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
             if stage["chapters"]:
                 stages.append(stage)
         return self._rewrite_chapter_ids(context, stages)
-        if self.llm_client:
-            try:
-                raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.3, max_tokens=max_tokens)
-                s, e = raw.find("{"), raw.rfind("}") + 1
-                if s >= 0 and e > s:
-                    data = json.loads(raw[s:e])
-                    stages = data.get("stages") or data.get("chapters") or []
-                    return self._rewrite_chapter_ids(context, stages)
-            except: pass
-        return None
 
     def _rewrite_chapter_ids(self, context, chapters: list) -> list:
         """Rewrite LLM-generated IDs with canonical, stable IDs."""

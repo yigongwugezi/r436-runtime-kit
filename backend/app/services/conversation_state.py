@@ -81,7 +81,27 @@ SUPPLEMENTAL_FIELD_DEFS: dict[str, dict[str, str]] = {
 }
 
 CORE_FIELDS = {"background", "target_course", "knowledge_base"}
-PLAN_READY_FIELDS = {"background", "target_course"}
+PLAN_READY_FIELDS = {"background", "target_course", "knowledge_base", "learning_goal", "time_budget"}
+
+# 浅层回答模式——这些值说明学生只是应付，没有给出有深度的信息
+_SHALLOW_PATTERNS: tuple[str, ...] = (
+    "学过一点", "了解一些", "还行", "还行吧", "一般", "一般般",
+    "基础", "入门", "没学过", "零基础", "不知道", "不太清楚",
+    "就那样", "差不多", "马马虎虎", "凑合", "还可以", "会一点",
+    "懂一点", "接触过", "了解过", "大概", "基本",
+)
+_SHALLOW_MIN_LENGTH = 8  # 短于这个长度的回答几乎一定是浅层的
+
+# 当某个维度已有浅层回答时，用追问来获取更深入的信息
+_SHALLOW_FOLLOWUPS: dict[str, str] = {
+    "background": "你具体是哪个学校、什么专业的？方便的话也可以说说年级～",
+    "target_course": "你想学这门课是为了应对什么？考试、考研、还是做项目？想学到什么程度？",
+    "knowledge_base": "你刚才说基础比较泛，能具体说说学过哪些内容、哪个部分觉得比较熟？",
+    "weak_points": "能举个例子说说具体哪个题型或知识点觉得比较难吗？",
+    "learning_goal": "你的目标具体是什么？比如通过期末考试、考研上岸、还是能独立做项目？",
+    "time_budget": "每天大概能投入多长时间？是每天都能学还是只有周末？",
+    "preference": "你更喜欢看文字讲义、看视频、做练习题、还是画思维导图？",
+}
 LOW_VALUE_BACKGROUND_WORDS = {
     "男生", "女生", "男", "女", "男孩子", "女孩子", "普通人", "学生", "大学生",
 }
@@ -536,6 +556,71 @@ class ConversationStore:
             for m in state.messages[-6:]
         )
 
+        # ── Detect probing patterns in recent history ──
+        # When DeepTutor used indirect probing last turn (diagnostic questions,
+        # concept explanations, preference choices, scenario tests), extract
+        # what the student's response reveals about their real profile.
+        _probe_context = ""
+        _prev_assistant = ""
+        for m in reversed(state.messages[-4:]):
+            if m.get("role") == "assistant":
+                _prev_assistant = str(m.get("content", ""))
+                break
+
+        # Detect probe type from previous assistant message
+        _probe_type = ""
+        _diagnostic_markers = ["考你一下", "你觉得对吗", "下面哪个", "正确的是", "以下哪个", "判断", "测测", "摸底"]
+        _concept_markers = ["你能解释", "说说看", "用自己的话", "什么是", "的区别是"]
+        _preference_markers = ["文字解释还是", "画个图", "哪种方式", "你喜欢"]
+        _scenario_markers = ["如果", "你会怎么", "遇到", "试试看"]
+        _goal_markers = ["最想做到", "学完", "能自己", "目标"]
+        _time_markers = ["整块还是", "碎片", "周末也", "最少能"]
+
+        if any(m in _prev_assistant for m in _diagnostic_markers):
+            _probe_type = "diagnostic_quiz"
+        elif any(m in _prev_assistant for m in _concept_markers):
+            _probe_type = "concept_explanation"
+        elif any(m in _prev_assistant for m in _preference_markers):
+            _probe_type = "preference_choice"
+        elif any(m in _prev_assistant for m in _scenario_markers):
+            _probe_type = "scenario_test"
+        elif any(m in _prev_assistant for m in _goal_markers):
+            _probe_type = "goal_probe"
+        elif any(m in _prev_assistant for m in _time_markers):
+            _probe_type = "time_reality_check"
+
+        if _probe_type:
+            _probe_hints = {
+                "diagnostic_quiz": (
+                    "上一轮出了一道诊断题来探测学生的真实知识水平.根据学生回答的对错和解释质量:\n"
+                    "- 答对且解释清楚 -> 提取 knowledge_base 为具体的掌握描述,如[探测]能正确判断XXX\n"
+                    "- 答错或回避 -> 提取 weak_points 为暴露出的具体薄弱点,如[探测]对YYY理解有误\n"
+                ),
+                "concept_explanation": (
+                    "上一轮让学生解释了一个概念.根据解释的准确性和深度:\n"
+                    "- 解释清晰准确 -> 提取 knowledge_base 为具体掌握程度\n"
+                    "- 解释模糊或错误 -> 提取 weak_points 为概念混淆的具体点\n"
+                ),
+                "preference_choice": (
+                    "上一轮给了学生一个学习方式的自然选择(文字vs图解等).从学生的选择中提取 preference.\n"
+                ),
+                "scenario_test": (
+                    "上一轮用场景题探测了学生的应对能力.从回答中提取 knowledge_base 或 weak_points.\n"
+                ),
+                "goal_probe": (
+                    "上一轮深入探测了学习目标的真实动机和具体程度.提取 learning_goal 为有深度的描述.\n"
+                ),
+                "time_reality_check": (
+                    "上一轮确认了时间安排的真实性(区分理想vs实际).提取 time_budget 为更精确的描述.\n"
+                ),
+            }
+            _probe_context = (
+                "\n## 探测结果提取模式\n"
+                + _probe_hints.get(_probe_type, "上一轮进行了画像探测,从学生回答中提取有深度的画像信息.\n")
+                + "- 提取的值必须带上 evidence(如[探测][学生自述][行为观察])\n"
+                "- 值要具体,避免笼统描述\n"
+            )
+
         # ── Detect course type for mode-specific extraction ──
         # Check BOTH stored facts AND current message (covers first message before facts are stored)
         target = str(state.facts.get("target_course", "")).strip()
@@ -567,7 +652,8 @@ class ConversationStore:
             "你是一个学习画像提取器。从用户消息中提取以下维度的信息。\n\n"
             "## 已有画像\n" + known_facts + "\n\n"
             "## 对话历史(最近几轮)\n" + history_text + "\n\n"
-            "## 用户最新消息\n" + message + "\n\n"
+            + _probe_context +
+            "\n## 用户最新消息\n" + message + "\n\n"
             "## 需要提取的维度\n"
             "- background: 身份/专业背景（只提取专业、年级、学校等学习相关信息，严禁提取人名、昵称、称呼）\n"
             "- target_course: 目标课程/知识方向\n"
@@ -916,25 +1002,82 @@ class ConversationStore:
                 state.facts["weak_points"] = "、".join(names)
 
     def missing_fields(self, state: ConversationState, limit: int | None = None) -> list[dict[str, str]]:
-        missing = [
-            {"key": key, "label": meta["label"], "question": meta["question"]}
-            for key, meta in PROFILE_FIELD_DEFS.items()
-            if not state.facts.get(key)
-        ]
-        return missing if limit is None else missing[:limit]
+        """Return fields that are either missing OR only have a shallow answer.
+
+        Shallow fields get a follow-up probe question instead of the generic
+        first-question prompt.
+        """
+        result: list[dict[str, str]] = []
+        for key, meta in PROFILE_FIELD_DEFS.items():
+            value = str(state.facts.get(key, "")).strip()
+            if not value:
+                result.append({
+                    "key": key, "label": meta["label"], "question": meta["question"],
+                })
+            elif self._fact_depth(value) == "shallow":
+                result.append({
+                    "key": key, "label": meta["label"],
+                    "question": _SHALLOW_FOLLOWUPS.get(key, f"关于{meta['label']}，能再说得具体一点吗？"),
+                })
+        return result if limit is None else result[:limit]
+
+    @staticmethod
+    def _fact_depth(value: str) -> str:
+        """Judge whether a profile fact is shallow, moderate, or deep.
+
+        Shallow answers like "学过一点" or "还行" don't give enough to
+        personalise on.  We require concrete detail before marking a
+        dimension as truly known.
+        """
+        text = str(value or "").strip()
+        if not text:
+            return "missing"
+        # Very short answers are almost always shallow
+        if len(text) < _SHALLOW_MIN_LENGTH:
+            return "shallow"
+        # Check against known shallow patterns
+        for pat in _SHALLOW_PATTERNS:
+            if pat in text and len(text) < len(pat) + 8:
+                return "shallow"
+        # Has concrete detail: specific nouns, numbers, or substantial length
+        has_detail = (
+            len(text) >= 20
+            or bool(re.search(r"[A-Za-z+#\d]", text))  # contains English/number/symbols
+            or any(word in text for word in ["专业", "工程", "计算机", "数学", "考试", "考研",
+                   "期末", "项目", "每天", "小时", "周", "个月", "掌握", "熟悉", "不会", "薄弱"])
+        )
+        return "deep" if has_detail else "moderate"
 
     def readiness(self, state: ConversationState) -> dict[str, Any]:
-        filled = set(state.facts)
+        filled = {k for k, v in state.facts.items() if v and str(v).strip()}
         missing_core = [key for key in CORE_FIELDS if key not in filled]
-        ready_to_plan = PLAN_READY_FIELDS.issubset(filled) and bool(
-            state.facts.get("knowledge_base") or state.facts.get("learning_goal")
-        )
+
+        # Depth gate: a field counts as "deep-filled" only when its value
+        # is moderate or deep.  Shallow answers like "学过一点" do NOT
+        # count toward readiness.
+        deep_filled = {
+            k for k in filled
+            if self._fact_depth(state.facts.get(k, "")) in ("moderate", "deep")
+        }
+        shallow_fields = [
+            {"key": k, "label": PROFILE_FIELD_DEFS[k]["label"], "value": state.facts[k]}
+            for k in filled if k not in deep_filled
+        ]
+
+        # True readiness: all PLAN_READY_FIELDS are deep-filled
+        ready_to_plan = PLAN_READY_FIELDS.issubset(deep_filled)
+
         score = round(len(filled) / len(PROFILE_FIELD_DEFS), 2)
+        depth_score = round(len(deep_filled) / max(1, len(PROFILE_FIELD_DEFS)), 2)
+
         return {
             "filledCount": len(filled),
+            "deepFilledCount": len(deep_filled),
             "totalCount": len(PROFILE_FIELD_DEFS),
             "score": score,
+            "depthScore": depth_score,
             "missingCore": missing_core,
+            "shallowFields": shallow_fields,
             "readyToPlan": ready_to_plan,
         }
 

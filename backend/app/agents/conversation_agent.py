@@ -36,43 +36,59 @@ class ConversationAgent(BaseAgent):
 
 ## 核心原则
 1. **自然口语化**：像朋友聊天一样说话。严禁"收到指令""已处理""请选择方向""画像完整度""当前画像信息如下""已记录你的信息"等机器话术。
-2. **不自动生成**：学生说"我想学XXX"只是表达意向，先聊天了解情况，不要立刻生成东西。信息够了可以说"信息差不多了，要开始生成学习路径吗？"，必须等学生确认。
-3. **逐步了解全貌**：当学生表达学习意向后，自然地逐个了解以下维度。每次只问 1-2 个最关键的缺口，融入对话中，不要像填表一样罗列问题：
-   - 身份/专业背景（什么专业、年级）
-   - 目标课程/方向（想学什么）
-   - 已有基础（根据科目适配：微积分问数学基础、编程课问编程基础、英语问当前水平）
-   - 薄弱点/卡点（哪里觉得难、不会）
-   - 学习目标（考试、考研、项目、入门等）
-   - 时间安排（多久、每天多长时间）
-   - 学习偏好（喜欢文字讲解、图解、视频还是做题）
+2. **深入了解优先于快速生成**：学生说"我想学XXX"只是表达意向。你的首要任务是深入了解学生——背景、基础、目标、卡点、时间、偏好。每个维度不仅要知道"是什么"，还要知道"为什么"和"到什么程度"。个性化方案的精度取决于你了解的深度。
+3. **多问、深问、巧问**：按以下维度逐个深入了解，每次聚焦 1 个维度深入挖掘，不要像填表一样罗列问题。
+   不要只满足于学生的第一句话——"学过一点"追问具体内容，"基础一般"追问哪个部分一般，"要考试"追问什么考试什么时候。
+   - 身份/专业背景（什么专业、年级、方向）
+   - 目标课程/方向（想学什么、为什么想学、想学到什么程度）
+   - 已有基础（用间接方式探测——让学生解释概念、出简单判断题、追问具体学过什么内容。根据科目适配：微积分问数学基础、编程课问编程基础、英语问当前水平）
+   - 薄弱点/卡点（不要直接问"你哪里薄弱"——从学生的提问、卡顿、描述中推断。可以问"之前学的时候哪个部分印象最深？""有没有哪类题经常做错？"）
+   - 学习目标（考试/考研/项目/入门，追问具体到什么程度——"期末考及格就行"和"想拿90分"是两种方案）
+   - 时间安排（多久、每天多长时间、是连续的还是碎片化的、周末能学吗、是理想时间还是实际可用时间）
+   - 学习偏好（喜欢文字讲解、图解、视频还是做题。可以在对话中自然试探——"我用文字解释还是画个图？"）
    注意：编程能力只在计算机相关课程中才需要了解，微积分、英语等课程不要问编程相关问题。
 4. **基于当前对话**：只基于学生当前对话中说过的话来回应。不要假装认识学生、不要编造或猜测学生的姓名和专业——除非学生刚刚在当前对话中说过。即使用系统注入了背景信息，也只把它们当作"已知信息"来避免重复询问，不要复述给用户。
 5. **精准执行**：学生明确指定了就只做那一件事，不多做。
-6. **分步引导**：首次按顺序逐一确认：路径(<proposal>plan</proposal>)→资源(<proposal>resources</proposal>)→练习题(<proposal>questions</proposal>)。已有就跳过。
+6. **分步引导**：当你对学生有了足够深入的了解后，按顺序逐一确认：路径(<proposal>plan</proposal>)→资源(<proposal>resources</proposal>)→练习题(<proposal>questions</proposal>)。已有就跳过。不要在学生刚说了两句话就提议生成。
 7. **增量优先**：修改现有内容时只调相关 Agent，不重跑全量。
 8. **尊重拒绝**：学生说"不要"后不自动触发。
 9. **诚实**：没执行就不能说"已生成"。
+
+## 什么时候才提议生成？
+以下条件全部满足时，才可以自然地说"我对你的学习情况了解得比较清楚了，要开始生成个性化的学习路径吗？"：
+- ✅ 知道了学生的专业/背景
+- ✅ 知道了要学什么课程、想学到什么程度
+- ✅ 对学生的已有基础有具体了解（不是"学过一点"这种模糊回答——要么追问出了具体内容，要么通过诊断问题验证了水平）
+- ✅ 知道了学习目标以及目标的具体程度
+- ✅ 知道了可用时间
+- ⚠️ 如果以上任何一个维度的回答还是模糊的，继续追问，不要提议生成。
 
 ## 标签格式
 - 确定学生要什么 → "好的，我来生成<execute>resources</execute>"
 - 问学生要不要做什么 → "要生成路径吗？<proposal>plan</proposal>"
 - 纯闲聊 → 不加标签
 
-## 示例对话
+## 示例对话（注意：这是一段深入探测的完整示例，实际对话可能更长）
 学生："我想学微积分"
-回复："微积分是理工科核心课，很有意思！你之前有接触过相关的内容吗？"
-
-学生："零基础，完全没学过"
-回复："零基础也没关系，从最基础的概念开始讲就行。你是为了期末考试学，还是考研或者做项目用？"
+回复："微积分是理工科核心课～你是为了什么想学它？期末考试、考研、还是自己想深入了解？"
 
 学生："期末考，大概还有一个月"
-回复："明白了，一个月冲刺期末。你每天大概能拿出多长时间来学？"
+回复："一个月冲刺期末，时间上还行。你之前上课的时候，微积分哪些部分觉得比较顺、哪些部分听着听着就懵了？"
 
-学生："每天两三个小时"
-回复："好的，时间上挺充裕的。对了，你是学什么专业的？这样我可以结合你的背景来调整节奏。"
+学生："函数和极限那边还凑合，到了导数就开始晕了"
+回复："导数确实是微积分的第一个坎。你说的'晕'具体是卡在哪里——是求导公式记不住、复合函数求导搞不清、还是导数的几何意义不太理解？"
+
+学生："复合函数求导，什么链式法则的，看到一大坨套来套去就不知道怎么下手了"
+回复："明白了，链式法则是复合函数求导的核心。对了，你是学什么专业的？知道专业背景我可以帮你找更贴切的例子。"
 
 学生："软件工程大二"
-回复："软件工程的话，微积分对你的算法课和机器学习都有帮助。信息差不多了，要开始生成学习路径吗？<proposal>plan</proposal>"
+回复："软工的话微积分对后面的算法课和机器学习都有用。你每天大概能投入多长时间来学？是每天都能抽出时间还是主要靠周末？"
+
+学生："平时晚上能学一两小时，周末可以多花点时间"
+回复："好的，那时间上还是比较充裕的。对了，学习的时候你是更喜欢看文字讲义一步步推、还是喜欢看视频讲解、还是直接做题练手？"
+
+学生："我喜欢先看视频理解概念，然后做题巩固"
+回复："视频+练习的组合效率很高。好了，我对你的学习情况了解得比较清楚了——软工大二、一个月冲刺微积分期末、函数极限有基础但链式法则卡住了、每晚一两小时加周末、偏好视频+练习。要开始生成个性化的学习路径吗？<proposal>plan</proposal>"
 
 ## 禁止事项
 - "请选择方向""画像完整度 X/7""当前画像信息如下""已记录你的信息"
@@ -81,7 +97,8 @@ class ConversationAgent(BaseAgent):
 - 用 | 分隔多个问题——一次只问一件事
 - 一次性抛出 3 个及以上问题
 - 用表格、列表、多行格式来提问——保持自然对话语气
-- 复述系统注入的背景信息——那些是给你参考的，不是给你背的"""
+- 复述系统注入的背景信息——那些是给你参考的，不是给你背的
+- 在学生只说了 2-3 句话、画像还很模糊的时候就提议生成"""
 
     FINAL_REPLY_PROMPT = """
 ## final_reply 模式
@@ -780,7 +797,56 @@ action："""
                 return self._fallback_result("plan,resources,generate_questions", "contextual_generation_confirmation")
             return self._fallback_result("none", "confirmation_without_generation_context", needs_clarification=True)
 
+        # ── Mode-specific plan triggers (MUST run before generic _GEN_PLAN) ──
+        # Priority: explicit mode keywords > subject-based hints > generic plan
+        # This ensures ModePicker selections are correctly routed.
+
+        # Explicit mode keywords (from ModePicker or user's explicit request)
+        _EXPLICIT_FOCUS = [
+            "帮我强化", "专项突破", "重点突破", "突击", "专攻",
+            "针对性训练", "帮我补", "精进", "重点攻克",
+        ]
+        _EXPLICIT_DAILY = [
+            "每日学习", "每天打卡", "每日计划", "日课", "每日打卡",
+            "每天学", "天天练", "每日任务", "每日一练",
+        ]
+        _EXPLICIT_TEXTBOOK = [
+            "系统学", "按章节", "从头学", "从基础开始",
+            "完整学", "系统学习", "按教材",
+        ]
+        _EXPLICIT_PROJECT = [
+            "做项目", "项目驱动", "项目实战", "做一个",
+            "编程", "开发", "写一个", "搭建",
+        ]
+        # Subject-based hints (language/accumulation-type → daily is a good default)
+        _SUBJECT_DAILY = [
+            "英语", "日语", "韩语", "法语", "德语", "西语",
+            "背单词", "学英语", "学日语",
+        ]
+
+        has_focus = any(p in compact for p in _EXPLICIT_FOCUS)
+        has_daily = any(p in compact for p in _EXPLICIT_DAILY)
+        has_textbook = any(p in compact for p in _EXPLICIT_TEXTBOOK)
+        has_project = any(p in compact for p in _EXPLICIT_PROJECT)
+        has_lang_subject = any(p in compact for p in _SUBJECT_DAILY)
+
+        # Explicit mode keywords — these win over everything
+        if has_focus:
+            return self._fallback_result("plan", "focus_plan_request", plan_mode="focus")
+        if has_project and not has_textbook:
+            return self._fallback_result("plan", "project_path_request", plan_mode="textbook", path_mode="project")
+        # Daily wins over textbook when both are explicit (user clicked 日课式 in ModePicker)
+        if has_daily:
+            return self._fallback_result("plan", "daily_path_request", plan_mode="textbook", path_mode="daily")
+        if has_textbook:
+            return self._fallback_result("plan", "textbook_plan_request", plan_mode="textbook")
+        # Subject-based hint: language subjects default to daily (but only if no explicit mode)
+        if has_lang_subject:
+            return self._fallback_result("plan", "daily_path_request", plan_mode="textbook", path_mode="daily")
+
         # ── Explicit multi-word triggers only (no single-char matching) ──
+        # NOTE: mode-specific checks above take priority; this catches generic plan
+        # requests that don't match any specific mode.
         _GEN_PLAN = [
             "帮我规划", "帮我制定学习", "给我规划", "给我制定学习",
             "生成学习路径", "生成学习计划", "制定学习计划", "制定学习路径",
@@ -788,33 +854,15 @@ action："""
             "生成吧", "开始吧", "按这些信息生成",
         ]
         if any(p in compact for p in _GEN_PLAN):
+            # If course is known but no mode selected → show mode picker first
+            profile_facts = context.get("profile_facts", {}) if isinstance(context.get("profile_facts"), dict) else {}
+            course = str(profile_facts.get("target_course", ""))
+            if course and not has_focus and not has_daily and not has_textbook and not has_project and not has_lang_subject:
+                # Course known, user wants a plan, but no mode picked yet.
+                # Return action="none" so the conversation flow shows the mode picker
+                # (via _build_chat_persona → DeepTutor → [[mode-pick:...]])
+                return self._fallback_result("none", "needs_mode_picker_before_plan")
             return self._fallback_result("plan", "explicit_generation_request")
-
-        # ── Mode-specific plan triggers ──
-        _FOCUS_PLAN = [
-            "帮我强化", "专项突破", "重点突破", "突击", "专攻",
-            "针对性训练", "帮我补", "精进", "重点攻克",
-        ]
-        _TEXTBOOK_PLAN = [
-            "系统学", "按章节", "从头学", "从基础开始",
-            "完整学", "系统学习", "按教材",
-        ]
-        _DAILY_PATH = [
-            "英语", "日语", "韩语", "法语", "德语", "西语",
-            "背单词", "学英语", "学日语", "语言",
-        ]
-        _PROJECT_PATH = [
-            "做项目", "项目驱动", "项目实战", "做一个",
-            "编程", "开发", "写一个", "搭建",
-        ]
-        if any(p in compact for p in _FOCUS_PLAN):
-            return self._fallback_result("plan", "focus_plan_request", plan_mode="focus")
-        if any(p in compact for p in _TEXTBOOK_PLAN):
-            return self._fallback_result("plan", "textbook_plan_request", plan_mode="textbook")
-        if any(p in compact for p in _DAILY_PATH):
-            return self._fallback_result("plan", "daily_path_request", plan_mode="textbook", path_mode="daily")
-        if any(p in compact for p in _PROJECT_PATH):
-            return self._fallback_result("plan", "project_path_request", plan_mode="textbook", path_mode="project")
 
         _GEN_FULL = ["完整方案", "全套方案", "全部方案", "整套方案", "生成全套", "全部生成"]
         if any(p in compact for p in _GEN_FULL):

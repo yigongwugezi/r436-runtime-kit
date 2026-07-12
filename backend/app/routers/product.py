@@ -1311,7 +1311,12 @@ def _info_request_reply(session_id: str) -> str:
     state = conversation_store.get(session_id)
     known, missing = _format_known_and_missing(session_id)
     if not missing:
-        return "信息差不多了！不过你还有什么特别想重点突破的方向吗？没有的话说「开始」我就给你出方案了。"
+        readiness = conversation_store.readiness(state)
+        shallow = readiness.get("shallowFields", [])
+        if shallow:
+            labels = "、".join(f.get("label", "") for f in shallow[:2])
+            return f"我对你的学习情况有了基本了解，不过关于{labels}我还想知道得更具体一些——这对个性化规划很重要。"
+        return "我对你的学习情况了解得比较清楚了。不过还有没有什么特别的习惯或偏好是我需要知道的？准备好生成方案的话随时告诉我～"
     questions = conversation_store.next_questions(state, limit=2)
     qs = "、".join(questions[:2]) if questions else "你的学习目标和时间安排"
     return f"收到。再跟我聊聊{qs}？了解越多我规划得越准。"
@@ -1331,7 +1336,7 @@ def _profile_query_reply(session_id: str) -> str:
         f"{dimension['label']}：{dimension['description']}"
         for dimension in profile["dimensions"] if dimension.get("description")
     ][:3]
-    return "根据目前的信息，我觉得你" + "；".join(descriptions) + "。还有什么要补充的吗？没有的话说「开始」就行。"
+    return "根据目前的信息，我觉得你" + "；".join(descriptions) + "。还有什么要补充或纠正的吗？"
 
 
 def _profile_update_reply(session_id: str) -> str:
@@ -1346,7 +1351,11 @@ def _profile_update_reply(session_id: str) -> str:
     conflict_notice = f"\n\n检测到和之前画像不一致的信息，已按你最新说法更新：\n{conflicts}" if conflicts else ""
 
     if readiness["readyToPlan"]:
-        return "收到，信息够了！还有什么特别想攻克的难点吗？没有的话说「开始生成」我就出方案。"
+        shallow = readiness.get("shallowFields", [])
+        if shallow:
+            labels = "、".join(f.get("label", "") for f in shallow[:2])
+            return f"收到，信息更完整了。关于{labels}这方面，能再具体说说吗？了解越深方案越贴切。"
+        return "收到，了解了。我对你的学习情况已经有了比较清楚的把握——还有没有什么想补充的？准备好出方案的话告诉我。"
     if missing:
         q = conversation_store.next_questions(state, limit=2)
         next_q = "和".join(q[:2]) if q else "你的学习时间"

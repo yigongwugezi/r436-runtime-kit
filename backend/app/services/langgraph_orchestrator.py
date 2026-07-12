@@ -86,40 +86,170 @@ def _summarize_known_facts(facts: dict[str, str]) -> str:
 def _build_chat_persona(facts: dict[str, str]) -> str:
     """Build persona instructions that override DeepTutor's default tutor persona.
 
-    Tells DeepTutor to act as a friendly profile-gathering assistant rather
-    than a tutor who asks templated questions.  Injected via persona_context
-    which DeepTutor eagerly places in the system prompt.
+    The persona guides DeepTutor through profile-building with per-dimension
+    probing strategies — each dimension has its own indirect method, not just
+    direct questioning.  Deep understanding of each dimension is the
+    prerequisite for true personalisation.
     """
+    from app.services.conversation_state import _SHALLOW_PATTERNS
+
     filled = {k for k, v in facts.items() if v and str(v).strip() and str(v).strip() not in ("未提及", "待补充", "未知", "", "无")}
     total = len(_LABEL_MAP)
-    missing_labels = [_LABEL_MAP[k] for k in _LABEL_MAP if k not in filled]
-    filled_pct = len(filled) / max(1, total)
 
-    if filled_pct < 0.5:
-        return (
-            "你需要更多地了解这个学生。基于已知信息自然地追问——每次只要一个问题的答案,"
-            "但要追问细节:学生说'学过一点',就问具体学过什么;学生说'考试',就问什么考试、什么时候。"
-            "把对话当一个真实的人来聊,不要机械填表。"
+    # Detect shallow vs deep per dimension
+    shallow_keys: set[str] = set()
+    deep_keys: set[str] = set()
+    for k in filled:
+        val = str(facts.get(k, "")).strip()
+        if len(val) < 8 or any(p in val for p in _SHALLOW_PATTERNS if len(val) < len(p) + 8):
+            shallow_keys.add(k)
+        else:
+            deep_keys.add(k)
+    missing_keys = set(_LABEL_MAP) - filled
+
+    deep_pct = len(deep_keys) / max(1, total)
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Per-dimension probing instructions — generated dynamically based on
+    # what's missing vs shallow vs deep for THIS student.
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _probe_for(key: str) -> str:
+        """Return a dimension-specific probing instruction."""
+        label = _LABEL_MAP.get(key, key)
+        course = str(facts.get("target_course", "")).strip()
+
+        strategies: dict[str, str] = {
+            "background": (
+                f"[{label}] 不要只问专业名。学生说了专业后追问方向——\n"
+                "例如: 软件工程的话偏前端还是AI？大二的话专业课上了哪些？\n"
+                "从学生用的术语也能推断背景——说'计组课'就是CS，说'高数课'就是理工科。\n"
+                "追问具体方向，不是泛泛的专业名。"
+            ),
+            "target_course": (
+                f"[{label}] 不要只问想学什么。追问为什么想学和想学到什么程度。\n"
+                "'为什么'能暴露真实动机(考试被迫/项目需要/纯兴趣)。\n"
+                "'什么程度'能区分'了解概念就行' vs '想能独立做题'。\n"
+                "这两个问题的答案决定了整个学习方案的深度和节奏。"
+            ),
+            "knowledge_base": (
+                f"[{label}] *** 核心探测维度——绝对不要问'你基础怎么样' ***\n"
+                "用以下方法组合探测，根据课程类型选择最合适的方法:\n"
+                "1. 出诊断题——抛一道概念判断/选择题: 如果我说XXX，你觉得对吗？\n"
+                "2. 让解释概念——你能用自己的话说说YYY是什么吗？从解释的准确性判断真懂假懂\n"
+                "3. 追问技术点——学生说'学过Python' -> 追问列表推导式、装饰器、上下文管理器\n"
+                "4. 场景测试——如果让你写一个XXX功能，你会怎么设计？\n"
+                "探测后在心里打分: 完全不会/知道概念/能看懂/能独立做/能教别人\n"
+                "记住: 出题只是方法之一，不同课程用不同方法——编程课看代码，数学课看推导，语言课看表达"
+            ),
+            "weak_points": (
+                f"[{label}] *** 核心探测维度——绝对不要问'你哪里薄弱' ***\n"
+                "薄弱点很难靠直接问得到，因为学生自己往往不知道哪里薄弱。用以下方法:\n"
+                "1. 从 knowledge_base 探测中暴露——学生答错/解释不清的地方 = 薄弱点\n"
+                "2. 问经历——之前学这门课，哪种题/哪个章节最头疼？\n"
+                "3. 问反应——如果考试出了一道XXX类型的题，你第一反应是什么？\n"
+                "4. 交叉验证——用探测结果和学生自我描述比对，矛盾的才是真薄弱点\n"
+                + (f"5. 如果{course or '目标课程'}有明确章节，按章节问——极限、导数、积分，哪个最没把握？\n" if course else "") +
+                "注意: 薄弱点要具体到题型或概念，不是'数学比较弱'这种笼统描述"
+            ),
+            "learning_goal": (
+                f"[{label}] 不要只问'为了考试还是做项目'。用以下方式深入:\n"
+                "1. 问未来——学完这门课你最想能做到什么？(具体成果 > 抽象目标)\n"
+                "2. 问紧迫感——这个目标有时间要求吗？(区分'最好能学会'和'下个月就要考')\n"
+                "3. 观察提问模式——学生问'这个会考吗'(应试型)还是'这个怎么用到XX上'(应用型)\n"
+                "4. 问放弃条件——如果时间不够，哪些内容你觉得可以跳过？(暴露真正的优先级)"
+            ),
+            "time_budget": (
+                f"[{label}] 直接问但确认真实性，不要满足于一个数字:\n"
+                "1. 每天2小时是整块的还是碎片化的？(碎片化时间学习效率完全不同)\n"
+                "2. 周末也一样吗？还是有其他安排？(区分工作日和周末)\n"
+                "3. 如果某天特别忙，你最少能挤出多少时间？(测试真实下限)\n"
+                "这些追问决定了学习方案是激进还是保守"
+            ),
+            "preference": (
+                f"[{label}] 行为探测比直接问更准——不要问'你喜欢什么方式':\n"
+                "1. 对话中自然抛出选择——我用文字解释还是画个图？\n"
+                "2. 观察反应——说'画个图吧'就是视觉型；说'直接推公式'就是抽象型\n"
+                "3. 问历史——你以前学东西，是喜欢先看原理还是先看例子？\n"
+                "4. 如果学生用了 LecturePage，观察他点了哪些内容类型，但不要在对话里说"
+            ),
+        }
+        return strategies.get(key, f"【{label}】请深入了解学生的{label}，追问具体细节。")
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Build probing priorities: shallow first (need deepening), then missing
+    # ═══════════════════════════════════════════════════════════════════
+    priority_order = ["target_course", "background", "knowledge_base", "weak_points", "learning_goal", "time_budget", "preference"]
+
+    # Dimensions that need work this turn
+    need_probing = list(shallow_keys)  # shallow → need deepening
+    for k in priority_order:
+        if k in missing_keys and k not in need_probing:
+            need_probing.append(k)
+
+    # Focus on 2-3 dimensions at most per turn
+    focus_dims = need_probing[:3]
+    probing_sections = "\n\n".join(_probe_for(k) for k in focus_dims)
+    other_shallow = [k for k in shallow_keys if k not in focus_dims]
+    other_missing = [k for k in missing_keys if k not in focus_dims]
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Stage-specific guidance
+    # ═══════════════════════════════════════════════════════════════════
+
+    if deep_pct < 0.4:
+        stage_guidance = (
+            "你正在逐步了解这个学生——目前还处于早期阶段，离生成方案还远。\n"
+            "每轮聚焦 1-2 个维度深入了解，不要急着跳到生成。把学生当一个真实的人来了解。"
         )
-    elif filled_pct < 0.85:
-        return (
-            "你需要更全面地了解学生。继续自然地聊——还有些维度没覆盖到。"
-            "把笼统的信息聊具体:薄弱点具体是哪一块不会,时间安排具体到每天多久、有没有周末。"
-            "还不到生成的时候。"
+    elif deep_pct < 0.7:
+        stage_guidance = (
+            "你对学生有了基本了解，但离真正的个性化规划还差得远。\n"
+            "现在重点是：把模糊的回答变具体，把直接询问变为间接探测。\n"
+            "每个核心维度至少经过 1 轮追问才算真正了解。"
+        )
+    elif deep_pct < 1.0 or shallow_keys:
+        stage_guidance = (
+            "你对学生的了解已经比较全面了。现在要做的是：\n"
+            "1. 回顾已了解的信息，用你自己的话总结并向学生确认\n"
+            "2. 对仍然模糊的维度做最后一轮追问\n"
+            "3. 确认后，才可以提议生成"
         )
     else:
         course = str(facts.get("target_course", ""))
-        is_lang = any(w in course for w in ["英语","日语","韩语","法语","德语","语言","雅思","托福"])
+        is_lang = any(w in course for w in ["英语", "日语", "韩语", "法语", "德语", "语言", "雅思", "托福"])
         mode_hint = ""
         if course:
             mode_hint = (
-                "信息差不多了。自然地说'信息很充分了,要不要开始生成学习路径?',"
-                "然后输出:\n"
+                "\n\n当你觉得学生对你的了解确认无误后，输出：\n"
                 "[[mode-pick:教材式,日课式,精进式|course:{course}|default:"
                 + ("日课式" if is_lang else "教材式") +
                 "]]\n"
             )
-        return "你觉得信息差不多了。可以自然地总结一下了解到的情况,确认对不对。" + mode_hint
+        return (
+            "你对学生的学习情况已经有了比较深入的了解。\n\n"
+            "1. 用自然对话的语气总结关键信息，向学生确认是否准确\n"
+            "2. 问学生还有什么补充\n"
+            "3. 确认后引出生成方案的提议"
+            + mode_hint
+        )
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Assemble the final persona
+    # ═══════════════════════════════════════════════════════════════════
+    parts = [
+        stage_guidance,
+        "",
+        "━━━ 本轮聚焦探测的维度 ━━━",
+        probing_sections,
+    ]
+    if other_shallow:
+        parts.append(f"\n⚠️ 以下维度回答太模糊，后续需要追问：{'、'.join(_LABEL_MAP.get(k, k) for k in other_shallow)}")
+    if other_missing:
+        parts.append(f"尚未了解：{'、'.join(_LABEL_MAP.get(k, k) for k in other_missing)}")
+    parts.append("\n记住：深入了解每个维度是生成个性化方案的前提。不要急着跳到生成。")
+
+    return "\n".join(parts)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -273,8 +403,11 @@ async def _intent_node(state: dict) -> dict:
     state["_conversation_reply"] = ca_result["reply"]
     state["_conversation_facts"] = ca_result["facts"]
     plan_mode = ca_result.get("plan_mode", "")
+    path_mode = ca_result.get("path_mode", "")
     if plan_mode:
         state["plan_mode"] = plan_mode
+    if path_mode:
+        state["path_mode"] = path_mode
     state.setdefault("agent_steps", []).append({"node": "intent_router", "intent": state["intent"]})
     logger.info("Intent: %s", state["intent"])
     return state
@@ -533,6 +666,40 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
     agents_filter = state.pop("agents_filter", None)
     agent_ids = agents_filter if (agents_filter is not None and len(agents_filter) > 0) else get_agent_ids(intent)
     if agent_ids is not None and len(agent_ids) > 0:
+        # ── Safety net: planning requested but no mode selected → check readiness first ──
+        if "planner_agent" in agent_ids and not state.get("plan_mode") and not state.get("path_mode"):
+            profile_facts = state.get("profile_facts", {}) or {}
+            course = str(profile_facts.get("target_course", ""))
+            if course:
+                # Check if profile is deep enough for planning
+                from app.services.conversation_state import conversation_store
+                store_state = conversation_store.get(state.get("session_id", ""))
+                readiness = conversation_store.readiness(store_state)
+                if readiness.get("readyToPlan"):
+                    is_lang = any(w in course for w in ["英语","日语","韩语","法语","德语","语言","雅思","托福"])
+                    default_mode = "日课式" if is_lang else "教材式"
+                    state["final_reply"] = (
+                        f"好的！在生成学习路径之前，先选一下你想要的规划模式吧～\n\n"
+                        f"[[mode-pick:教材式,日课式,精进式|course:{course}|default:{default_mode}]]"
+                    )
+                else:
+                    # Profile too shallow — keep probing instead of jumping to generation
+                    persona_context = _build_chat_persona(profile_facts)
+                    profile_context = _build_profile_context(profile_facts)
+                    try:
+                        reply = await deeptutor.chat(
+                            state.get("user_message", ""),
+                            state.get("messages", []) or [],
+                            profile_context=profile_context,
+                            persona_context=persona_context,
+                        )
+                        state["final_reply"] = reply or "好的，让我再了解一些你的具体情况，这样规划会更精准。"
+                    except Exception:
+                        state["final_reply"] = "好的，在生成方案之前，我还想再多了解一些你的情况～"
+                state["pipeline_executed"] = True
+                state["overall_status"] = "completed"
+                return dict(state)
+
         # Snapshot old results so we only report what's newly generated
         old_path = len(state.get("learning_path") or [])
         old_res = len(state.get("resources") or [])

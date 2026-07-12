@@ -6,6 +6,39 @@ from dataclasses import dataclass, field
 class ExtractedProfileFacts:
     facts: dict[str, str] = field(default_factory=dict)
     supplemental: dict[str, list[str]] = field(default_factory=dict)
+    depth: dict[str, str] = field(default_factory=dict)  # "shallow" | "moderate" | "deep"
+
+
+# 浅层回答模式——这些值说明学生只是应付，没有给出有深度的信息
+_SHALLOW_PATTERNS: tuple[str, ...] = (
+    "学过一点", "了解一些", "还行", "还行吧", "一般", "一般般",
+    "基础", "入门", "没学过", "零基础", "不知道", "不太清楚",
+    "就那样", "差不多", "马马虎虎", "凑合", "还可以", "会一点",
+    "懂一点", "接触过", "了解过", "大概", "基本",
+)
+_SHALLOW_MIN_LENGTH = 8
+
+
+def _judge_depth(value: str) -> str:
+    """Judge whether a profile fact value is shallow, moderate, or deep."""
+    text = str(value or "").strip()
+    if not text:
+        return "missing"
+    if len(text) < _SHALLOW_MIN_LENGTH:
+        return "shallow"
+    for pat in _SHALLOW_PATTERNS:
+        if pat in text and len(text) < len(pat) + 8:
+            return "shallow"
+    has_detail = (
+        len(text) >= 20
+        or bool(re.search(r"[A-Za-z+#\d]", text))
+        or any(word in text for word in [
+            "专业", "工程", "计算机", "数学", "考试", "考研",
+            "期末", "项目", "每天", "小时", "周", "个月", "掌握", "熟悉",
+            "不会", "薄弱", "比较", "经常", "具体",
+        ])
+    )
+    return "deep" if has_detail else "moderate"
 
 
 def zh(codepoints: str) -> str:
@@ -155,6 +188,7 @@ def _put_fact(result: ExtractedProfileFacts, key: str, value: str | None) -> Non
     cleaned = _clean(value)
     if cleaned:
         result.facts[key] = cleaned
+        result.depth[key] = _judge_depth(cleaned)
 
 
 def _add_supplemental(result: ExtractedProfileFacts, key: str, value: str | None) -> None:
