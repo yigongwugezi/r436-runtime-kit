@@ -30,11 +30,11 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _raw_call(capability: str, message: str, history: list | None = None, timeout: int = 120, profile_context: str = "", persona_context: str = "") -> str:
+def _raw_call(capability: str, message: str, history: list | None = None, timeout: int = 120, profile_context: str = "", persona_context: str = "", config_overrides: dict | None = None) -> str:
     """Thin synchronous wrapper — kept private.  Prefer the facade methods below."""
     from app.services.deeptutor_client import deeptutor_call
 
-    return deeptutor_call(capability, message, history, profile_context, persona_context)
+    return deeptutor_call(capability, message, history, profile_context, persona_context, config_overrides)
 
 
 async def _raw_call_async(
@@ -44,6 +44,7 @@ async def _raw_call_async(
     system_prompt: str | None = None,
     profile_context: str = "",
     persona_context: str = "",
+    config_overrides: dict | None = None,
 ) -> str:
     """Thin async wrapper — kept private."""
     from app.services.deeptutor_client import deeptutor_call_async
@@ -51,8 +52,8 @@ async def _raw_call_async(
     if system_prompt:
         h = list(history or [])
         h.insert(0, {"role": "system", "content": system_prompt})
-        return await deeptutor_call_async(capability, message, h, profile_context, persona_context)
-    return await deeptutor_call_async(capability, message, history, profile_context, persona_context)
+        return await deeptutor_call_async(capability, message, h, profile_context, persona_context, config_overrides)
+    return await deeptutor_call_async(capability, message, history, profile_context, persona_context, config_overrides)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -108,28 +109,26 @@ class DeepTutorFacade:
             return ""
 
     def generate_mindmap(self, topic: str) -> str:
-        """Generate a Mermaid-format mind map for *topic*."""
-        prompt = f"为'{topic}'生成一个Mermaid格式的思维导图，覆盖关键知识点和层级关系。只输出mermaid代码块。"
+        """Generate a Mermaid-format mind map for *topic* via DeepTutor with strict mindmap syntax."""
         try:
-            return _raw_call("chat", prompt)
+            from app.services.deeptutor_client import generate_mindmap as _gen_mindmap
+            return _gen_mindmap(topic)
         except Exception as e:
             logger.warning("DeepTutor mindmap generation failed: %s", e)
             return ""
 
     def generate_reading(self, topic: str) -> str:
-        """Generate extended reading material for *topic*."""
-        prompt = f"对'{topic}'进行深度研究，提供结构化拓展阅读材料，包含背景、核心概念、应用案例。2000字以上。"
+        """Generate extended reading material for *topic* via DeepTutor deep_research capability."""
         try:
-            return _raw_call("chat", prompt)
+            return _raw_call("deep_research", topic, config_overrides={"mode": "report", "depth": "standard"})
         except Exception as e:
             logger.warning("DeepTutor reading generation failed: %s", e)
             return ""
 
     def generate_visual_explanation(self, topic: str) -> str:
-        """Generate a diagram-based visual explanation for *topic*."""
-        prompt = f"用图解方式解释'{topic}'。生成一个Mermaid图表，配合简洁的文字说明。输出Mermaid代码块加简短文字。"
+        """Generate a diagram-based visual explanation for *topic* via DeepTutor visualize capability."""
         try:
-            return _raw_call("chat", prompt)
+            return _raw_call("visualize", f"用图解方式解释「{topic}」，配合简洁的文字说明。", config_overrides={"render_mode": "mermaid"})
         except Exception as e:
             logger.warning("DeepTutor visual explanation failed: %s", e)
             return ""
@@ -145,12 +144,28 @@ class DeepTutorFacade:
             return ""
 
     def generate_quiz(self, topic: str, knowledge_points: str = "", count: int = 5) -> str:
-        """Generate practice questions for *topic*."""
-        prompt = f"生成{count}道关于'{topic}'的练习题。知识点：{knowledge_points}。题型混合，含答案和解析。"
+        """Generate practice questions for *topic* via DeepTutor deep_question capability."""
         try:
-            return _raw_call("chat", prompt)
+            prompt = topic + (f"（知识点：{knowledge_points}）" if knowledge_points else "")
+            return _raw_call("deep_question", prompt, config_overrides={
+                "mode": "custom",
+                "topic": topic,
+                "num_questions": count,
+            })
         except Exception as e:
             logger.warning("DeepTutor quiz generation failed: %s", e)
+            return ""
+
+    def generate_solution(self, question_stem: str, correct_answer: str = "") -> str:
+        """Generate a step-by-step solution via DeepTutor deep_solve capability."""
+        prompt_parts = [f"请逐步解答以下题目，展示完整的推导过程：\n\n{question_stem}"]
+        if correct_answer:
+            prompt_parts.append(f"\n\n（已知正确答案是：{correct_answer}，请推导出这个答案的完整过程）")
+        prompt = "".join(prompt_parts)
+        try:
+            return _raw_call("deep_solve", prompt)
+        except Exception as e:
+            logger.warning("DeepTutor solution generation failed: %s", e)
             return ""
 
     # ── Planning ───────────────────────────────────────────────────────

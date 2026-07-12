@@ -6,6 +6,7 @@ are missing or when the real API call is not implemented yet.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from typing import Any
@@ -51,15 +52,26 @@ def _normalize_stages(value: Any) -> list[dict[str, Any]]:
             continue
         title = _text(item.get("title") or item.get("name") or f"阶段 {index}")
         tasks = item.get("tasks") or item.get("nodes") or item.get("knowledge_points") or []
-        children: list[str] = []
+        children: list[Any] = []
         if isinstance(tasks, list):
             for task in tasks:
                 if isinstance(task, dict):
-                    child = _text(task.get("topic") or task.get("title") or task.get("name"))
+                    child_title = _text(task.get("topic") or task.get("title") or task.get("name"))
+                    grandchildren = task.get("children") or task.get("knowledge_points") or []
+                    child_entry: dict[str, Any] = {"title": child_title, "children": []}
+                    for gc in grandchildren:
+                        if isinstance(gc, dict):
+                            gc_text = _text(gc.get("title") or gc.get("name") or gc.get("topic") or "")
+                        else:
+                            gc_text = _text(gc)
+                        if gc_text:
+                            child_entry["children"].append(gc_text)
+                    if child_title:
+                        children.append(child_entry)
                 else:
                     child = _text(task)
-                if child:
-                    children.append(child)
+                    if child:
+                        children.append(child)
         stages.append({
             "title": title,
             "goal": _text(item.get("goal") or item.get("objective") or item.get("description")),
@@ -68,137 +80,7 @@ def _normalize_stages(value: Any) -> list[dict[str, Any]]:
     return stages
 
 
-class MindMapTool:
-    name = "MindMapTool"
-    provider = "deeptutor_mindmap"
-
-    def run(self, context: dict[str, Any]) -> dict[str, Any]:
-        learning_path = context.get("learning_path") or context.get("path")
-        stages = _normalize_stages(learning_path)
-        topic = _text(context.get("topic") or context.get("course_name") or context.get("subject_name"))
-
-        # Build context for DeepTutor
-        section_titles = []
-        for s in stages:
-            section_titles.append(s.get("title", ""))
-            for c in s.get("children", []):
-                section_titles.append(str(c) if isinstance(c, str) else c.get("title", ""))
-
-        dt_prompt = (
-            f"为「{topic}」生成一张Mermaid思维导图。"
-            + (f"涵盖：{'、'.join(section_titles[:12])}。" if section_titles else "")
-            + "铁律: 用graph TD语法,节点ID用A/B/C1,标签[中文]。禁止mindmap语法。禁止root/::id1。必须用```mermaid包裹。只输出代码块。"
-        )
-
-        try:
-            from app.services.deeptutor_client import deeptutor_call
-            raw = deeptutor_call("chat", dt_prompt)
-            if raw and len(raw) > 20:
-                import re as _re
-                m = _re.search(r"```(?:mermaid)?\s*\n?(.+?)```", raw, _re.DOTALL)
-                mermaid_def = m.group(1).strip() if m else raw.strip()
-                markdown_lines = [f"# {topic}"]
-                for s in stages:
-                    markdown_lines.append(f"- {s.get('title', '')}")
-                return _response(status="success", provider=self.provider,
-                    result={"mermaid": mermaid_def, "markdown": "\n".join(markdown_lines), "stage_count": len(stages)},
-                    trace={"source": "deeptutor"})
-        except Exception:
-            pass
-
-        # Fallback to local
-        if not stages:
-            return _response(status="needs_input", provider=self.provider,
-                warnings=["missing learning_path"], trace={"input_keys": sorted(context.keys())})
-
-        root = topic or "学习内容"
-        lines = ["mindmap", f"  root(({_safe_mermaid_label(root)}))"]
-        for stage in stages:
-            lines.append(f"    {_safe_mermaid_label(stage['title'])}")
-            for child in stage["children"][:6]:
-                lines.append(f"      {_safe_mermaid_label(child)}")
-
-        return _response(status="success", provider=self.provider,
-            result={"mermaid": "\n".join(lines), "stage_count": len(stages)},
-            trace={"source": "local_fallback"})
-
-
-class QwenVisionProvider:
-    name = "QwenVisionProvider"
-    provider = "qwen_vision"
-
-    def run(self, context: dict[str, Any]) -> dict[str, Any]:
-        api_key = os.getenv("QWEN_API_KEY")
-        model = os.getenv("QWEN_VL_MODEL")
-        base_url = os.getenv("QWEN_BASE_URL")
-        if not api_key or not model or not base_url:
-            return _response(
-                status="provider_not_configured",
-                provider=self.provider,
-                warnings=["Qwen vision provider is not configured."],
-                trace={"required_env": ["QWEN_API_KEY", "QWEN_VL_MODEL", "QWEN_BASE_URL"]},
-            )
-        if not context.get("attachments"):
-            return _response(
-                status="needs_input",
-                provider=self.provider,
-                warnings=["缺少图片附件，无法执行图片理解。"],
-            )
-        return _response(
-            status="unsupported",
-            provider=self.provider,
-            warnings=["Qwen vision API call is not implemented yet; no fake recognition result was returned."],
-            trace={"model": model, "base_url": base_url},
-        )
-
-
-class QwenImageProvider:
-    name = "QwenImageProvider"
-    provider = "qwen_image"
-
-    def run(self, context: dict[str, Any]) -> dict[str, Any]:
-        api_key = os.getenv("QWEN_API_KEY")
-        model = os.getenv("QWEN_IMAGE_MODEL")
-        base_url = os.getenv("QWEN_BASE_URL")
-        if not api_key or not model or not base_url:
-            return _response(
-                status="provider_not_configured",
-                provider=self.provider,
-                warnings=["Qwen image provider is not configured."],
-                trace={"required_env": ["QWEN_API_KEY", "QWEN_IMAGE_MODEL", "QWEN_BASE_URL"]},
-            )
-        return _response(
-            status="unsupported",
-            provider=self.provider,
-            warnings=["Qwen image API call is not implemented yet; no fake image_url was returned."],
-            trace={"model": model, "base_url": base_url},
-        )
-
-
-class WanVideoProvider:
-    name = "WanVideoProvider"
-    provider = "wan_video"
-
-    def run(self, context: dict[str, Any]) -> dict[str, Any]:
-        api_key = os.getenv("WAN_API_KEY")
-        provider = os.getenv("WAN_PROVIDER")
-        model = os.getenv("WAN_VIDEO_MODEL")
-        if not api_key or not provider or not model:
-            return _response(
-                status="provider_not_configured",
-                provider=self.provider,
-                warnings=["Wan video provider is not configured."],
-                trace={"required_env": ["WAN_API_KEY", "WAN_PROVIDER", "WAN_VIDEO_MODEL"]},
-            )
-        return _response(
-            status="unsupported",
-            provider=self.provider,
-            warnings=["Wan video API call is not implemented yet; no fake video_url was returned."],
-            trace={"provider": provider, "model": model},
-        )
-
-
-# Real HTTP providers and upload helpers.
+# ── Real implementations below (imports + providers) ──
 import base64
 import json
 import mimetypes
@@ -800,66 +682,103 @@ class MindMapTool:
     provider = "deeptutor_mindmap"
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
+        logger = logging.getLogger(__name__)
         topic = _text(context.get("topic") or context.get("course_name") or context.get("subject_name"))
         learning_path = context.get("learning_path") or context.get("path")
         stages = _normalize_stages(learning_path)
 
-        # Build context for DeepTutor
+        # ── 先构建数据驱动的三层结构（始终可用）──
+        data_mermaid = self._build_data_mindmap(topic, stages)
+        data_markdown = self._build_data_markdown(topic, stages)
+
+        # ── 尝试 DeepTutor 用 graph LR 生成更丰富的层级图 ──
         section_titles = []
         for s in stages:
             section_titles.append(s.get("title", ""))
             for c in s.get("children", []):
                 section_titles.append(str(c) if isinstance(c, str) else c.get("title", ""))
+        topic_list = "、".join(section_titles[:15]) if section_titles else topic
 
         dt_prompt = (
-            f"为「{topic}」生成一张Mermaid思维导图。"
-            + (f"涵盖：{'、'.join(section_titles[:12])}。" if section_titles else "")
-            + "铁律: 用graph TD语法,节点ID用A/B/C1,标签[中文]。禁止mindmap语法。禁止root/::id1。必须用```mermaid包裹。只输出代码块。"
+            f'用 Mermaid flowchart LR 为「{topic}」生成一张知识点层级结构图。\n'
+            f'铁律：第一行必须是 flowchart LR，禁止写成 TD/TB/RL。从左到右布局。\n'
+            f'节点标签简洁中文，至少3层深度，每个分支展开到底层知识点。\n'
+            f'涵盖内容：{topic_list}\n'
+            f'参考格式：\n'
+            f'```mermaid\n'
+            f'flowchart LR\n'
+            f'  A["{topic}"] --> B["核心概念一"]\n'
+            f'  A --> C["核心概念二"]\n'
+            f'  B --> D["子概念1"]\n'
+            f'  B --> E["子概念2"]\n'
+            f'  D --> F["具体知识点"]\n'
+            f'  C --> G["子概念3"]\n'
+            f'```\n'
+            f'只输出```mermaid代码块。'
         )
 
         try:
             from app.services.deeptutor_client import deeptutor_call
             raw = deeptutor_call("chat", dt_prompt)
-            if raw and len(raw) > 20:
-                # Extract mermaid code block
+            logger.info("MindMapTool DT raw (first 300): %s", (raw or "")[:300])
+            if raw and len(raw) > 50:
                 import re as _re
                 m = _re.search(r"```(?:mermaid)?\s*\n?(.+?)```", raw, _re.DOTALL)
-                mermaid_def = m.group(1).strip() if m else raw.strip()
-                # Build markdown version from section titles
-                markdown_lines = [f"# {topic}"]
-                for s in stages:
-                    markdown_lines.append(f"- {s.get('title', '')}")
-                return _response(
-                    status="success", provider=self.provider,
-                    result={
-                        "mermaid": mermaid_def,
-                        "markdown": "\n".join(markdown_lines),
-                        "stage_count": len(stages),
-                    },
-                    trace={"source": "deeptutor"},
-                )
-        except Exception:
-            pass
+                mermaid_def = m.group(1).strip() if m else ""
+                # Accept both mindmap and graph/flowchart syntax
+                if mermaid_def and len(mermaid_def) > 50 and (
+                    mermaid_def.startswith("mindmap") or
+                    mermaid_def.startswith("graph") or
+                    mermaid_def.startswith("flowchart")
+                ):
+                    logger.info("MindMapTool using DT output (%d chars, type=%s)", len(mermaid_def), mermaid_def.split()[0])
+                    return _response(status="success", provider=self.provider,
+                        result={"mermaid": mermaid_def, "markdown": data_markdown, "stage_count": len(stages)},
+                        trace={"source": "deeptutor_chat"})
+                else:
+                    logger.warning("MindMapTool DT rejected: len=%d prefix=%s", len(mermaid_def), (mermaid_def or "")[:30])
+        except Exception as e:
+            logger.warning("MindMapTool DT failed: %s", e)
 
-        # Fallback to local algorithm
-        if not stages:
-            return _response(status="needs_input", provider=self.provider,
-                warnings=["missing learning_path"], trace={"input_keys": sorted(context.keys())})
+        # ── 回退到数据驱动的三层结构 ──
+        logger.info("MindMapTool using data-driven fallback (%d stages)", len(stages))
+        return _response(status="success", provider=self.provider,
+            result={"mermaid": data_mermaid, "markdown": data_markdown, "stage_count": len(stages)},
+            trace={"source": "data_driven"})
 
+    @staticmethod
+    def _build_data_mindmap(topic: str, stages: list[dict[str, Any]]) -> str:
         root = topic or "学习内容"
         lines = ["mindmap", f"  root(({_safe_mermaid_label(root)}))"]
-        markdown = [f"# {root}"]
         for stage in stages:
             lines.append(f"    {_safe_mermaid_label(stage['title'])}")
-            markdown.append(f"- {stage['title']}")
-            for child in stage.get("children", [])[:6]:
-                child_title = child if isinstance(child, str) else child.get("title", "")
-                lines.append(f"      {_safe_mermaid_label(child_title)}")
-                markdown.append(f"  - {child_title}")
+            for child in stage.get("children", [])[:8]:
+                if isinstance(child, dict):
+                    child_title = _safe_mermaid_label(child.get("title", ""))
+                    if child_title and child_title != "未命名":
+                        lines.append(f"      {child_title}")
+                    for gc in child.get("children", [])[:5]:
+                        gc_text = _safe_mermaid_label(gc if isinstance(gc, str) else str(gc.get("title", gc)))
+                        if gc_text and gc_text != "未命名":
+                            lines.append(f"        {gc_text}")
+                else:
+                    lines.append(f"      {_safe_mermaid_label(str(child))}")
+        return "\n".join(lines)
 
-        return _response(status="success", provider=self.provider,
-            result={"mermaid": "\n".join(lines), "markdown": "\n".join(markdown), "stage_count": len(stages)},
-            trace={"source": "local_fallback"})
+    @staticmethod
+    def _build_data_markdown(topic: str, stages: list[dict[str, Any]]) -> str:
+        lines = [f"# {topic or '学习内容'}"]
+        for stage in stages:
+            lines.append(f"- {stage.get('title', '')}")
+            for child in stage.get("children", [])[:8]:
+                if isinstance(child, dict):
+                    lines.append(f"  - {child.get('title', '')}")
+                    for gc in child.get("children", [])[:5]:
+                        gc_text = str(gc) if isinstance(gc, str) else str(gc.get("title", gc))
+                        lines.append(f"    - {gc_text}")
+                else:
+                    lines.append(f"  - {str(child)}")
+        return "\n".join(lines)
 
 
 class QwenVisionProvider:

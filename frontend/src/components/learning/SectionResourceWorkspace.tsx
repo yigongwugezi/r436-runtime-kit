@@ -4,10 +4,10 @@ import { useNavigate } from 'react-router-dom';
 import Markdown from '../../utils/markdown';
 import MermaidDiagram from '../../utils/mermaid';
 import {
-  generateChapterMindmap,
+  generateSectionMindmap,
   generateSectionResource,
   generatedResourceLabels,
-  getChapterMindmap,
+  getSectionMindmap,
   getGeneratedSectionResources,
   recommendSectionResources,
 } from '../../api/sectionResources';
@@ -54,10 +54,10 @@ export default function SectionResourceWorkspace(props: Props) {
 
   useEffect(() => {
     let active = true;
-    if (!sessionId || !chapterId) { setMindmap(null); return; }
-    getChapterMindmap(chapterId, sessionId).then((item) => active && setMindmap(item)).catch(() => active && setMindmap(null));
+    if (!sessionId || !section?.id) { setMindmap(null); return; }
+    getSectionMindmap(section.id, sessionId).then((item) => active && setMindmap(item)).catch(() => active && setMindmap(null));
     return () => { active = false; };
-  }, [sessionId, chapterId]);
+  }, [sessionId, section?.id]);
 
   const search = async () => {
     if (!sessionId || !section) return;
@@ -88,13 +88,13 @@ export default function SectionResourceWorkspace(props: Props) {
   };
 
   const generateMindmap = async () => {
-    if (!sessionId || !chapterId) return;
+    if (!sessionId || !section) return;
     setMindmapLoading(true);
     setNotice('');
     try {
-      const result = await generateChapterMindmap(chapterId, {
-        sessionId, pathId, stageId, chapterTitle,
-        sections: sections.map((item) => ({ title: item.title, knowledgePoints: item.knowledgePoints })),
+      const result = await generateSectionMindmap(section.id, {
+        sessionId, pathId, stageId, sectionTitle: section.title,
+        knowledgePoints: section.knowledgePoints,
         regenerate: Boolean(mindmap),
       });
       setMindmap(result.mindmap);

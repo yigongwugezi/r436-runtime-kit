@@ -26,6 +26,21 @@ export async function getChapterMindmap(chapterId: string, sessionId: string): P
   return data.mindmap || null;
 }
 
+export async function generateSectionMindmap(sectionId: string, payload: Record<string, unknown>): Promise<{ mindmap: ChapterMindmap; reused: boolean }> {
+  const { data } = await client.post(`/api/sections/${encodeURIComponent(sectionId)}/mindmap/generate`, payload);
+  return data;
+}
+
+export async function getSectionMindmap(sectionId: string, sessionId: string): Promise<ChapterMindmap | null> {
+  const { data } = await client.get(`/api/sections/${encodeURIComponent(sectionId)}/mindmap`, { params: { sessionId } });
+  return data.mindmap || null;
+}
+
+export async function tutorSection(sectionId: string, payload: Record<string, unknown>): Promise<{ reply: string }> {
+  const { data } = await client.post(`/api/sections/${encodeURIComponent(sectionId)}/tutor`, payload);
+  return data;
+}
+
 export const generatedResourceLabels: Record<GeneratedSectionResourceType, string> = {
   summary_card: '生成总结卡片',
   concept_comparison: '生成概念对比',

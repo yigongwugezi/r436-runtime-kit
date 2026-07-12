@@ -234,7 +234,7 @@ function MindmapRenderer({ resource }: Props) {
       </div>
       <div className="p-4 bg-white rounded-xl border border-gray-100 overflow-auto" style={{ minHeight: 200 }}>
         <div ref={containerRef} className="flex items-center justify-center" />
-        {svg && <div dangerouslySetInnerHTML={{ __html: svg }} className="flex items-center justify-center [&>svg]:max-w-full [&>svg]:h-auto" />}
+        {svg && <div dangerouslySetInnerHTML={{ __html: svg }} className="flex items-center justify-center [&>svg]:w-full [&>svg]:h-auto [&>svg]:min-w-[600px]" />}
         {error && (
           <details className="mt-3">
             <summary className="text-[10px] text-gray-400 cursor-pointer">渲染失败，查看源码</summary>

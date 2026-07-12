@@ -35,7 +35,7 @@ class ChapterMindmapResourceService:
             {"title": str(section.get("title") or ""), "children": self._points(section.get("knowledge_points") or section.get("knowledgePoints") or [])}
             for section in sections if str(section.get("title") or "").strip()
         ]
-        result = self._tool.run({"topic": chapter_title, "learning_path": {"stages": [{"title": chapter_title, "children": [child["title"] for child in children]}]}})
+        result = self._tool.run({"topic": chapter_title, "learning_path": {"stages": [{"title": chapter_title, "tasks": children}]}})
         mermaid = str((result.get("result") or {}).get("mermaid") or "").strip() if isinstance(result, dict) else ""
         if not self._valid_mermaid(mermaid):
             mermaid = self._fallback_mermaid(chapter_title, children)
@@ -82,7 +82,12 @@ class ChapterMindmapResourceService:
 
     @staticmethod
     def _valid_mermaid(value: str) -> bool:
-        return value.startswith("mindmap") and "root((" in value and len(value) > 30
+        v = value.strip()
+        return len(v) > 50 and (
+            (v.startswith("mindmap") and "root((" in v) or
+            v.startswith("graph") or
+            v.startswith("flowchart")
+        )
 
     @staticmethod
     def _fallback_mermaid(title: str, children: list[dict[str, Any]]) -> str:

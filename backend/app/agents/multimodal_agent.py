@@ -115,6 +115,23 @@ class MultimodalAgent:
         if not isinstance(result, dict):
             result = {"status": "failed", "provider": tool_name or "unknown", "warnings": ["多模态服务返回了无效结果。"], "result": {}}
         payload = result.get("result") if isinstance(result.get("result"), dict) else result
+
+        # ── deep_solve augmentation: 图片解题 → 提取文字后走分步推理 ──
+        _SOLVE_TASKS = {"explain_image_question", "solve_image_question", "image_understanding"}
+        if task_type in _SOLVE_TASKS and payload.get("question_text"):
+            try:
+                from app.services.deeptutor_client import generate_solution
+                question_text = str(payload.get("question_text", ""))
+                answer = str(payload.get("answer", ""))
+                solution = generate_solution(question_text, answer)
+                if solution and len(solution) > 30:
+                    payload["deep_solve_solution"] = solution
+                    if not payload.get("display_text"):
+                        payload["display_text"] = solution
+                    else:
+                        payload["display_text"] = solution + "\n\n---\n📷 图片原文识别：\n" + str(payload.get("display_text", ""))[:300]
+            except Exception:
+                pass  # deep_solve 失败不影响主流程
         status, error_code = _public_status(result.get("status"))
         content, content_url = _result_content(payload)
         warnings = result.get("warnings") if isinstance(result.get("warnings"), list) else []

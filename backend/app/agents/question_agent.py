@@ -26,7 +26,7 @@ class QuestionAgent(BaseAgent):
     agent_name = "试题生成智能体"
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
-        """主入口 — DeepTutor deep_question capability with full pipeline."""
+        """主入口 — LLM 生成试题 + DeepTutor deep_solve 生成逐步解析."""
         user_message = str(context.get("user_message", "")).strip()
         course = str(context.get("course_id", "") or user_message[:30])
         diagnosis = context.get("diagnosis", {}) if isinstance(context.get("diagnosis"), dict) else {}
@@ -38,34 +38,6 @@ class QuestionAgent(BaseAgent):
             kb_val = str(kb.get("value", "") if isinstance(kb, dict) else "")
             if any(w in kb_val for w in ["弱", "不会", "没学过", "入门"]):
                 difficulty = "easy"
-
-        # Build smart prompt from context
-        prompt_parts = [f"为'{course}'生成10道练习题"]
-        if weak_names:
-            prompt_parts.append(f"重点关注这些薄弱知识点：{'、'.join(weak_names)}")
-        prompt_parts.append(f"难度：{difficulty}")
-        prompt_parts.append("题型混合选择题、填空题、判断题、简答题")
-        prompt_parts.append("每道题包含：question_id, type, stem, options(选择题需要), correct, explanation, difficulty, knowledge_point")
-        prompt_parts.append("输出JSON格式：{\"questions\": [...]}")
-        prompt = "。".join(prompt_parts) + "。"
-
-        # ── DeepTutor: 生成增强题目（不替代 LLM 完整路径）──
-        dt_questions = []
-        dt_set_id = ""
-        try:
-            from app.services.deeptutor_client import deeptutor_call
-            import uuid as _uuid
-            dt_result = deeptutor_call("chat", prompt)
-            if dt_result and len(dt_result) > 50:
-                dt_questions = self._parse_deeptutor_output(dt_result) or []
-                if dt_questions:
-                    dt_set_id = _uuid.uuid4().hex[:8]
-                    for q in dt_questions:
-                        q.setdefault("question_id", f"dt_{_uuid.uuid4().hex[:8]}")
-                        q.setdefault("source", "deeptutor")
-                        q.setdefault("difficulty", difficulty)
-        except Exception as e:
-            logger.debug("DeepTutor skip: %s", e)
 
         # ── LLM path ──
         diagnosis = context.get("diagnosis", {}) if isinstance(context.get("diagnosis"), dict) else {}
@@ -107,40 +79,26 @@ class QuestionAgent(BaseAgent):
             questions = self._build_rule_questions(params, profile)
             all_questions.extend(questions)
 
-        # ── 合并 DeepTutor 结果作为增强补充 ──
-        if dt_questions:
-            all_questions = dt_questions + all_questions
-        return {"questions": all_questions, "question_set_id": self._make_set_id(context) or dt_set_id,
+        # ── DeepTutor deep_solve: 为每道题生成逐步解析 ──
+        all_questions = self._generate_solutions(all_questions)
+        return {"questions": all_questions, "question_set_id": self._make_set_id(context),
                 "agent_step": self.agent_step()}
 
-    def _parse_deeptutor_output(self, raw: str) -> list[dict]:
-        """Normalize DeepTutor output to standard question format."""
-        questions = []
-        try:
-            # Try JSON first
-            s, e = raw.find("{"), raw.rfind("}") + 1
-            if s >= 0 and e > s:
-                parsed = json.loads(raw[s:e])
-                qs = parsed.get("questions", []) if isinstance(parsed, dict) else []
-                for q in qs:
-                    if not isinstance(q, dict):
-                        continue
-                    normalized = {
-                        "question_id": str(q.get("question_id", q.get("id", ""))),
-                        "type": str(q.get("type", "choice")),
-                        "stem": str(q.get("stem", q.get("question", q.get("title", "")))),
-                        "correct": str(q.get("correct", q.get("answer", ""))),
-                        "explanation": str(q.get("explanation", q.get("analysis", ""))),
-                        "difficulty": str(q.get("difficulty", "medium")),
-                        "knowledge_point": str(q.get("knowledge_point", q.get("topic", ""))),
-                    }
-                    opts = q.get("options", [])
-                    if isinstance(opts, list) and opts:
-                        normalized["options"] = [str(o) for o in opts]
-                    questions.append(normalized)
-        except Exception:
-            # Raw text: wrap as single question
-            questions = [{"type": "mixed", "stem": raw[:500], "correct": "", "explanation": ""}]
+    def _generate_solutions(self, questions: list[dict]) -> list[dict]:
+        """为每道题调用 DeepTutor deep_solve 生成逐步解析，替换原有的简短 explanation。"""
+        from app.services.deeptutor_client import generate_solution
+        for q in questions:
+            stem = q.get("stem", "")
+            correct = str(q.get("correct", "") or q.get("answers", "") or q.get("reference_answer", ""))
+            if not stem:
+                continue
+            try:
+                solution = generate_solution(stem, correct)
+                if solution and len(solution) > 30:
+                    q["explanation"] = solution
+                    q["explanation_source"] = "deeptutor_deep_solve"
+            except Exception as e:
+                logger.debug("deep_solve explanation skipped: %s", e)
         return questions
 
     def get_fallback(self, context: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -289,14 +247,6 @@ class QuestionAgent(BaseAgent):
                     continue
                 generated_stems.append(stem)
 
-                # 解析质量差 → 用 LLM 重写
-                expl = nq.get("explanation", "") or ""
-                bad_quality = len(expl) < 30 or "学生可能" in expl or "学生选择了" in expl
-                if bad_quality and self.llm_client:
-                    try:
-                        nq["explanation"] = self._expand_explanation(nq)
-                    except Exception:
-                        pass
                 normalized.append(nq)
 
             logger.info(f"QuestionAgent: generated {len(normalized)} questions (consistency+dedup filtered)")
@@ -547,24 +497,6 @@ class QuestionAgent(BaseAgent):
                 })
 
         return questions
-
-    def _expand_explanation(self, q: dict) -> str:
-        """用 LLM 重写质量差的解析"""
-        stem = q.get("stem", "")
-        answer = q.get("correct", "") or str(q.get("answers", ""))
-        qtype = q.get("type", "choice")
-        prompt = f"""{qtype}题目：{stem}
-正确答案：{answer}
-
-写解析禁止以下内容：不要写"学生可能"、"学生选择了"、"常见错误"等学情推测——你不是在批改，你是在解析题目。直接写解法。
-格式：
-解：先说明这道题考什么、用哪个公式/定理 → 再分步推导得出答案 → 最后给结论。
-只输出解析正文，不加任何标题。"""
-        raw = self.llm_client.chat(
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2, max_tokens=500,
-        )
-        return raw.strip()
 
     def _make_set_id(self, context: dict) -> str:
         session_id = str(context.get("session_id", ""))

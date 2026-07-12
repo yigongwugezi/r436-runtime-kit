@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useLearningPath } from '../hooks/useLearningPath';
 import { useChatStore } from '../store/chatStore';
 import { useLectureStore } from '../store/lectureStore';
-import { ChevronRight, Sparkles, MessageCircle, Send, Brain, BookOpen, ArrowLeft, ArrowRight, Target, Lightbulb, Layers, Clock, GraduationCap, Hash, CheckCircle2, Check, X, Loader2, HelpCircle, RefreshCw } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Sparkles, MessageCircle, Send, Brain, BookOpen, ArrowLeft, ArrowRight, Target, Lightbulb, Layers, Clock, GraduationCap, Hash, CheckCircle2, Check, X, Loader2, HelpCircle, RefreshCw } from 'lucide-react';
 import Markdown from '../utils/markdown';
 import { generateSectionQuiz, submitQuizAttempt } from '../api/assessment';
 import type { Chapter, LearningStage, PathNode, Section, ContentStatus } from '../types/learningPath';
@@ -99,6 +99,9 @@ export default function LecturePage() {
   const [prevLecture, setPrevLecture] = useState('');           // 控制返回按钮显示
   const originalLectureRef = useRef('');                         // 永远指向原始讲义，不会被子卡片覆盖
   const [showRightPanel, setShowRightPanel] = useState(true);
+  const [quotedText, setQuotedText] = useState('');                 // 学员划词引用
+  const [quotePos, setQuotePos] = useState<{x:number;y:number}|null>(null);
+  const [zoomDiagram, setZoomDiagram] = useState<string>('');        // 放大查看图解内容
   const generatePanelRef = useRef<GeneratePanelHandle>(null);
 
   // ── 派生值 ──
@@ -237,9 +240,25 @@ export default function LecturePage() {
   const [videoGenerating, setVideoGenerating] = useState(false);
   const [videoResult, setVideoResult] = useState<any>(null);
 
+  const handleTextSelection = useCallback(() => {
+    const sel = window.getSelection();
+    const text = sel?.toString().trim();
+    if (text && text.length > 2 && rightTab === 'tutor') {
+      setQuotedText(text);
+      const range = sel?.getRangeAt(0);
+      if (range) {
+        const rect = range.getBoundingClientRect();
+        setQuotePos({ x: rect.left + rect.width / 2, y: rect.top - 8 });
+      }
+    } else {
+      setQuotedText('');
+      setQuotePos(null);
+    }
+  }, [rightTab]);
+
   const sendChat = useCallback(async (question: string, actionType = '') => {
     if (!question.trim() || !sessionId || !currentSection) return;
-    setChatMsg(''); setChatLoading(true);
+    setChatMsg(''); setChatLoading(true); setQuotedText(''); setQuotePos(null);
     const ck = `${sessionId}:${activeSectionId}`;
     store.setChatReply(ck, '');
     try {
@@ -247,6 +266,7 @@ export default function LecturePage() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           sessionId, question,
+          quoted: quotedText || '',
           sectionTitle: currentSection.title,
           sectionGoal: currentSection.goal || '',
           knowledgePoints: currentSection.knowledgePoints || [],
@@ -287,6 +307,15 @@ export default function LecturePage() {
   const handleSendChat = useCallback(async () => {
     await sendChat(chatMsg);
   }, [chatMsg, sendChat]);
+
+  const quoteAction = useCallback(async (action: string) => {
+    if (!quotedText) return;
+    setQuotedText(''); setQuotePos(null);
+    setRightTab('tutor');
+    const labelMap: Record<string,string> = { explain:'解释', diagram:'图解', quiz:'出题' };
+    setChatMsg(`「${quotedText.slice(0, 100)}」${quotedText.length > 100 ? '…' : ''} - ${labelMap[action] || action}`);
+    await sendChat(`""${quotedText}""`, action);
+  }, [quotedText, sendChat]);
 
   const loadingLecture = !lectureLoaded;
 
@@ -735,7 +764,7 @@ export default function LecturePage() {
 
           {/* ── Section content — routed by content_type ── */}
           {quizState !== 'idle' ? null : sectionContent ? (
-            <div className="px-5 py-4">
+            <div className="px-5 py-4 relative" onMouseUp={handleTextSelection}>
               <SectionContentRouter
                 content={sectionContent}
                 onComplete={() => {
@@ -757,6 +786,16 @@ export default function LecturePage() {
                   }).catch(() => {});
                 }}
               />
+              {/* ── 划词引用栏 ── */}
+              {quotedText && quotePos && (
+                <div className="absolute z-50 -translate-x-1/2 bg-white border border-surface-200 rounded-xl shadow-lg px-2 py-1.5 flex items-center gap-1" style={{ left: quotePos.x, top: quotePos.y }}>
+                  <span className="text-[10px] text-surface-400 truncate max-w-[120px] px-1">{quotedText.slice(0, 30)}{quotedText.length > 30 ? '…' : ''}</span>
+                  <span className="w-px h-4 bg-surface-200" />
+                  <button onClick={() => quoteAction('explain')} className="px-2 py-1 text-[10px] font-medium text-surface-600 hover:text-violet-600 hover:bg-violet-50 rounded-md transition-colors">解释</button>
+                  <button onClick={() => quoteAction('diagram')} className="px-2 py-1 text-[10px] font-medium text-surface-600 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors">图解</button>
+                  <button onClick={() => quoteAction('quiz')} className="px-2 py-1 text-[10px] font-medium text-surface-600 hover:text-amber-600 hover:bg-amber-50 rounded-md transition-colors">出题</button>
+                </div>
+              )}
             </div>
           ) : loadingLecture ? (
             <div className="flex items-center justify-center h-full">
@@ -811,16 +850,22 @@ export default function LecturePage() {
             <div className="flex flex-col flex-1 min-h-0">
               {!chatReply && !chatLoading && currentSection && (
                 <div className="px-3 py-3 space-y-1.5 flex-shrink-0">
+                  {quotedText && (
+                    <div className="p-2 rounded-lg bg-violet-50 border border-violet-100">
+                      <p className="text-[10px] text-violet-600 font-medium mb-0.5">已引用</p>
+                      <p className="text-[11px] text-violet-800 line-clamp-2">「{quotedText}」</p>
+                    </div>
+                  )}
                   <div className="space-y-1.5">
-                    <button onClick={() => sendChat(`请详细解释「${currentSection.knowledgePoints?.[0]?.name || '核心概念'}」的含义、原理和应用场景。`, 'concept_explanation')}
+                    <button onClick={() => sendChat(quotedText ? `""${quotedText}""` : `请详细解释「${currentSection.knowledgePoints?.[0]?.name || '核心概念'}」的含义、原理和应用场景。`, quotedText ? 'explain' : 'concept_explanation')}
                       className="w-full p-2.5 rounded-lg bg-surface-50 hover:bg-surface-100 transition-colors text-left border border-transparent hover:border-surface-200">
-                      <span className="text-xs font-medium text-surface-700">概念讲解</span>
-                      <p className="text-[10px] text-surface-400 mt-0.5">"{currentSection.knowledgePoints?.[0]?.name || '核心概念'}"的含义与应用</p>
+                      <span className="text-xs font-medium text-surface-700">文字解答</span>
+                      <p className="text-[10px] text-surface-400 mt-0.5">{quotedText ? '针对选中内容逐步讲解' : `"${currentSection.knowledgePoints?.[0]?.name || '核心概念'}"的含义与应用`}</p>
                     </button>
-                    <button onClick={() => sendChat('请用图解和文字结合的方式，说明本节的核心知识结构。', 'diagram')}
+                    <button onClick={() => sendChat(quotedText ? `""${quotedText}"" 请用图解说明` : '请用图解和文字结合的方式，说明本节的核心知识结构。', 'diagram')}
                       className="w-full p-2.5 rounded-lg bg-surface-50 hover:bg-surface-100 transition-colors text-left border border-transparent hover:border-surface-200">
-                      <span className="text-xs font-medium text-surface-700">图解结构</span>
-                      <p className="text-[10px] text-surface-400 mt-0.5">Mermaid 知识结构图 + 文字梳理</p>
+                      <span className="text-xs font-medium text-surface-700">图解说明</span>
+                      <p className="text-[10px] text-surface-400 mt-0.5">{quotedText ? '为选中内容生成图解' : 'Mermaid 知识结构图 + 文字梳理'}</p>
                     </button>
                     <button onClick={() => handleGenerateVideo()} disabled={videoGenerating}
                       className="w-full p-2.5 rounded-lg bg-surface-50 hover:bg-surface-100 transition-colors text-left border border-transparent hover:border-surface-200 disabled:opacity-50">
@@ -832,7 +877,16 @@ export default function LecturePage() {
               )}
               <div className="flex-1 overflow-y-auto px-3 min-h-0">
                 {chatReply ? (
-                  <div className="text-xs surface-600 leading-relaxed"><Markdown content={chatReply} /></div>
+                  <div>
+                    <button onClick={() => { store.setChatReply(`${sessionId || 'anon'}:${activeSectionId}`, ''); setChatMsg(''); }}
+                      className="flex items-center gap-1 text-[10px] text-surface-400 hover:text-surface-600 mb-2 transition-colors">
+                      <ChevronLeft size={12} /> 返回
+                    </button>
+                    <div className="text-xs surface-600 leading-relaxed cursor-zoom-in" onClick={() => setZoomDiagram(chatReply)}>
+                      <Markdown content={chatReply} />
+                      <p className="text-[10px] text-surface-300 mt-2">点击内容可放大查看</p>
+                    </div>
+                  </div>
                 ) : !chatLoading && (
                   <p className="text-[11px] text-surface-400 px-1">点击快捷提问或输入问题，AI 结合讲义和知识点为你解答</p>
                 )}
@@ -954,13 +1008,14 @@ export default function LecturePage() {
                 }
               }}
               onGenerateMindmap={async (cardId: string, requirements?: string) => {
-                if (!chapterCtx?.chapter.id || !sessionId) return;
+                if (!activeSectionId || !sessionId || !currentSection) return;
                 try {
-                  const { generateChapterMindmap } = await import('../api/sectionResources');
-                  const r = await generateChapterMindmap(chapterCtx.chapter.id, {
-                    sessionId, regenerate: false,
-                    knowledgePoints: currentSection?.knowledgePoints || [],
-                    requirements: requirements || '',
+                  const { generateSectionMindmap } = await import('../api/sectionResources');
+                  const r = await generateSectionMindmap(activeSectionId, {
+                    sessionId, pathId: path?.id || '', stageId: chapterCtx?.stage.id || '',
+                    sectionTitle: currentSection.title,
+                    knowledgePoints: currentSection.knowledgePoints || [],
+                    regenerate: false,
                   });
                   const mm = (r as any)?.mindmap || r;
                   generatePanelRef.current?.updateRecord(cardId, { status: 'ready', content: mm?.mermaidDef || '' });
@@ -991,6 +1046,16 @@ export default function LecturePage() {
           title="展开功能面板">
           <MessageCircle size={14} className="text-surface-400" />
         </button>
+      )}
+
+      {/* ── 图解放大层 ── */}
+      {zoomDiagram && (
+        <div className="fixed inset-0 z-[100] bg-black/50 flex items-center justify-center p-8" onClick={() => setZoomDiagram('')}>
+          <div className="relative bg-white rounded-2xl p-8 w-[85vw] h-[85vh] overflow-auto shadow-2xl" onClick={e => e.stopPropagation()}>
+            <button onClick={() => setZoomDiagram('')} className="absolute top-4 right-4 w-8 h-8 rounded-full bg-surface-100 hover:bg-surface-200 flex items-center justify-center text-surface-500 z-10"><X size={16} /></button>
+            <div className="text-sm leading-relaxed"><Markdown content={zoomDiagram} /></div>
+          </div>
+        </div>
       )}
     </div>
   );

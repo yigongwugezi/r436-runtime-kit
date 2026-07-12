@@ -36,11 +36,12 @@ async def deeptutor_call_async(
     history: list | None = None,
     profile_context: str = "",
     persona_context: str = "",
+    config_overrides: dict | None = None,
 ) -> str:
     """Proper async DeepTutor call — no nest_asyncio, no asyncio.run.
 
     Args:
-        capability: DeepTutor capability name ("chat", "mastery_path", etc.)
+        capability: DeepTutor capability name ("chat", "visualize", etc.)
         message: User message or prompt.
         history: Conversation history in OpenAI format.
         profile_context: Student profile text injected into DeepTutor's
@@ -48,6 +49,8 @@ async def deeptutor_call_async(
         persona_context: Behavioural instructions injected into DeepTutor's
             persona_context — used to override the default tutor persona
             for profiling conversations.
+        config_overrides: Per-request config overrides passed to the
+            capability (e.g. {"render_mode": "mermaid"} for visualize).
     """
     if not _setup_config():
         return ""
@@ -62,6 +65,7 @@ async def deeptutor_call_async(
             memory_context=profile_context or "",
             persona_context=persona_context or "",
             enabled_tools=["reason","brainstorm","read_memory","write_memory","ask_user"] if capability == "chat" else [],
+            config_overrides=config_overrides or {},
         )
         if capability and capability != "chat":
             ctx.active_capability = capability
@@ -82,9 +86,10 @@ def deeptutor_call(
     history: list | None = None,
     profile_context: str = "",
     persona_context: str = "",
+    config_overrides: dict | None = None,
 ) -> str:
     import asyncio, concurrent.futures
-    async def _call(): return await deeptutor_call_async(capability, message, history, profile_context, persona_context)
+    async def _call(): return await deeptutor_call_async(capability, message, history, profile_context, persona_context, config_overrides)
     try:
         loop = asyncio.get_running_loop()
         with concurrent.futures.ThreadPoolExecutor() as pool:
@@ -94,21 +99,47 @@ def deeptutor_call(
 
 
 def generate_mindmap(topic: str) -> str:
-    return deeptutor_call("chat", f"为'{topic}'生成一个Mermaid格式的思维导图，覆盖关键知识点和层级关系。只输出mermaid代码块。")
+    """Generate a Mermaid mind map — delegates to MindMapTool for consistent output."""
+    from app.services.multimodal_provider import MindMapTool
+    result = MindMapTool().run({"topic": topic})
+    if isinstance(result, dict) and result.get("status") == "success":
+        return str((result.get("result") or {}).get("mermaid") or "")
+    return ""
 
 
 def generate_research(topic: str) -> str:
-    return deeptutor_call("chat", f"对'{topic}'进行深度研究，提供结构化拓展阅读材料，包含背景、核心概念、应用案例。2000字以上。")
+    """Deep research via DeepTutor deep_research capability."""
+    return deeptutor_call("deep_research", topic, config_overrides={"mode": "report", "depth": "standard"})
 
 
 def generate_visual_explanation(topic: str) -> str:
-    return deeptutor_call("chat", f"用图解方式解释'{topic}'。生成一个Mermaid图表，配合简洁的文字说明。输出Mermaid代码块加简短文字。")
+    """Generate a visual diagram explanation via DeepTutor visualize capability."""
+    return deeptutor_call("visualize", f"用图解方式解释「{topic}」，配合简洁的文字说明。", config_overrides={"render_mode": "mermaid"})
 
 
 def generate_video_script(topic: str, duration_minutes: int = 3) -> str:
+    """Generate a micro-lecture video script. (No dedicated DeepTutor capability — uses chat.)"""
     body = duration_minutes - 1
     return deeptutor_call("chat", f"为'{topic}'生成一个{duration_minutes}分钟的教学微课视频脚本。片头30秒标题+学习目标。核心讲解{body}分钟分3-5场景标注时长画面配音。片尾30秒小结思考题。")
 
 
 def generate_quiz(topic: str, knowledge_points: str = "", count: int = 5) -> str:
-    return deeptutor_call("chat", f"生成{count}道关于'{topic}'的练习题。知识点：{knowledge_points}。题型混合，含答案和解析。")
+    """Generate practice questions via DeepTutor deep_question capability."""
+    prompt = topic + (f"（知识点：{knowledge_points}）" if knowledge_points else "")
+    return deeptutor_call("deep_question", prompt, config_overrides={
+        "mode": "custom",
+        "topic": topic,
+        "num_questions": count,
+    })
+
+
+def generate_solution(question_stem: str, correct_answer: str = "", question_type: str = "choice") -> str:
+    """Generate a step-by-step solution for a question via DeepTutor deep_solve capability.
+
+    Forces the model to show complete reasoning steps, not just the final answer.
+    """
+    prompt_parts = [f"请逐步解答以下题目，展示完整的推导过程：\n\n{question_stem}"]
+    if correct_answer:
+        prompt_parts.append(f"\n\n（已知正确答案是：{correct_answer}，请推导出这个答案的完整过程）")
+    prompt = "".join(prompt_parts)
+    return deeptutor_call("deep_solve", prompt)

@@ -4618,7 +4618,7 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
 
 格式要求：
 - **表格每行独占一行，禁止把多行挤在一行**
-- Mermaid mindmap 用 root((主题))，子节点缩进；graph TD 节点 ID 用英文
+- Mermaid mindmap 用 root((主题))，子节点缩进；graph LR 节点 ID 用英文
 - 代码块指定语言
 - 重点用 > 引用块
 - 直接输出 Markdown
@@ -4629,9 +4629,9 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
 | 缓存 | 高速小容量存储器 | CPU 三级缓存 |
 | 寄存器 | CPU 内部最快存储 | 通用寄存器 |
 
-Mermaid 示例(必须严格照此格式，用 ```mermaid 包裹，graph TD 语法):
+Mermaid 示例(必须严格照此格式，用 ```mermaid 包裹，flowchart LR 语法):
 ```mermaid
-graph TD
+flowchart LR
   A[核心主题] --> B[子概念1]
   A --> C[子概念2]
   B --> D[细节A]
@@ -4639,7 +4639,7 @@ graph TD
 ```
 铁律:
 - 必须用 ```mermaid 和 ``` 包裹
-- 只用 graph TD, 禁止 mindmap/flowchart
+- 只用 flowchart LR, 从左到右布局, 禁止 TD/TB/mindmap
 - 节点 ID 英文字母+数字, 标签中文放[方括号]
 - 禁止中文节点 ID
 - 禁止 root/::id1/::icon 等语法"""
@@ -4969,11 +4969,18 @@ def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """智辅问答：注入学生画像 + 诊断数据，返回 Markdown 格式回答。"""
     session_id = _payload_session_id(payload)
     question = str(payload.get("question", "")).strip()
+    quoted = str(payload.get("quoted", "") or "").strip()
     section_title = str(payload.get("sectionTitle", "")).strip()
     section_goal = str(payload.get("sectionGoal", "")).strip()
     knowledge_points = payload.get("knowledgePoints", [])
     lecture_excerpt = str(payload.get("lectureExcerpt", ""))[:1000]
     action_type = str(payload.get("actionType") or payload.get("action_type") or "").strip()
+
+    # Combine quoted text into question if provided
+    if quoted and not question:
+        question = f'"""{quoted}"""\n请解释以上选中的内容'
+    elif quoted and question:
+        question = f'"""{quoted}"""\n{question}'
 
     if not question:
         return _product_response(None, session_id=session_id, status="error", message="question required", source="agent")
@@ -5027,6 +5034,36 @@ def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         pass
 
+    # ── Extract quoted/selected text early ──
+    sel_match = re.search(r'"""\s*\n?(.+?)\n?\s*"""', question, re.DOTALL)
+    selected_excerpt = sel_match.group(1).strip()[:800] if sel_match else ""
+
+    # ── Route to DeepTutor capabilities for specific action types ──
+    if action_type in ("explain", "concept_explanation"):
+        try:
+            from app.services.deeptutor_client import deeptutor_call
+            raw = deeptutor_call("deep_solve", question)
+            if raw and len(raw) > 30:
+                return {"status": "success", "data": {"reply": raw, "content_type": "tutor_explain"}}
+        except Exception:
+            pass
+    if action_type in ("diagram", "visualize"):
+        try:
+            from app.services.deeptutor_client import deeptutor_call
+            raw = deeptutor_call("visualize", question, config_overrides={"render_mode": "mermaid"})
+            if raw and len(raw) > 30:
+                return {"status": "success", "data": {"reply": raw, "content_type": "diagram"}}
+        except Exception:
+            pass
+    if action_type == "quiz":
+        try:
+            from app.services.deeptutor_client import deeptutor_call
+            raw = deeptutor_call("deep_question", question, config_overrides={"mode": "custom", "topic": selected_excerpt or question or section_title, "num_questions": 3})
+            if raw and len(raw) > 30:
+                return {"status": "success", "data": {"reply": raw, "content_type": "quiz"}}
+        except Exception:
+            pass
+
     # ── Handle video action: use DeepTutor for script generation ──
     if action_type == "video":
         try:
@@ -5037,15 +5074,12 @@ def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             pass
 
-    # ── Detect if question contains specific selected text ("""...""") ──
-    sel_match = re.search(r'"""\s*\n?(.+?)\n?\s*"""', question, re.DOTALL)
-    selected_excerpt = sel_match.group(1).strip()[:800] if sel_match else ""
     is_targeted = bool(selected_excerpt)
 
     # ── Diagram: Mermaid for precision. AI image as bonus for conceptual topics.
     diagram_hint = ""
     if action_type == "diagram":
-        diagram_hint = "\n请用 ```mermaid 绘制图解。graph TD，节点ID英文，标签[中文]。"
+        diagram_hint = "\n请用 ```mermaid 绘制图解。铁律：第一行 flowchart LR（禁止 TD/TB），从左到右布局，节点ID英文，标签[中文]。"
     img_bonus = ""
     if action_type == "diagram" and is_targeted:
         _tech_kw = ["指令", "寄存器", "电路", "门", "总线", "时序", "流水线", "编码", "算法", "语法"]
@@ -5293,9 +5327,6 @@ def generate_chapter_mindmap(chapter_id: str, payload: dict[str, Any]) -> dict[s
     service = ChapterMindmapResourceService()
     try:
         db = SessionLocal()
-        existing = service.existing(db, session_id, chapter_id)
-        if existing is not None and not bool(payload.get("regenerate")):
-            return _product_response({"mindmap": service.serialize(existing), "reused": True}, session_id=session_id, source="db")
         resource = service.generate(
             path_id=str(payload.get("pathId") or context.get("path_id") or ""),
             stage_id=str(payload.get("stageId") or context.get("stage_id") or ""),
@@ -5317,6 +5348,49 @@ def get_chapter_mindmap(chapter_id: str, sessionId: str = "") -> dict[str, Any]:
     try:
         db = SessionLocal()
         resource = ChapterMindmapResourceService().existing(db, session_id, chapter_id)
+        return _product_response({"mindmap": ChapterMindmapResourceService.serialize(resource) if resource else None}, session_id=session_id, source="db")
+    finally:
+        db.close()
+
+
+# ── Section-level mindmap ──
+
+@router.post("/sections/{section_id}/mindmap/generate")
+def generate_section_mindmap(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Generate a mindmap scoped to a single section's knowledge points."""
+    session_id = _payload_session_id(payload)
+    section_title = str(payload.get("sectionTitle") or "").strip()
+    knowledge_points = payload.get("knowledgePoints") if isinstance(payload.get("knowledgePoints"), list) else []
+    if not section_title:
+        return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
+    from app.services.chapter_mindmap_resources import ChapterMindmapResourceService
+    service = ChapterMindmapResourceService()
+    try:
+        db = SessionLocal()
+        resource = service.generate(
+            path_id=str(payload.get("pathId") or ""),
+            stage_id=str(payload.get("stageId") or ""),
+            chapter_id=section_id,
+            chapter_title=section_title,
+            sections=[{"title": section_title, "knowledgePoints": knowledge_points}],
+        )
+        resource["id"] = f"section_{section_id}_mindmap"
+        resource["title"] = f"{section_title} · 小节思维导图"
+        saved = service.persist(db, session_id, resource)
+        return _product_response({"mindmap": service.serialize(saved), "reused": False}, session_id=session_id, source="agent")
+    except ValueError:
+        return _product_response(None, session_id=session_id, status="error", message="思维导图生成失败", source="agent")
+    finally:
+        db.close()
+
+
+@router.get("/sections/{section_id}/mindmap")
+def get_section_mindmap(section_id: str, sessionId: str = "") -> dict[str, Any]:
+    session_id = _require_session_id(sessionId)
+    from app.services.chapter_mindmap_resources import ChapterMindmapResourceService
+    try:
+        db = SessionLocal()
+        resource = ChapterMindmapResourceService().existing(db, session_id, f"section_{section_id}_mindmap")
         return _product_response({"mindmap": ChapterMindmapResourceService.serialize(resource) if resource else None}, session_id=session_id, source="db")
     finally:
         db.close()

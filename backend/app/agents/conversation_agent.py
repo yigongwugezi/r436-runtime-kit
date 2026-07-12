@@ -205,8 +205,9 @@ class ConversationAgent(BaseAgent):
                 context.get("profile_facts", {}).pop("_pending_adjustment", None)
                 return result
 
-        if action in ("none", "tutoring", ""):
-            dt = self._try_deeptutor_reply(user_message, self._history)
+        if action in ("none", "tutoring", "", "deep_tutor_chat"):
+            dt_capability = rule_result.get("capability", "chat")
+            dt = self._try_deeptutor_reply(user_message, self._history, capability=dt_capability)
             if dt and len(dt) > 5:
                 llm_reply = re.sub(r'<[^>]+>', '', dt).strip()
 
@@ -600,25 +601,70 @@ action："""
                 flat[key] = str(item)
         return flat
 
-    def _try_deeptutor_reply(self, user_message: str, history: list) -> str:
+    @staticmethod
+    def _is_solve_request(message: str) -> bool:
+        """检测是否为具体解题请求（应路由到 deep_solve），而非概念询问。
+
+        必须同时满足：① 解题动作词 + ② 具体问题内容 + ③ 非纯概念询问。
+        """
+        import re
+        text = message.strip()
+        if len(text) < 6:
+            return False
+
+        # ① 解题动作词
+        action_patterns = [
+            r"[求解证明计算化简推导求证]+",   # 解、求、证明、计算...
+            r"怎么[解做推算]",
+            r"如何[解求]",
+            r"(?:帮我|给我|帮忙)[解算](?:一下|这道|这个)?",
+        ]
+        has_action = any(re.search(p, text) for p in action_patterns)
+
+        # ② 具体问题内容：包含数学符号、数字、公式结构
+        content_patterns = [
+            r"\b[fghxyzt]\s*\(.*\)\s*=",     # f(x)=
+            r"\b[fghxyzt]\s*=",               # x=
+            r"[=＝]\s*[?？]",                  # =?
+            r"[＋＋\-+\-*/÷×^√∫∑∏]\s*\d",   # 运算符+数字
+            r"\d+\s*[＋\-*/÷×]\s*\d+",       # 数字 运算符 数字
+            r"已知.*[求证明计算]",
+            r"[设若].*则.*[求证明]",
+            r"这道题|这个题|这题|下列题目",
+            r"解方?程|不等式|函数|极限|导数|积分|微分|矩阵|向量|概率",
+            r"等于多少|结果是|答案是多少",
+            r"[∠△⊥∥△⊙].*\d",              # 几何符号
+            r"lim|sin|cos|tan|log|ln|dx|∫|∑|∏",
+            r"\\frac|\\sqrt|\\int|\\sum|\\lim",
+        ]
+        has_content = any(re.search(p, text) for p in content_patterns)
+
+        # ③ 排除纯概念询问（不是解题，是问定义）
+        not_solve = [
+            r"什么是|什么意思|是什么|的定义|的概念",
+            r"为什么.*重要|为什么要学|有什么用|应用场景",
+            r"讲讲|介绍一下|概述|总结一下|归纳",
+            r"区别|对比|比较|异同|vs\b",
+            r"学习方法|怎么学|如何入门|学习路线|推荐.*书|推荐.*课程",
+            r"我不懂|不太明白|不理解.*概念|搞不懂.*意思",
+        ]
+        is_concept_question = any(re.search(p, text) for p in not_solve)
+
+        return has_action and has_content and not is_concept_question
+
+    def _try_deeptutor_reply(self, user_message: str, history: list, capability: str = "chat") -> str:
         from app.services.deeptutor_client import deeptutor_call, generate_visual_explanation, generate_video_script
-        try:
-            from app.services.deeptutor_client import generate_manim_video
-        except ImportError:
-            generate_manim_video = None
+
+        # ── 指定了非 chat 能力 → 直接路由，不走关键词检测 ──
+        if capability != "chat":
+            profile_context = self._build_profile_context_for_dt()
+            return deeptutor_call(capability, user_message, history or [], profile_context)
 
         # Detect diagram/visualization requests
         vis_keywords = ["图解", "画图", "图示", "示意图", "流程图", "思维导图", "可视化",
                         "画个", "画一张", "用图", "图表", "图示说明", "图解释", "结构图"]
         if any(kw in user_message for kw in vis_keywords):
             return generate_visual_explanation(user_message)
-
-        # Detect video/animation requests — render real mp4
-        vid_keywords = ["生成.*动画", "做个.*动画", "动画演示", "演示动画", "教学动画"]
-        if generate_manim_video and any(kw in user_message for kw in vid_keywords):
-            result = generate_manim_video(user_message)
-            if result:
-                return f"已生成教学动画，文件路径：{result['path']}\n标题：{result['title']}\n你可以在资源库中查看。"
 
         # Detect video script requests
         vid_script_kw = ["视频", "微课", "短片", "演示视频", "教学视频", "做个小视频",
@@ -804,6 +850,11 @@ action："""
         if any(p in compact for p in _ASSESS):
             return self._fallback_result("assess", "combined_assessment_request")
 
+        # ── Problem solving: 具体解题请求 → deep_solve ──
+        # 判定条件：包含解题动作词 + 具体问题内容（数字/公式/题目结构）
+        if self._is_solve_request(user_message):
+            return self._fallback_result("deep_tutor_chat", "solve_request", capability="deep_solve")
+
         # ── Intelligent tutoring (借力画像+诊断+资源的辅导) ──
         _TUTOR = [
             "给我讲讲", "帮我理解", "解释一下", "我不懂",
@@ -845,7 +896,7 @@ action："""
         return self._fallback_result("none", "unclassified_fallback")
 
 
-    def _fallback_result(self, action, reason, needs_clarification=False, plan_mode="", path_mode=""):
+    def _fallback_result(self, action, reason, needs_clarification=False, plan_mode="", path_mode="", capability=""):
         result = {
             "reply": "",
             "action": action,
@@ -862,6 +913,8 @@ action："""
             result["plan_mode"] = plan_mode
         if path_mode:
             result["path_mode"] = path_mode
+        if capability:
+            result["capability"] = capability
         return result
 
     def _has_generation_confirmation_context(self, context):
