@@ -555,7 +555,6 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
             finally:
                 db.close()
 
-        # Map agent_id → short node key (e.g. "planner_agent" → "planner")
         for full_id in agent_ids:
             short_key = full_id.replace("_agent", "")
             if factory.has(full_id):

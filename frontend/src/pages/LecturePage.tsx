@@ -14,6 +14,7 @@ import TextbookViewer from '../components/learning/TextbookViewer';
 import TextbookTocPanel from '../components/learning/TextbookTocPanel';
 import { getTextbookTOC } from '../api/textbooks';
 import type { TextbookTOC } from '../types/textbook';
+import GeneratePanel from '../components/learning/GeneratePanel';
 import { logStudyEvent } from '../api/feedback';
 
 const CONTENT_TYPE_OPTIONS: { value: ContentType; label: string; icon: string }[] = [
@@ -144,7 +145,9 @@ export default function LecturePage() {
   const [chatMsg, setChatMsg] = useState('');
   const [chatReply, setChatReply] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
-  const [rightTab, setRightTab] = useState<'tutor' | 'resources' | 'quiz' | 'toc'>('tutor');
+  const [rightTab, setRightTab] = useState<'tutor' | 'resources' | 'quiz' | 'toc' | 'generate'>('tutor');
+  const [genAll, setGenAll] = useState(false);
+  const [prevLecture, setPrevLecture] = useState('');
   const [generatedSectionIds, setGeneratedSectionIds] = useState<Set<string>>(new Set());
   const [showRightPanel, setShowRightPanel] = useState(true);
 
@@ -471,6 +474,12 @@ export default function LecturePage() {
                 <div className="flex items-center gap-1.5 text-[10px] text-surface-400 mb-2">
                   <span className="text-surface-500 truncate max-w-[200px]">{chapterCtx?.chapter.title}</span>
                 </div>
+                {prevLecture && (
+                  <button onClick={() => { setLecture(prevLecture); setPrevLecture(''); }}
+                    className="flex items-center gap-1.5 text-xs text-surface-500 hover:text-surface-700 mb-1 transition-colors">
+                    <ArrowLeft size={14} />返回讲义
+                  </button>
+                )}
                 <h2 className="text-lg font-bold text-surface-900">{currentSection?.title || '选择小节'}</h2>
                 {currentSection?.goal && (
                   <p className="text-xs text-surface-400 mt-1.5 flex items-center gap-1.5"><Target size={11} className="text-amber-500 flex-shrink-0" />{currentSection.goal}</p>
@@ -716,7 +725,7 @@ export default function LecturePage() {
               pageStart={currentSection.textbookPageStart ?? 1}
               pageEnd={currentSection.textbookPageEnd ?? (currentSection.textbookPageStart ?? 1) + 5}
             />
-          ) : sectionContent ? (
+          ) : quizState !== 'idle' ? null : sectionContent ? (
             /* ── Section content — routed by content_type ── */
             <div className="px-5 py-4">
               <SectionContentRouter
@@ -782,6 +791,7 @@ export default function LecturePage() {
             ...(isTextbookMode
               ? [{ key: 'toc' as const, label: '教材目录', icon: <BookOpen size={12} />, color: 'blue' }]
               : []),
+            { key: 'generate' as const, label: '生成', icon: <Sparkles size={12} />, color: 'slate' },
             { key: 'tutor' as const, label: '智能辅导', icon: <MessageCircle size={12} />, color: 'violet' },
             { key: 'resources' as const, label: '相关资源', icon: <Lightbulb size={12} />, color: 'amber' },
             { key: 'quiz' as const, label: '知识点', icon: <Target size={12} />, color: 'emerald' },
@@ -817,50 +827,23 @@ export default function LecturePage() {
           {rightTab === 'tutor' && (
             <div className="flex flex-col flex-1 min-h-0">
               {!chatReply && !chatLoading && currentSection && (
-                <div className="px-3 py-2 space-y-1 flex-shrink-0">
-                  <p className="text-[10px] font-medium text-surface-400 uppercase tracking-wide mb-2 px-1">AI 助手</p>
-                  <div className="space-y-2">
+                <div className="px-3 py-3 space-y-1.5 flex-shrink-0">
+                  <div className="space-y-1.5">
                     <button onClick={() => sendChat(`请详细解释「${currentSection.knowledgePoints?.[0]?.name || '核心概念'}」的含义、原理和应用场景。`, 'concept_explanation')}
-                      className="w-full p-3 rounded-xl bg-gradient-to-br from-violet-50 to-blue-50 border border-violet-100 hover:border-violet-200 hover:shadow-sm transition-all text-left group">
-                      <div className="flex items-center gap-2 mb-1">
-                        <div className="w-7 h-7 rounded-lg bg-violet-100 flex items-center justify-center group-hover:scale-110 transition-transform"><Brain size={13} className="text-violet-600" /></div>
-                        <span className="text-xs font-semibold text-surface-700">概念讲解</span>
-                      </div>
-                      <p className="text-[10px] text-surface-400 leading-relaxed">解释"{currentSection.knowledgePoints?.[0]?.name || '核心概念'}"的含义、原理和应用</p>
+                      className="w-full p-2.5 rounded-lg bg-surface-50 hover:bg-surface-100 transition-colors text-left border border-transparent hover:border-surface-200">
+                      <span className="text-xs font-medium text-surface-700">概念讲解</span>
+                      <p className="text-[10px] text-surface-400 mt-0.5">"{currentSection.knowledgePoints?.[0]?.name || '核心概念'}"的含义与应用</p>
                     </button>
-                    <button onClick={() => sendChat('请用图解（Mermaid）和文字结合的方式，说明本节的核心知识结构和概念关系。', 'diagram')}
-                      className="w-full p-3 rounded-xl bg-gradient-to-br from-amber-50 to-orange-50 border border-amber-100 hover:border-amber-200 hover:shadow-sm transition-all text-left group">
-                      <div className="flex items-center gap-2 mb-1">
-                        <div className="w-7 h-7 rounded-lg bg-amber-100 flex items-center justify-center group-hover:scale-110 transition-transform"><Lightbulb size={13} className="text-amber-600" /></div>
-                        <span className="text-xs font-semibold text-surface-700">图解结构</span>
-                      </div>
-                      <p className="text-[10px] text-surface-400 leading-relaxed">用知识结构图和文字梳理本节概念关系</p>
-                    </button>
-                    <button onClick={() => sendChat(`请根据本节「${currentSection.title}」的内容，出一道中等难度的练习题并给出详细解析。`, 'example')}
-                      className="w-full p-3 rounded-xl bg-gradient-to-br from-emerald-50 to-teal-50 border border-emerald-100 hover:border-emerald-200 hover:shadow-sm transition-all text-left group">
-                      <div className="flex items-center gap-2 mb-1">
-                        <div className="w-7 h-7 rounded-lg bg-emerald-100 flex items-center justify-center group-hover:scale-110 transition-transform"><Target size={13} className="text-emerald-600" /></div>
-                        <span className="text-xs font-semibold text-surface-700">随堂练习</span>
-                      </div>
-                      <p className="text-[10px] text-surface-400 leading-relaxed">根据本节内容生成练习题并给出详细解析</p>
+                    <button onClick={() => sendChat('请用图解和文字结合的方式，说明本节的核心知识结构。', 'diagram')}
+                      className="w-full p-2.5 rounded-lg bg-surface-50 hover:bg-surface-100 transition-colors text-left border border-transparent hover:border-surface-200">
+                      <span className="text-xs font-medium text-surface-700">图解结构</span>
+                      <p className="text-[10px] text-surface-400 mt-0.5">Mermaid 知识结构图 + 文字梳理</p>
                     </button>
                     <button onClick={handleGenerateVideo} disabled={videoGenerating}
-                      className="w-full p-3 rounded-xl bg-gradient-to-br from-rose-50 to-pink-50 border border-rose-100 hover:border-rose-200 hover:shadow-sm transition-all text-left group disabled:opacity-60">
-                      <div className="flex items-center gap-2 mb-1">
-                        <div className="w-7 h-7 rounded-lg bg-rose-100 flex items-center justify-center group-hover:scale-110 transition-transform"><Sparkles size={13} className="text-rose-600" /></div>
-                        <span className="text-xs font-semibold text-surface-700">讲解视频</span>
-                      </div>
-                      <p className="text-[10px] text-surface-400 leading-relaxed">{videoGenerating ? '正在生成微课视频脚本…' : videoResult?.script ? '已生成脚本，点击查看' : videoResult?.userMessage || '生成本节微课讲解视频'}</p>
+                      className="w-full p-2.5 rounded-lg bg-surface-50 hover:bg-surface-100 transition-colors text-left border border-transparent hover:border-surface-200 disabled:opacity-50">
+                      <span className="text-xs font-medium text-surface-700">讲解视频</span>
+                      <p className="text-[10px] text-surface-400 mt-0.5">{videoGenerating ? '生成中…' : videoResult?.script ? '已生成，点击查看' : '微课视频脚本'}</p>
                     </button>
-                  </div>
-                </div>
-              )}
-              {videoResult && (
-                <div className="px-3 py-2 flex-shrink-0">
-                  <div className="p-3 rounded-xl bg-rose-50 border border-rose-100">
-                    <p className="text-[10px] font-semibold text-rose-600 mb-1">🎬 讲解视频</p>
-                    {videoResult.script && <p className="text-xs text-surface-600 leading-relaxed whitespace-pre-wrap line-clamp-6">{videoResult.script}</p>}
-                    <p className="text-[10px] text-rose-400 mt-1">{videoResult.userMessage || (videoResult.status === 'generation_failed' ? '讲解视频生成失败，请稍后重试。' : '讲解视频服务暂未配置，当前可以先查看或生成视频脚本。')}</p>
                   </div>
                 </div>
               )}
@@ -871,7 +854,7 @@ export default function LecturePage() {
                   <p className="text-[11px] text-surface-400 px-1">点击快捷提问或输入问题，AI 结合讲义和知识点为你解答</p>
                 )}
                 {chatLoading && (
-                  <div className="flex items-center gap-2 text-xs text-violet-500 px-1"><div className="w-3 h-3 border-2 border-violet-400 border-t-transparent rounded-full animate-spin" />AI 正在分析…</div>
+                  <div className="flex items-center gap-2 text-xs text-surface-500 px-1"><div className="w-3 h-3 border-2 border-surface-300 border-t-transparent rounded-full animate-spin" />思考中…</div>
                 )}
               </div>
               <div className="p-3 border-t border-surface-100 flex-shrink-0">
@@ -946,6 +929,57 @@ export default function LecturePage() {
                 <p className="text-xs text-surface-400">选择小节后查看知识点</p>
               )}
             </div>
+          )}
+
+          {rightTab === 'generate' && (
+            <GeneratePanel
+              sessionId={sessionId || ''}
+              activeSectionId={activeSectionId}
+              currentSection={currentSection}
+              chapterCtx={chapterCtx}
+              path={path}
+              lecture={lecture}
+              generating={generating}
+              genAll={genAll}
+              onViewContent={(c: any) => {
+                if (!c?.content && c?.type !== 'mindmap') return;
+                setPrevLecture(lecture);
+                if (c.type === 'mindmap') {
+                  setLecture('```mermaid\n' + c.content + '\n```');
+                } else {
+                  setLecture(c.content);
+                }
+              }}
+              onGenerateLecture={handleGenerate}
+              onGenerateQuiz={handleQuizGenerate}
+              onGenerateVideo={handleGenerateVideo}
+              onGenerateReading={async () => {
+                if (!activeSectionId || !sessionId || !currentSection) return;
+                try { await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/lecture/generate`, {
+                  method: 'POST', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal, type: 'reading', knowledgePoints: currentSection.knowledgePoints || [] }),
+                }); } catch {}
+              }}
+              onGeneratePractice={async () => {
+                if (!activeSectionId || !sessionId || !currentSection) return;
+                try { await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/lecture/generate`, {
+                  method: 'POST', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal, type: 'practice', knowledgePoints: currentSection.knowledgePoints || [] }),
+                }); } catch {}
+              }}
+              onGenerateAll={async () => {
+                if (!currentSection || !sessionId) return;
+                setGenAll(true);
+                try {
+                  const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/generate-all`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal || '', chapterId: chapterCtx?.chapter.id || '', stageId: chapterCtx?.stage.id || '', knowledgePoints: currentSection.knowledgePoints || [] }),
+                  }).then(r => r.json());
+                  const data = res?.data || res;
+                  if (data?.lecture_content) setLecture(data.lecture_content);
+                } catch {} finally { setGenAll(false); }
+              }}
+            />
           )}
         </div>
       </div>

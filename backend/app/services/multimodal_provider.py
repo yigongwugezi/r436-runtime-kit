@@ -70,67 +70,57 @@ def _normalize_stages(value: Any) -> list[dict[str, Any]]:
 
 class MindMapTool:
     name = "MindMapTool"
-    provider = "local_mindmap"
+    provider = "deeptutor_mindmap"
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         learning_path = context.get("learning_path") or context.get("path")
         stages = _normalize_stages(learning_path)
         topic = _text(context.get("topic") or context.get("course_name") or context.get("subject_name"))
 
-        if not stages:
-            knowledge_context = context.get("knowledge_context") or {}
-            points = []
-            if isinstance(knowledge_context, dict):
-                points = (
-                    knowledge_context.get("retrieved_points")
-                    or knowledge_context.get("knowledge_points")
-                    or knowledge_context.get("topics")
-                    or []
-                )
-            if isinstance(points, list) and points:
-                stages = [
-                    {
-                        "title": _text(point.get("title") if isinstance(point, dict) else point),
-                        "goal": "",
-                        "children": [],
-                    }
-                    for point in points[:12]
-                    if _text(point.get("title") if isinstance(point, dict) else point)
-                ]
-                topic = topic or _text(knowledge_context.get("course_name") if isinstance(knowledge_context, dict) else "")
+        # Build context for DeepTutor
+        section_titles = []
+        for s in stages:
+            section_titles.append(s.get("title", ""))
+            for c in s.get("children", []):
+                section_titles.append(str(c) if isinstance(c, str) else c.get("title", ""))
 
-        if not stages:
-            return _response(
-                status="needs_input",
-                provider=self.provider,
-                warnings=["缺少可用于生成思维导图的 learning_path 或 knowledge_context。"],
-                trace={"input_keys": sorted(context.keys())},
-            )
+        dt_prompt = (
+            f"为「{topic}」生成一张Mermaid思维导图。"
+            + (f"涵盖：{'、'.join(section_titles[:12])}。" if section_titles else "")
+            + "铁律: 用graph TD语法,节点ID用A/B/C1,标签[中文]。禁止mindmap语法。禁止root/::id1。必须用```mermaid包裹。只输出代码块。"
+        )
 
-        root = topic or _text(context.get("user_message")) or "学习路径"
-        children = [
-            {
-                "title": stage["title"],
-                "children": [{"title": child} for child in stage["children"]],
-            }
-            for stage in stages
-        ]
+        try:
+            from app.services.deeptutor_client import deeptutor_call
+            raw = deeptutor_call("chat", dt_prompt)
+            if raw and len(raw) > 20:
+                import re as _re
+                m = _re.search(r"```(?:mermaid)?\s*\n?(.+?)```", raw, _re.DOTALL)
+                mermaid_def = m.group(1).strip() if m else raw.strip()
+                markdown_lines = [f"# {topic}"]
+                for s in stages:
+                    markdown_lines.append(f"- {s.get('title', '')}")
+                return _response(status="success", provider=self.provider,
+                    result={"mermaid": mermaid_def, "markdown": "\n".join(markdown_lines), "stage_count": len(stages)},
+                    trace={"source": "deeptutor"})
+        except Exception:
+            pass
+
+        # Fallback to local
+        if not stages:
+            return _response(status="needs_input", provider=self.provider,
+                warnings=["missing learning_path"], trace={"input_keys": sorted(context.keys())})
+
+        root = topic or "学习内容"
         lines = ["mindmap", f"  root(({_safe_mermaid_label(root)}))"]
         for stage in stages:
             lines.append(f"    {_safe_mermaid_label(stage['title'])}")
             for child in stage["children"][:6]:
                 lines.append(f"      {_safe_mermaid_label(child)}")
 
-        return _response(
-            status="success",
-            provider=self.provider,
-            result={
-                "mindmap_json": {"title": root, "children": children},
-                "mermaid": "\n".join(lines),
-                "stage_count": len(stages),
-            },
-            trace={"source": "learning_path" if learning_path else "knowledge_context"},
-        )
+        return _response(status="success", provider=self.provider,
+            result={"mermaid": "\n".join(lines), "stage_count": len(stages)},
+            trace={"source": "local_fallback"})
 
 
 class QwenVisionProvider:
@@ -807,52 +797,69 @@ def _vision_prompt(task_type: str) -> str:
 
 class MindMapTool:
     name = "MindMapTool"
-    provider = "local_mindmap"
+    provider = "deeptutor_mindmap"
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
+        topic = _text(context.get("topic") or context.get("course_name") or context.get("subject_name"))
         learning_path = context.get("learning_path") or context.get("path")
         stages = _normalize_stages(learning_path)
-        topic = _text(context.get("topic") or context.get("course_name") or context.get("subject_name"))
 
+        # Build context for DeepTutor
+        section_titles = []
+        for s in stages:
+            section_titles.append(s.get("title", ""))
+            for c in s.get("children", []):
+                section_titles.append(str(c) if isinstance(c, str) else c.get("title", ""))
+
+        dt_prompt = (
+            f"为「{topic}」生成一张Mermaid思维导图。"
+            + (f"涵盖：{'、'.join(section_titles[:12])}。" if section_titles else "")
+            + "铁律: 用graph TD语法,节点ID用A/B/C1,标签[中文]。禁止mindmap语法。禁止root/::id1。必须用```mermaid包裹。只输出代码块。"
+        )
+
+        try:
+            from app.services.deeptutor_client import deeptutor_call
+            raw = deeptutor_call("chat", dt_prompt)
+            if raw and len(raw) > 20:
+                # Extract mermaid code block
+                import re as _re
+                m = _re.search(r"```(?:mermaid)?\s*\n?(.+?)```", raw, _re.DOTALL)
+                mermaid_def = m.group(1).strip() if m else raw.strip()
+                # Build markdown version from section titles
+                markdown_lines = [f"# {topic}"]
+                for s in stages:
+                    markdown_lines.append(f"- {s.get('title', '')}")
+                return _response(
+                    status="success", provider=self.provider,
+                    result={
+                        "mermaid": mermaid_def,
+                        "markdown": "\n".join(markdown_lines),
+                        "stage_count": len(stages),
+                    },
+                    trace={"source": "deeptutor"},
+                )
+        except Exception:
+            pass
+
+        # Fallback to local algorithm
         if not stages:
-            knowledge_context = context.get("knowledge_context") or {}
-            points = []
-            if isinstance(knowledge_context, dict):
-                points = knowledge_context.get("retrieved_points") or knowledge_context.get("knowledge_points") or knowledge_context.get("topics") or []
-            if isinstance(points, list) and points:
-                stages = [{"title": _text(point.get("title") if isinstance(point, dict) else point), "goal": "", "children": []} for point in points[:12]]
-                topic = topic or _text(knowledge_context.get("course_name") if isinstance(knowledge_context, dict) else "")
+            return _response(status="needs_input", provider=self.provider,
+                warnings=["missing learning_path"], trace={"input_keys": sorted(context.keys())})
 
-        if not stages:
-            return _response(
-                status="needs_input",
-                provider=self.provider,
-                warnings=["missing learning_path or knowledge_context for mind map"],
-                trace={"input_keys": sorted(context.keys())},
-            )
-
-        root = topic or _text(context.get("user_message")) or "Learning path"
-        children = [{"title": stage["title"], "children": [{"title": child} for child in stage.get("children", [])]} for stage in stages if stage.get("title")]
+        root = topic or "学习内容"
         lines = ["mindmap", f"  root(({_safe_mermaid_label(root)}))"]
         markdown = [f"# {root}"]
         for stage in stages:
             lines.append(f"    {_safe_mermaid_label(stage['title'])}")
             markdown.append(f"- {stage['title']}")
             for child in stage.get("children", [])[:6]:
-                lines.append(f"      {_safe_mermaid_label(child)}")
-                markdown.append(f"  - {child}")
+                child_title = child if isinstance(child, str) else child.get("title", "")
+                lines.append(f"      {_safe_mermaid_label(child_title)}")
+                markdown.append(f"  - {child_title}")
 
-        return _response(
-            status="success",
-            provider=self.provider,
-            result={
-                "mindmap_json": {"title": root, "children": children},
-                "markdown": "\n".join(markdown),
-                "mermaid": "\n".join(lines),
-                "stage_count": len(stages),
-            },
-            trace={"source": "learning_path" if learning_path else "knowledge_context"},
-        )
+        return _response(status="success", provider=self.provider,
+            result={"mermaid": "\n".join(lines), "markdown": "\n".join(markdown), "stage_count": len(stages)},
+            trace={"source": "local_fallback"})
 
 
 class QwenVisionProvider:
@@ -924,6 +931,88 @@ class QwenVisionProvider:
             return _response(status="failed", provider=self.provider, warnings=[str(exc)], trace=failed_trace)
 
 
+class SparkVisionProvider:
+    name = "SparkVisionProvider"
+    provider = "spark_vision"
+
+    SPARK_VISION_URL = "wss://spark-api.cn-huabei-1.xf-yun.com/v2.1/image"
+
+    def run(self, context: dict[str, Any]) -> dict[str, Any]:
+        from app.config import settings
+        import asyncio, json as _json, base64 as _b64
+
+        app_id = settings.spark_vision_app_id or settings.spark_app_id
+        api_key = settings.spark_vision_api_key or settings.spark_api_key
+        api_secret = settings.spark_vision_api_secret or settings.spark_api_secret
+        if not app_id or not api_key:
+            return _response(status="provider_not_configured", provider=self.provider,
+                warnings=["Spark vision provider not configured."],
+                trace={"required_env": ["SPARK_VISION_APP_ID", "SPARK_VISION_API_KEY", "SPARK_VISION_API_SECRET"]})
+
+        image, image_warning, image_kind = image_input_from_context(context)
+        task_type = _text(context.get("task_type")) or "image_understanding"
+        if not image:
+            return _response(status="needs_input", provider=self.provider,
+                warnings=[image_warning or "missing image input"],
+                trace={"task_type": task_type})
+
+        prompt = _vision_prompt(task_type)
+
+        async def _ws_call():
+            from app.services.spark_provider import _build_auth_url
+            import websockets
+
+            url = _build_auth_url(
+                self.SPARK_VISION_URL.replace("wss://", "https://"),
+                api_key=api_key, api_secret=api_secret,
+            )
+            url = url.replace("https://", "wss://")
+            payload = {
+                "header": {"app_id": app_id},
+                "parameter": {"chat": {"domain": "imagev3", "temperature": 0.1}},
+                "payload": {"message": {"text": [
+                    {"role": "user", "content": image if image_kind == "base64" else _b64.b64encode(image.encode()).decode() if isinstance(image, str) else image, "content_type": "image"},
+                    {"role": "user", "content": prompt, "content_type": "text"},
+                ]}},
+            }
+            async with websockets.connect(url, max_size=10*1024*1024) as ws:
+                await ws.send(_json.dumps(payload))
+                raw_text = ""
+                async for msg in ws:
+                    data = _json.loads(msg)
+                    code = data.get("header", {}).get("code", -1)
+                    if code != 0:
+                        break
+                    choices = data.get("payload", {}).get("choices", {})
+                    status = choices.get("status", 2)
+                    content_list = choices.get("text", []) if isinstance(choices, dict) else []
+                    for c in content_list:
+                        if isinstance(c, dict) and c.get("content"):
+                            raw_text += str(c["content"])
+                    if status == 2:  # completed
+                        break
+                return raw_text
+
+        try:
+            raw_text = asyncio.run(_ws_call())
+        except Exception as e:
+            return _response(status="failed", provider=self.provider, warnings=[str(e)])
+
+        if not raw_text:
+            return _response(status="failed", provider=self.provider, warnings=["empty response from Spark vision"])
+
+        try:
+            parsed = parse_safe(raw_text)
+        except Exception:
+            parsed = {}
+        result = _ensure_review_fields(
+            _normalize_task_result(task_type, parsed, raw_text),
+            parsed, raw_text,
+            parsed.get("detected_text"), parsed.get("question_text"), parsed.get("answer"))
+        return _response(status="success", provider=self.provider, result=result,
+            trace={"task_type": task_type})
+
+
 class QwenImageProvider:
     name = "QwenImageProvider"
     provider = "qwen_image"
@@ -974,11 +1063,11 @@ class WanVideoProvider:
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         script = _micro_lesson_script(context)
-        api_key = _env("DASHSCOPE_API_KEY", "WAN_API_KEY")
+        api_key = _env("DASHSCOPE_API_KEY", "WAN_API_KEY", "QWEN_API_KEY")
         model = _env("WAN_VIDEO_MODEL", default="wanx2.1-t2v-turbo")
-        endpoint = _env("WAN_VIDEO_ENDPOINT")
-        if not api_key or not model or not endpoint:
-            return _response(status="script_ready_provider_not_configured", provider=self.provider, result=script, warnings=["Wan video provider is not configured."], trace={"required_env": ["DASHSCOPE_API_KEY or WAN_API_KEY", "WAN_VIDEO_MODEL", "WAN_VIDEO_ENDPOINT"]})
+        endpoint = _env("WAN_VIDEO_ENDPOINT", default="https://dashscope.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis")
+        if not api_key or not model:
+            return _response(status="script_ready_provider_not_configured", provider=self.provider, result=script, warnings=["Wan video provider is not configured."], trace={"required_env": ["QWEN_API_KEY/DASHSCOPE_API_KEY/WAN_API_KEY", "WAN_VIDEO_MODEL"]})
         try:
             body = self.post_json(endpoint, {"model": model, "prompt": script["script"]}, api_key, int(os.getenv("WAN_TIMEOUT", "60")))
             result = {**script, "task_id": _text(body.get("task_id") or body.get("output", {}).get("task_id")), "task_status": _text(body.get("status") or body.get("output", {}).get("task_status") or "submitted"), "video_url": _text(body.get("video_url") or body.get("output", {}).get("video_url")), "remote_result": body}

@@ -14,6 +14,7 @@ from app.services.spark_provider import (
     SparkImageProvider,
     SparkVideoProvider,
 )
+from app.services.multimodal_provider import SparkVisionProvider
 
 
 class ToolRegistry:
@@ -41,6 +42,9 @@ class ToolRegistry:
             "video_generation": "SparkVideoProvider",        # 科大讯飞星火视频
             "micro_lesson_video": "SparkVideoProvider",
             "video_script_generation": "SparkVideoProvider",
+            # Spark vision as alternative to Qwen VL
+            "image_understanding_spark": "SparkVisionProvider",
+            "image_to_mindmap_spark": "SparkVisionProvider",
             # Fallback to Qwen/Wan when Spark not configured
             "image_generation_qwen": "QwenImageProvider",
             "video_generation_wan": "WanVideoProvider",
@@ -55,13 +59,14 @@ class ToolRegistry:
     def select_tool(self, task_type: str) -> tuple[str | None, Any | None]:
         name = self._task_map.get(task_type)
         tool = self.get_tool(name) if name else None
-        # 如果 Spark 没配置，自动回退到备用 provider
-        if tool and hasattr(tool, 'run'):
+        if tool is not None:
             return name, tool
-        if name and name.startswith("Spark"):
-            fallback = self._task_map.get(task_type + "_qwen") or self._task_map.get(task_type + "_wan")
-            if fallback:
-                return fallback, self.get_tool(fallback)
+        # Auto-fallback: try suffixed alternatives
+        for suffix in ("_spark", "_qwen", "_wan"):
+            fname = self._task_map.get(task_type + suffix)
+            ftool = self.get_tool(fname) if fname else None
+            if ftool is not None:
+                return fname, ftool
         return name, tool
 
 
@@ -73,4 +78,5 @@ def default_registry() -> ToolRegistry:
     registry.register_tool("WanVideoProvider", WanVideoProvider())
     registry.register_tool("SparkImageProvider", SparkImageProvider())
     registry.register_tool("SparkVideoProvider", SparkVideoProvider())
+    registry.register_tool("SparkVisionProvider", SparkVisionProvider())
     return registry
