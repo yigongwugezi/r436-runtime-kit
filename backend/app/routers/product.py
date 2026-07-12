@@ -4976,6 +4976,7 @@ def generate_section_resource(section_id: str, payload: dict[str, Any]) -> dict[
             lecture_content=str(payload.get("lectureContent") or (lecture.content if lecture else "") or ""),
             knowledge_points=payload.get("knowledgePoints") if isinstance(payload.get("knowledgePoints"), list) else context.get("knowledge_points", []),
             resource_type=resource_type,
+            profile=_profile_v2(session_id),
         )
         saved = service.persist(db, session_id, resource)
         return _product_response({"resource": service.serialize(saved), "reused": False}, session_id=session_id, source="agent")

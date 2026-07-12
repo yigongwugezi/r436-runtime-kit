@@ -29,11 +29,11 @@ class SectionResourceRecommendationService:
         profile: dict[str, Any] | None = None,
         weak_points: list[Any] | None = None,
     ) -> dict[str, Any]:
-        del session_id, section_id, profile  # Context is used to shape the caller's query, never persisted.
+        del session_id, section_id  # External results remain transient and are never persisted.
         points = self._point_names(knowledge_points)
         weak_names = self._point_names(weak_points)
         query_points = list(dict.fromkeys([*points, *weak_names]))
-        queries = self._queries(section_title, query_points, resource_types)
+        queries = self._queries(section_title, query_points, resource_types, profile)
         warnings: list[str] = []
         raw_items: list[Any] = []
 
@@ -53,7 +53,7 @@ class SectionResourceRecommendationService:
                 "warnings": list(dict.fromkeys(warnings or ["未找到可用的外部学习资源。"])),
             }
 
-        resources = self._deduplicate_and_rank(raw_items, section_title, query_points, weak_points, language)
+        resources = self._deduplicate_and_rank(raw_items, section_title, query_points, weak_points, language, profile)
         return {
             "query": queries,
             "resources": resources[:5],
@@ -72,9 +72,12 @@ class SectionResourceRecommendationService:
         return names[:6]
 
     @staticmethod
-    def _queries(title: str, points: list[str], resource_types: list[str] | None) -> list[str]:
+    def _queries(title: str, points: list[str], resource_types: list[str] | None, profile: dict[str, Any] | None = None) -> list[str]:
         topic = " ".join([title, *points[:4]]).strip() or "学习资料"
-        queries = [f"{topic} 教程 讲解", f"{topic} 官方文档 大学课程"]
+        context = (profile or {}).get("subject_context") if isinstance(profile, dict) else {}
+        preferences = context.get("content_preferences", []) if isinstance(context, dict) else []
+        level_hint = "入门 示例" if "example_first" in preferences else "教程 讲解"
+        queries = [f"{topic} {level_hint}", f"{topic} 官方文档 大学课程"]
         requested = {str(kind).lower() for kind in resource_types or []}
         if requested & {"video", "course", "paper", "document"}:
             labels = {"video": "视频", "course": "公开课", "paper": "论文", "document": "文档"}
@@ -97,15 +100,17 @@ class SectionResourceRecommendationService:
         points: list[str],
         weak_points: list[Any] | None,
         language: str,
+        profile: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         seen_urls: set[str] = set()
         seen_titles: set[str] = set()
+        source_counts: dict[str, int] = {}
         resources: list[dict[str, Any]] = []
         terms = [section_title, *points, *self._point_names(weak_points)]
 
         for rank, item in enumerate(items):
             data = asdict(item) if hasattr(item, "__dataclass_fields__") else dict(item)
-            title = re.sub(r"\s+", " ", str(data.get("title") or "").strip())
+            title = re.sub(r"\s+", " ", str(data.get("title") or "").strip())[:140]
             url = self._normal_url(str(data.get("url") or ""))
             title_key = title.lower()
             if not title or not url or url in seen_urls or title_key in seen_titles:
@@ -114,9 +119,14 @@ class SectionResourceRecommendationService:
             seen_titles.add(title_key)
             snippet = re.sub(r"\s+", " ", str(data.get("snippet") or "").strip())[:360]
             source = urlparse(url).netloc.removeprefix("www.")
+            if source_counts.get(source, 0) >= 1:
+                continue
+            if title.startswith(("http://", "https://")) or len(title) < 4:
+                continue
             trust = self._trust_level(source)
             matched = [term for term in terms if term and term.lower() in f"{title} {snippet}".lower()]
             score = min(0.98, 0.50 + min(0.24, len(matched) * 0.08) + {"official": 0.16, "educational": 0.10, "general": 0.04}[trust] - min(0.12, rank * 0.01))
+            source_counts[source] = source_counts.get(source, 0) + 1
             reason = f"匹配当前小节“{section_title}”"
             if matched:
                 reason += f"及知识点“{'、'.join(matched[:2])}”"

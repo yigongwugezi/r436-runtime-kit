@@ -47,6 +47,7 @@ class SectionGeneratedResourcesService:
         lecture_content: str,
         knowledge_points: list[Any],
         resource_type: str,
+        profile: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if resource_type not in RESOURCE_DEFINITIONS:
             raise ValueError("unsupported resourceType")
@@ -61,7 +62,7 @@ class SectionGeneratedResourcesService:
         except Exception:
             content = ""
         if self._invalid(content, section_title, resource_type):
-            content = self._fallback(resource_type, section_title, points, lecture_content)
+            content = self._fallback(resource_type, section_title, points, lecture_content, profile)
 
         return {
             "id": self.resource_id(section_id, resource_type),
@@ -121,16 +122,20 @@ class SectionGeneratedResourcesService:
         return isinstance(value, dict) and len(PROFILE_KEYS.intersection(value)) >= 3
 
     @staticmethod
-    def _fallback(resource_type: str, title: str, points: list[str], lecture: str) -> str:
+    def _fallback(resource_type: str, title: str, points: list[str], lecture: str, profile: dict[str, Any] | None = None) -> str:
         topic = "、".join(points) or title
+        preferences = ((profile or {}).get("subject_context") or {}).get("content_preferences") or []
+        study_tip = "先看一个具体例子，再完成一题练习。" if "example_first" in preferences else "先说清定义和适用条件，再用例子验证。"
         if resource_type == "summary_card":
-            return f"## {title} 总结卡片\n\n- 核心主题：{topic}\n- 学习重点：先理解定义，再比较操作成本。\n- 自检：能否用一个例子说明每个概念的作用？"
+            return f"## {title} 总结卡片\n\n- 核心主题：{topic}\n- 学习重点：{study_tip}\n- 自检：能否用一个例子说明每个概念的作用？"
         if resource_type == "concept_comparison":
-            return f"## {title} 概念对比\n\n| 维度 | 概念 A | 概念 B |\n|---|---|---|\n| 关注点 | {topic} 的定义 | 典型操作与适用场景 |\n| 复习方法 | 说清为什么需要 | 用例子比较差异 |"
+            first, second = (points + ["当前概念", "关联概念"])[:2]
+            return f"## {title} 概念对比\n\n| 维度 | {first} | {second} |\n|---|---|---|\n| 关注点 | 定义、结构特征与常见操作 | 定义、结构特征与常见操作 |\n| 复习方法 | 用一个具体输入说明操作结果 | 对照相同输入说明差异 |"
         if resource_type == "worked_example":
-            return f"## {title} 例题详解\n\n**题目**：选择一个与 {topic} 有关的操作，说明操作步骤和成本。\n\n**解题步骤**：先明确输入，再逐步写出操作过程，最后解释为什么得到该结论。\n\n> 不只写答案，要写判断依据。"
+            first = points[0] if points else title
+            return f"## {title} 例题详解\n\n**题目**：给定含 5 个元素的 {first}，写出一次查找或插入的步骤，并说明需要检查哪些位置。\n\n**解题步骤**：1. 明确输入和目标位置。2. 逐步记录每次访问或移动。3. 根据实际访问次数说明成本。\n\n**判断依据**：步骤数来自具体操作过程，而不是只给出结论。"
         if resource_type == "mistake_checklist":
-            return f"## {title} 易错点检查清单\n\n- [ ] 没有混淆 {topic} 的定义与操作。\n- [ ] 能说明结论对应的条件。\n- [ ] 能用一个例子检验理解。"
+            return f"## {title} 易错点检查清单\n\n- [ ] 没有混淆 {topic} 的定义与操作。\n- [ ] 每一步都说明了输入变化或访问位置。\n- [ ] 能用一个例子检验理解。"
         point_lines = "\n".join(f"- {point}" for point in points) or f"- {title}"
         return (
             f"# {title} 复习笔记\n\n"
