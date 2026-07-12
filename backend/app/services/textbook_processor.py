@@ -52,9 +52,9 @@ def extract_pdf_content(pdf_path: str) -> list[dict[str, Any]]:
 
     Returns a list of dicts: [{page_number, content, page_label}, ...]
 
-    pymupdf4llm.to_markdown() with page_chunks=True returns markdown
-    with page-break markers. We parse those markers to produce
-    per-page records.
+    Page numbers are assigned by a manual counter that increments once per
+    page chunk — we do NOT trust the page field from pymupdf4llm (which
+    may be 0-indexed, missing, or version-dependent).
     """
     import pymupdf4llm
 
@@ -66,46 +66,59 @@ def extract_pdf_content(pdf_path: str) -> list[dict[str, Any]]:
         logger.exception("pymupdf4llm extraction failed for %s", pdf_path)
         raise
 
-    # pymupdf4llm page_chunks output wraps pages in <!-- Page N --> markers
-    # or returns a list of dicts depending on version. Handle both.
+    # ── List output (newer pymupdf4llm) ──────────────────────────
+    # Each item is a dict like {"page": int, "text": str}.
+    # Enumerate manually — do NOT read the page field.
     if isinstance(md_text, list):
         pages = []
-        for item in md_text:
+        for i, item in enumerate(md_text):
             pages.append({
-                "page_number": item.get("page", item.get("page_number", 0)),
+                "page_number": i + 1,  # ← guaranteed 1-indexed
                 "content": item.get("text", item.get("content", "")),
-                "page_label": str(item.get("page", "")),
+                "page_label": str(i + 1),
             })
+        logger.info("Extracted %d pages (list output, manual counter)", len(pages))
         return pages
 
-    # String output with page markers
-    pages = []
+    # ── String output (older pymupdf4llm) ───────────────────────
+    # Contains <!-- Page N --> markers.  Split on them but assign
+    # page_number from a manual counter, ignoring the parsed N value.
     import re
 
-    # Split by <!-- Page N --> markers
-    parts = re.split(r"<!--\s*Page\s+(\d+)\s*-->", str(md_text))
+    md_str = str(md_text)
+    parts = re.split(r"<!--\s*Page\s+(\d+)\s*-->", md_str)
+    pages: list[dict[str, Any]] = []
+    counter = 0
 
-    # First element is content before any marker (if any)
+    # First segment (before any marker)
     if parts and parts[0].strip():
-        pages.append({"page_number": 1, "content": parts[0].strip(), "page_label": "1"})
-
-    # Remaining pairs: (page_number, content)
-    for i in range(1, len(parts) - 1, 2):
-        try:
-            page_num = int(parts[i])
-        except (ValueError, IndexError):
-            continue
-        content = parts[i + 1] if i + 1 < len(parts) else ""
+        counter += 1
         pages.append({
-            "page_number": page_num,
-            "content": content.strip() if content else "",
-            "page_label": str(page_num),
+            "page_number": counter,
+            "content": parts[0].strip(),
+            "page_label": str(counter),
         })
 
-    # If no page markers found, treat the entire output as one page
-    if not pages:
-        pages = [{"page_number": 1, "content": str(md_text), "page_label": "1"}]
+    # Remaining pairs: (matched_page_number, content_after_marker)
+    for i in range(1, len(parts) - 1, 2):
+        counter += 1
+        content = parts[i + 1] if i + 1 < len(parts) else ""
+        pages.append({
+            "page_number": counter,  # ← manual counter, ignores parsed value
+            "content": content.strip() if content else "",
+            "page_label": str(counter),
+        })
 
+    # Fallback: no markers found → entire text is one page
+    if not pages:
+        counter += 1
+        pages = [{
+            "page_number": counter,
+            "content": md_str,
+            "page_label": str(counter),
+        }]
+
+    logger.info("Extracted %d pages (string output, manual counter)", len(pages))
     return pages
 
 
