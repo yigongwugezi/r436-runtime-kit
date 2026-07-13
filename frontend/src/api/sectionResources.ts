@@ -6,6 +6,11 @@ export async function recommendSectionResources(sectionId: string, payload: Reco
   return data.recommendations;
 }
 
+export async function submitSectionResourceFeedback(sectionId: string, payload: Record<string, unknown>): Promise<{ feedback: Record<string, string> }> {
+  const { data } = await client.post(`/api/sections/${encodeURIComponent(sectionId)}/resources/feedback`, payload);
+  return data;
+}
+
 export async function generateSectionResource(sectionId: string, payload: Record<string, unknown>): Promise<{ resource: GeneratedSectionResource; reused: boolean }> {
   const { data } = await client.post(`/api/sections/${encodeURIComponent(sectionId)}/resources/generate`, payload);
   return data;

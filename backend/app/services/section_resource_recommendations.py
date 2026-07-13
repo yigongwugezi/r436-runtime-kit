@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from hashlib import sha256
 from collections import Counter
 from dataclasses import asdict
 from typing import Any
@@ -29,6 +30,12 @@ def normalize_url(value: str) -> str:
         return ""
     query = urlencode([(key, val) for key, val in parse_qsl(parsed.query, keep_blank_values=True) if not key.lower().startswith("utm_")])
     return urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/"), "", query, ""))
+
+
+def resource_feedback_key(url: str) -> str:
+    """Stable, non-reversible key for one normalized external URL."""
+    normalized = normalize_url(url)
+    return sha256(normalized.encode("utf-8")).hexdigest()[:24] if normalized else ""
 
 
 def classify_platform(url: str) -> str | None:
@@ -299,6 +306,7 @@ class SectionResourceRecommendationService:
         context: dict[str, Any],
         language: str,
         diagnostics: dict[str, Any],
+        feedback_by_url: dict[str, str] | None = None,
     ) -> list[dict[str, Any]]:
         resources: list[dict[str, Any]] = []
         seen_urls: set[str] = set()
@@ -323,6 +331,13 @@ class SectionResourceRecommendationService:
             trust = self._trust_level(source)
             diagnostics["relevance_candidate_count"] += 1
             score, matched = score_relevance(title, snippet, context, expected, match_level, trust)
+            feedback = (feedback_by_url or {}).get(resource_feedback_key(url))
+            if feedback == "helpful":
+                score += 0.1
+            elif feedback == "not_relevant":
+                score -= 0.14
+            elif feedback in {"too_hard", "too_easy"}:
+                score -= 0.04
             if score < 0.45 or (not matched and match_level == "exact_topic"):
                 diagnostics["filtered"]["low_relevance"] += 1
                 continue
@@ -346,6 +361,7 @@ class SectionResourceRecommendationService:
                 "platform": platform, "snippet": snippet, "reason": reason + "。",
                 "relevance_score": round(score, 2), "language": language or "zh-CN",
                 "trust_level": trust, "match_level": match_level,
+                "feedback": feedback,
             })
         return diversify_results(resources)
 
@@ -360,6 +376,7 @@ class SectionResourceRecommendationService:
         resource_types: list[str] | None = None,
         profile: dict[str, Any] | None = None,
         weak_points: list[Any] | None = None,
+        feedback_by_url: dict[str, str] | None = None,
         collect_diagnostics: bool = False,
     ) -> dict[str, Any]:
         del session_id, section_id  # External results are transient and never persisted.
@@ -386,11 +403,11 @@ class SectionResourceRecommendationService:
                     warnings.append("外部资源搜索暂不可用，请稍后重试。")
                 except Exception:
                     warnings.append("外部资源搜索暂不可用，请稍后重试。")
-                ranked = self._rank(candidates, context, language, {**diagnostics, "filtered": Counter()})
+                ranked = self._rank(candidates, context, language, {**diagnostics, "filtered": Counter()}, feedback_by_url)
                 if len([item for item in ranked if item["resource_type"] == resource_type]) >= target_count:
                     break
 
-        ranked = self._rank(candidates, context, language, diagnostics)
+        ranked = self._rank(candidates, context, language, diagnostics, feedback_by_url)
         if len(requested) == 1:
             resources = ranked[:5]
         else:

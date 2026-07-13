@@ -6,6 +6,7 @@ from app.services.section_resource_recommendations import (
     SectionResourceRecommendationService,
     classify_platform,
     normalize_search_context,
+    resource_feedback_key,
 )
 
 
@@ -120,6 +121,16 @@ def main() -> None:
     assert all("张三" not in query and "私人学习目标" not in query and "private_session" not in query for query in personalized_client.queries)
     assert all("链表" not in query for query in personalized_client.queries)
     assert "先看例题偏好" in personalized["resources"][0]["reason"]
+
+    baseline = recommend(SectionResourceRecommendationService(client=TypedClient()), "article")
+    target = baseline["resources"][0]
+    demoted = SectionResourceRecommendationService(client=TypedClient()).recommend(
+        session_id="test", section_id="s1", section_title="递归调用栈", resource_types=["article"],
+        profile={"subject_context": {"subject_name": "数据结构", "content_preferences": ["example_first"]}},
+        feedback_by_url={resource_feedback_key(target["url"]): "not_relevant"},
+    )
+    changed = next((item for item in demoted["resources"] if item["url"] == target["url"]), None)
+    assert changed is None or changed["relevance_score"] < target["relevance_score"]
     print("section resource recommendations: PASS")
 
 

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ExternalLink, FilePlus2, Loader2, RefreshCw, Search, Sparkles, FileText } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { useSubjectStore } from '../../store/subjectStore';
 import Markdown from '../../utils/markdown';
 import MermaidDiagram from '../../utils/mermaid';
 import {
@@ -10,6 +11,7 @@ import {
   getSectionMindmap,
   getGeneratedSectionResources,
   recommendSectionResources,
+  submitSectionResourceFeedback,
 } from '../../api/sectionResources';
 import type { ChapterMindmap, GeneratedSectionResource, GeneratedSectionResourceType, SectionRecommendationResult } from '../../types/sectionResources';
 import type { Section } from '../../types/learningPath';
@@ -38,6 +40,7 @@ function safeExternalUrl(url: string): boolean {
 export default function SectionResourceWorkspace(props: Props) {
   const nav = useNavigate();
   const { sessionId, pathId, stageId, chapterId, chapterTitle, section, lectureContent, sections, legacyMindmapId } = props;
+  const subjectId = useSubjectStore((state) => state.activeSubject?.id ?? state.activeClassSubject?.subject);
   const [recommendations, setRecommendations] = useState<SectionRecommendationResult | null>(null);
   const [searching, setSearching] = useState(false);
   const [resourceFilter, setResourceFilter] = useState<'all' | 'video' | 'article' | 'course' | 'paper' | 'document'>('all');
@@ -71,6 +74,7 @@ export default function SectionResourceWorkspace(props: Props) {
     try {
       const result = await recommendSectionResources(section.id, {
         sessionId, sectionTitle: section.title, knowledgePoints: section.knowledgePoints,
+        subjectId,
         language: 'zh-CN', resourceTypes: filter === 'all' ? ['video', 'article', 'course', 'document', 'paper'] : [filter],
       });
       if (requestId === requestSerial.current) setRecommendations(result);
@@ -79,6 +83,15 @@ export default function SectionResourceWorkspace(props: Props) {
     } finally { if (requestId === requestSerial.current) setSearching(false); }
   };
   const search = () => searchResources(resourceFilter);
+
+  const giveFeedback = async (resource: any, feedback: 'helpful' | 'not_relevant' | 'too_hard' | 'too_easy') => {
+    if (!sessionId || !section || !subjectId) return;
+    setNotice('');
+    try {
+      await submitSectionResourceFeedback(section.id, { sessionId, subjectId, url: resource.url, resourceType: resource.resource_type, feedback });
+      setRecommendations((current) => current ? { ...current, resources: current.resources.map((item) => item.url === resource.url ? { ...item, feedback } : item) } : current);
+    } catch { setNotice('反馈保存失败，请稍后重试。'); }
+  };
 
   const generate = async (resourceType: GeneratedSectionResourceType) => {
     if (!sessionId || !section) return;
@@ -155,6 +168,7 @@ export default function SectionResourceWorkspace(props: Props) {
             {safeExternalUrl(r.url) && <a href={r.url} target="_blank" rel="noopener noreferrer"
               className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-medium text-surface-500 hover:text-surface-700">
               {r.resource_type === 'video' ? '打开视频' : '打开原文'} <ExternalLink size={10} /></a>}
+            <div className="mt-2 flex flex-wrap gap-1"><span className="mr-1 text-[10px] text-surface-400">这条推荐：</span>{[['helpful', '有帮助'], ['not_relevant', '不相关'], ['too_hard', '偏难'], ['too_easy', '偏简单']].map(([value, label]) => <button key={value} onClick={() => giveFeedback(r, value as 'helpful' | 'not_relevant' | 'too_hard' | 'too_easy')} className={`rounded px-1.5 py-0.5 text-[10px] ${r.feedback === value ? 'bg-blue-100 text-blue-700' : 'bg-white text-surface-500 hover:bg-surface-100'}`}>{label}</button>)}</div>
           </div>
         ))}
       </div>

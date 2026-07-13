@@ -12,6 +12,7 @@ export interface ExternalSectionResource {
   language: string;
   trust_level: 'official' | 'educational' | 'general';
   match_level?: 'exact_topic' | 'chapter_level' | 'course_level' | 'expanded_research';
+  feedback?: 'helpful' | 'not_relevant' | 'too_hard' | 'too_easy' | null;
 }
 
 export interface SectionRecommendationResult {

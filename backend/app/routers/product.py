@@ -31,7 +31,7 @@ from app.agents.diagnosis_agent import DiagnosisAgent
 from app.agents.multimodal_agent import MultimodalAgent
 from app.config import settings
 from app.db.engine import SessionLocal
-from app.db.models import AnswerRecordModel, DailyTaskModel, LearnerModel, PracticeQuestionModel, ResourceModel, SessionModel
+from app.db.models import AnswerRecordModel, DailyTaskModel, LearnerModel, LearningEventModel, PracticeQuestionModel, ResourceModel, SessionModel
 from app.db.repository import (
     get_bookmarked_ids,
     get_daily_tasks as repo_get_daily_tasks,
@@ -2163,6 +2163,67 @@ def _require_matching_subject(session_id: str, subject_id: str) -> None:
     finally:
         db.close()
     _ensure_session_linked(session_id, subject_id=subject_id)
+
+
+_EXTERNAL_FEEDBACK_TYPES = {"helpful", "not_relevant", "too_hard", "too_easy"}
+
+
+def _external_feedback_by_url(db: Any, session_id: str, subject_id: str, section_id: str) -> dict[str, str]:
+    feedback: dict[str, str] = {}
+    events = db.query(LearningEventModel).filter(
+        LearningEventModel.session_id == session_id,
+        LearningEventModel.event_type == "external_resource_feedback",
+    ).order_by(LearningEventModel.created_at.asc()).all()
+    for event in events:
+        metadata = event.metadata_ if isinstance(event.metadata_, dict) else {}
+        if metadata.get("subject_id") == subject_id and metadata.get("section_id") == section_id and metadata.get("url_hash"):
+            feedback[str(metadata["url_hash"])] = str(metadata.get("feedback") or "")
+    return feedback
+
+
+def _upsert_external_feedback(
+    db: Any,
+    *,
+    session_id: str,
+    subject_id: str,
+    section_id: str,
+    url: str,
+    resource_type: str,
+    feedback: str,
+) -> dict[str, Any]:
+    from urllib.parse import urlparse
+    from app.services.section_resource_recommendations import RESOURCE_TYPES, normalize_url, resource_feedback_key
+
+    normalized = normalize_url(url)
+    if not normalized or resource_type not in RESOURCE_TYPES or feedback not in _EXTERNAL_FEEDBACK_TYPES:
+        raise HTTPException(status_code=400, detail="invalid external resource feedback")
+    url_hash = resource_feedback_key(normalized)
+    metadata = {
+        "subject_id": subject_id,
+        "section_id": section_id,
+        "url_hash": url_hash,
+        "resource_type": resource_type,
+        "domain": urlparse(normalized).netloc.lower().removeprefix("www."),
+        "feedback": feedback,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    existing = db.query(LearningEventModel).filter(
+        LearningEventModel.session_id == session_id,
+        LearningEventModel.event_type == "external_resource_feedback",
+        LearningEventModel.resource_id == f"external:{url_hash}",
+    ).first()
+    if existing:
+        previous = existing.metadata_ if isinstance(existing.metadata_, dict) else {}
+        existing.metadata_ = {**metadata, "created_at": previous.get("created_at") or metadata["updated_at"]}
+    else:
+        db.add(LearningEventModel(
+            session_id=session_id,
+            event_type="external_resource_feedback",
+            resource_id=f"external:{url_hash}",
+            metadata_={**metadata, "created_at": metadata["updated_at"]},
+        ))
+    db.commit()
+    return metadata
 
 
 @router.get("/profile")
@@ -5286,6 +5347,15 @@ def recommend_section_resources(section_id: str, payload: dict[str, Any]) -> dic
         "knowledge_mastery": profile_v2.get("knowledge_mastery") or [],
     }
 
+    subject_id = str(payload.get("subjectId") or "").strip()
+    db = SessionLocal()
+    try:
+        session = db.get(SessionModel, session_id)
+        subject_id = subject_id or str((session.subject_id if session else "") or "")
+        feedback_by_url = _external_feedback_by_url(db, session_id, subject_id, section_id) if subject_id else {}
+    finally:
+        db.close()
+
     from app.services.section_resource_recommendations import SectionResourceRecommendationService
     result = SectionResourceRecommendationService().recommend(
         session_id=session_id,
@@ -5296,8 +5366,35 @@ def recommend_section_resources(section_id: str, payload: dict[str, Any]) -> dic
         resource_types=payload.get("resourceTypes") if isinstance(payload.get("resourceTypes"), list) else [],
         profile=profile,
         weak_points=weak_points,
+        feedback_by_url=feedback_by_url,
     )
     return _product_response({"recommendations": result}, session_id=session_id, source="duckduckgo")
+
+
+@router.post("/sections/{section_id}/resources/feedback")
+def feedback_on_section_resource(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Persist one scoped external recommendation signal without creating a resource."""
+    session_id = _payload_session_id(payload)
+    subject_id = str(payload.get("subjectId") or "").strip()
+    feedback = str(payload.get("feedback") or "").strip()
+    url = str(payload.get("url") or "").strip()
+    resource_type = str(payload.get("resourceType") or "").strip()
+    db = SessionLocal()
+    try:
+        session = db.get(SessionModel, session_id)
+        resolved_subject = subject_id or str((session.subject_id if session else "") or "")
+        if not resolved_subject:
+            raise HTTPException(status_code=400, detail="subjectId required")
+        if session and session.subject_id and session.subject_id != resolved_subject:
+            raise HTTPException(status_code=409, detail="当前会话不属于该科目")
+        _ensure_session_linked(session_id, subject_id=resolved_subject)
+        saved = _upsert_external_feedback(
+            db, session_id=session_id, subject_id=resolved_subject, section_id=section_id,
+            url=url, resource_type=resource_type, feedback=feedback,
+        )
+        return _product_response({"feedback": saved}, session_id=session_id, subject_id=resolved_subject, source="user_input")
+    finally:
+        db.close()
 
 
 def _section_path_context(session_id: str, section_id: str) -> dict[str, Any]:
