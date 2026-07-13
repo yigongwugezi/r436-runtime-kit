@@ -36,3 +36,8 @@ export async function assessInterest(sessionId: string, answers?: number[]): Pro
   const { data } = await client.post('/api/profile/v2/assess/interest', { sessionId, ...(answers ? { answers } : {}) });
   return data;
 }
+
+export async function syncProfileFromConversation(subjectId: string, sessionId: string, preview = true): Promise<{ preview: any; profileV2: LearnerProfileV2; applied?: boolean }> {
+  const { data } = await client.post(`/api/profiles/${encodeURIComponent(subjectId)}/sync-from-conversation`, { sessionId, preview });
+  return data;
+}

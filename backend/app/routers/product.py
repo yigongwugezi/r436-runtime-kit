@@ -60,7 +60,15 @@ from app.schemas.feedback import FeedbackSignal
 from app.utils.errors import InvalidEventTypeError, MissingSessionIdError, NotFoundError
 from app.utils.profile_facts import apply_state_facts_to_result, profile_item
 from app.utils.profile_normalizer import PROFILE_DIMENSION_LABELS, normalize_profile_dimensions
-from app.services.profile_v2 import INTEREST_QUESTIONS, assess_interest, build_profile_v2, update_context as update_profile_v2_context, update_self_report
+from app.services.profile_v2 import (
+    INTEREST_QUESTIONS,
+    apply_conversation_sync,
+    assess_interest,
+    build_profile_v2,
+    preview_conversation_sync,
+    update_context as update_profile_v2_context,
+    update_self_report,
+)
 from app.services.conversation_state import conversation_store
 from app.services.course_catalog import course_catalog
 from app.services.learning_tracker import learning_tracker
@@ -2036,6 +2044,7 @@ def _profile_v2(session_id: str, legacy: dict[str, Any] | None = None) -> dict[s
         course=course,
         weaknesses=legacy.get("weaknesses") if isinstance(legacy.get("weaknesses"), list) else [],
         existing=prefs.get("profile_v2") if isinstance(prefs, dict) else None,
+        session_id=session_id,
     )
 
 
@@ -2140,6 +2149,20 @@ def _ensure_session_linked(
         logger.warning("Failed to link session %s to subject/learner", session_id, exc_info=True)
     finally:
         db.close()
+
+
+def _require_matching_subject(session_id: str, subject_id: str) -> None:
+    """Reject a sync request that tries to reuse another subject session."""
+    if not subject_id:
+        raise HTTPException(status_code=400, detail="subjectId required")
+    db = SessionLocal()
+    try:
+        session = db.get(SessionModel, session_id)
+        if session and session.subject_id and session.subject_id != subject_id:
+            raise HTTPException(status_code=409, detail="当前会话不属于该科目")
+    finally:
+        db.close()
+    _ensure_session_linked(session_id, subject_id=subject_id)
 
 
 @router.get("/profile")
@@ -2249,6 +2272,33 @@ def update_profile_context(payload: dict[str, Any], auth: AuthContext = Depends(
     profile_v2 = update_profile_v2_context(_profile_v2(session_id), updates)
     _save_profile_v2(session_id, profile_v2)
     return _product_response({"profileV2": profile_v2}, session_id=session_id, source="user_input")
+
+
+@router.post("/profiles/{subject_id}/sync-from-conversation")
+def sync_profile_from_conversation(
+    subject_id: str,
+    payload: dict[str, Any],
+    auth: AuthContext = Depends(reject_parent),
+) -> dict[str, Any]:
+    """Preview or apply explicit learner facts from this session's user messages."""
+    session_id = _payload_session_id(payload)
+    subject_id = str(subject_id).strip()
+    _require_matching_subject(session_id, subject_id)
+    db = SessionLocal()
+    try:
+        messages = repo_get_messages(db, session_id)
+    finally:
+        db.close()
+    profile_v2 = _profile_v2(session_id)
+    context = profile_v2.setdefault("subject_context", {})
+    context["subject_id"] = subject_id
+    context["session_id"] = session_id
+    preview = preview_conversation_sync(profile_v2, messages, session_id=session_id, subject_id=subject_id)
+    if payload.get("preview", True) is not False:
+        return _product_response({"preview": preview, "profileV2": profile_v2}, session_id=session_id, subject_id=subject_id, source="conversation_explicit")
+    updated = apply_conversation_sync(profile_v2, preview)
+    _save_profile_v2(session_id, updated)
+    return _product_response({"preview": preview, "profileV2": updated, "applied": True}, session_id=session_id, subject_id=subject_id, source="conversation_explicit")
 
 
 @router.patch("/profile/v2/self-report")
