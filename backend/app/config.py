@@ -84,6 +84,21 @@ class Settings(BaseSettings):
     search_total_timeout: int = 15      # seconds across all real search backends
     search_proxy: str = ""              # optional HTTP/SOCKS proxy for web search only
     search_cache_ttl: int = 300         # in-memory cache TTL in seconds
+    search_strategy: str = "free_first_cascade"
+    search_provider_timeout_seconds: int = 5
+    search_total_timeout_seconds: int = 12
+    search_max_provider_calls: int = 8
+    search_min_results_single_type: int = 6
+    search_max_results_single_type: int = 8
+    search_min_results_all: int = 8
+    search_max_results_all: int = 12
+    search_min_types_all: int = 3
+    search_cache_enabled: bool = True
+    search_cache_ttl_seconds: int = 21600
+    search_stale_cache_seconds: int = 604800
+    search_cache_max_entries: int = 500
+    search_circuit_failure_threshold: int = 3
+    search_circuit_open_seconds: int = 60
 
     # ── RAG / Vector Search ───────────────────────────────────────────
     rag_enabled: bool = True

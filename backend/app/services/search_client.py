@@ -20,7 +20,10 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from threading import Lock
 from urllib import error, request
+from urllib.parse import urlencode
+from xml.etree import ElementTree
 
 from app.config import settings
 
@@ -50,6 +53,12 @@ class SearchResultItem:
     snippet: str = ""
     content: str = ""
     source: str = ""
+    provider: str = ""
+    published_at: str = ""
+    authors: list[str] = field(default_factory=list)
+    doi: str = ""
+    raw_rank: int = 0
+    access_hint: str = ""
 
 
 @dataclass
@@ -131,6 +140,8 @@ class DuckDuckGoSearchClient(BaseSearchClient):
     """Free real search through ``ddgs`` with bounded backend fallback."""
 
     _BACKENDS = ("auto", "bing", "brave")
+    _circuit_lock = Lock()
+    _circuits: dict[str, tuple[int, float, bool]] = {}
 
     def __init__(self, timeout: int = 10, total_timeout: int = 15, proxy: str | None = None) -> None:
         self.timeout = timeout
@@ -159,6 +170,8 @@ class DuckDuckGoSearchClient(BaseSearchClient):
         deadline = time.monotonic() + self.total_timeout
         last_error: Exception | None = None
         for backend in self._BACKENDS:
+            if not self._allow_backend(backend):
+                continue
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
@@ -169,12 +182,50 @@ class DuckDuckGoSearchClient(BaseSearchClient):
                     max_results=max_results,
                 )
                 if raw:
+                    self._record_success(backend)
                     return self._response(query, raw, backend)
             except Exception as exc:
                 last_error = exc
+                self._record_failure(backend)
                 logger.info("DDGS backend %s failed: %s", backend, exc)
 
         raise SearchError(f"DDGS search failed after real backends: {last_error or 'no results'}", cause=last_error)
+
+    @classmethod
+    def _allow_backend(cls, backend: str) -> bool:
+        """Skip only a repeatedly failing backend; empty results remain healthy."""
+        now = time.monotonic()
+        with cls._circuit_lock:
+            failures, opened_at, probing = cls._circuits.get(backend, (0, 0.0, False))
+            if not opened_at:
+                return True
+            if now - opened_at < settings.search_circuit_open_seconds:
+                return False
+            if probing:
+                return False
+            cls._circuits[backend] = (failures, opened_at, True)
+            return True
+
+    @classmethod
+    def _record_success(cls, backend: str) -> None:
+        with cls._circuit_lock:
+            cls._circuits.pop(backend, None)
+
+    @classmethod
+    def _record_failure(cls, backend: str) -> None:
+        with cls._circuit_lock:
+            failures, opened_at, _ = cls._circuits.get(backend, (0, 0.0, False))
+            failures += 1
+            cls._circuits[backend] = (
+                failures,
+                time.monotonic() if failures >= settings.search_circuit_failure_threshold else opened_at,
+                False,
+            )
+
+    @classmethod
+    def reset_circuits(cls) -> None:
+        with cls._circuit_lock:
+            cls._circuits.clear()
 
     @staticmethod
     def _response(query: str, raw: list[dict[str, object]], backend: str) -> SearchResponse:
@@ -185,8 +236,10 @@ class DuckDuckGoSearchClient(BaseSearchClient):
                 snippet=str(item.get("body") or item.get("snippet") or ""),
                 content=str(item.get("body") or item.get("snippet") or ""),
                 source=f"ddgs:{backend}",
+                provider="ddgs",
+                raw_rank=index,
             )
-            for item in raw
+            for index, item in enumerate(raw, start=1)
         ]
 
         return SearchResponse(
@@ -309,6 +362,64 @@ class TavilySearchClient(BaseSearchClient):
             return exc.read().decode("utf-8", errors="replace")[:500]
         except Exception:
             return str(exc)
+
+
+def search_crossref(query: str, max_results: int = 5, timeout: int = 5) -> SearchResponse:
+    """Query Crossref's public metadata API without a key or PDF download."""
+    try:
+        url = f"https://api.crossref.org/works?{urlencode({'query': query, 'rows': max_results})}"
+        with request.urlopen(url, timeout=timeout) as response:
+            items = json.loads(response.read().decode("utf-8")).get("message", {}).get("items", [])
+    except (error.URLError, error.HTTPError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        raise SearchError("Crossref public search is unavailable", cause=exc) from exc
+    results = []
+    for rank, item in enumerate(items, start=1):
+        doi = str(item.get("DOI") or "")
+        title = " ".join(item.get("title") or [])
+        authors = [" ".join(filter(None, (author.get("given"), author.get("family")))) for author in item.get("author") or []]
+        published = item.get("published-print") or item.get("published-online") or {}
+        date_parts = (published.get("date-parts") or [[]])[0]
+        results.append(SearchResultItem(
+            title=title,
+            url=f"https://doi.org/{doi}" if doi else str(item.get("URL") or ""),
+            snippet=str(item.get("abstract") or "")[:360],
+            source="crossref",
+            provider="crossref",
+            published_at="-".join(str(part) for part in date_parts),
+            authors=[author for author in authors if author],
+            doi=doi,
+            raw_rank=rank,
+            access_hint="metadata",
+        ))
+    return SearchResponse(query=query, results=results, total_estimated=len(results), source="crossref")
+
+
+def search_arxiv(query: str, max_results: int = 5, timeout: int = 5) -> SearchResponse:
+    """Query arXiv's public Atom API without a key or PDF download."""
+    try:
+        url = f"https://export.arxiv.org/api/query?{urlencode({'search_query': f'all:{query}', 'start': 0, 'max_results': max_results})}"
+        with request.urlopen(url, timeout=timeout) as response:
+            root = ElementTree.fromstring(response.read())
+    except (error.URLError, error.HTTPError, TimeoutError, OSError, ElementTree.ParseError) as exc:
+        raise SearchError("arXiv public search is unavailable", cause=exc) from exc
+    ns = {"atom": "http://www.w3.org/2005/Atom"}
+    results = []
+    for rank, entry in enumerate(root.findall("atom:entry", ns), start=1):
+        title = " ".join((entry.findtext("atom:title", default="", namespaces=ns)).split())
+        summary = " ".join((entry.findtext("atom:summary", default="", namespaces=ns)).split())
+        url = entry.findtext("atom:id", default="", namespaces=ns)
+        results.append(SearchResultItem(
+            title=title,
+            url=url,
+            snippet=summary[:360],
+            source="arxiv",
+            provider="arxiv",
+            published_at=entry.findtext("atom:published", default="", namespaces=ns),
+            authors=[author.findtext("atom:name", default="", namespaces=ns) for author in entry.findall("atom:author", ns)],
+            raw_rank=rank,
+            access_hint="abstract",
+        ))
+    return SearchResponse(query=query, results=results, total_estimated=len(results), source="arxiv")
 
 
 # ── In-memory cache ───────────────────────────────────────────────────────

@@ -35,7 +35,16 @@ class AlwaysFails:
         raise RuntimeError("provider unavailable")
 
 
+class CircuitFails(AlwaysFails):
+    calls = 0
+
+    def text(self, query, **kwargs):
+        self.__class__.calls += 1
+        raise RuntimeError("provider unavailable")
+
+
 def main() -> None:
+    DuckDuckGoSearchClient.reset_circuits()
     with patch("ddgs.DDGS", AutoSuccess):
         AutoSuccess.calls.clear()
         result = DuckDuckGoSearchClient(timeout=2, total_timeout=3).search("时间复杂度", max_results=3)
@@ -58,6 +67,23 @@ def main() -> None:
             assert "DDGS search failed" in str(exc)
         else:
             raise AssertionError("all real backends must not fall back to mock results")
+
+    DuckDuckGoSearchClient.reset_circuits()
+    with patch("ddgs.DDGS", CircuitFails):
+        CircuitFails.calls = 0
+        client = DuckDuckGoSearchClient(timeout=1, total_timeout=2)
+        for _ in range(3):
+            try:
+                client.search("circuit test")
+            except SearchError:
+                pass
+        failed_calls = CircuitFails.calls
+        try:
+            client.search("circuit test")
+        except SearchError:
+            pass
+        assert failed_calls == 9 and CircuitFails.calls == failed_calls
+    DuckDuckGoSearchClient.reset_circuits()
 
     print("search client: PASS")
 

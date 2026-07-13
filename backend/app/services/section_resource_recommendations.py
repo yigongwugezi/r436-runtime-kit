@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import copy
 import re
+import time
 from hashlib import sha256
-from collections import Counter
-from dataclasses import asdict
-from typing import Any
+from collections import Counter, OrderedDict
+from dataclasses import asdict, dataclass
+from threading import Lock
+from typing import Any, Callable
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from app.services.search_client import SearchError, get_search_client
+from app.config import settings
+from app.services.search_client import SearchError, get_search_client, search_arxiv, search_crossref
 
 
 RESOURCE_TYPES = ("article", "video", "course", "document", "paper")
@@ -21,6 +25,59 @@ _CONCEPTS = (
 )
 _PAPER_HOSTS = ("arxiv.org", "semanticscholar.org", "dl.acm.org", "ieeexplore.ieee.org", "dblp.org", "doi.org", "cnki", "wanfang")
 _COURSE_HOSTS = ("icourse163.org", "xuetangx.com", "smartedu.cn", "imooc.com", "coursera.org", "edx.org", "ocw.mit.edu")
+
+ProgressCallback = Callable[[dict[str, Any]], None]
+
+
+@dataclass
+class _CachedCandidates:
+    created_at: float
+    candidates: list[dict[str, Any]]
+    queries: list[str]
+
+
+class SearchCascade:
+    """Process-local public candidate cache for ResourceAgent's section search.
+
+    It deliberately stores neither session/profile data nor ranked reasons. Each
+    request reruns feedback filtering and personalised ranking over the cached
+    public candidates.
+    """
+
+    _cache: OrderedDict[str, _CachedCandidates] = OrderedDict()
+    _lock = Lock()
+
+    @classmethod
+    def get(cls, key: str) -> tuple[str, _CachedCandidates | None]:
+        if not settings.search_cache_enabled:
+            return "miss", None
+        with cls._lock:
+            entry = cls._cache.get(key)
+            if not entry:
+                return "miss", None
+            age = time.time() - entry.created_at
+            if age <= settings.search_cache_ttl_seconds:
+                cls._cache.move_to_end(key)
+                return "fresh", copy.deepcopy(entry)
+            if age <= settings.search_stale_cache_seconds:
+                return "stale", copy.deepcopy(entry)
+            cls._cache.pop(key, None)
+        return "miss", None
+
+    @classmethod
+    def put(cls, key: str, candidates: list[dict[str, Any]], queries: list[str]) -> None:
+        if not settings.search_cache_enabled or not candidates:
+            return
+        with cls._lock:
+            cls._cache[key] = _CachedCandidates(time.time(), copy.deepcopy(candidates), list(queries))
+            cls._cache.move_to_end(key)
+            while len(cls._cache) > settings.search_cache_max_entries:
+                cls._cache.popitem(last=False)
+
+    @classmethod
+    def clear(cls) -> None:
+        with cls._lock:
+            cls._cache.clear()
 
 
 def normalize_url(value: str) -> str:
@@ -251,6 +308,7 @@ class SectionResourceRecommendationService:
 
     def __init__(self, client: Any | None = None) -> None:
         self._client = client or get_search_client("duckduckgo")
+        self._use_cache = client is None
 
     _normal_url = staticmethod(normalize_url)
     _video_platform = staticmethod(classify_platform)
@@ -365,6 +423,55 @@ class SectionResourceRecommendationService:
             })
         return diversify_results(resources)
 
+    @staticmethod
+    def _cache_key(context: dict[str, Any], requested: list[str], language: str) -> str:
+        public_key = "|".join((
+            str(context.get("primary_topic") or "").strip().lower(),
+            str(context.get("course_name") or "").strip().lower(),
+            ",".join(requested),
+            language or "zh-CN",
+            settings.search_strategy,
+        ))
+        return sha256(public_key.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _emit(callback: ProgressCallback | None, stage: str, status: str, **counts: int | bool) -> None:
+        if callback:
+            callback({"event": "search_progress", "stage": stage, "status": status, **counts})
+
+    def _preview_rank(
+        self,
+        candidates: list[dict[str, Any]],
+        context: dict[str, Any],
+        language: str,
+        feedback_by_url: dict[str, str] | None,
+    ) -> list[dict[str, Any]]:
+        return self._rank(
+            candidates,
+            context,
+            language,
+            {"filtered": Counter(), "url_valid_count": 0, "relevance_candidate_count": 0, "relevant_count": 0},
+            feedback_by_url,
+        )
+
+    @staticmethod
+    def _enough(ranked: list[dict[str, Any]], requested: list[str]) -> bool:
+        if len(requested) == 1:
+            return len(ranked) >= settings.search_min_results_single_type
+        types = {item["resource_type"] for item in ranked}
+        return len(ranked) >= settings.search_min_results_all and len(types) >= settings.search_min_types_all
+
+    @staticmethod
+    def _paper_fallbacks(context: dict[str, Any]) -> list[tuple[Any, str]]:
+        query = " ".join(context.get("english_keywords") or []) or str(context.get("primary_topic") or "")
+        results: list[tuple[Any, str]] = []
+        for search in (search_crossref, search_arxiv):
+            try:
+                results.extend((item, "expanded_research") for item in search(query, max_results=5, timeout=settings.search_provider_timeout_seconds).results)
+            except SearchError:
+                continue
+        return results
+
     def recommend(
         self,
         *,
@@ -378,6 +485,8 @@ class SectionResourceRecommendationService:
         weak_points: list[Any] | None = None,
         feedback_by_url: dict[str, str] | None = None,
         collect_diagnostics: bool = False,
+        progress_callback: ProgressCallback | None = None,
+        refresh: bool = False,
     ) -> dict[str, Any]:
         del session_id, section_id  # External results are transient and never persisted.
         requested = [kind for kind in RESOURCE_TYPES if kind in {str(item).lower() for item in resource_types or RESOURCE_TYPES}]
@@ -387,14 +496,31 @@ class SectionResourceRecommendationService:
         candidates: list[dict[str, Any]] = []
         queries: list[str] = []
         warnings: list[str] = []
-        diagnostics: dict[str, Any] = {"queries": [], "raw_count": 0, "url_valid_count": 0, "relevance_candidate_count": 0, "relevant_count": 0, "final_count": 0, "filtered": Counter()}
-        target_count = 1 if len(requested) > 1 else 2
+        diagnostics: dict[str, Any] = {"queries": [], "raw_count": 0, "url_valid_count": 0, "relevance_candidate_count": 0, "relevant_count": 0, "final_count": 0, "filtered": Counter(), "provider_calls": 0, "cache": "miss"}
+        target_count = 1 if len(requested) > 1 else settings.search_min_results_single_type
+        cache_key = self._cache_key(context, requested, language)
+        cache_state, cached = SearchCascade.get(cache_key) if self._use_cache else ("miss", None)
+        stale = cached if cache_state == "stale" else None
+        self._emit(progress_callback, "topic_analysis", "completed")
+        if cached and cache_state == "fresh" and not refresh:
+            candidates, queries = cached.candidates, cached.queries
+            diagnostics["cache"] = "fresh"
+            search_requested: list[str] = []
+            self._emit(progress_callback, "cache", "completed")
+        else:
+            search_requested = requested
+            self._emit(progress_callback, "primary_search", "running")
 
-        for resource_type in requested:
-            for query, match_level in self._query_layers(context, resource_type, language):
+        for resource_type in search_requested:
+            for layer_index, (query, match_level) in enumerate(self._query_layers(context, resource_type, language)):
+                if diagnostics["provider_calls"] >= settings.search_max_provider_calls:
+                    break
+                if layer_index:
+                    self._emit(progress_callback, "fallback_search", "running", fallback_used=True)
                 queries.append(query)
+                diagnostics["provider_calls"] += 1
                 try:
-                    response = self._client.search(query, max_results=5)
+                    response = self._client.search(query, max_results=settings.search_max_results_single_type)
                     items = list(response.results)
                     diagnostics["queries"].append({"query": query, "resource_type": resource_type, "match_level": match_level, "raw_count": len(items)})
                     diagnostics["raw_count"] += len(items)
@@ -404,12 +530,31 @@ class SectionResourceRecommendationService:
                 except Exception:
                     warnings.append("外部资源搜索暂不可用，请稍后重试。")
                 ranked = self._rank(candidates, context, language, {**diagnostics, "filtered": Counter()}, feedback_by_url)
+                if self._use_cache and resource_type == "paper" and layer_index == 0 and len([item for item in ranked if item["resource_type"] == "paper"]) < target_count:
+                    self._emit(progress_callback, "fallback_search", "running", fallback_used=True)
+                    for item, paper_match in self._paper_fallbacks(context):
+                        if diagnostics["provider_calls"] >= settings.search_max_provider_calls:
+                            break
+                        diagnostics["provider_calls"] += 1
+                        diagnostics["raw_count"] += 1
+                        candidates.append({"item": item, "resource_type": "paper", "match_level": paper_match})
+                    ranked = self._rank(candidates, context, language, {**diagnostics, "filtered": Counter()}, feedback_by_url)
                 if len([item for item in ranked if item["resource_type"] == resource_type]) >= target_count:
                     break
 
+        if not candidates and stale:
+            candidates, queries = stale.candidates, stale.queries
+            diagnostics["cache"] = "stale"
+            warnings.append("\u5b9e\u65f6\u641c\u7d22\u6682\u65f6\u4e0d\u7a33\u5b9a\uff0c\u6b63\u5728\u5c55\u793a\u8fd1\u671f\u6709\u6548\u7ed3\u679c\u3002")
+            self._emit(progress_callback, "cache", "completed", stale=True)
+        elif candidates and diagnostics["cache"] == "miss" and self._use_cache:
+            SearchCascade.put(cache_key, candidates, queries)
+
+        self._emit(progress_callback, "quality_filter", "running")
         ranked = self._rank(candidates, context, language, diagnostics, feedback_by_url)
+        self._emit(progress_callback, "personalized_ranking", "running")
         if len(requested) == 1:
-            resources = ranked[:5]
+            resources = ranked[:settings.search_max_results_single_type]
         else:
             resources = []
             selected_urls: set[str] = set()
@@ -419,7 +564,7 @@ class SectionResourceRecommendationService:
                     resources.append(item)
                     selected_urls.add(item["url"])
             resources.extend(item for item in ranked if item["url"] not in selected_urls)
-            resources = resources[:5]
+            resources = resources[:settings.search_max_results_all]
         diagnostics["final_count"] = len(resources)
         if resources:
             status = "completed"
@@ -432,6 +577,7 @@ class SectionResourceRecommendationService:
             status = "no_high_relevance"
             warnings.append("暂未找到高相关公开资源。")
         result = {"query": queries, "resources": resources, "status": status, "warnings": list(dict.fromkeys(warnings))}
+        self._emit(progress_callback, "completed", "completed", candidate_count=diagnostics["raw_count"], result_count=len(resources), source_count=len({item["source"] for item in resources}))
         if collect_diagnostics:
             result["diagnostics"] = {**diagnostics, "filtered": dict(diagnostics["filtered"])}
         return result
