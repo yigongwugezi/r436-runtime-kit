@@ -110,6 +110,16 @@ def main() -> None:
 
     unavailable = SectionResourceRecommendationService(client=UnavailableClient()).recommend(session_id="test", section_id="s1", section_title="\u9012\u5f52", resource_types=["article"])
     assert unavailable["status"] == "search_unavailable" and not unavailable["resources"]
+    personalized_client = TypedClient()
+    personalized = SectionResourceRecommendationService(client=personalized_client).recommend(
+        session_id="private_session", section_id="s2", section_title="递归调用栈", knowledge_points=["递归", "调用栈"],
+        weak_points=["递归", "链表"], resource_types=["article"],
+        profile={"subject_context": {"subject_name": "数据结构", "prior_experience": ["零基础"], "content_preferences": ["example_first"], "resource_preferences": ["视频"], "learning_goal": "张三的完整私人学习目标"}, "knowledge_mastery": [{"label": "递归", "status": "weak"}]},
+    )
+    assert any("示例" in query and "入门" in query for query in personalized_client.queries)
+    assert all("张三" not in query and "私人学习目标" not in query and "private_session" not in query for query in personalized_client.queries)
+    assert all("链表" not in query for query in personalized_client.queries)
+    assert "先看例题偏好" in personalized["resources"][0]["reason"]
     print("section resource recommendations: PASS")
 
 

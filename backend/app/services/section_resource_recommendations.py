@@ -129,6 +129,15 @@ def _profile_context(profile: dict[str, Any] | None) -> dict[str, Any]:
     return nested if isinstance(nested, dict) else {}
 
 
+def _profile_mastery(profile: dict[str, Any] | None) -> list[dict[str, Any]]:
+    profile = profile or {}
+    direct = profile.get("knowledge_mastery")
+    if isinstance(direct, list):
+        return [item for item in direct if isinstance(item, dict)]
+    nested = ((profile.get("preferences") or {}).get("profile_v2") or {}).get("knowledge_mastery")
+    return [item for item in nested if isinstance(item, dict)] if isinstance(nested, list) else []
+
+
 def normalize_search_context(
     *,
     course_name: str = "",
@@ -138,6 +147,7 @@ def normalize_search_context(
     section_title: str = "",
     lecture_title: str = "",
     knowledge_points: list[str] | None = None,
+    weak_points: list[str] | None = None,
     learner_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Extract stable search concepts without requiring an LLM."""
@@ -168,12 +178,27 @@ def normalize_search_context(
                 keywords.append(cn)
             if cn in text and en not in english_keywords:
                 english_keywords.append(en)
+    relevant_weak = [point for point in weak_points or [] if str(point).strip() and str(point).strip().lower() in text.lower()]
+    for item in _profile_mastery(learner_profile):
+        name = str(item.get("label") or item.get("knowledge_id") or "").strip()
+        if item.get("status") == "weak" and name and name.lower() in text.lower() and name not in relevant_weak:
+            relevant_weak.append(name)
+    for point in relevant_weak:
+        if point not in keywords:
+            keywords.append(point)
+    prior = " ".join(str(item) for item in profile_context.get("prior_experience") or [])
+    beginner = any(token in prior for token in ("零基础", "没学过", "基础薄弱", "初学"))
+    preferences = profile_context.get("content_preferences") if isinstance(profile_context.get("content_preferences"), list) else []
+    resource_preferences = profile_context.get("resource_preferences") if isinstance(profile_context.get("resource_preferences"), list) else []
     return {
         "course_name": course,
         "primary_topic": primary_topic,
         "keywords": keywords[:7],
         "english_keywords": english_keywords[:7],
-        "preferences": profile_context.get("content_preferences") if isinstance(profile_context.get("content_preferences"), list) else [],
+        "preferences": preferences,
+        "resource_preferences": resource_preferences,
+        "level": "beginner" if beginner else "general",
+        "relevant_weak_points": relevant_weak[:4],
     }
 
 
@@ -194,8 +219,12 @@ def score_relevance(title: str, snippet: str, context: dict[str, Any], resource_
     if match_level == "expanded_research":
         score -= 0.05
     score += {"official": 0.16, "educational": 0.11, "general": 0.03}[trust_level]
-    if resource_type == "video":
-        score += 0.04
+    if "example_first" in context["preferences"] and any(token in text for token in ("示例", "例题", "example", "walkthrough")):
+        score += 0.05
+    if context["level"] == "beginner" and any(token in text for token in ("入门", "基础", "beginner", "basics")):
+        score += 0.05
+    if resource_type == "video" and any("视频" in str(item) for item in context["resource_preferences"]):
+        score += 0.06
     return min(0.98, score), matched
 
 
@@ -245,15 +274,24 @@ class SectionResourceRecommendationService:
         topic = context["primary_topic"]
         keywords = " ".join(context["keywords"][:3]) or topic
         english = " ".join(context["english_keywords"][:3]) or "recursion call stack"
+        cn_hints = []
+        en_hints = []
+        if "example_first" in context["preferences"]:
+            cn_hints.extend(["示例", "例题", "分步讲解"]); en_hints.extend(["example", "walkthrough"])
+        if context["level"] == "beginner":
+            cn_hints.extend(["入门", "基础"]); en_hints.extend(["beginner", "basics"])
+        hint = " ".join(cn_hints)
+        english_hint = " ".join(en_hints)
         if resource_type == "article":
-            return [(f"{course} {keywords} 教程", "exact_topic"), (f"{topic} 阶乘 斐波那契 示例", "exact_topic"), (f"{english} tutorial", "chapter_level"), (f"{course} {topic} 教学", "course_level")]
+            return [(f"{course} {keywords} 教程 {hint}".strip(), "exact_topic"), (f"{topic} 示例 {hint}".strip(), "exact_topic"), (f"{english} tutorial {english_hint}".strip(), "chapter_level"), (f"{course} {topic} 教学", "course_level")]
         if resource_type == "video":
-            return [(f"{course} {topic} 视频 site:bilibili.com/video", "exact_topic"), (f"{topic} 栈帧 教学视频 site:youtube.com/watch", "exact_topic"), (f"{topic} site:icourse163.org/learn", "chapter_level"), (f"{course} 递归 教程 site:youku.com/v_show", "course_level")]
+            return [(f"{course} {topic} 视频 {hint} site:bilibili.com/video".strip(), "exact_topic"), (f"{topic} 教学视频 {hint} site:youtube.com/watch".strip(), "exact_topic"), (f"{topic} site:icourse163.org/learn", "chapter_level"), (f"{course} {topic} 教程 site:youku.com/v_show", "course_level")]
         if resource_type == "course":
-            return [(f"{course} {topic} site:icourse163.org/learn", "exact_topic"), (f"{course} 递归 site:xuetangx.com/learn", "chapter_level"), (f"{course} 递归 课程 site:coursera.org/learn", "chapter_level"), (f"{course} 课程 site:ocw.mit.edu/courses", "course_level")]
+            return [(f"{course} {topic} {hint} site:icourse163.org/learn".strip(), "exact_topic"), (f"{course} {topic} site:xuetangx.com/learn", "chapter_level"), (f"{course} {topic} 课程 site:coursera.org/learn", "chapter_level"), (f"{course} 课程 site:ocw.mit.edu/courses", "course_level")]
         if resource_type == "document":
-            return [(f"{topic} 栈帧 filetype:pdf", "exact_topic"), (f"{topic} 课件 filetype:pdf", "exact_topic"), (f"{course} 递归 讲义 filetype:pdf", "chapter_level"), (f"{english} lecture notes filetype:pdf", "course_level")]
-        return [(f"{english} paper site:arxiv.org", "exact_topic"), (f"recursion runtime stack paper site:semanticscholar.org", "exact_topic"), (f"tail recursion optimization paper site:arxiv.org", "expanded_research"), (f"stack frame design paper site:dblp.org", "expanded_research")]
+            return [(f"{topic} {hint} filetype:pdf".strip(), "exact_topic"), (f"{topic} 课件 filetype:pdf", "exact_topic"), (f"{course} {topic} 讲义 filetype:pdf", "chapter_level"), (f"{english} lecture notes {english_hint} filetype:pdf".strip(), "course_level")]
+        expanded = "tail recursion" if "recursion" in english else english
+        return [(f"{english} paper site:arxiv.org", "exact_topic"), (f"{english} research site:semanticscholar.org", "exact_topic"), (f"{expanded} optimization paper site:arxiv.org", "expanded_research"), (f"{english} design paper site:dblp.org", "expanded_research")]
 
     def _rank(
         self,
@@ -295,7 +333,14 @@ class SectionResourceRecommendationService:
             if matched:
                 reason += f"及「{'、'.join(matched[:2])}」"
             if "example_first" in context["preferences"]:
-                reason += "，包含示例线索，适合先看例题再练习"
+                reason += "，按先看例题偏好补充了示例导向搜索"
+            if context["level"] == "beginner":
+                reason += "，按当前基础阶段加入了入门与基础查询词"
+            if expected == "video" and any("视频" in str(item) for item in context["resource_preferences"]):
+                reason += "，匹配视频资源偏好"
+            related_weak = [point for point in context["relevant_weak_points"] if point.lower() in {term.lower() for term in matched}]
+            if related_weak:
+                reason += f"，命中当前小节薄弱点「{'、'.join(related_weak[:2])}」"
             resources.append({
                 "title": title, "url": url, "source": source, "resource_type": expected,
                 "platform": platform, "snippet": snippet, "reason": reason + "。",
@@ -319,8 +364,9 @@ class SectionResourceRecommendationService:
     ) -> dict[str, Any]:
         del session_id, section_id  # External results are transient and never persisted.
         requested = [kind for kind in RESOURCE_TYPES if kind in {str(item).lower() for item in resource_types or RESOURCE_TYPES}]
-        points = list(dict.fromkeys([*self._point_names(knowledge_points), *self._point_names(weak_points)]))
-        context = normalize_search_context(section_title=section_title, knowledge_points=points, learner_profile=profile)
+        points = self._point_names(knowledge_points)
+        weak = self._point_names(weak_points)
+        context = normalize_search_context(section_title=section_title, knowledge_points=points, weak_points=weak, learner_profile=profile)
         candidates: list[dict[str, Any]] = []
         queries: list[str] = []
         warnings: list[str] = []
