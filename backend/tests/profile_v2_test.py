@@ -61,6 +61,7 @@ def main() -> None:
     weekly_context = weekly["subject_context"]
     assert weekly_context["deadline"] == "\u4e00\u5468" and weekly_context["daily_minutes"] == 60
     assert weekly_context["content_preferences"] == ["example_first", "practice_after_explanation"]
+    assert {item["label"] for item in weekly["knowledge_mastery"] if item["status"] == "weak"} == {"\u94fe\u8868", "\u6811"}
     assert by_key(weekly["general_states"])["interest"]["self_report"] is None
     assert weekly["profile_completeness"] == 0.67
 
@@ -77,8 +78,12 @@ def main() -> None:
     assert corrupted["profile_completeness"] == 0.83
 
     extracted_state = ConversationState(session_id="profile_v2_extraction")
-    ConversationStore().extract_facts(extracted_state, "\u6211\u7684 C \u8bed\u8a00\u57fa\u7840\u8fd8\u53ef\u4ee5\uff0c\u4f46\u94fe\u8868\u548c\u6811\u6bd4\u8f83\u8584\u5f31\u3002")
+    state_text = "我是大二学生，想在一周内复习数据结构，每天可以学习一小时。我的C语言基础还可以，但链表和树比较薄弱。我喜欢先看例题，再完成练习。"
+    ConversationStore().extract_facts(extracted_state, state_text)
     assert extracted_state.facts["knowledge_base"] == "C\u8bed\u8a00\u57fa\u7840\uff1a\u8fd8\u53ef\u4ee5"
+    assert extracted_state.facts["target_course"] == "\u6570\u636e\u7ed3\u6784"
+    assert extracted_state.facts["weak_points"] == "\u94fe\u8868\u3001\u6811\u8f83\u8584\u5f31"
+    assert extracted_state.facts["daily_minutes"] == "60"
 
     readiness = ConversationStore().readiness(ConversationState(
         session_id="profile_v2_readiness",

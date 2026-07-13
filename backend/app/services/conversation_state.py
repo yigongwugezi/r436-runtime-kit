@@ -867,9 +867,9 @@ class ConversationStore:
             set_fact("preference", "、".join(dict.fromkeys(formats)) or text)
 
         extracted_profile_facts = extract_profile_facts(text)
+        # Explicit facts are more precise than the broad rules above for this message.
         for key, value in extracted_profile_facts.facts.items():
-            if key not in state.facts or not state.facts[key]:
-                set_fact(key, value)
+            set_fact(key, value, force=True)
         for key, values in extracted_profile_facts.supplemental.items():
             for value in values:
                 add_supplemental(key, value)
@@ -895,13 +895,15 @@ class ConversationStore:
             if not cleaned:
                 return
             old_value = state.facts.get(key, "")
-            cleaned = self._merge_time_budget(old_value, cleaned)
+            if not force:
+                cleaned = self._merge_time_budget(old_value, cleaned)
         elif key == "weak_points":
             cleaned = self._clean_fact_value(value)
             if not cleaned:
                 return
             old_value = state.facts.get(key, "")
-            cleaned = self._merge_list_fact(old_value, cleaned)
+            if not force:
+                cleaned = self._merge_list_fact(old_value, cleaned)
         else:
             cleaned = self._clean_fact_value(value)
             if not cleaned:

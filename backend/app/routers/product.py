@@ -2037,13 +2037,25 @@ def _profile_v2(session_id: str, legacy: dict[str, Any] | None = None) -> dict[s
     state = conversation_store.get(session_id)
     legacy = legacy or ag_get_profile(session_id) or {}
     prefs = legacy.get("preferences") if isinstance(legacy.get("preferences"), dict) else {}
+    db = SessionLocal()
+    try:
+        session = db.get(SessionModel, session_id)
+        subject_id = str((session.subject_id if session else "") or "")
+    finally:
+        db.close()
     course = course_catalog.match_course(str(state.facts.get("target_course") or ""))
+    if subject_id:
+        course = {**(course or {}), "course_id": subject_id}
+    existing = prefs.get("profile_v2") if isinstance(prefs, dict) else None
+    existing_subject = str(((existing or {}).get("subject_context") or {}).get("subject_id") or "") if isinstance(existing, dict) else ""
+    if subject_id and existing_subject and existing_subject != subject_id:
+        existing = None
     return build_profile_v2(
         dimensions=legacy.get("dimensions") if isinstance(legacy.get("dimensions"), list) else [],
         facts=state.facts,
         course=course,
         weaknesses=legacy.get("weaknesses") if isinstance(legacy.get("weaknesses"), list) else [],
-        existing=prefs.get("profile_v2") if isinstance(prefs, dict) else None,
+        existing=existing,
         session_id=session_id,
     )
 

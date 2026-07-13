@@ -169,8 +169,8 @@ def _completeness(context: dict[str, Any]) -> float:
 
 
 def _claims(facts: dict[str, Any]) -> list[str]:
-    raw = "\u3001".join(str(facts.get(key) or "") for key in ("weak_points", "knowledge_base", "prior_experience"))
-    return list(dict.fromkeys(re.sub(r"^(?:\u4f46|\u6211|\u7684)", "", item).strip() for item in re.split(r"[\u3001,\uff0c;\uff1b\n]", raw) if not _missing(item)))
+    raw = "\uff1b".join(str(facts.get(key) or "") for key in ("weak_points", "knowledge_base", "prior_experience"))
+    return list(dict.fromkeys(re.sub(r"^(?:\u4f46|\u6211|\u7684)", "", item).strip() for item in re.split(r"[,\uff0c;\uff1b\n]", raw) if not _missing(item)))
 
 
 def _targets(claim: str, category: str) -> list[str]:
