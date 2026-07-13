@@ -13,7 +13,7 @@ import SectionResourceWorkspace from '../components/learning/SectionResourceWork
 import SectionContentRouter, { type ContentType, type SectionContent } from '../components/learning/SectionContentRouter';
 import TextbookViewer from '../components/learning/TextbookViewer';
 import TextbookTocPanel from '../components/learning/TextbookTocPanel';
-import { getTextbookTOC } from '../api/textbooks';
+import { getTextbookTOC, getTextbookContent } from '../api/textbooks';
 import type { TextbookTOC } from '../types/textbook';
 import GeneratePanel, { type GeneratePanelHandle } from '../components/learning/GeneratePanel';
 import { logStudyEvent } from '../api/feedback';
@@ -169,6 +169,10 @@ export default function LecturePage() {
       .then((toc) => setTextbookToc(toc))
       .catch(() => setTextbookToc(null));
   }, [isTextbookMode, activeSubject?.id]);
+
+  // ── Textbook content for resource generation ──
+  const [textbookLectureContent, setTextbookLectureContent] = useState('');
+
   const [quizState, setQuizState] = useState<'idle' | 'generating' | 'answering' | 'submitted'>('idle');
   const [quizSuggestion, setQuizSuggestion] = useState('');
   const [quizWeakPoints, setQuizWeakPoints] = useState<WeakPoint[]>([]);
@@ -204,6 +208,21 @@ export default function LecturePage() {
   const currentIdx = sections.findIndex((s: Section) => s.id === activeSectionId);
   const prevSection = currentIdx > 0 ? sections[currentIdx - 1] : null;
   const nextSection = currentIdx < sections.length - 1 ? sections[currentIdx + 1] : null;
+
+  // ── Textbook content for resource generation ──
+  useEffect(() => {
+    if (!isTextbookMode || !activeSubject?.id || !currentSection?.textbookSectionId) {
+      setTextbookLectureContent('');
+      return;
+    }
+    let cancelled = false;
+    getTextbookContent(activeSubject.id, {
+      sectionId: currentSection.textbookSectionId,
+    })
+      .then((c) => { if (!cancelled) setTextbookLectureContent(c?.content ?? ''); })
+      .catch(() => { if (!cancelled) setTextbookLectureContent(''); });
+    return () => { cancelled = true; };
+  }, [isTextbookMode, activeSubject?.id, currentSection?.textbookSectionId]);
 
   // ── 加载已有讲义（优先读缓存）──
   useEffect(() => {
@@ -291,7 +310,6 @@ export default function LecturePage() {
     let lectureExcerpt = lecture.slice(0, 1000);
     if (isTextbookMode && activeSubject?.id && currentSection.textbookSectionId) {
       try {
-        const { getTextbookContent } = await import('../api/textbooks');
         const content = await getTextbookContent(activeSubject.id, {
           sectionId: currentSection.textbookSectionId,
         });
@@ -417,7 +435,6 @@ export default function LecturePage() {
     let lectureSummary = lecture.slice(0, 1500);
     if (isTextbookMode && activeSubject?.id && currentSection.textbookSectionId) {
       try {
-        const { getTextbookContent } = await import('../api/textbooks');
         const content = await getTextbookContent(activeSubject.id, {
           sectionId: currentSection.textbookSectionId,
         });
@@ -1035,7 +1052,7 @@ export default function LecturePage() {
                 chapterId={chapterCtx?.chapter.id || ''}
                 chapterTitle={chapterCtx?.chapter.title || ''}
                 section={currentSection}
-                lectureContent={lecture}
+                lectureContent={isTextbookMode ? textbookLectureContent : lecture}
                 sections={sections}
                 legacyMindmapId={chapterCtx?.chapter.mindmapId}
               />
