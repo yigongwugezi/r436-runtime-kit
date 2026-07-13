@@ -24,6 +24,17 @@ export interface LearnerProfileV2 {
   evidence_summary: Record<string, number>;
   profile_completeness: number;
   updated_at: string;
+  fact_records?: Record<string, {
+    fact_key?: string;
+    value?: unknown;
+    fact_type?: 'explicit' | 'inferred' | 'observed' | 'system_default';
+    scope?: 'global' | 'subject' | 'course' | 'path' | 'session';
+    status?: string;
+    is_user_locked?: boolean;
+    is_disabled_for_personalization?: boolean;
+    source_type?: string;
+    evidence_summary?: string;
+  }>;
 }
 
 export interface ProfileStateV2 {

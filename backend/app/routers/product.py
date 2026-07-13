@@ -17,6 +17,8 @@ import time
 import threading
 from datetime import datetime, timezone
 from queue import Queue, Empty
+from threading import Event
+import uuid
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -66,6 +68,7 @@ from app.services.profile_v2 import (
     assess_interest,
     build_profile_v2,
     preview_conversation_sync,
+    update_fact_control,
     update_context as update_profile_v2_context,
     update_self_report,
 )
@@ -2381,6 +2384,31 @@ def update_profile_self_report(payload: dict[str, Any], auth: AuthContext = Depe
     if not isinstance(updates, dict):
         raise HTTPException(status_code=400, detail="selfReport required")
     profile_v2 = update_self_report(_profile_v2(session_id), updates)
+    _save_profile_v2(session_id, profile_v2)
+    return _product_response({"profileV2": profile_v2}, session_id=session_id, source="user_input")
+
+
+@router.patch("/profile/v2/facts/{fact_key}")
+def update_profile_fact(fact_key: str, payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
+    session_id = _payload_session_id(payload)
+    action = str(payload.get("action") or "").strip().lower()
+    try:
+        profile_v2 = update_fact_control(
+            _profile_v2(session_id), fact_key, action, payload.get("value"), str(payload.get("scope") or "") or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _save_profile_v2(session_id, profile_v2)
+    return _product_response({"profileV2": profile_v2}, session_id=session_id, source="user_input")
+
+
+@router.delete("/profile/v2/facts/{fact_key}")
+def delete_profile_fact(fact_key: str, sessionId: str = "", auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
+    session_id = _payload_session_id({"sessionId": sessionId})
+    try:
+        profile_v2 = update_fact_control(_profile_v2(session_id), fact_key, "delete")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     _save_profile_v2(session_id, profile_v2)
     return _product_response({"profileV2": profile_v2}, session_id=session_id, source="user_input")
 
@@ -5344,6 +5372,7 @@ def _recommend_section_resources(
     section_id: str,
     payload: dict[str, Any],
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    cancel_event: Event | None = None,
 ) -> dict[str, Any]:
     """Return real external links for a section without archiving them as resources."""
     session_id = _payload_session_id(payload)
@@ -5403,6 +5432,7 @@ def _recommend_section_resources(
         feedback_by_url=feedback_by_url,
         progress_callback=progress_callback,
         refresh=bool(payload.get("refresh")),
+        cancel_event=cancel_event,
     )
     return result
 
@@ -5419,25 +5449,33 @@ def recommend_section_resources(section_id: str, payload: dict[str, Any]) -> dic
 def stream_section_resource_recommendations(section_id: str, payload: dict[str, Any]) -> StreamingResponse:
     """Stream safe, real ResourceAgent search stages for the lecture workspace."""
     _payload_session_id(payload)
+    search_task_id = uuid.uuid4().hex
+    cancel_event = Event()
 
     def event_stream():
         events: Queue[dict[str, Any] | None] = Queue()
 
         def worker() -> None:
             try:
-                result = _recommend_section_resources(section_id, payload, events.put)
-                events.put({"event": "result", "recommendations": result})
+                def publish(event: dict[str, Any]) -> None:
+                    events.put({**event, "search_task_id": search_task_id})
+
+                result = _recommend_section_resources(section_id, payload, publish, cancel_event)
+                events.put({"event": "result", "search_task_id": search_task_id, "recommendations": result})
             except Exception:
-                events.put({"event": "result", "recommendations": {"query": [], "resources": [], "status": "failed", "warnings": ["\u641c\u7d22\u670d\u52a1\u6682\u65f6\u4e0d\u7a33\u5b9a\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002"]}})
+                events.put({"event": "result", "search_task_id": search_task_id, "recommendations": {"query": [], "resources": [], "status": "failed", "warnings": ["\u641c\u7d22\u670d\u52a1\u6682\u65f6\u4e0d\u7a33\u5b9a\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002"]}})
             finally:
                 events.put(None)
 
-        threading.Thread(target=worker, daemon=True).start()
-        while True:
-            event = events.get()
-            if event is None:
-                break
-            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        threading.Thread(target=worker, daemon=True, name=f"search-{search_task_id[:8]}").start()
+        try:
+            while True:
+                event = events.get()
+                if event is None:
+                    break
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        finally:
+            cancel_event.set()
 
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 

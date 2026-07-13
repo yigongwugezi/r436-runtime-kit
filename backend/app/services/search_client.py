@@ -20,6 +20,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from collections import OrderedDict
 from threading import Lock
 from urllib import error, request
 from urllib.parse import urlencode
@@ -39,6 +40,33 @@ class SearchError(Exception):
     def __init__(self, message: str, cause: Exception | None = None) -> None:
         super().__init__(message)
         self.cause = cause
+
+
+def classify_search_error(exc: BaseException) -> str:
+    """Return a safe network category without exposing provider details."""
+    text = str(exc).lower()
+    if "429" in text or "too many" in text:
+        return "rate_limited"
+    if "403" in text or "401" in text or "forbidden" in text or "unauthorized" in text:
+        return "rejected"
+    if "tls" in text or "ssl" in text:
+        return "tls"
+    if "proxy" in text:
+        return "proxy"
+    if "dns" in text or "name or service" in text or "nodename" in text:
+        return "dns"
+    if "timeout" in text or isinstance(exc, TimeoutError):
+        return "timeout"
+    if "connection" in text or isinstance(exc, OSError):
+        return "connect"
+    return "unknown"
+
+
+def retryable_search_error(exc: BaseException) -> bool:
+    """Only transient connection/5xx failures get one provider retry."""
+    category = classify_search_error(exc)
+    text = str(exc).lower()
+    return category in {"connect", "timeout"} or any(code in text for code in ("500", "502", "503", "504", "reset"))
 
 
 # ── Internal data classes (lightweight, no Pydantic overhead) ──────────────
@@ -69,6 +97,19 @@ class SearchResponse:
     results: list[SearchResultItem] = field(default_factory=list)
     total_estimated: int = 0
     source: str = ""
+
+
+@dataclass
+class ProviderHealth:
+    success_count: int = 0
+    failure_count: int = 0
+    consecutive_failures: int = 0
+    last_success_at: float = 0.0
+    last_failure_at: float = 0.0
+    ewma_latency: float = 0.0
+    circuit_state: str = "closed"
+    circuit_open_until: float = 0.0
+    half_open_probe: bool = False
 
 
 # ── Abstract base ──────────────────────────────────────────────────────────
@@ -142,10 +183,11 @@ class DuckDuckGoSearchClient(BaseSearchClient):
     _BACKENDS = ("auto", "bing", "brave")
     _circuit_lock = Lock()
     _circuits: dict[str, tuple[int, float, bool]] = {}
+    _health: dict[str, ProviderHealth] = {}
 
     def __init__(self, timeout: int = 10, total_timeout: int = 15, proxy: str | None = None) -> None:
-        self.timeout = timeout
-        self.total_timeout = max(timeout, total_timeout)
+        self.timeout = max(1, float(timeout))
+        self.total_timeout = max(1, float(total_timeout))
         self.proxy = proxy if proxy is not None else self._configured_proxy()
 
     @staticmethod
@@ -169,7 +211,7 @@ class DuckDuckGoSearchClient(BaseSearchClient):
 
         deadline = time.monotonic() + self.total_timeout
         last_error: Exception | None = None
-        for backend in self._BACKENDS:
+        for backend in self._ordered_backends():
             if not self._allow_backend(backend):
                 continue
             remaining = deadline - time.monotonic()
@@ -182,12 +224,12 @@ class DuckDuckGoSearchClient(BaseSearchClient):
                     max_results=max_results,
                 )
                 if raw:
-                    self._record_success(backend)
+                    self._record_success(backend, time.monotonic() - (deadline - self.total_timeout))
                     return self._response(query, raw, backend)
             except Exception as exc:
                 last_error = exc
                 self._record_failure(backend)
-                logger.info("DDGS backend %s failed: %s", backend, exc)
+                logger.info("DDGS backend %s unavailable (%s)", backend, classify_search_error(exc))
 
         raise SearchError(f"DDGS search failed after real backends: {last_error or 'no results'}", cause=last_error)
 
@@ -207,13 +249,39 @@ class DuckDuckGoSearchClient(BaseSearchClient):
             return True
 
     @classmethod
-    def _record_success(cls, backend: str) -> None:
+    def _ordered_backends(cls) -> tuple[str, ...]:
+        if not settings.search_dynamic_provider_order_enabled:
+            return cls._BACKENDS
         with cls._circuit_lock:
+            health = {name: cls._health.get(name, ProviderHealth()) for name in cls._BACKENDS}
+        # Keep the existing auto route first unless it is unhealthy; then use
+        # the lowest observed failure/latency among the free fallbacks.
+        primary = health[cls._BACKENDS[0]]
+        rest = sorted(cls._BACKENDS[1:], key=lambda name: (health[name].consecutive_failures, health[name].ewma_latency or 9999))
+        if primary.consecutive_failures < settings.search_circuit_failure_threshold:
+            return (cls._BACKENDS[0], *rest)
+        return tuple(rest + [cls._BACKENDS[0]])
+
+    @classmethod
+    def _record_success(cls, backend: str, latency: float = 0.0) -> None:
+        with cls._circuit_lock:
+            item = cls._health.setdefault(backend, ProviderHealth())
+            item.success_count += 1
+            item.consecutive_failures = 0
+            item.last_success_at = time.time()
+            item.ewma_latency = latency if not item.ewma_latency else item.ewma_latency * 0.8 + latency * 0.2
+            item.circuit_state = "closed"
+            item.circuit_open_until = 0.0
+            item.half_open_probe = False
             cls._circuits.pop(backend, None)
 
     @classmethod
     def _record_failure(cls, backend: str) -> None:
         with cls._circuit_lock:
+            item = cls._health.setdefault(backend, ProviderHealth())
+            item.failure_count += 1
+            item.consecutive_failures += 1
+            item.last_failure_at = time.time()
             failures, opened_at, _ = cls._circuits.get(backend, (0, 0.0, False))
             failures += 1
             cls._circuits[backend] = (
@@ -221,11 +289,20 @@ class DuckDuckGoSearchClient(BaseSearchClient):
                 time.monotonic() if failures >= settings.search_circuit_failure_threshold else opened_at,
                 False,
             )
+            if failures >= settings.search_circuit_failure_threshold:
+                item.circuit_state = "open"
+                item.circuit_open_until = time.time() + settings.search_circuit_open_seconds
 
     @classmethod
     def reset_circuits(cls) -> None:
         with cls._circuit_lock:
             cls._circuits.clear()
+            cls._health.clear()
+
+    @classmethod
+    def health_snapshot(cls) -> dict[str, dict[str, object]]:
+        with cls._circuit_lock:
+            return {name: vars(item).copy() for name, item in cls._health.items()}
 
     @staticmethod
     def _response(query: str, raw: list[dict[str, object]], backend: str) -> SearchResponse:
@@ -431,9 +508,12 @@ class SearchCache:
     Module-level singleton: ``search_cache``.
     """
 
-    def __init__(self, ttl_seconds: int = 300) -> None:
-        self._cache: dict[str, tuple[float, SearchResponse]] = {}
+    def __init__(self, ttl_seconds: int = 300, max_entries: int = 500) -> None:
+        self._cache: OrderedDict[str, tuple[float, SearchResponse]] = OrderedDict()
         self._ttl = ttl_seconds
+        self._max_entries = max_entries
+        self._stats = {"hits": 0, "misses": 0}
+        self._lock = Lock()
 
     def _make_key(self, query: str, max_results: int) -> str:
         return f"{query.strip().lower()}:{max_results}"
@@ -441,21 +521,35 @@ class SearchCache:
     def get(self, query: str, max_results: int = 5) -> SearchResponse | None:
         """Return cached results if still fresh, otherwise None."""
         key = self._make_key(query, max_results)
-        if key in self._cache:
-            timestamp, response = self._cache[key]
-            if time.time() - timestamp < self._ttl:
-                return response
-            del self._cache[key]
+        with self._lock:
+            if key in self._cache:
+                timestamp, response = self._cache[key]
+                if time.time() - timestamp < self._ttl:
+                    self._cache.move_to_end(key)
+                    self._stats["hits"] += 1
+                    return response
+                del self._cache[key]
+            self._stats["misses"] += 1
         return None
 
     def set(self, query: str, max_results: int, response: SearchResponse) -> None:
         """Store search results in the cache."""
         key = self._make_key(query, max_results)
-        self._cache[key] = (time.time(), response)
+        with self._lock:
+            self._cache[key] = (time.time(), response)
+            self._cache.move_to_end(key)
+            while len(self._cache) > self._max_entries:
+                self._cache.popitem(last=False)
 
     def clear(self) -> None:
         """Remove all cached entries."""
-        self._cache.clear()
+        with self._lock:
+            self._cache.clear()
+            self._stats = {"hits": 0, "misses": 0}
+
+    def stats(self) -> dict[str, int]:
+        with self._lock:
+            return dict(self._stats)
 
 
 search_cache = SearchCache()
@@ -479,13 +573,14 @@ def get_search_client(provider: str = "mock") -> BaseSearchClient:
     if provider == "mock":
         return MockSearchClient()
     if provider == "duckduckgo":
+        timeout = min(settings.search_timeout, settings.search_provider_hard_timeout_seconds)
         return DuckDuckGoSearchClient(
-            timeout=settings.search_timeout,
-            total_timeout=settings.search_total_timeout,
+            timeout=timeout,
+            total_timeout=settings.search_provider_hard_timeout_seconds,
         )
     if provider == "tavily":
         return TavilySearchClient(
             api_key=settings.tavily_api_key,
-            timeout=settings.search_timeout,
+            timeout=min(settings.search_timeout, int(settings.search_provider_hard_timeout_seconds)),
         )
     raise ValueError(f"Unsupported search provider: {provider}")

@@ -48,6 +48,7 @@ _CONTEXT_FACTS = {
     "prior_experience": "prior_experience", "content_preferences": "content_preferences", "preference": "content_preferences",
     "resource_preferences": "resource_preferences",
 }
+FACT_SCOPES = {"global", "subject", "course", "path", "session"}
 
 
 def _now() -> str:
@@ -123,18 +124,40 @@ def _confidence(source_type: str) -> str:
 def _evidence(source_type: str, detail: str, targets: list[str], *, session_id: str = "", subject_id: str = "", confidence: str | None = None) -> list[dict[str, Any]]:
     if _missing(detail):
         return []
+    now = _now()
     return [{
         "source": source_type, "source_type": source_type, "detail": detail, "evidence_summary": detail,
         "target_keys": targets, "confidence": confidence or _confidence(source_type), "session_id": session_id,
-        "subject_id": subject_id, "updated_at": _now(),
+        "subject_id": subject_id, "updated_at": now, "evidence_refs": [],
     }]
 
 
-def _fact_record(value: Any, source_type: str, detail: str, *, session_id: str = "", subject_id: str = "", confidence: str | None = None) -> dict[str, Any]:
+def _fact_record(
+    value: Any,
+    source_type: str,
+    detail: str,
+    *,
+    fact_key: str = "",
+    session_id: str = "",
+    subject_id: str = "",
+    confidence: str | None = None,
+    scope: str | None = None,
+) -> dict[str, Any]:
+    now = _now()
+    fact_type = {
+        "conversation_explicit": "explicit", "manual_edit": "explicit",
+        "user_self_report": "explicit", "system_observation": "observed",
+        "inferred": "inferred", "system_default": "system_default",
+    }.get(source_type, "explicit" if source_type in {"assessment", "user_input"} else "inferred")
     return {
-        "value": value, "source_type": source_type, "evidence_summary": detail,
+        "fact_key": fact_key, "value": value, "normalized_value": value,
+        "fact_type": fact_type, "source_type": source_type, "scope": scope or ("subject" if subject_id else "global"),
+        "evidence_summary": detail, "evidence_refs": [],
         "confidence": confidence or _confidence(source_type), "session_id": session_id,
-        "subject_id": subject_id, "updated_at": _now(),
+        "subject_id": subject_id, "first_observed_at": now, "last_observed_at": now,
+        "last_confirmed_at": now if fact_type == "explicit" else None, "status": "active",
+        "is_user_locked": source_type == "manual_edit", "is_disabled_for_personalization": False,
+        "supersedes": None, "metadata": {}, "updated_at": now,
     }
 
 
@@ -252,6 +275,17 @@ def build_profile_v2(*, dimensions: list[dict[str, Any]] | None = None, facts: d
     profile = dict(existing) if isinstance(existing, dict) and existing.get("profile_version") == 2 else {"profile_version": 2}
     previous = profile.get("subject_context") if isinstance(profile.get("subject_context"), dict) else {}
     records = profile.get("fact_records") if isinstance(profile.get("fact_records"), dict) else {}
+    for key, record in records.items():
+        if isinstance(record, dict):
+            record.setdefault("fact_key", key)
+            record.setdefault("normalized_value", record.get("value"))
+            record.setdefault("fact_type", "explicit" if record.get("source_type") in {"conversation_explicit", "manual_edit", "user_self_report"} else "inferred")
+            record.setdefault("scope", "subject" if record.get("subject_id") else "global")
+            record.setdefault("status", "active")
+            record.setdefault("is_user_locked", record.get("source_type") == "manual_edit")
+            record.setdefault("is_disabled_for_personalization", False)
+            record.setdefault("evidence_refs", [])
+            record.setdefault("metadata", {})
     for key, value in previous.items():
         if key not in context or _missing(context.get(key)):
             context[key] = value
@@ -262,7 +296,7 @@ def build_profile_v2(*, dimensions: list[dict[str, Any]] | None = None, facts: d
     profile["fact_records"] = records
     for fact_key, context_key in _CONTEXT_FACTS.items():
         if fact_key in facts and not _missing(facts[fact_key]) and context_key not in records:
-            profile["fact_records"][context_key] = _fact_record(context.get(context_key), "conversation_explicit", f"\u7528\u6237\u5728\u5bf9\u8bdd\u4e2d\u660e\u786e\u8868\u8fbe\u4e86{context_key}\u3002", subject_id=str(context.get("subject_id") or ""))
+            profile["fact_records"][context_key] = _fact_record(context.get(context_key), "conversation_explicit", f"\u7528\u6237\u5728\u5bf9\u8bdd\u4e2d\u660e\u786e\u8868\u8fbe\u4e86{context_key}\u3002", fact_key=context_key, subject_id=str(context.get("subject_id") or ""))
     return _refresh_profile(profile, facts, weaknesses)
 
 
@@ -286,7 +320,7 @@ def _sync_candidates(messages: Iterable[Any], session_id: str, subject_id: str) 
             elif context_key == "content_preferences": normalized = _preferences(value)
             if _missing(normalized):
                 continue
-            context_values[context_key] = _fact_record(normalized, "conversation_explicit", f"\u7528\u6237\u5728\u5f53\u524d\u5bf9\u8bdd\u4e2d\u660e\u786e\u8868\u8fbe\u4e86{str(normalized)}\u3002", session_id=session_id, subject_id=subject_id)
+            context_values[context_key] = _fact_record(normalized, "conversation_explicit", f"\u7528\u6237\u5728\u5f53\u524d\u5bf9\u8bdd\u4e2d\u660e\u786e\u8868\u8fbe\u4e86{str(normalized)}\u3002", fact_key=context_key, session_id=session_id, subject_id=subject_id)
         for claim in (extracted.facts.get("weak_points", ""), extracted.facts.get("knowledge_base", ""), extracted.facts.get("prior_experience", "")):
             for item in _knowledge([claim], "computing", session_id=session_id, subject_id=subject_id):
                 if item["knowledge_id"] not in {entry["knowledge_id"] for entry in knowledge}:
@@ -354,7 +388,77 @@ def update_context(profile: dict[str, Any], updates: dict[str, Any]) -> dict[str
         elif key == "content_preferences": value = _preferences(value)
         elif key == "deadline": value = _deadline(value)
         context[key] = value
-        records[key] = _fact_record(value, "manual_edit", f"\u7528\u6237\u5728\u753b\u50cf\u9875\u624b\u52a8\u786e\u8ba4\u4e86{key}\u3002", session_id=str(context.get("session_id") or ""), subject_id=str(context.get("subject_id") or ""))
+        records[key] = _fact_record(value, "manual_edit", f"\u7528\u6237\u5728\u753b\u50cf\u9875\u624b\u52a8\u786e\u8ba4\u4e86{key}\u3002", fact_key=key, session_id=str(context.get("session_id") or ""), subject_id=str(context.get("subject_id") or ""))
+    return _refresh_profile(profile)
+
+
+def update_fact_control(profile: dict[str, Any], fact_key: str, action: str, value: Any = None, scope: str | None = None) -> dict[str, Any]:
+    """Apply one user-visible fact control while retaining audit history."""
+    if fact_key not in _CONTEXT_KEYS or (scope and scope not in FACT_SCOPES):
+        raise ValueError("invalid profile fact scope")
+    context = profile.setdefault("subject_context", {})
+    records = profile.setdefault("fact_records", {})
+    record = records.get(fact_key)
+    if not isinstance(record, dict):
+        record = _fact_record(context.get(fact_key), "manual_edit", f"用户确认了{fact_key}。", fact_key=fact_key, subject_id=str(context.get("subject_id") or ""))
+    record.setdefault("fact_key", fact_key)
+    if scope:
+        record["scope"] = scope
+    if action == "delete":
+        record["status"] = "deleted"
+        record["is_disabled_for_personalization"] = True
+        context.pop(fact_key, None)
+    elif action in {"disable", "enable"}:
+        record["is_disabled_for_personalization"] = action == "disable"
+        record["status"] = "active"
+    elif action in {"lock", "unlock"}:
+        record["is_user_locked"] = action == "lock"
+    elif action == "edit":
+        if value is None or _missing(value):
+            raise ValueError("fact value required")
+        old_value = record.get("value")
+        context[fact_key] = value
+        record = _fact_record(value, "manual_edit", f"用户修改了{fact_key}。", fact_key=fact_key, session_id=str(context.get("session_id") or ""), subject_id=str(context.get("subject_id") or ""), scope=scope or record.get("scope"))
+        record["supersedes"] = old_value
+    else:
+        raise ValueError("unsupported profile fact action")
+    records[fact_key] = record
+    return _refresh_profile(profile)
+
+
+def delete_fact(profile: dict[str, Any], fact_key: str) -> dict[str, Any]:
+    return update_fact_control(profile, fact_key, "delete")
+
+
+def set_fact_personalization(profile: dict[str, Any], fact_key: str, enabled: bool) -> dict[str, Any]:
+    return update_fact_control(profile, fact_key, "enable" if enabled else "disable")
+
+
+def personalization_context(profile: dict[str, Any] | None) -> dict[str, Any]:
+    """Return the smallest safe profile slice used by search/generation."""
+    profile = profile or {}
+    context = profile.get("subject_context") if isinstance(profile.get("subject_context"), dict) else {}
+    records = profile.get("fact_records") if isinstance(profile.get("fact_records"), dict) else {}
+    result: dict[str, Any] = {}
+    for key in ("subject_name", "prior_experience", "content_preferences", "resource_preferences", "learning_goal"):
+        record = records.get(key) if isinstance(records.get(key), dict) else {}
+        if record.get("status") == "active" and not record.get("is_disabled_for_personalization") and not _missing(context.get(key)):
+            result[key] = context[key]
+    return result
+
+
+def record_behavior_fact(profile: dict[str, Any], fact_key: str, value: Any, *, subject_id: str = "") -> dict[str, Any]:
+    """Accumulate weak observed evidence; one event never becomes a strong preference."""
+    records = profile.setdefault("fact_records", {})
+    record = records.get(fact_key)
+    if not isinstance(record, dict) or record.get("fact_type") != "observed":
+        record = _fact_record(value, "system_observation", "来自重复学习行为的系统观察。", fact_key=fact_key, subject_id=subject_id, confidence="low")
+    metadata = record.setdefault("metadata", {})
+    metadata["observation_count"] = int(metadata.get("observation_count", 0)) + 1
+    if metadata["observation_count"] >= 3:
+        record["confidence"] = "medium"
+    record["last_observed_at"] = _now()
+    records[fact_key] = record
     return _refresh_profile(profile)
 
 

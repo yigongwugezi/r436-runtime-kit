@@ -45,6 +45,7 @@ const searchStageLabels: Record<SearchProgressEvent['stage'], string> = {
   quality_filter: '\u6b63\u5728\u68c0\u67e5\u8d44\u6e90\u76f8\u5173\u6027',
   personalized_ranking: '\u6b63\u5728\u6839\u636e\u5b66\u4e60\u9700\u6c42\u6392\u5e8f',
   completed: '\u641c\u7d22\u5b8c\u6210',
+  cancelled: '\u641c\u7d22\u5df2\u53d6\u6d88', failed: '\u641c\u7d22\u5931\u8d25', stale_cache: '\u5df2\u52a0\u8f7d\u8fd1\u671f\u6709\u6548\u8d44\u6e90',
 };
 
 function safeExternalUrl(url: string): boolean {
@@ -69,6 +70,9 @@ export default function SectionResourceWorkspace(props: Props) {
   const [mindmapLoading, setMindmapLoading] = useState(false);
   const [notice, setNotice] = useState('');
   const requestSerial = useRef(0);
+  const searchAbort = useRef<AbortController | null>(null);
+
+  useEffect(() => () => searchAbort.current?.abort(), []);
 
   useEffect(() => {
     let active = true;
@@ -86,6 +90,9 @@ export default function SectionResourceWorkspace(props: Props) {
 
   const searchResources = async (filter = resourceFilter) => {
     if (!sessionId || !section) return;
+    searchAbort.current?.abort();
+    const controller = new AbortController();
+    searchAbort.current = controller;
     const requestId = ++requestSerial.current;
     setSearching(true);
     setSearchProgress([]);
@@ -96,17 +103,38 @@ export default function SectionResourceWorkspace(props: Props) {
         sessionId, sectionTitle: section.title, knowledgePoints: section.knowledgePoints,
         subjectId,
         language: 'zh-CN', resourceTypes: filter === 'all' ? ['video', 'article', 'course', 'document', 'paper'] : [filter],
-        refresh: Boolean(recommendations),
+        refresh: false,
       }, (event) => {
-        if (requestId === requestSerial.current) setSearchProgress((events) => [...events, event]);
-      });
+        if (requestId === requestSerial.current) setSearchProgress((events) => {
+          const index = events.findIndex((item) => item.stage === event.stage);
+          if (index < 0) return [...events, event];
+          const next = [...events]; next[index] = event; return next;
+        });
+      }, controller.signal);
       if (requestId === requestSerial.current) {
         setRecommendations(result);
         setProgressExpanded(false);
       }
-    } catch {
-      if (requestId === requestSerial.current) setRecommendations({ query: [], resources: [], status: 'failed', warnings: ['外部资源检索失败，请稍后重试。'] });
+    } catch (error) {
+      if (requestId === requestSerial.current && !(error instanceof DOMException && error.name === 'AbortError')) {
+        setRecommendations({ query: [], resources: [], status: 'failed', warnings: ['外部资源检索失败，请稍后重试。'] });
+      }
     } finally { if (requestId === requestSerial.current) setSearching(false); }
+  };
+  const cancelSearch = () => {
+    searchAbort.current?.abort();
+    setSearching(false);
+    setSearchProgress((events) => {
+      const event: SearchProgressEvent = {
+        event: 'search_progress', stage: 'cancelled', status: 'cancelled',
+        source_count: events[events.length - 1]?.source_count || 0,
+        result_count: events[events.length - 1]?.result_count || 0,
+      };
+      const index = events.findIndex((item) => item.stage === 'cancelled');
+      if (index < 0) return [...events, event];
+      const next = [...events]; next[index] = event; return next;
+    });
+    setProgressExpanded(true);
   };
   const search = () => searchResources(resourceFilter);
 
@@ -188,9 +216,9 @@ export default function SectionResourceWorkspace(props: Props) {
     {notice && <p className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">{notice}</p>}
 
     {/* ── 一键推送 ── */}
-    <button onClick={search} disabled={searching || !section}
+    <button onClick={() => searching ? cancelSearch() : search()} disabled={!section}
       className="w-full flex items-center justify-center gap-2 px-3 py-3 rounded-xl bg-surface-800 text-white text-xs font-semibold hover:bg-surface-900 disabled:opacity-40 transition-colors">
-      <Search size={14} />{searching ? '搜索中…' : recommendations ? '重新推送' : '一键推送'}
+      <Search size={14} />{searching ? '取消搜索' : recommendations ? '重新推送' : '一键推送'}
     </button>
     <p className="text-[10px] text-surface-400 text-center -mt-3 mb-1">基于画像 + 知识点智能匹配</p>
 
@@ -210,7 +238,7 @@ export default function SectionResourceWorkspace(props: Props) {
             setResourceFilter(filter);
             void searchResources(filter);
           }}
-          disabled={searching || !section}
+          disabled={!section}
           className="flex items-center justify-center gap-1 px-2.5 py-2 rounded-lg bg-surface-50 text-surface-600 text-[10px] font-medium hover:bg-surface-100 disabled:opacity-30 transition-colors">
           {label}
         </button>
@@ -223,8 +251,8 @@ export default function SectionResourceWorkspace(props: Props) {
         {searching ? '\u6b63\u5728\u4e3a\u4f60\u5bfb\u627e\u5b66\u4e60\u8d44\u6e90' : `\u641c\u7d22\u5b8c\u6210 \u00b7 \u68c0\u67e5 ${searchProgress[searchProgress.length - 1]?.source_count || 0} \u4e2a\u6765\u6e90 \u00b7 \u63a8\u8350 ${searchProgress[searchProgress.length - 1]?.result_count || 0} \u6761\u9ad8\u76f8\u5173\u8d44\u6e90`}
       </summary>
       <ol className="mt-2 space-y-1.5">
-        {searchProgress.map((event, index) => <li key={`${event.stage}-${index}`} className="flex gap-2">
-          <span className={event.status === 'running' ? 'animate-pulse text-primary-600' : 'text-success-600'}>{event.status === 'running' ? '\u25cf' : '\u2713'}</span>
+        {searchProgress.map((event) => <li key={event.stage} className="flex gap-2">
+          <span className={event.status === 'running' ? 'animate-spin text-primary-600' : event.status === 'failed' ? 'text-amber-600' : 'text-success-600'}>{event.status === 'running' ? '\u25cc' : event.status === 'cancelled' ? '\u25cb' : event.status === 'failed' ? '!' : '\u2713'}</span>
           <span>{searchStageLabels[event.stage]}{event.fallback_used ? '\uff0c\u9996\u9009\u7ed3\u679c\u4e0d\u8db3\uff0c\u5df2\u81ea\u52a8\u5c1d\u8bd5\u5907\u7528\u6765\u6e90' : ''}{event.stale ? '\uff0c\u5b9e\u65f6\u641c\u7d22\u6682\u65f6\u4e0d\u7a33\u5b9a' : ''}</span>
         </li>)}
       </ol>

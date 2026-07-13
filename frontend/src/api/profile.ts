@@ -32,6 +32,11 @@ export async function updateProfileSelfReport(sessionId: string, selfReport: Rec
   return data;
 }
 
+export async function updateProfileFact(sessionId: string, factKey: string, action: 'edit' | 'delete' | 'disable' | 'enable' | 'lock' | 'unlock', value?: unknown, scope?: string) {
+  const { data } = await client.patch(`/api/profile/v2/facts/${encodeURIComponent(factKey)}`, { sessionId, action, value, scope });
+  return data;
+}
+
 export async function assessInterest(sessionId: string, answers?: number[]): Promise<{ profileV2?: LearnerProfileV2; questions: string[] }> {
   const { data } = await client.post('/api/profile/v2/assess/interest', { sessionId, ...(answers ? { answers } : {}) });
   return data;

@@ -141,7 +141,7 @@ def _personalization(profile: dict[str, Any] | None) -> dict[str, Any]:
 
 def _flow(topic: str, points: list[str]) -> str:
     lines = ["flowchart TD", f'  ROOT["{_label(topic)}"]']
-    for index, point in enumerate((points or [topic])[:4], 1):
+    for index, point in enumerate((points or [topic])[:6], 1):
         lines.append(f'  ROOT --> N{index}["{_label(point)}"]')
     return sanitize_mermaid("\n".join(lines))
 
@@ -326,7 +326,7 @@ def build_structured_resource(context: dict[str, Any]) -> dict[str, Any]:
             "mermaid_def": _flow(title, points),
         }
     elif resource_type == "process_flow":
-        steps = (points + ["复盘与自测"])[:4]
+        steps = (points + ["明确目标", "建立概念关系", "跟随一个具体例子", "检查中间状态", "完成自测", "复盘易错点"])[:7]
         lines = ["flowchart TD", '  S["明确本节目标"]']
         previous = "S"
         for index, step in enumerate(steps, 1):
@@ -342,11 +342,11 @@ def build_structured_resource(context: dict[str, Any]) -> dict[str, Any]:
         first = points[0]
         second = points[1] if len(points) > 1 else f"{title} 的应用"
         payload = {
-            "content": f"## {title} 概念对比\n\n| 维度 | {first} | {second} |\n|---|---|---|\n| 关注点 | 定义、条件与作用 | 使用步骤与结果 |\n| 共同点 | 都服务于 {title} 的理解 | 都需要结合例子验证 |\n| 容易混淆 | 不把名称当作完整理解 | 不跳过适用条件 |\n\n建议先用同一个例子分别说明这两个概念。",
+            "content": f"## {title} 概念对比\n\n| 维度 | {first} | {second} |\n|---|---|---|\n| 定义 | 当前知识点中的概念定义 | 当前知识点中的相关概念定义 |\n| 关注点 | 条件与作用 | 步骤与结果 |\n| 输入 | 需要满足的前提 | 接收的对象或状态 |\n| 输出 | 对问题的解释 | 对过程的结果 |\n| 适用场景 | 适合何时使用 | 何时应选择另一概念 |\n| 常见错误 | 混淆定义和条件 | 跳过适用范围 |\n\n建议用同一个例子分别说明这两个概念。",
             "mermaid_def": sanitize_mermaid(f'''flowchart LR\n  T["{title}"] --> A["{_label(first)}"]\n  T --> B["{_label(second)}"]\n  A --> C["定义与条件"]\n  B --> D["使用与结果"]'''),
         }
     elif resource_type == "execution_trace":
-        steps = (points + ["完成并复盘"])[:4]
+        steps = (points + ["接收输入", "初始化状态", "执行当前动作", "检查关键分支", "输出结果", "记录完成状态"])[:7]
         lines = ["flowchart TD", f'  S["开始：{title}"]']
         previous = "S"
         for index, step in enumerate(steps, 1):
@@ -360,7 +360,7 @@ def build_structured_resource(context: dict[str, Any]) -> dict[str, Any]:
     else:  # code_trace without an executable, trusted algorithm example
         focus = points[0]
         payload = {
-            "content": f"## {title} 代码运行轨迹\n\n本资源只展示安全的结构化伪代码，不执行用户代码。\n\n```text\n读取输入 → 检查 {focus} → 记录当前状态 → 输出结论\n```\n\n| 步骤 | 变量状态 | 说明 |\n|---|---|---|\n| 1 | input 已读取 | 明确输入范围 |\n| 2 | current 更新 | 逐步检查 {focus} |\n| 3 | result 输出 | 记录可验证结论 |\n\n示例流程按线性步骤展示，时间复杂度为 `O(n)`，额外空间复杂度为 `O(1)`。",
+            "content": f"## {title} 代码运行轨迹\n\n本资源只展示安全的结构化伪代码，不执行用户代码。\n\n```python\ndef inspect_items(items):\n    for index, item in enumerate(items):\n        state = {{'index': index, 'value': item, 'focus': '{_label(focus)}'}}\n        if item is None:\n            continue\n        yield state\n```\n\n| 步骤 | 局部变量与状态 | 说明 |\n|---|---|---|\n| 1 | items 已读取 | 检查输入是否为空 |\n| 2 | index=0，item=items[0] | 建立当前状态 |\n| 3 | state 保存当前值 | 检查 {focus} |\n| 4 | index 递增 | 进入下一项 |\n| 5 | 遇到 None 跳过 | 处理边界输入 |\n| 6 | yield state | 输出可验证结果 |\n\n调用顺序是读取、遍历、检查、输出；时间复杂度为 `O(n)`，额外空间复杂度为 `O(1)`（不计输出）。",
             "mermaid_def": sanitize_mermaid(f'''flowchart TD\n  I["读取输入"] --> C["检查 {_label(focus)}"]\n  C --> U["更新当前状态"]\n  U --> O["输出结果"]'''),
             "code_blocks": [{"language": "text", "code": "读取输入 → 检查知识点 → 更新状态 → 输出结果", "explanation": "安全伪代码，不执行外部或用户提供的代码。"}],
         }

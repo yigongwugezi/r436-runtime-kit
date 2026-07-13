@@ -78,7 +78,10 @@ class SectionGeneratedResourcesService:
                 "resource_type": resource_type,
                 "section_title": section_title,
                 "knowledge_points": points,
-                "profile": profile or {},
+                "profile": {
+                    "subject_context": {"content_preferences": personalization["preferences"]},
+                    "knowledge_mastery": [{"label": point, "status": "weak"} for point in personalization["relevant_weak_points"]],
+                },
                 "feedback": feedback,
             }
             result = MultimodalAgent().run(multimodal_context)
@@ -236,8 +239,10 @@ class SectionGeneratedResourcesService:
     def _personalization(profile: dict[str, Any] | None, title: str, points: list[str]) -> dict[str, Any]:
         profile = profile or {}
         context = profile.get("subject_context") if isinstance(profile.get("subject_context"), dict) else {}
-        prior = " ".join(str(item) for item in context.get("prior_experience") or [])
-        preferences = [str(item) for item in context.get("content_preferences") or []]
+        records = profile.get("fact_records") if isinstance(profile.get("fact_records"), dict) else {}
+        enabled = lambda key: not isinstance(records.get(key), dict) or not records[key].get("is_disabled_for_personalization")
+        prior = " ".join(str(item) for item in context.get("prior_experience") or []) if enabled("prior_experience") else ""
+        preferences = [str(item) for item in context.get("content_preferences") or []] if enabled("content_preferences") else []
         section_text = f"{title} {' '.join(points)}".lower()
         mastery = profile.get("knowledge_mastery") if isinstance(profile.get("knowledge_mastery"), list) else []
         weak = [str(item.get("label") or item.get("knowledge_id") or "").strip() for item in mastery if isinstance(item, dict) and item.get("status") == "weak"]

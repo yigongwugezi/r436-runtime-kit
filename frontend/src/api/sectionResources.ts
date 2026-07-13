@@ -10,8 +10,9 @@ export async function streamSectionResourceRecommendations(
   sectionId: string,
   payload: Record<string, unknown>,
   onProgress: (event: SearchProgressEvent) => void,
+  signal?: AbortSignal,
 ): Promise<SectionRecommendationResult> {
-  const reader = await streamRequest(`/api/sections/${encodeURIComponent(sectionId)}/resources/recommendations/stream`, payload);
+  const reader = await streamRequest(`/api/sections/${encodeURIComponent(sectionId)}/resources/recommendations/stream`, payload, signal);
   const decoder = new TextDecoder();
   let buffer = '';
   try {
