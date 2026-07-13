@@ -12,7 +12,11 @@ from app.db.models import ResourceModel
 from app.db.repository import upsert_resource
 from app.services.llm_client import get_llm_client
 from app.services.resource_quality import ResourceQualityReviewer
-from app.services.structured_multimodal_resources import STRUCTURED_RESOURCE_DEFINITIONS, build_structured_resource
+from app.services.structured_multimodal_resources import (
+    STRUCTURED_RESOURCE_DEFINITIONS,
+    build_structured_resource,
+    normalized_resource_title,
+)
 
 
 RESOURCE_DEFINITIONS = {
@@ -97,7 +101,7 @@ class SectionGeneratedResourcesService:
                 "task_id": resource_type,
                 "generated_type": resource_type,
                 "generation_status": "completed",
-                "quality_status": "passed",
+                "quality_status": "pending",
                 "workflow_trace": self._workflow_trace(resource_type, profile, feedback),
             }
             reviewed = ResourceQualityReviewer().review(resource, section_title=section_title, knowledge_points=points)
@@ -127,7 +131,8 @@ class SectionGeneratedResourcesService:
                 })
                 reviewed = ResourceQualityReviewer().review(reviewed, section_title=section_title, knowledge_points=points)
                 metadata = reviewed.get("resource_metadata") if isinstance(reviewed.get("resource_metadata"), dict) else {}
-                metadata = {**metadata, "quality_status": "fallback", "fallback_reason": "质量审查未通过，已使用本地模板重建"}
+                if metadata.get("quality_status") in {"passed", "repaired"}:
+                    metadata = {**metadata, "quality_status": "fallback", "fallback_reason": "质量审查未通过，已使用本地模板重建"}
             reviewed["quality_status"] = metadata.get("quality_status", "failed")
             reviewed["resource_metadata"] = {
                 **metadata,
@@ -149,7 +154,7 @@ class SectionGeneratedResourcesService:
         return {
             "id": self.resource_id(section_id, resource_type, session_id),
             "type": storage_type,
-            "title": f"{section_title} · {label}",
+            "title": normalized_resource_title(section_title, resource_type, points) if resource_type in STRUCTURED_RESOURCE_DEFINITIONS else f"{section_title} · {label}",
             "description": f"为当前小节生成的{label}",
             "content": content,
             "knowledge_points": points,

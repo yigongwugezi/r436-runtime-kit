@@ -1,10 +1,56 @@
 import json
+from unittest.mock import patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db.models import Base, ResourceModel
 from app.services.section_generated_resources import RESOURCE_DEFINITIONS, SectionGeneratedResourcesService
+
+
+class _RouteDb:
+    def query(self, *_args):
+        return self
+
+    def filter(self, *_args):
+        return self
+
+    def order_by(self, *_args):
+        return self
+
+    def first(self):
+        return None
+
+    def close(self):
+        pass
+
+
+class _RouteService:
+    def existing(self, *_args):
+        return None
+
+    def generate(self, **kwargs):
+        return {"id": "generated", "content": "resource", **kwargs}
+
+    def persist(self, _db, _session_id, resource):
+        return resource
+
+    def serialize(self, resource):
+        return resource
+
+
+def _assert_generate_route_is_callable() -> None:
+    """The normal route must resolve its service import before title validation returns."""
+    from app.routers import product
+
+    with (
+        patch("app.services.section_generated_resources.SectionGeneratedResourcesService", return_value=_RouteService()),
+        patch.object(product, "SessionLocal", return_value=_RouteDb()),
+        patch.object(product, "_section_path_context", return_value={"section_title": "Recursion", "knowledge_points": []}),
+        patch.object(product, "_profile_v2", return_value={}),
+    ):
+        result = product.generate_section_resource("section_1", {"sessionId": "session_1", "resourceType": "summary_card"})
+    assert result["data"]["resource"]["id"] == "generated"
 
 
 class ProfileJsonClient:
@@ -17,6 +63,7 @@ class ProfileJsonClient:
 
 
 def main() -> None:
+    _assert_generate_route_is_callable()
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine)()

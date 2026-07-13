@@ -39,6 +39,7 @@ export interface GeneratedSectionResource {
   quality?: 'passed' | 'repaired' | 'fallback' | 'failed' | '';
   qualityScore?: number | null;
   personalization?: Record<string, unknown>;
+  feedback?: { feedback: 'helpful' | 'not_relevant' | 'too_hard' | 'too_easy' | 'other'; rating?: number; comment?: string } | null;
   workflowTrace?: Array<{ agent: string; status: string; summary: string }>;
   createdAt: number;
 }

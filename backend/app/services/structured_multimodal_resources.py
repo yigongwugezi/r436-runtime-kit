@@ -17,6 +17,7 @@ STRUCTURED_RESOURCE_DEFINITIONS = {
     "execution_trace": ("执行过程图", "mindmap"),
     "code_trace": ("代码运行轨迹", "case_study"),
 }
+_RESOURCE_LABELS = {key: value[0] for key, value in STRUCTURED_RESOURCE_DEFINITIONS.items()}
 ALLOWED_MERMAID_TYPES = {"flowchart", "graph", "sequenceDiagram", "mindmap", "stateDiagram-v2"}
 _DANGEROUS_MERMAID = re.compile(r"%%\{|\b(?:click|style|classDef|linkStyle)\b|<\s*(?:script|iframe|img)\b|javascript:|\bon\w+\s*=", re.I)
 
@@ -35,6 +36,30 @@ def normalized_points(items: Any, topic: str) -> list[str]:
     points = [_text(item.get("name") if isinstance(item, dict) else item, 48) for item in values]
     points = [point for point in points if point]
     return list(dict.fromkeys(points))[:6] or [_label(topic)]
+
+
+def normalized_topic(section_title: Any, knowledge_points: Any = None) -> str:
+    """Use a short, teachable topic instead of a full task sentence."""
+    raw = f"{section_title or ''} {' '.join(normalized_points(knowledge_points, ''))}".lower()
+    if any(token in raw for token in ("递归", "recursion", "阶乘", "factorial", "调用栈", "栈帧")):
+        return "递归调用栈"
+    return _label(section_title)
+
+
+def normalized_resource_title(section_title: Any, resource_type: str, knowledge_points: Any = None) -> str:
+    """Return one user-facing title; IDs and stored bindings stay unchanged."""
+    topic = normalized_topic(section_title, knowledge_points)
+    if topic == "递归调用栈":
+        special = {
+            "knowledge_map": "递归调用栈知识结构图",
+            "process_flow": "递归调用栈学习流程图",
+            "concept_diagram": "递归与迭代概念对比",
+            "execution_trace": "阶乘递归执行过程图",
+            "code_trace": "阶乘函数代码运行轨迹",
+        }
+        if resource_type in special:
+            return special[resource_type]
+    return f"{topic}{_RESOURCE_LABELS.get(resource_type, '')}".strip() or "学习资源"
 
 
 def sanitize_mermaid(value: Any) -> str:
@@ -114,16 +139,14 @@ def _personalization(profile: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def _flow(topic: str, points: list[str], title: str = "知识结构") -> str:
-    branches = (points + ["核心定义", "关键步骤", "应用边界"])[:3]
+def _flow(topic: str, points: list[str]) -> str:
     lines = ["flowchart TD", f'  ROOT["{_label(topic)}"]']
-    for index, point in enumerate(branches, 1):
-        child = f"N{index}"
-        lines.extend((f'  ROOT --> {child}["{_label(point)}"]', f'  {child} --> D{index}["理解与练习"]'))
+    for index, point in enumerate((points or [topic])[:4], 1):
+        lines.append(f'  ROOT --> N{index}["{_label(point)}"]')
     return sanitize_mermaid("\n".join(lines))
 
 
-def _recursion_trace(topic: str, points: list[str], resource_type: str) -> dict[str, Any]:
+def _recursion_trace(topic: str, points: list[str], resource_type: str, feedback: str = "") -> dict[str, Any]:
     mermaid = sanitize_mermaid(
         """sequenceDiagram
   participant U as 调用者
@@ -140,6 +163,12 @@ def _recursion_trace(topic: str, points: list[str], resource_type: str) -> dict[
   F3-->>F4: 返回 6
   F4-->>U: 返回 24"""
     )
+    code = '''def factorial(n):
+    if not isinstance(n, int):
+        raise TypeError("n 必须是整数")
+    if n < 0:
+        raise ValueError("n 必须是非负整数")
+    return 1 if n <= 1 else n * factorial(n - 1)'''
     common = f"""## {topic}：factorial(4) 执行轨迹
 
 ### 调用栈
@@ -149,6 +178,14 @@ def _recursion_trace(topic: str, points: list[str], resource_type: str) -> dict[
 | 2 | factorial(3) | n=3 | 2 | 等待 factorial(2) |
 | 3 | factorial(2) | n=2 | 3 | 等待 factorial(1) |
 | 4 | factorial(1) | n=1 | 4 | 命中基例，返回 1 |
+
+### 返回后继续执行
+| 栈帧 | 局部变量 | 返回后继续执行 |
+|---|---|---|
+| factorial(4) | n=4 | 计算 `4 × factorial(3)` 的返回值 |
+| factorial(3) | n=3 | 计算 `3 × factorial(2)` 的返回值 |
+| factorial(2) | n=2 | 计算 `2 × factorial(1)` 的返回值 |
+| factorial(1) | n=1 | 命中终止条件，返回 1 |
 
 ### 返回过程
 | 返回层 | 返回值 | 计算 |
@@ -160,36 +197,54 @@ def _recursion_trace(topic: str, points: list[str], resource_type: str) -> dict[
 
 ### 关键点
 - 每次调用都会创建一个包含局部变量 `n` 和返回地址的栈帧。
-- `n=1` 是基例；从这里开始逐层返回并释放栈帧。
+- `n<=1` 是终止条件，因此 `factorial(0)=1`、`factorial(1)=1`。
+- 负数会被明确拒绝，避免无终止的递归。
 - 时间复杂度为 `O(n)`，调用栈空间复杂度为 `O(n)`。
 
 ### 易错点与自测
 - 不要遗漏基例，否则递归不会停止。
-- 想一想：`factorial(0)` 应返回什么？为什么？"""
+- 想一想：`factorial(0)` 为什么也应返回 `1`？"""
     if resource_type == "code_trace":
-        common = f"""## {topic}：安全代码运行轨迹
-
-```python
-def factorial(n):
-    return 1 if n == 1 else n * factorial(n - 1)
-```
-
-输入：`factorial(4)`
-
-{common.split('### 调用栈', 1)[1]}"""
-    return {"content": common, "mermaid_def": mermaid, "code_blocks": [{"language": "python", "code": "def factorial(n):\n    return 1 if n == 1 else n * factorial(n - 1)", "explanation": "固定示例，仅展示递归调用过程，不执行用户代码。"}] if resource_type == "code_trace" else None}
-
-
-def _apply_feedback(content: str, feedback: str, topic: str, points: list[str]) -> str:
-    """Apply one scoped preference without retaining a feedback history."""
-    focus = points[0] if points else topic
+        common = f"## {topic}：安全代码运行轨迹\n\n输入：`factorial(4)`。下方代码只展示一次；调用和返回表说明每层栈帧如何继续执行。\n\n{common.split('### 调用栈', 1)[1]}"
     if feedback == "too_hard":
-        return content + f"\n\n### 初学者分步提示\n1. 先用一句话说清楚 {focus} 的作用。\n2. 再用一个很小的例子逐步观察变化。\n3. 最后完成一道只检查本节核心概念的自测题。"
-    if feedback == "too_easy":
-        return content + f"\n\n### 进阶检查\n- 说明 {focus} 的适用边界。\n- 比较两种实现的时间或空间代价。\n- 为当前主题设计一个边界输入并解释结果。"
-    if feedback == "not_relevant":
-        return content + f"\n\n### 主题对齐\n本版只围绕“{topic}”及其知识点（{'、'.join(points[:3])}）组织，不扩展到无关主题。"
-    return content
+        mermaid = sanitize_mermaid(
+            """sequenceDiagram
+  participant U as 调用者
+  participant F3 as factorial(3)
+  participant F2 as factorial(2)
+  participant F1 as factorial(1)
+  U->>F3: 从 n=3 开始
+  F3->>F2: 等待 factorial(2)
+  F2->>F1: 等待 factorial(1)
+  F1-->>F2: 返回 1
+  F2-->>F3: 返回 2
+  F3-->>U: 返回 6"""
+        )
+        common = f"""## {topic}：从 factorial(3) 开始
+
+先只看三个栈帧：`factorial(3)`、`factorial(2)` 和 `factorial(1)`。每一层只保存自己的 `n`，并等待下一层返回。
+
+### 分步调用表
+| 栈帧 | 局部变量 | 正在等待 | 返回后继续执行 |
+|---|---|---|---|
+| factorial(3) | n=3 | factorial(2) | 计算 `3 × factorial(2)` |
+| factorial(2) | n=2 | factorial(1) | 计算 `2 × factorial(1)` |
+| factorial(1) | n=1 | 无 | 命中终止条件，返回 1 |
+
+### 逐层返回
+1. `factorial(1)` 因为 `n<=1` 返回 1。
+2. `factorial(2)` 在原来的返回位置继续，计算 `2 × 1 = 2`。
+3. `factorial(3)` 在原来的返回位置继续，计算 `3 × 2 = 6`。
+
+### 先记住这三点
+- 终止条件让递归停下来；调用栈保存每层栈帧和局部变量。
+- `factorial(0)=1`，`factorial(1)=1`；负数会被拒绝。
+- 时间复杂度和调用栈空间复杂度都是 `O(n)`。"""
+    elif feedback == "too_easy":
+        common += "\n\n### 进阶检查\n- 对比递归与迭代实现的状态保存方式。\n- 解释深度过大时的栈溢出风险。\n- 验证 `factorial(0)=1` 与负数抛出异常的边界。"
+    elif feedback == "not_relevant":
+        common = common.replace(topic, "递归调用栈") + "\n\n### 主题对齐\n本版仅解释递归、终止条件、调用栈、栈帧与逐层返回。"
+    return {"content": common, "mermaid_def": mermaid, "code_blocks": [{"language": "python", "code": code, "explanation": "安全阶乘示例：0 和 1 返回 1，负数被拒绝。"}] if resource_type == "code_trace" else None}
 
 
 def build_structured_resource(context: dict[str, Any]) -> dict[str, Any]:
@@ -197,8 +252,9 @@ def build_structured_resource(context: dict[str, Any]) -> dict[str, Any]:
     resource_type = str(context.get("resource_type") or context.get("resourceType") or "").strip()
     if resource_type not in STRUCTURED_RESOURCE_DEFINITIONS:
         raise ValueError("unsupported structured resource type")
-    title = _label(context.get("section_title") or context.get("sectionTitle") or "当前小节")
-    points = normalized_points(context.get("knowledge_points") or context.get("knowledgePoints"), title)
+    section_title = _label(context.get("section_title") or context.get("sectionTitle") or "当前小节")
+    points = normalized_points(context.get("knowledge_points") or context.get("knowledgePoints"), section_title)
+    title = normalized_topic(section_title, points)
     profile = context.get("profile") if isinstance(context.get("profile"), dict) else {}
     subject_context = profile.get("subject_context") if isinstance(profile.get("subject_context"), dict) else {}
     subject = _label(context.get("subject") or subject_context.get("course_name") or subject_context.get("subject_name") or "")
@@ -208,7 +264,62 @@ def build_structured_resource(context: dict[str, Any]) -> dict[str, Any]:
     is_recursion = any(token in f"{title} {' '.join(points)}" for token in ("递归", "recursion", "阶乘", "factorial"))
 
     if resource_type in {"execution_trace", "code_trace"} and is_recursion:
-        payload = _recursion_trace(title, points, resource_type)
+        payload = _recursion_trace(title, points, resource_type, feedback)
+    elif resource_type == "knowledge_map" and is_recursion:
+        payload = {
+            "content": """## 递归调用栈知识结构图
+
+- **递归函数**：函数通过调用自身解决规模更小的同类问题。
+- **终止条件**：`n<=1` 时直接返回，防止无限调用。
+- **调用栈**：每次调用都会压入一个栈帧，保存局部变量和返回位置。
+- **逐层返回**：最深层先返回，上一层从等待位置继续计算。
+- **示例**：阶乘和斐波那契都能展示这一过程。""",
+            "mermaid_def": sanitize_mermaid("""mindmap
+  root((递归调用栈))
+    递归函数
+      终止条件
+      递归关系
+    调用栈
+      栈帧
+      局部变量
+      返回位置
+    执行过程
+      逐层调用
+      逐层返回
+    示例
+      阶乘
+      斐波那契"""),
+        }
+    elif resource_type == "process_flow" and is_recursion:
+        steps = ["理解递归函数", "找到终止条件", "确定递归关系", "代入 factorial(4)", "记录每层参数与栈帧", "到达终止条件", "逐层计算返回值", "分析时间和空间复杂度", "完成类似练习"]
+        lines = ["flowchart TD", '  S["开始：理解递归函数"]']
+        for index, step in enumerate(steps[1:], 1):
+            lines.append(f'  P{index - 1 if index > 1 else "S"} --> P{index}["{step}"]' if index > 1 else f'  S --> P1["{step}"]')
+        payload = {
+            "content": "## 递归调用栈学习流程\n\n" + "\n".join(f"{index}. {step}" for index, step in enumerate(steps, 1)),
+            "mermaid_def": sanitize_mermaid("\n".join(lines)),
+        }
+    elif resource_type == "concept_diagram" and is_recursion:
+        rows = [
+            ("定义", "函数调用自身解决更小的同类问题", "用循环重复执行步骤"),
+            ("执行方式", "通过函数调用推进", "通过循环条件推进"),
+            ("状态保存", "调用栈中的栈帧保存每层局部变量", "变量或显式栈保存状态"),
+            ("结束条件", "由终止条件结束最深层调用", "由循环条件结束重复执行"),
+            ("返回过程", "最深层先返回，上一层在返回位置继续计算", "每轮循环直接更新下一轮所需状态"),
+            ("空间开销", "常为 O(n)", "常可优化为 O(1)"),
+            ("优点", "结构接近递归定义", "避免深递归的栈开销"),
+            ("风险", "深度过大可能栈溢出", "状态更新遗漏会出错"),
+            ("适用场景", "树遍历、分治、回溯", "线性重复计算"),
+            ("易混淆点", "基例和返回位置", "循环条件和状态更新"),
+        ]
+        payload = {
+            "content": "## 递归与迭代概念对比\n\n| 对比维度 | 递归 | 迭代 |\n|---|---|---|\n" + "\n".join(f"| {a} | {b} | {c} |" for a, b, c in rows),
+            "mermaid_def": sanitize_mermaid("""flowchart LR
+  T["递归调用栈"] --> R["递归"]
+  T --> I["迭代"]
+  R --> RS["调用栈保存状态"]
+  I --> IS["变量或显式栈保存状态"]"""),
+        }
     elif resource_type == "knowledge_map":
         payload = {
             "content": f"## {title} 知识结构\n\n- 中心主题：{title}\n- 核心知识：{'、'.join(points)}\n- 学习顺序：先理解定义与关系，再完成一个对应练习。",
@@ -254,12 +365,11 @@ def build_structured_resource(context: dict[str, Any]) -> dict[str, Any]:
             "code_blocks": [{"language": "text", "code": "读取输入 → 检查知识点 → 更新状态 → 输出结果", "explanation": "安全伪代码，不执行外部或用户提供的代码。"}],
         }
 
-    payload["content"] = _apply_feedback(payload["content"], feedback, title, points)
     label, storage_type = STRUCTURED_RESOURCE_DEFINITIONS[resource_type]
     fallback_note = "已按反馈降低说明门槛。" if feedback == "too_hard" else "已按反馈补充挑战性检查。" if feedback == "too_easy" else ""
     return {
         "type": storage_type,
-        "title": f"{title} · {label}",
+        "title": normalized_resource_title(section_title, resource_type, points),
         "description": f"基于当前小节与知识点生成的{label}{fallback_note}",
         "content": payload["content"],
         "mermaid_def": payload.get("mermaid_def") or "",

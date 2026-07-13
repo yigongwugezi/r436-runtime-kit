@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useLearningPath } from '../hooks/useLearningPath';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
@@ -87,6 +87,7 @@ function legacyStageSection(stage: { id: string; title: string }, sectionId: str
 export default function LecturePage() {
   const { chapterId, sectionId } = useParams<{ chapterId?: string; sectionId?: string }>();
   const nav = useNavigate();
+  const [searchParams] = useSearchParams();
   const { path, updateKnowledgePoint } = useLearningPath();
   const sessionId = useChatStore((s) => s.dataSessionId);
 
@@ -108,6 +109,10 @@ export default function LecturePage() {
   const [quotePos, setQuotePos] = useState<{x:number;y:number}|null>(null);
   const [zoomDiagram, setZoomDiagram] = useState<string>('');        // 放大查看图解内容
   const generatePanelRef = useRef<GeneratePanelHandle>(null);
+
+  useEffect(() => {
+    if (searchParams.get('panel') === 'resources') setRightTab('resources');
+  }, [searchParams]);
 
   // ── 派生值 ──
   const cacheKey = `${sessionId || 'anon'}:${activeSectionId}`;

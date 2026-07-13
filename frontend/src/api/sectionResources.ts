@@ -16,8 +16,8 @@ export async function generateSectionResource(sectionId: string, payload: Record
   return data;
 }
 
-export async function getGeneratedSectionResources(sectionId: string, sessionId: string): Promise<GeneratedSectionResource[]> {
-  const { data } = await client.get(`/api/sections/${encodeURIComponent(sectionId)}/generated-resources`, { params: { sessionId } });
+export async function getGeneratedSectionResources(sectionId: string, sessionId: string, subjectId?: string): Promise<GeneratedSectionResource[]> {
+  const { data } = await client.get(`/api/sections/${encodeURIComponent(sectionId)}/generated-resources`, { params: { sessionId, subjectId } });
   return data.resources || [];
 }
 

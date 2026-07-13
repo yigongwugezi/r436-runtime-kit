@@ -50,10 +50,9 @@ def main() -> None:
         assert resource["task_id"] == resource_type
         assert "major_background" not in resource["content"]
         assert resource["resource_metadata"]["quality_status"] in {"passed", "repaired"}
-        assert set(resource["resource_metadata"]["checks"]) == {
-            "topic_relevance", "factual_consistency", "structural_completeness", "renderability",
-            "placeholder_free", "personalization", "safety",
-        }
+        checks = resource["resource_metadata"]["checks"]
+        assert all(checks.values())
+        assert {"topic_keyword_coverage", "duplicate_node_detection", "generic_content_detection", "semantic_distinctness", "educational_value"} <= set(checks)
         assert [step["agent"] for step in resource["workflow_trace"]] == [
             "ProfileAgent", "ResourceAgent", "MultimodalAgent", "ResourceQualityReviewer", "ResourceModel",
         ]
@@ -66,6 +65,18 @@ def main() -> None:
     assert all(fragment in recursion["content"] for fragment in ("factorial(4)", "栈深度", "返回过程", "O(n)", "基例"))
     trace = generated["code_trace"]
     assert trace["mermaid_def"].startswith("sequenceDiagram") and trace["code_blocks"]
+    assert trace["content"].count("def factorial") == 0
+    assert "n <= 1" in trace["code_blocks"][0]["code"] and "n < 0" in trace["code_blocks"][0]["code"]
+    assert "factorial(0)=1" in trace["content"] and "返回后继续执行" in trace["content"]
+    knowledge_map = generated["knowledge_map"]
+    assert knowledge_map["title"] == "递归调用栈知识结构图"
+    assert all(term in knowledge_map["mermaid_def"] for term in ("递归函数", "终止条件", "调用栈", "栈帧", "局部变量", "返回位置", "逐层返回", "阶乘", "斐波那契"))
+    comparison = generated["concept_diagram"]
+    assert comparison["title"] == "递归与迭代概念对比"
+    assert "| 对比维度 | 递归 | 迭代 |" in comparison["content"] and comparison["content"].count("|") >= 24
+    flow = generated["process_flow"]
+    assert flow["title"] == "递归调用栈学习流程图"
+    assert all(term in flow["content"] for term in ("终止条件", "栈帧", "逐层计算返回值"))
     assert "顺序访问" not in recursion["content"] and "数组存储" not in recursion["content"]
 
     other_session = generate(service, "knowledge_map", "session_b")
@@ -75,9 +86,10 @@ def main() -> None:
     assert service.existing(db, "session_b", "recursion_section", "knowledge_map").session_id == "session_b"
     assert db.query(ResourceModel).count() == len(STRUCTURED_RESOURCE_DEFINITIONS) + 1
 
-    adjusted = generate(service, "knowledge_map", feedback="too_hard")
-    assert "降低说明门槛" in adjusted["description"]
-    assert "初学者分步提示" in adjusted["content"]
+    adjusted = generate(service, "code_trace", feedback="too_hard")
+    assert adjusted["resource_metadata"]["quality_status"] in {"passed", "repaired"}
+    assert "从 factorial(3) 开始" in adjusted["content"]
+    assert "factorial(3)" in adjusted["mermaid_def"]
 
     invalid = ResourceQualityReviewer().review(
         {"content": "无关内容", "format": "diagram", "mermaid_def": "flowchart TD\n A[\"安全\"]\n click A \"x\""},
@@ -86,6 +98,11 @@ def main() -> None:
     )
     assert invalid["resource_metadata"]["quality_status"] == "failed"
     assert not invalid["resource_metadata"]["checks"]["safety"]
+    generic = ResourceQualityReviewer().review(
+        {"task_id": "knowledge_map", "type": "mindmap", "format": "diagram", "content": "普通模板", "mermaid_def": "mindmap\n  root((递归调用栈))\n    核心定义\n    核心定义", "personalization": {"learner_level": "beginner"}},
+        section_title="递归调用栈", knowledge_points=["递归", "调用栈"],
+    )
+    assert generic["resource_metadata"]["quality_status"] == "failed"
     print("multimodal resource quality: PASS")
 
 

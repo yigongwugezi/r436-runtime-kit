@@ -36,6 +36,7 @@ const resourceGroups: Array<{ label: string; types: GeneratedSectionResourceType
 const platformLabels: Record<string, string> = { bilibili: 'B站', youtube: 'YouTube', vimeo: 'Vimeo', icourse163: '中国大学MOOC', xuetangx: '学堂在线', smartedu: '智慧教育平台', imooc: '慕课网', youku: '优酷', iqiyi: '爱奇艺', douyin: '抖音', tencent_video: '腾讯视频' };
 const trustLabels: Record<string, string> = { official: '官方来源', educational: '教育来源', general: '普通来源' };
 const matchLevelLabels: Record<string, string> = { exact_topic: '精确匹配', chapter_level: '章节匹配', course_level: '课程拓展', expanded_research: '拓展论文' };
+type GeneratedFeedback = NonNullable<GeneratedSectionResource['feedback']>['feedback'];
 
 function safeExternalUrl(url: string): boolean {
   try { return ['http:', 'https:'].includes(new URL(url).protocol); } catch { return false; }
@@ -51,7 +52,7 @@ export default function SectionResourceWorkspace(props: Props) {
   const [generated, setGenerated] = useState<GeneratedSectionResource[]>([]);
   const [generating, setGenerating] = useState<GeneratedSectionResourceType | null>(null);
   const [selectedType, setSelectedType] = useState<GeneratedSectionResourceType>('knowledge_map');
-  const [generatedFeedback, setGeneratedFeedback] = useState<'helpful' | 'not_relevant' | 'too_hard' | 'too_easy'>('helpful');
+  const [generatedFeedback, setGeneratedFeedback] = useState<GeneratedFeedback>('helpful');
   const [preview, setPreview] = useState<GeneratedSectionResource | null>(null);
   const [mindmap, setMindmap] = useState<ChapterMindmap | null>(null);
   const [mindmapLoading, setMindmapLoading] = useState(false);
@@ -61,9 +62,9 @@ export default function SectionResourceWorkspace(props: Props) {
   useEffect(() => {
     let active = true;
     if (!sessionId || !section?.id) { setGenerated([]); return; }
-    getGeneratedSectionResources(section.id, sessionId).then((items) => active && setGenerated(items)).catch(() => active && setGenerated([]));
+    getGeneratedSectionResources(section.id, sessionId, subjectId).then((items) => active && setGenerated(items)).catch(() => active && setGenerated([]));
     return () => { active = false; };
-  }, [sessionId, section?.id]);
+  }, [sessionId, section?.id, subjectId]);
 
   useEffect(() => {
     let active = true;
@@ -99,7 +100,7 @@ export default function SectionResourceWorkspace(props: Props) {
     } catch { setNotice('反馈保存失败，请稍后重试。'); }
   };
 
-  const generate = async (resourceType: GeneratedSectionResourceType, feedback = '') => {
+  const generate = async (resourceType: GeneratedSectionResourceType, feedback: GeneratedFeedback | '' = '') => {
     if (!sessionId || !section) return;
     setGenerating(resourceType);
     setNotice('');
@@ -109,17 +110,45 @@ export default function SectionResourceWorkspace(props: Props) {
         subjectId, knowledgePoints: section.knowledgePoints, lectureContent, feedback,
         regenerate: generated.some((item) => item.resourceType === resourceType),
       });
-      setGenerated((items) => [result.resource, ...items.filter((item) => item.id !== result.resource.id)]);
-      setPreview(result.resource);
+      const previous = generated.find((item) => item.resourceType === resourceType);
+      const next: GeneratedSectionResource = {
+        ...result.resource,
+        feedback: feedback ? { ...previous?.feedback, feedback } : result.resource.feedback,
+      };
+      setGenerated((items) => [next, ...items.filter((item) => item.id !== next.id)]);
+      setPreview(next);
     } catch { setNotice('资源生成失败，请稍后重试。'); } finally { setGenerating(null); }
   };
 
   const regenerateFromFeedback = async () => {
     if (!preview || !sessionId || !section) return;
     try {
-      await submitGeneratedSectionResourceFeedback(section.id, preview.resourceType, { sessionId, subjectId, feedback: generatedFeedback });
+      const savedFeedback = { ...preview.feedback, feedback: generatedFeedback };
+      await submitGeneratedSectionResourceFeedback(section.id, preview.resourceType, {
+        sessionId,
+        subjectId,
+        feedback: generatedFeedback,
+        rating: savedFeedback.rating,
+        comment: savedFeedback.comment,
+      });
+      setGenerated((items) => items.map((item) => item.id === preview.id ? { ...item, feedback: savedFeedback } : item));
+      setPreview((item) => item ? { ...item, feedback: savedFeedback } : item);
+      if (generatedFeedback === 'helpful') {
+        setNotice('已记录，这将用于优化后续同类资源推荐。');
+        return;
+      }
       await generate(preview.resourceType, generatedFeedback);
     } catch { setNotice('反馈保存或重新生成失败，请稍后重试。'); }
+  };
+
+  const openGeneratedDetail = (resource: GeneratedSectionResource) => {
+    if (!section) return;
+    const returnTo = `/lecture/section/${encodeURIComponent(section.id)}?panel=resources`;
+    const query = new URLSearchParams({
+      source: 'lecture', activePanel: 'related_resources', returnTo, sessionId,
+      subjectId: subjectId || '', pathId, stageId, chapterId, sectionId: section.id,
+    });
+    nav(`/resources/${encodeURIComponent(resource.id)}?${query.toString()}`);
   };
 
   const generateMindmap = async () => {
@@ -183,7 +212,7 @@ export default function SectionResourceWorkspace(props: Props) {
             {safeExternalUrl(r.url) && <a href={r.url} target="_blank" rel="noopener noreferrer"
               className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-medium text-surface-500 hover:text-surface-700">
               {r.resource_type === 'video' ? '打开视频' : '打开原文'} <ExternalLink size={10} /></a>}
-            <div className="mt-2 flex flex-wrap gap-1"><span className="mr-1 text-[10px] text-surface-400">这条推荐：</span>{[['helpful', '有帮助'], ['not_relevant', '不相关'], ['too_hard', '偏难'], ['too_easy', '偏简单']].map(([value, label]) => <button key={value} onClick={() => giveFeedback(r, value as 'helpful' | 'not_relevant' | 'too_hard' | 'too_easy')} className={`rounded px-1.5 py-0.5 text-[10px] ${r.feedback === value ? 'bg-blue-100 text-blue-700' : 'bg-white text-surface-500 hover:bg-surface-100'}`}>{label}</button>)}</div>
+            <div className="mt-2 flex flex-wrap gap-1"><span className="mr-1 text-[10px] text-surface-400">这条推荐：</span>{[['helpful', '有帮助'], ['not_relevant', '不相关'], ['too_hard', '太难'], ['too_easy', '太简单']].map(([value, label]) => <button key={value} onClick={() => giveFeedback(r, value as 'helpful' | 'not_relevant' | 'too_hard' | 'too_easy')} className={`rounded px-1.5 py-0.5 text-[10px] ${r.feedback === value ? 'bg-blue-100 text-blue-700' : 'bg-white text-surface-500 hover:bg-surface-100'}`}>{label}</button>)}</div>
           </div>
         ))}
       </div>
@@ -210,23 +239,24 @@ export default function SectionResourceWorkspace(props: Props) {
       </div>
 
       {generated.length > 0 && <div className="space-y-1.5 pt-1">
-        {generated.map((item) => <button key={item.id} onClick={() => setPreview(item)}
+        {generated.map((item) => <button key={item.id} onClick={() => { setPreview(item); setGeneratedFeedback(item.feedback?.feedback || 'helpful'); }}
           className={`w-full rounded-lg border px-2.5 py-2 text-left text-xs transition-colors ${preview?.id === item.id ? 'border-primary-200 bg-primary-50 text-primary-700' : 'border-surface-100 bg-surface-50 text-surface-600 hover:bg-surface-100'}`}>
-          <span className="font-medium">{generatedResourceLabels[item.resourceType]}</span>
+          <span className="font-medium">{item.title}</span>
           {item.quality && <span className="ml-1.5 text-[10px] text-surface-400">质检：{item.quality === 'passed' ? '通过' : item.quality === 'repaired' ? '已修复' : item.quality === 'fallback' ? '本地兜底' : '失败'}</span>}
         </button>)}
       </div>}
 
       {preview && <div className="space-y-2 rounded-xl border border-surface-200 bg-white p-3">
-        <div className="flex items-center justify-between gap-2"><p className="text-xs font-semibold text-surface-700">{preview.title}</p><button onClick={() => nav(`/resources/${preview.id}`)} className="text-[10px] text-primary-600 hover:text-primary-700">打开详情</button></div>
+        <div className="flex items-center justify-between gap-2"><p className="text-xs font-semibold text-surface-700">{preview.title}</p><button onClick={() => openGeneratedDetail(preview)} className="text-[10px] text-primary-600 hover:text-primary-700">打开详情</button></div>
         {preview.mermaidDef && <div className="rounded-lg border border-surface-100 bg-white p-2"><MermaidDiagram definition={preview.mermaidDef} /></div>}
         <div className="prose prose-sm max-w-none text-xs"><Markdown content={preview.content} /></div>
         <div className="flex gap-2 border-t border-surface-100 pt-2">
           <select value={generatedFeedback} onChange={(event) => setGeneratedFeedback(event.target.value as typeof generatedFeedback)} className="min-w-0 flex-1 rounded-lg border border-surface-200 px-2 py-1.5 text-[10px]">
-            <option value="helpful">有帮助</option><option value="not_relevant">不相关</option><option value="too_hard">偏难</option><option value="too_easy">偏简单</option>
+            <option value="helpful">有帮助</option><option value="not_relevant">不相关</option><option value="too_hard">太难</option><option value="too_easy">太简单</option><option value="other">其他</option>
           </select>
-          <button onClick={regenerateFromFeedback} disabled={Boolean(generating)} className="inline-flex items-center gap-1 rounded-lg bg-surface-800 px-2 py-1.5 text-[10px] text-white hover:bg-surface-900 disabled:opacity-40"><RefreshCw size={11} />按反馈重生成</button>
+          {generatedFeedback === 'helpful' ? <button onClick={regenerateFromFeedback} className="rounded-lg bg-success-50 px-2 py-1.5 text-[10px] text-success-700">记录有帮助</button> : <button onClick={regenerateFromFeedback} disabled={Boolean(generating)} className="inline-flex items-center gap-1 rounded-lg bg-surface-800 px-2 py-1.5 text-[10px] text-white hover:bg-surface-900 disabled:opacity-40"><RefreshCw size={11} />按反馈重新生成</button>}
         </div>
+        {generatedFeedback === 'helpful' && <p className="text-[10px] text-success-600">有帮助不需要重新生成；保存后会用于优化后续同类推荐。</p>}
         {preview.workflowTrace && preview.workflowTrace.length > 0 && <details className="rounded-lg bg-surface-50 p-2 text-[10px] text-surface-500"><summary className="cursor-pointer font-medium text-surface-600">查看协同执行记录</summary><ol className="mt-1 space-y-1 pl-4">{preview.workflowTrace.map((step, index) => <li key={`${step.agent}-${index}`}>{step.agent}：{step.summary}</li>)}</ol></details>}
       </div>}
     </div>

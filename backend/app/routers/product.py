@@ -2632,10 +2632,16 @@ def get_resources(
 
     def _normalize(item: dict[str, Any]) -> dict[str, Any]:
         metadata = item.get("resource_metadata") if isinstance(item.get("resource_metadata"), dict) else {}
+        task_id = item.get("taskId", item.get("task_id", ""))
+        title = item.get("title", "学习资源")
+        if "section_generated" in (item.get("tags") or []):
+            from app.services.structured_multimodal_resources import STRUCTURED_RESOURCE_DEFINITIONS, normalized_resource_title
+            if task_id in STRUCTURED_RESOURCE_DEFINITIONS:
+                title = normalized_resource_title(title, task_id, item.get("knowledgePoints", item.get("knowledge_points", [])))
         return {
             "id": item["id"],
             "type": _resource_type(item.get("type", "lecture")),
-            "title": item.get("title", "学习资源"),
+            "title": title,
             "description": item.get("description", ""),
             "content": item.get("content", ""),
             "knowledgePoints": item.get("knowledgePoints", item.get("knowledge_points", [])),
@@ -2655,7 +2661,7 @@ def get_resources(
             "relatedStageId": item.get("relatedStageId", item.get("related_stage_id", "")),
             "relatedChapterId": item.get("relatedChapterId", item.get("related_chapter_id", "")),
             "relatedSectionId": item.get("relatedSectionId", item.get("related_section_id", "")),
-            "taskId": item.get("taskId", item.get("task_id", "")),
+            "taskId": task_id,
             "relatedChapter": item.get("relatedChapter", item.get("related_chapter", "")),
             "relatedKnowledgePoints": item.get("relatedKnowledgePoints", item.get("related_knowledge_points", [])),
             "qualityStatus": item.get("qualityStatus", item.get("quality_status", metadata.get("quality_status", ""))),
@@ -2779,11 +2785,17 @@ def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "") -> 
     if db_match:
         bookmarks = _get_bookmarks(session_id)
         metadata = db_match.get("resource_metadata") if isinstance(db_match.get("resource_metadata"), dict) else {}
+        title = db_match.get("title", "学习资源")
+        task_id = db_match.get("task_id", "")
+        if "section_generated" in (db_match.get("tags") or []):
+            from app.services.structured_multimodal_resources import STRUCTURED_RESOURCE_DEFINITIONS, normalized_resource_title
+            if task_id in STRUCTURED_RESOURCE_DEFINITIONS:
+                title = normalized_resource_title(title, task_id, db_match.get("knowledge_points", []))
         return _product_response(
             {"resource": {
                 "id": db_match["id"],
                 "type": _resource_type(db_match.get("type", "lecture")),
-                "title": db_match.get("title", "学习资源"),
+                "title": title,
                 "description": db_match.get("description", ""),
                 "content": db_match.get("content", ""),
                 "knowledgePoints": db_match.get("knowledge_points", []),
@@ -2802,7 +2814,7 @@ def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "") -> 
                 "relatedStageId": db_match.get("related_stage_id", ""),
                 "relatedChapterId": db_match.get("related_chapter_id", ""),
                 "relatedSectionId": db_match.get("related_section_id", ""),
-                "taskId": db_match.get("task_id", ""),
+                "taskId": task_id,
                 "qualityStatus": metadata.get("quality_status", ""),
                 "sourceType": metadata.get("generation_source", ""),
                 "generationMode": metadata.get("generation_mode", ""),
@@ -5437,6 +5449,8 @@ def _section_path_context(session_id: str, section_id: str) -> dict[str, Any]:
 @router.post("/sections/{section_id}/resources/generate")
 def generate_section_resource(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Generate one small section resource and archive it in the existing library."""
+    from app.services.section_generated_resources import SectionGeneratedResourcesService
+
     session_id = _payload_session_id(payload)
     subject_id = _payload_subject_id(payload)
     if subject_id:
@@ -5446,7 +5460,6 @@ def generate_section_resource(section_id: str, payload: dict[str, Any]) -> dict[
     section_title = str(payload.get("sectionTitle") or context.get("section_title") or "").strip()
     if not section_title:
         return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
-    from app.services.section_generated_resources import SectionGeneratedResourcesService
     service = SectionGeneratedResourcesService()
     try:
         db = SessionLocal()
@@ -5479,12 +5492,59 @@ def generate_section_resource(section_id: str, payload: dict[str, Any]) -> dict[
         db.close()
 
 
+def _generated_feedback(
+    db: Any, session_id: str, subject_id: str, section_id: str, resource_type: str,
+) -> dict[str, Any] | None:
+    event_id = f"generated:{section_id}:{resource_type}"
+    events = db.query(LearningEventModel).filter(
+        LearningEventModel.session_id == session_id,
+        LearningEventModel.event_type == "generated_resource_feedback",
+        LearningEventModel.resource_id == event_id,
+    ).order_by(LearningEventModel.id.desc()).all()
+    for event in events:
+        metadata = event.metadata_ if isinstance(event.metadata_, dict) else {}
+        if str(metadata.get("subject_id") or "") == subject_id:
+            return dict(metadata)
+    return None
+
+
+def _upsert_generated_feedback(
+    db: Any, session_id: str, subject_id: str, section_id: str, resource_type: str,
+    feedback: str, rating: int = 0, comment: str = "",
+) -> dict[str, Any]:
+    event_id = f"generated:{section_id}:{resource_type}"
+    metadata = {
+        "subject_id": subject_id,
+        "section_id": section_id,
+        "resource_type": resource_type,
+        "feedback": feedback,
+        "rating": max(0, min(int(rating or 0), 5)),
+        "comment": str(comment or "").strip()[:500],
+    }
+    event = next((row for row in db.query(LearningEventModel).filter(
+        LearningEventModel.session_id == session_id,
+        LearningEventModel.event_type == "generated_resource_feedback",
+        LearningEventModel.resource_id == event_id,
+    ).order_by(LearningEventModel.id.desc()).all() if str((row.metadata_ or {}).get("subject_id") or "") == subject_id), None)
+    if event:
+        event.metadata_ = metadata
+    else:
+        db.add(LearningEventModel(
+            session_id=session_id,
+            event_type="generated_resource_feedback",
+            resource_id=event_id,
+            metadata_=metadata,
+        ))
+    db.commit()
+    return metadata
+
+
 @router.post("/sections/{section_id}/generated-resources/{resource_type}/feedback")
 def feedback_on_generated_section_resource(section_id: str, resource_type: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """Store section-scoped feedback without changing external-search feedback."""
+    """Upsert feedback in the session + subject + section + resource scope."""
     session_id = _payload_session_id(payload)
     feedback = str(payload.get("feedback") or "").strip()
-    allowed_feedback = {"helpful", "not_relevant", "too_hard", "too_easy"}
+    allowed_feedback = {"helpful", "not_relevant", "too_hard", "too_easy", "other"}
     from app.services.section_generated_resources import RESOURCE_DEFINITIONS, SectionGeneratedResourcesService
 
     if resource_type not in RESOURCE_DEFINITIONS or feedback not in allowed_feedback:
@@ -5496,40 +5556,42 @@ def feedback_on_generated_section_resource(section_id: str, resource_type: str, 
             raise HTTPException(status_code=404, detail="generated resource not found")
         session = db.get(SessionModel, session_id)
         subject_id = str(payload.get("subjectId") or (session.subject_id if session else "") or "")
-        event_id = f"generated:{section_id}:{resource_type}"
-        event = db.query(LearningEventModel).filter(
-            LearningEventModel.session_id == session_id,
-            LearningEventModel.event_type == "generated_resource_feedback",
-            LearningEventModel.resource_id == event_id,
-        ).first()
-        metadata = {"subject_id": subject_id, "section_id": section_id, "resource_type": resource_type, "feedback": feedback}
-        if event:
-            event.metadata_ = metadata
-        else:
-            db.add(LearningEventModel(
-                session_id=session_id,
-                event_type="generated_resource_feedback",
-                resource_id=event_id,
-                metadata_=metadata,
-            ))
-        db.commit()
+        if subject_id:
+            _require_matching_subject(session_id, subject_id)
+        metadata = _upsert_generated_feedback(
+            db, session_id, subject_id, section_id, resource_type, feedback,
+            int(payload.get("rating") or 0), str(payload.get("comment") or ""),
+        )
         return _product_response({"feedback": metadata}, session_id=session_id, subject_id=subject_id, source="user_input")
     finally:
         db.close()
 
 
 @router.get("/sections/{section_id}/generated-resources")
-def get_generated_section_resources(section_id: str, sessionId: str = "") -> dict[str, Any]:
+def get_generated_section_resources(section_id: str, sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
     """Read only resources generated for the current section."""
     session_id = _require_session_id(sessionId)
     from app.services.section_generated_resources import SectionGeneratedResourcesService
+    from app.services.structured_multimodal_resources import STRUCTURED_RESOURCE_DEFINITIONS, normalized_resource_title
     try:
         db = SessionLocal()
+        session = db.get(SessionModel, session_id)
+        subject_id = str(subjectId or (session.subject_id if session else "") or "")
+        if subject_id:
+            _require_matching_subject(session_id, subject_id)
         rows = db.query(ResourceModel).filter(
             ResourceModel.session_id == session_id,
             ResourceModel.related_section_id == section_id,
         ).order_by(ResourceModel.updated_at.desc()).all()
-        resources = [SectionGeneratedResourcesService.serialize(row) for row in rows if "section_generated" in (row.tags or [])]
+        resources = []
+        for row in rows:
+            if "section_generated" not in (row.tags or []):
+                continue
+            item = SectionGeneratedResourcesService.serialize(row)
+            if item["resourceType"] in STRUCTURED_RESOURCE_DEFINITIONS:
+                item["title"] = normalized_resource_title(row.title, item["resourceType"], row.knowledge_points)
+            item["feedback"] = _generated_feedback(db, session_id, subject_id, section_id, item["resourceType"])
+            resources.append(item)
         return _product_response({"resources": resources}, session_id=session_id, source="db")
     finally:
         db.close()
