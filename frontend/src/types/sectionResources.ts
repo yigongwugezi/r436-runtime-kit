@@ -5,18 +5,19 @@ export interface ExternalSectionResource {
   url: string;
   source: string;
   resource_type: 'video' | 'article' | 'course' | 'paper' | 'document';
-  platform?: 'bilibili' | 'youtube' | 'vimeo' | 'mooc' | 'other' | null;
+  platform?: string | null;
   snippet: string;
   reason: string;
   relevance_score: number;
   language: string;
   trust_level: 'official' | 'educational' | 'general';
+  match_level?: 'exact_topic' | 'chapter_level' | 'course_level' | 'expanded_research';
 }
 
 export interface SectionRecommendationResult {
   query: string[];
   resources: ExternalSectionResource[];
-  status: 'completed' | 'search_unavailable' | 'failed';
+  status: 'completed' | 'search_unavailable' | 'no_high_relevance' | 'expanded_no_results' | 'failed';
   warnings: string[];
 }
 

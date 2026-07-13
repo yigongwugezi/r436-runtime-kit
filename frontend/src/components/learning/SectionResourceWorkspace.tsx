@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ExternalLink, FilePlus2, Loader2, RefreshCw, Search, Sparkles, FileText } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import Markdown from '../../utils/markdown';
@@ -27,8 +27,9 @@ interface Props {
 }
 
 const resourceTypes: GeneratedSectionResourceType[] = ['summary_card', 'concept_comparison', 'worked_example', 'mistake_checklist', 'review_notes'];
-const platformLabels: Record<string, string> = { bilibili: 'B站', youtube: 'YouTube', vimeo: 'Vimeo', mooc: '公开课' };
+const platformLabels: Record<string, string> = { bilibili: 'B站', youtube: 'YouTube', vimeo: 'Vimeo', icourse163: '中国大学MOOC', xuetangx: '学堂在线', smartedu: '智慧教育平台', imooc: '慕课网', youku: '优酷', iqiyi: '爱奇艺', douyin: '抖音', tencent_video: '腾讯视频' };
 const trustLabels: Record<string, string> = { official: '官方来源', educational: '教育来源', general: '普通来源' };
+const matchLevelLabels: Record<string, string> = { exact_topic: '精确匹配', chapter_level: '章节匹配', course_level: '课程拓展', expanded_research: '拓展论文' };
 
 function safeExternalUrl(url: string): boolean {
   try { return ['http:', 'https:'].includes(new URL(url).protocol); } catch { return false; }
@@ -46,6 +47,7 @@ export default function SectionResourceWorkspace(props: Props) {
   const [mindmap, setMindmap] = useState<ChapterMindmap | null>(null);
   const [mindmapLoading, setMindmapLoading] = useState(false);
   const [notice, setNotice] = useState('');
+  const requestSerial = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -61,19 +63,22 @@ export default function SectionResourceWorkspace(props: Props) {
     return () => { active = false; };
   }, [sessionId, section?.id]);
 
-  const search = async () => {
+  const searchResources = async (filter = resourceFilter) => {
     if (!sessionId || !section) return;
+    const requestId = ++requestSerial.current;
     setSearching(true);
     setNotice('');
     try {
-      setRecommendations(await recommendSectionResources(section.id, {
+      const result = await recommendSectionResources(section.id, {
         sessionId, sectionTitle: section.title, knowledgePoints: section.knowledgePoints,
-        language: 'zh-CN', resourceTypes: resourceFilter === 'all' ? ['video', 'article', 'course', 'document', 'paper'] : [resourceFilter],
-      }));
+        language: 'zh-CN', resourceTypes: filter === 'all' ? ['video', 'article', 'course', 'document', 'paper'] : [filter],
+      });
+      if (requestId === requestSerial.current) setRecommendations(result);
     } catch {
-      setRecommendations({ query: [], resources: [], status: 'failed', warnings: ['外部资源检索失败，请稍后重试。'] });
-    } finally { setSearching(false); }
+      if (requestId === requestSerial.current) setRecommendations({ query: [], resources: [], status: 'failed', warnings: ['外部资源检索失败，请稍后重试。'] });
+    } finally { if (requestId === requestSerial.current) setSearching(false); }
   };
+  const search = () => searchResources(resourceFilter);
 
   const generate = async (resourceType: GeneratedSectionResourceType) => {
     if (!sessionId || !section) return;
@@ -124,18 +129,10 @@ export default function SectionResourceWorkspace(props: Props) {
         { key: 'paper', label: '学术论文' },
       ].map(({ key, label }) => (
         <button key={label}
-          onClick={async () => {
-            setResourceFilter(key as any);
-            if (!sessionId || !section) return;
-            setSearching(true);
-            try {
-              setRecommendations(await recommendSectionResources(section.id, {
-                sessionId, sectionTitle: section.title, knowledgePoints: section.knowledgePoints,
-                language: 'zh-CN',
-                resourceTypes: key === 'all' ? ['video','article','course','document','paper'] : [key],
-              }));
-            } catch { setRecommendations({ query: [], resources: [], status: 'failed', warnings: ['检索失败'] }); }
-            finally { setSearching(false); }
+          onClick={() => {
+            const filter = key as typeof resourceFilter;
+            setResourceFilter(filter);
+            void searchResources(filter);
           }}
           disabled={searching || !section}
           className="flex items-center justify-center gap-1 px-2.5 py-2 rounded-lg bg-surface-50 text-surface-600 text-[10px] font-medium hover:bg-surface-100 disabled:opacity-30 transition-colors">
@@ -147,11 +144,12 @@ export default function SectionResourceWorkspace(props: Props) {
     {/* ── 推送结果 ── */}
     {recommendations && (
       <div className="space-y-1.5">
-        {!recommendations.resources.length && <p className="rounded-lg bg-surface-50 px-3 py-2 text-[11px] text-surface-500">未找到与当前小节匹配的公开资源，请调整小节知识点后重试。</p>}
+        {!recommendations.resources.length && <p className="rounded-lg bg-surface-50 px-3 py-2 text-[11px] text-surface-500">{recommendations.status === 'search_unavailable' ? '外部搜索暂不可用，请稍后重试。' : recommendations.status === 'expanded_no_results' ? '已扩大搜索范围，仍未找到高相关公开资源。' : recommendations.status === 'no_high_relevance' ? '暂无高相关公开资源，可调整知识点后重试。' : '未找到与当前小节匹配的公开资源。'}</p>}
         {recommendations.resources.filter(r => resourceFilter === 'all' || r.resource_type === resourceFilter).map(r => (
           <div key={r.url} className="rounded-lg bg-surface-50 p-2.5">
             <p className="text-xs font-medium text-surface-700 line-clamp-2">{r.title}</p>
             <p className="mt-0.5 text-[10px] text-surface-400">{r.platform ? platformLabels[r.platform] || r.platform : r.resource_type} · {r.source} · {trustLabels[r.trust_level] || r.trust_level}</p>
+            {r.match_level && <p className="mt-0.5 text-[10px] text-surface-400">{matchLevelLabels[r.match_level] || r.match_level}</p>}
             <p className="mt-1 text-[11px] text-surface-500 line-clamp-2">{r.snippet}</p>
             <p className="mt-1 text-[10px] text-surface-500 line-clamp-2">推荐理由：{r.reason}</p>
             {safeExternalUrl(r.url) && <a href={r.url} target="_blank" rel="noopener noreferrer"

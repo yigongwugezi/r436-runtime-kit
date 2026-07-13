@@ -5229,6 +5229,9 @@ def recommend_section_resources(section_id: str, payload: dict[str, Any]) -> dic
     except Exception:
         pass
 
+    profile_v2 = _profile_v2(session_id, profile or {})
+    profile = {**(profile or {}), "subject_context": profile_v2.get("subject_context") or {}}
+
     from app.services.section_resource_recommendations import SectionResourceRecommendationService
     result = SectionResourceRecommendationService().recommend(
         session_id=session_id,
