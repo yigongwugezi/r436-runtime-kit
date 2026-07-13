@@ -1049,7 +1049,12 @@ class ConversationStore:
         return "deep" if has_detail else "moderate"
 
     def readiness(self, state: ConversationState) -> dict[str, Any]:
-        filled = {k for k, v in state.facts.items() if v and str(v).strip()}
+        # Profile V2 may add normalized facts such as daily_minutes.  Readiness
+        # remains a score for the legacy conversation contract only.
+        filled = {
+            key for key, value in state.facts.items()
+            if key in PROFILE_FIELD_DEFS and value and str(value).strip()
+        }
         missing_core = [key for key in CORE_FIELDS if key not in filled]
 
         # Depth gate: a field counts as "deep-filled" only when its value
@@ -1205,7 +1210,14 @@ class ConversationStore:
         return next((normalized for raw, normalized in MAJOR_ALIASES if raw in value or normalized in value), "")
 
     def _extract_knowledge_levels(self, text: str) -> tuple[list[str], list[str]]:
-        strengths: list[str] = []
+        strengths = [
+            f"{re.sub(r'\s+', '', match.group(1))}：{self._level_label(match.group(0))}"
+            for match in re.finditer(
+                r"((?:C\s*(?:\+\+)?\s*语言|Python|Java|JavaScript)\s*基础)\s*(?:还可以|不错|较好|熟悉)",
+                text,
+                flags=re.IGNORECASE,
+            )
+        ]
         weaknesses: list[str] = []
         segments = [segment.strip() for segment in re.split(r"[，。,.!?！？；;、]", text) if segment.strip()]
         for segment in segments:
@@ -1221,11 +1233,13 @@ class ConversationStore:
             if front_weak_match:
                 weaknesses.append(f"{front_weak_match.group(1)}：薄弱")
                 continue
+            if re.search(r"(?:C\s*(?:\+\+)?\s*语言|Python|Java|JavaScript)\s*基础\s*(?:还可以|不错|较好|熟悉)", segment, flags=re.IGNORECASE):
+                continue
             strength_match = re.search(r"([A-Za-z+#一-鿿]{2,20}?)(?:还可以|可以|较好|不错|熟悉|会)", segment)
             if strength_match:
                 topic = strength_match.group(1).rstrip("还也都很较比较")
                 strengths.append(f"{topic}：{self._level_label(segment)}")
-        return strengths, weaknesses
+        return list(dict.fromkeys(strengths)), list(dict.fromkeys(weaknesses))
 
     def _level_label(self, segment: str) -> str:
         if any(word in segment for word in ["较好", "不错", "熟悉"]):

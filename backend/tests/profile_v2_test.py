@@ -1,5 +1,6 @@
 from app.agents.profile_agent import ProfileAgent
 from app.routers.product import update_profile
+from app.services.conversation_state import ConversationState, ConversationStore
 from app.services.profile_extractor import extract_profile_facts
 from app.services.profile_v2 import assess_interest, build_profile_v2, update_context, update_self_report
 from fastapi import HTTPException
@@ -54,6 +55,36 @@ def main() -> None:
     assert set(explicit_profile["subject_context"]["content_preferences"]) == {"example_first", "practice_after_explanation"}
     assert all(item["score"] is None for item in explicit_profile["subject_dimensions"])
     assert explicit_profile["profile_completeness"] < 0.83
+
+    weekly_facts = extract_profile_facts("\u4e00\u5468\u5185\u590d\u4e60\u6570\u636e\u7ed3\u6784\uff0c\u6bcf\u5929\u53ef\u4ee5\u5b66\u4e60\u4e00\u5c0f\u65f6\u3002C\u8bed\u8a00\u57fa\u7840\u8fd8\u53ef\u4ee5\uff0c\u94fe\u8868\u548c\u6811\u6bd4\u8f83\u8584\u5f31\uff0c\u559c\u6b22\u5148\u770b\u4f8b\u9898\uff0c\u518d\u5b8c\u6210\u7ec3\u4e60\u3002").facts
+    weekly = build_profile_v2(facts=weekly_facts, course={"course_name": "\u6570\u636e\u7ed3\u6784"})
+    weekly_context = weekly["subject_context"]
+    assert weekly_context["deadline"] == "\u4e00\u5468" and weekly_context["daily_minutes"] == 60
+    assert weekly_context["content_preferences"] == ["example_first", "practice_after_explanation"]
+    assert by_key(weekly["general_states"])["interest"]["self_report"] is None
+    assert weekly["profile_completeness"] == 0.5
+
+    existing = {"profile_version": 2, "subject_context": {"daily_minutes": 50, "deadline": "\u5f85\u8865\u5145", "background": {"value": ""}}, "profile_completeness": 0.86}
+    merged = build_profile_v2(facts=weekly_facts, course={"course_name": "\u6570\u636e\u7ed3\u6784"}, existing=existing)
+    assert merged["subject_context"]["daily_minutes"] == 60 and merged["subject_context"]["deadline"] == "\u4e00\u5468"
+    assert merged["profile_completeness"] == 0.5
+
+    corrupted = build_profile_v2(
+        facts={"target_course": "\u6570\u636e\u7ed3\u6784", "learning_goal": "\u590d\u4e60", "daily_minutes": "60", "deadline": "\u4e00\u5468", "background": "\u5927\u4e8c\u5b66\u751f", "knowledge_base": "\u6bcf\u5929\uff1a\u8fd8\u53ef\u4ee5\uff1b\u8bed\u8a00\u57fa\u7840\uff1a\u8fd8\u53ef\u4ee5", "content_preferences": "example_first,practice_after_explanation"},
+        course={"course_name": "\u6570\u636e\u7ed3\u6784"},
+    )
+    assert corrupted["subject_context"]["prior_experience"] == []
+    assert corrupted["profile_completeness"] == 0.83
+
+    extracted_state = ConversationState(session_id="profile_v2_extraction")
+    ConversationStore().extract_facts(extracted_state, "\u6211\u7684 C \u8bed\u8a00\u57fa\u7840\u8fd8\u53ef\u4ee5\uff0c\u4f46\u94fe\u8868\u548c\u6811\u6bd4\u8f83\u8584\u5f31\u3002")
+    assert extracted_state.facts["knowledge_base"] == "C\u8bed\u8a00\u57fa\u7840\uff1a\u8fd8\u53ef\u4ee5"
+
+    readiness = ConversationStore().readiness(ConversationState(
+        session_id="profile_v2_readiness",
+        facts={"target_course": "\u6570\u636e\u7ed3\u6784", "daily_minutes": "60", "deadline": "\u4e00\u5468"},
+    ))
+    assert readiness["filledCount"] == 1
     print("profile v2: PASS")
 
 

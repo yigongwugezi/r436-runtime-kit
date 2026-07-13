@@ -28,12 +28,33 @@ def _now() -> str:
 
 
 def _missing(value: Any) -> bool:
-    return value is None or str(value).strip().lower() in _MISSING or value == 50
+    if value is None or value == 50:
+        return True
+    if isinstance(value, dict):
+        keys = ("value", "content", "name", "label", "score", "self_report", "system_estimate")
+        return not any(key in value and not _missing(value[key]) for key in keys)
+    if isinstance(value, (list, tuple, set)):
+        return not any(not _missing(item) for item in value)
+    text = str(value).strip().lower()
+    return text in _MISSING or text == "\u8bc1\u636e\u4e0d\u8db3"
 
 
 def _clean_list(value: Any) -> list[str]:
-    values = value if isinstance(value, list) else re.split(r"[\u3001,\uff0c;/]", str(value or ""))
+    values = value if isinstance(value, list) else re.split(r"[\u3001,\uff0c;\uff1b/]", str(value or ""))
     return list(dict.fromkeys(item.strip() for item in values if not _missing(item)))
+
+
+def _prior_experience(value: Any, category: str) -> list[str]:
+    """Keep explicit experience, not fragments leaked from schedule parsing."""
+    items = [item for item in _clean_list(value) if not re.match(r"^(?:\u6bcf\u5929|\u6bcf\u65e5|\u6bcf\u5468).*[:\uff1a]", item)]
+    if category == "computing":
+        items = [item for item in items if not re.fullmatch(r"\u8bed\u8a00\u57fa\u7840[:\uff1a]?(?:\u8fd8\u53ef\u4ee5|\u4e00\u822c|\u8f83\u597d)?", item)]
+    return items
+
+
+def _number(value: str) -> int | None:
+    numbers = {"\u4e00": 1, "\u4e8c": 2, "\u4e24": 2, "\u4e09": 3, "\u56db": 4, "\u4e94": 5, "\u516d": 6, "\u4e03": 7, "\u516b": 8, "\u4e5d": 9, "\u5341": 10}
+    return int(value) if value.isdigit() else numbers.get(value)
 
 
 def _minutes(value: Any) -> int | None:
@@ -42,6 +63,13 @@ def _minutes(value: Any) -> int | None:
     text = str(value or "")
     if text.isdigit() and 1 <= int(text) <= 1440:
         return int(text)
+    match = re.search(r"(?:\u6bcf\u5929|\u6bcf\u65e5|\u4e00\u5929)\s*(?:\u53ef\u4ee5|\u80fd|\u53ef)?\s*(?:\u5b66\u4e60|\u5b66)?\s*([0-9\u4e00\u4e8c\u4e24\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341]+)\s*\u5c0f\u65f6", text)
+    if match:
+        number = _number(match.group(1))
+        return number * 60 if number else None
+    match = re.search(r"(?:\u6bcf\u5929|\u6bcf\u65e5|\u4e00\u5929)\s*(?:\u53ef\u4ee5|\u80fd|\u53ef)?\s*(?:\u5b66\u4e60|\u5b66)?\s*([0-9\u4e00\u4e8c\u4e24\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341]+)\s*\u5206\u949f", text)
+    if match:
+        return _number(match.group(1))
     match = re.search(r"(?:\u6bcf\u5929|\u6bcf\u65e5|\u4e00\u5929)\s*(\d+)\s*\u5c0f\u65f6", text)
     if match:
         return int(match.group(1)) * 60
@@ -51,6 +79,11 @@ def _minutes(value: Any) -> int | None:
 
 def _deadline(value: Any) -> str | None:
     text = str(value or "").strip()
+    match = re.search(r"([0-9\u4e00\u4e8c\u4e24\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341]+)\s*(\u5929|\u5468|\u6708)", text)
+    if match:
+        number = _number(match.group(1))
+        label = {1: "\u4e00", 2: "\u4e24"}.get(number, str(number)) if number else match.group(1)
+        return f"{label}{match.group(2)}"
     return text if re.search(r"\u5468\u5185|\u4e24\u5468|\u671f\u672b|\u524d|\u5185|\u6708", text) else None
 
 
@@ -84,17 +117,28 @@ def _context(facts: dict[str, Any], legacy: dict[str, dict[str, Any]], course: d
     course_name = str((course or {}).get("course_name") or facts.get("target_course") or legacy.get("interest_direction", {}).get("value") or "").strip()
     time_text = str(facts.get("time_budget") or legacy.get("learning_rhythm", {}).get("value") or "")
     preference = facts.get("content_preferences") or facts.get("preference") or legacy.get("cognitive_style", {}).get("value")
+    category = _category(course_name, course)
     return {
         "subject_id": str((course or {}).get("course_id") or ""), "subject_name": course_name,
-        "subject_category": _category(course_name, course),
+        "subject_category": category,
         "learning_goal": "" if _missing(facts.get("learning_goal")) else str(facts.get("learning_goal")).strip(),
         "deadline": _deadline(facts.get("deadline") or time_text),
         "daily_minutes": _minutes(facts.get("daily_minutes") or time_text),
-        "prior_experience": _clean_list(facts.get("prior_experience") or facts.get("knowledge_base")),
+        "prior_experience": _prior_experience(facts.get("prior_experience") or facts.get("knowledge_base"), category),
         "background": "" if _missing(facts.get("background")) else str(facts.get("background")).strip(),
         "language": "zh-CN", "content_preferences": _preferences(preference),
         "resource_preferences": _clean_list(facts.get("resource_preferences")),
     }
+
+
+def _completeness(context: dict[str, Any]) -> float:
+    """Count period and daily time as one valid schedule fact."""
+    values = (
+        context.get("subject_name"), context.get("learning_goal"),
+        context.get("daily_minutes") or context.get("deadline"), context.get("background"),
+        context.get("prior_experience"), context.get("content_preferences"),
+    )
+    return round(sum(not _missing(value) for value in values) / len(values), 2)
 
 
 def _claims(facts: dict[str, Any]) -> list[str]:
@@ -134,7 +178,9 @@ def build_profile_v2(*, dimensions: list[dict[str, Any]] | None = None, facts: d
     context = _context(facts, legacy, course)
     if existing and existing.get("profile_version") == 2:
         profile = dict(existing)
-        profile["subject_context"] = {**context, **{key: value for key, value in (existing.get("subject_context") or {}).items() if not _missing(value)}}
+        previous = existing.get("subject_context") if isinstance(existing.get("subject_context"), dict) else {}
+        profile["subject_context"] = {key: (value if not _missing(value) else previous.get(key)) for key, value in {**previous, **context}.items()}
+        profile["profile_completeness"] = _completeness(profile["subject_context"])
         return profile
     category, claims = context["subject_category"], _claims(facts)
     subject_dimensions = []
@@ -147,8 +193,7 @@ def build_profile_v2(*, dimensions: list[dict[str, Any]] | None = None, facts: d
             name = str(item.get("topic") or item.get("name") or "").strip()
             if name and not _missing(name): mastery.append({"knowledge_id": name, "label": name, "status": "weak", "confidence": "low", "evidence": _evidence("diagnostic", str(item.get("reason") or name), []), "updated_at": _now()})
     states = [{"key": key, "label": label, "status": "unassessed", "self_report": None, "system_estimate": None, "level": "\u672a\u8bc4\u4f30", "confidence": "low", "evidence": [], "updated_at": _now()} for key, label in _STATE_LABELS]
-    present = sum(not _missing(context.get(key)) and bool(context.get(key)) for key in ("subject_name", "learning_goal", "daily_minutes", "deadline", "prior_experience", "background", "content_preferences"))
-    return {"profile_version": 2, "subject_context": context, "general_states": states, "subject_dimensions": subject_dimensions, "knowledge_mastery": mastery, "evidence_summary": {"conversation": len(claims), "diagnostic": len(weaknesses or []), "practice": 0, "behavior": 0}, "profile_completeness": round(present / 7, 2), "updated_at": _now()}
+    return {"profile_version": 2, "subject_context": context, "general_states": states, "subject_dimensions": subject_dimensions, "knowledge_mastery": mastery, "evidence_summary": {"conversation": len(claims), "diagnostic": len(weaknesses or []), "practice": 0, "behavior": 0}, "profile_completeness": _completeness(context), "updated_at": _now()}
 
 
 def update_context(profile: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
@@ -160,6 +205,7 @@ def update_context(profile: dict[str, Any], updates: dict[str, Any]) -> dict[str
         elif key == "content_preferences": value = _preferences(value)
         elif key == "deadline": value = _deadline(value)
         context[key] = value
+    profile["profile_completeness"] = _completeness(context)
     profile["updated_at"] = _now(); return profile
 
 
