@@ -137,6 +137,29 @@ def rag_search(
         )
 
 
+@router.post("/rag/ingest-url")
+async def rag_ingest_url(payload: dict[str, Any]) -> dict[str, Any]:
+    """抓取指定 URL 的网页内容并导入知识库。"""
+    url = str(payload.get("url", "")).strip()
+    if not url:
+        return _error("url required", code="INVALID_INPUT")
+
+    from app.services.web_ingest import ingest_url
+
+    result = await ingest_url(url)
+    return _ok(
+        {
+            "url": result.url,
+            "title": result.title,
+            "ok": result.ok,
+            "chunks": result.chunks,
+            "error": result.error,
+        },
+        message=f"已导入 {result.chunks} 个文本块" if result.ok else f"导入失败: {result.error}",
+        source="rag",
+    )
+
+
 @router.get("/rag/status")
 def rag_status() -> dict[str, Any]:
     """Health-check for the RAG knowledge base.

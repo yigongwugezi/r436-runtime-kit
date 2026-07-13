@@ -985,14 +985,31 @@ class QwenImageProvider:
 
 
 def _micro_lesson_script(context: dict[str, Any]) -> dict[str, Any]:
-    topic = _text(context.get("topic") or context.get("user_message")) or "learning topic"
-    script = f"Opening: introduce {topic}.\nExplain the core idea with one simple example.\nClose with a quick recap and one practice question."
+    topic = _text(context.get("topic") or context.get("user_message")) or "学习主题"
+    subject = _text(context.get("subject_name") or topic)
+    # Conceptual animation prompt — no text/characters, pure visual explanation.
+    # Wan2.1 cannot render legible text; we use abstract visuals + motion to
+    # convey ideas.  Voiceover / subtitles are added separately.
+    script = (
+        f"An educational micro-lecture animation about {subject} — {topic}. "
+        f"Professional lecture style, clean academic visuals, smooth transitions. "
+        f"Scene 1: Abstract geometric shapes floating in dark blue space, representing mathematical concepts, "
+        f"slowly converging to form a unified structure — symbolizing the core idea of {topic}. "
+        f"Scene 2: Clean 3D graphs and curves animating on a dark gradient background, "
+        f"showing relationships between variables, with glowing connection lines. "
+        f"Scene 3: A real-world metaphor visualized — smooth flowing particles or waves "
+        f"transitioning from chaos to order, illustrating the concept intuitively. "
+        f"Scene 4: Returning to the abstract structure from scene 1, now fully formed and rotating gently, "
+        f"ending on a calm, satisfying wide shot. "
+        f"Style: dark blue and indigo gradient background, warm golden accent lines, no text, no people."
+    )
     return {
         "script": script,
         "storyboard": [
-            {"scene": 1, "title": "Hook", "description": f"Introduce why {topic} matters."},
-            {"scene": 2, "title": "Concept", "description": f"Explain the key idea of {topic}."},
-            {"scene": 3, "title": "Practice", "description": "Show one short practice prompt."},
+            {"scene": 1, "title": "概念引入", "description": f"抽象几何体在深蓝空间汇聚，隐喻「{topic}」的核心结构"},
+            {"scene": 2, "title": "关系演示", "description": "3D 曲线和图表动画展示变量间关系"},
+            {"scene": 3, "title": "直观类比", "description": "粒子/波动从混沌到有序的视觉隐喻"},
+            {"scene": 4, "title": "回顾收束", "description": "回到开头的结构，缓缓旋转，平静收尾"},
         ],
     }
 

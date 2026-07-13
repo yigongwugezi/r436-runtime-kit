@@ -627,6 +627,11 @@ def _chapter_stages_to_frontend(stages: list[dict[str, Any]]) -> list[dict[str, 
             "tasks": [],
             "resourceTypes": [],
             "orderingReason": "",
+            # ── Preserve mode markers ──
+            "path_mode": stage.get("path_mode", ""),
+            "plan_mode": stage.get("plan_mode", ""),
+            "focus": stage.get("focus", ""),
+            "reason": stage.get("reason", ""),
         })
     return result
 
@@ -657,6 +662,9 @@ def _chapters_to_frontend(chapters: list[dict[str, Any]]) -> list[dict[str, Any]
                 "status": _normalize_content_status(sec.get("status", "not_started")),
                 "knowledgePoints": kps,
                 "lectureIds": sec.get("lectureIds", []),
+                # ── Preserve daily-mode fields ──
+                "contentType": sec.get("content_type", ""),
+                "task_type": sec.get("task_type", ""),
             }
             # Propagate textbook page range fields if present
             if sec.get("textbookPageStart"):
@@ -731,6 +739,11 @@ def _task_stages_to_frontend(stages: list[dict[str, Any]]) -> list[dict[str, Any
             "tasks": stage.get("tasks", []),
             "resourceTypes": stage.get("resource_types", []),
             "orderingReason": stage.get("reason", stage.get("ordering_reason", "")),
+            # ── Preserve mode markers ──
+            "path_mode": stage.get("path_mode", ""),
+            "plan_mode": stage.get("plan_mode", ""),
+            "focus": stage.get("focus", ""),
+            "reason": stage.get("reason", ""),
         })
     return result
 
@@ -4628,7 +4641,7 @@ _PROFILE_KEYS = {
     "error_patterns", "coding_ability", "learning_progress", "interest_direction",
     "learning_rhythm",
 }
-_LECTURE_HEADINGS = ("学习目标", "核心概念", "示例", "易错点", "小结")
+_LECTURE_HEADINGS = ("学习目标", "核心概念", "示例", "易错点", "小结", "预备知识", "知识结构", "正文", "本章练习", "本章小结", "巩固与总结", "核心内容", "前置知识")
 
 
 def _is_profile_json(content: str) -> bool:
@@ -4639,10 +4652,15 @@ def _is_profile_json(content: str) -> bool:
     return isinstance(value, dict) and len(_PROFILE_KEYS.intersection(value)) >= 3
 
 
-def _is_valid_section_lecture(content: str, section_title: str, knowledge_points: list[Any]) -> bool:
+def _is_valid_section_lecture(content: str, section_title: str, knowledge_points: list[Any], task_type: str = "") -> bool:
     text = str(content or "").strip()
-    if len(text) < 120 or _is_profile_json(text):
+    if len(text) < 60 or _is_profile_json(text):
         return False
+    # Task-type-specific validation — task content has different structure than lectures
+    if task_type in ("vocabulary", "listening", "reading", "speaking", "writing", "review", "grammar"):
+        # Task content: at least 60 chars, not JSON, done.  No heading/title checks needed.
+        return True
+    # Textbook/lecture content: must reference the section and have proper headings
     point_names = [str(item.get("name", "")) if isinstance(item, dict) else str(item) for item in knowledge_points]
     has_subject = section_title in text or any(name and name in text for name in point_names)
     return has_subject and sum(heading in text for heading in _LECTURE_HEADINGS) >= 2
@@ -4656,20 +4674,20 @@ def _fallback_section_lecture(section_title: str, section_goal: str, knowledge_p
 
 ## 学习目标
 - {goal}
-- 能说明{topic}在数据结构学习中的作用。
+- 能够用自己的话解释{topic}的含义，并举出至少一个实际例子。
 
 ## 核心概念
-{topic}需要结合定义、操作成本和适用场景理解。学习时先区分概念之间的联系，再用具体操作验证结论。
+{topic}是本节的核心内容。理解它需要从定义出发，结合具体场景分析其作用和意义，再通过练习巩固。建议先厘清概念之间的关系，再动手验证。
 
 ## 示例
-以顺序访问和插入操作为例，比较不同数据结构在时间复杂度和存储方式上的差异，并说明选择依据。
+围绕{topic}找一个贴近实际应用的例子，具体说明它是如何工作的，为什么要这样设计。
 
 ## 易错点
-- 不要只记结论，要说明操作发生在什么位置。
-- 不要混淆访问、查找、插入和删除的成本。
+- 不要只记结论，要理解背后的原理。
+- 区分相似概念之间的差异，避免混淆。
 
 ## 小结
-本节围绕{topic}建立基础认识。完成阅读后，建议结合一道练习题验证对操作复杂度和结构特点的理解。"""
+本节围绕{topic}建立了基础认识。AI 生成的内容未通过质量校验，以上为兜底内容。建议重新生成以获得更完整的学习材料。"""
 
 
 @router.get("/sections/{section_id}/lecture")
@@ -4701,6 +4719,515 @@ def get_section_lecture(section_id: str, sessionId: str = "") -> dict[str, Any]:
         db.close()
 
 
+# ════════════════════════════════════════════════════════════════════════
+# Task-type-specific prompt builders
+# ════════════════════════════════════════════════════════════════════════
+
+def _vocabulary_prompt(title: str, goal: str, kp_lines: str, course_name: str = "") -> str:
+    cat = _detect_subject_category(course_name, title)
+    if cat == "programming":
+        return f"""你是编程教学专家。为「{title}」生成一份术语速查卡，供学生快速查阅和自测。
+
+学习目标：{goal or '掌握核心编程术语'}
+{f"知识点：{chr(10)}{kp_lines}" if kp_lines else ""}
+
+要求：
+- 输出 Markdown，每个术语用 **术语** — 一句话定义 格式，一行一个
+- 术语量：10-15 个核心术语
+- 按类别分组（如：数据结构、算法、语法、设计模式等，用 ## 二级标题）
+- 每组附一个 > 记忆/理解技巧，解释术语之间的关联和区别
+- 定义要精准，能区分相似术语（如 array vs list, stack vs queue）
+- 最后附 ### 自测，只列术语名不列定义，供学生默写回忆
+
+直接输出 Markdown。"""
+    if cat == "math_science":
+        return f"""你是理科教学专家。为「{title}」生成一份核心概念速查表。
+
+学习目标：{goal or '掌握核心概念定义'}
+{f"知识点：{chr(10)}{kp_lines}" if kp_lines else ""}
+
+要求：
+- 输出 Markdown，用 | 概念 | 定义 | 公式/符号 | 一句话直觉理解 | 四列表格
+- 8-15 个核心概念
+- 定义简洁精确，公式用 LaTeX
+- 按逻辑依赖关系排序（基础在前的先讲）
+- 最后附 ### 自测，只写概念名
+
+直接输出 Markdown。"""
+    if cat == "language":
+        lang = "英文" if any(w in course_name for w in ["英语", "english", "English"]) else course_name or "目标语言"
+        return f"""你是{lang}词汇教学专家。为「{title}」生成一份{lang}词汇闪卡。
+
+学习目标：{goal or f'掌握核心{lang}词汇'}
+{f"知识点：{chr(10)}{kp_lines}" if kp_lines else ""}
+
+要求：
+- 输出 Markdown，每个词汇用 **{lang}词** — 中文释义 格式，一行一个
+- 包含至少 15-25 个词汇/短语，**词汇本身用{lang}**，释义用中文
+- 必要时附一个{lang}例句
+- 按难度或主题分组（用 ## 二级标题分组）
+- 每组附一个 > 记忆技巧提示（中文）
+- 最后附 ### 自测 区域，只写{lang}词汇不写释义，供学生默写
+
+直接输出 Markdown。"""
+    return f"""你是词汇教学专家。为「{title}」生成一份可直接用于记忆训练的闪卡内容。
+
+学习目标：{goal or '掌握核心词汇'}
+{f"知识点：{chr(10)}{kp_lines}" if kp_lines else ""}
+
+要求：
+- 输出 Markdown，每个词汇用 **词** — 释义 格式，一行一个
+- 包含至少 15-25 个词汇/短语
+- 释义简洁准确（15字以内），必要时加例句
+- 按难度或主题分组（用 ## 二级标题分组）
+- 每组附一个 > 记忆技巧提示
+- 最后附一个 ### 自测 区域，列出词汇（只写词，不写释义）
+
+直接输出 Markdown。"""
+
+
+def _grammar_prompt(title: str, goal: str, kp_lines: str, course_name: str = "") -> str:
+    cat = _detect_subject_category(course_name, title)
+    if cat == "programming":
+        return f"""你是编程教学专家。为「{title}」生成一份语法规则讲解。
+
+学习目标：{goal or '掌握编程语法规则'}
+{f"知识点：{chr(10)}{kp_lines}" if kp_lines else ""}
+
+要求：
+- 输出 Markdown，结构如下：
+  ## 语法规则
+  分 3-5 步逐步讲解（每步 ## 二级标题：第N步：xxx）
+  每步包含：语法规则 + 正确示例代码 + 错误示例代码 + 为什么错
+  ## 语法对比
+  | 语法点 | 写法 | 适用场景 | 注意事项 |
+  |---|---|---|---|
+  （至少 4 行）
+  ## 即时练习
+  5 道改错/填空题（给出错误代码，要求改正，附答案）
+
+直接输出 Markdown。"""
+    return f"""你是语法教学专家。为「{title}」生成一份分步语法讲解。
+
+学习目标：{goal or '掌握语法规则'}
+{f"涉及知识点：{chr(10)}{kp_lines}" if kp_lines else ""}
+
+要求：
+- 输出 Markdown，结构如下：
+  ## 语法规则
+  分 3-5 步逐步讲解（每步 ## 二级标题：第N步：xxx）
+  每步包含：规则说明 + 2个例句 + 1个易错点提示
+  ## 语法对比
+  | 结构 | 用法 | 例句 |
+  |---|---|---|
+  （至少 4 行）
+  ## 即时练习
+  5 道填空/选择题（附答案）
+  > 3条常见错误提醒
+
+直接输出 Markdown。"""
+
+
+def _writing_prompt(title: str, goal: str, kp_lines: str, course_name: str = "") -> str:
+    cat = _detect_subject_category(course_name, title)
+    if cat == "programming":
+        return f"""你是编程教学专家。为「{title}」生成一份代码写作练习。
+
+学习目标：{goal or '提升编程实现能力'}
+{f"知识点：{chr(10)}{kp_lines}" if kp_lines else ""}
+
+要求：
+- 输出 Markdown，结构如下：
+  ## 题目描述
+  描述一个具体编程问题（与本节知识点直接相关）+ 输入输出要求
+  ## 解题思路
+  3-5 步思路引导（不直接给代码）
+  ## 参考实现
+  完整可运行代码（```语言标注），详细注释
+  ## 测试用例
+  | 输入 | 预期输出 | 说明 |
+  |---|---|---|
+  （至少 3 组）
+  ## 自查清单
+  > 5 条代码完成后应检查的要点（边界、复杂度、可读性）
+
+直接输出 Markdown。"""
+    if cat == "math_science":
+        return f"""你是理科教学专家。为「{title}」生成一份证明/推导练习。
+
+学习目标：{goal or '提升数学推导能力'}
+{f"知识点：{chr(10)}{kp_lines}" if kp_lines else ""}
+
+要求：
+- 输出 Markdown，结构如下：
+  ## 题目
+  2-3 道与本节知识点相关的证明/计算题
+  ## 解题步骤
+  每题给出详细推导（LaTeX 公式），标注每一步的关键技巧
+  ## 常见错误
+  > 推导中容易出错的地方及正确做法
+  ## 变式练习
+  2 道变形题供学生自主练习（只给题不给解）
+
+直接输出 Markdown。"""
+    if cat == "language":
+        lang = "英文" if any(w in course_name for w in ["英语", "english", "English"]) else course_name or "目标语言"
+        return f"""你是{lang}写作教学专家。为「{title}」生成一份{lang}写作训练材料。
+
+学习目标：{goal or f'提升{lang}写作能力'}
+{f"涉及知识点：{chr(10)}{kp_lines}" if kp_lines else ""}
+
+要求：
+- 输出 Markdown，**题目、提纲、范文全部用{lang}**，说明文字用中文
+- 结构如下：
+  ## Writing Topic
+  一个具体的{lang}写作题目 + 词数要求（150-300 words）
+  ## Outline
+  3-5 段的结构大纲（{lang}）
+  ## Useful Expressions
+  | Function | Expression（{lang}） | 中文说明 |
+  |---|---|---|
+  （至少 8 个）
+  ## Sample Essay
+  一篇 150-250 词的{lang}参考范文
+  ## Self-Check List
+  > 5 条写作完成后应检查的要点（{lang}）
+
+直接输出 Markdown。"""
+    return f"""你是写作教学专家。为「{title}」生成一份写作训练材料。
+
+学习目标：{goal or '提升写作能力'}
+{f"涉及知识点：{chr(10)}{kp_lines}" if kp_lines else ""}
+
+要求：
+- 输出 Markdown，结构如下：
+  ## 写作题目
+  一个具体的写作题目 + 字数要求（150-300词）
+  ## 写作提纲
+  3-5 段的结构大纲
+  ## 实用表达
+  | 功能 | 表达 |
+  |---|---|
+  （至少 8 个）
+  ## 范文
+  一篇 150-250 词的参考范文
+  ## 自查清单
+  > 5 条写作完成后应检查的要点
+
+直接输出 Markdown。"""
+
+
+def _reading_task_prompt(title: str, goal: str, kp_lines: str, course_name: str = "") -> str:
+    cat = _detect_subject_category(course_name, title)
+    if cat == "programming":
+        return f"""你是编程教学专家。为「{title}」生成一份代码阅读分析练习。
+
+学习目标：{goal or '提升代码阅读理解能力'}
+{f"知识点：{chr(10)}{kp_lines}" if kp_lines else ""}
+
+要求：
+- 输出 Markdown，结构如下：
+  ## 阅读材料
+  一段 30-80 行的代码（```语言标注），实现与本课相关的算法/数据结构
+  ## 代码分析
+  | 函数/变量 | 作用 | 复杂度 |
+  |---|---|---|
+  （至少 6 行）
+  ## 理解题
+  3 道选择题（代码行为预测）+ 2 道简答题（设计意图/优化方向），附答案
+
+直接输出 Markdown。"""
+    if cat == "language":
+        # Detect target language from course name
+        lang = "英文" if any(w in course_name for w in ["英语", "english", "English"]) else course_name or "目标语言"
+        return f"""你是{lang}阅读教学专家。为「{title}」生成一份{lang}阅读理解训练材料。
+
+学习目标：{goal or f'提升{lang}阅读理解能力'}
+{f"涉及知识点：{chr(10)}{kp_lines}" if kp_lines else ""}
+
+要求：
+- 输出 Markdown，**文章、题目、选项全部用{lang}写**，只有词汇释义和长难句分析可以用中文辅助说明
+- 结构如下：
+  ## Reading Passage
+  一篇 300-500 词的{lang}文章，贴合主题，难度适中
+  ## Vocabulary
+  | Word | Part of Speech | Definition（中文） |
+  |---|---|---|
+  （至少 8 个，英文单词+中文释义）
+  ## Comprehension Questions
+  5 道选择题（{lang}题干+选项）+ 2 道简答题（{lang}提问，{lang}作答），每题标注正确答案
+  ## Sentence Analysis
+  挑 2 个长句，分析语法结构（中文说明），并给出中文翻译
+
+直接输出 Markdown。"""
+    return f"""你是阅读教学专家。为「{title}」生成一份阅读理解训练材料。
+
+学习目标：{goal or '提升阅读理解能力'}
+{f"涉及知识点：{chr(10)}{kp_lines}" if kp_lines else ""}
+
+要求：
+- 输出 Markdown，结构如下：
+  ## 阅读文章
+  一篇 300-500 字的文章，贴合主题，难度适中
+  ## 核心词汇
+  | 词汇 | 词性 | 释义 |
+  |---|---|---|
+  （至少 8 个）
+  ## 阅读理解题
+  5 道选择题 + 2 道简答题，每题标注正确答案
+  ## 长难句解析
+  挑 2 个长句分析结构和翻译
+
+直接输出 Markdown。"""
+
+
+def _listening_prompt(title: str, goal: str, kp_lines: str, course_name: str = "") -> str:
+    return f"""你是听力教学专家。为「{title}」生成一份听力训练材料。
+
+学习目标：{goal or '提升听力理解能力'}
+{f"涉及知识点：{chr(10)}{kp_lines}" if kp_lines else ""}
+
+要求：
+- 输出 Markdown，结构如下：
+  ## 听力脚本
+  一段完整的听力文本（200-400字），贴合主题，对话或独白均可
+  ## 关键词汇
+  | 词汇 | 释义 |
+  |---|---|
+  （至少 8 个）
+  ## 理解题目
+  5 道选择题，每道标注正确答案（用 **答案：A/B/C/D**）
+  ## 听力要点
+  > 3-5 条听力技巧提示
+
+直接输出 Markdown。"""
+
+
+def _speaking_prompt(title: str, goal: str, kp_lines: str, course_name: str = "") -> str:
+    cat = _detect_subject_category(course_name, title)
+    if cat == "language":
+        lang = "英文" if any(w in course_name for w in ["英语", "english", "English"]) else course_name or "目标语言"
+        return f"""你是{lang}口语教学专家。为「{title}」生成一份{lang}口语练习材料。
+
+学习目标：{goal or f'提升{lang}口语表达能力'}
+{f"涉及知识点：{chr(10)}{kp_lines}" if kp_lines else ""}
+
+要求：
+- 输出 Markdown，**对话和表达全部用{lang}**，说明文字用中文
+- 结构如下：
+  ## 对话场景
+  用一个{lang}句子描述具体场景
+  ## Dialogue
+  一段完整的{lang}对话（10-15轮），用 A: / B: 格式
+  ## Useful Expressions
+  | Expression | When to Use | Example（{lang}） |
+  |---|---|---|
+  （至少 6 个，表达本身用{lang}）
+  ## Pronunciation Tips
+  > 3-5 条发音和语调提示（中文说明，音标或{lang}示例）
+  ## Free Practice
+  3 个开放式话题（{lang}），供学生自主练习
+
+直接输出 Markdown。"""
+    return f"""你是口语教学专家。为「{title}」生成一份口语练习材料。
+
+学习目标：{goal or '提升口语表达能力'}
+{f"涉及知识点：{chr(10)}{kp_lines}" if kp_lines else ""}
+
+要求：
+- 输出 Markdown，结构如下：
+  ## 对话场景
+  描述一个具体场景（50-100字）
+  ## 对话模板
+  一段完整对话（10-15轮），用 A: / B: 格式
+  ## 常用表达
+  | 表达 | 适用场景 | 例句 |
+  |---|---|---|
+  （至少 6 个）
+  ## 发音要点
+  > 3-5 条发音和语调提示
+  ## 自由练习
+  3 个开放式话题，供学生自主练习
+
+直接输出 Markdown。"""
+
+
+def _review_task_prompt(title: str, goal: str, kp_lines: str, course_name: str = "") -> str:
+    cat = _detect_subject_category(course_name, title)
+    if cat == "programming":
+        return f"""你是编程教学专家。为「{title}」生成一份综合练习。
+
+学习目标：{goal or '巩固编程知识'}
+{f"知识点：{chr(10)}{kp_lines}" if kp_lines else ""}
+
+要求：
+- 输出 Markdown，结构如下：
+  ## 知识速览
+  表格总结核心概念和常用 API（至少 6 行）
+  ## 常见 bug
+  > 5 条常见错误代码 + 正确写法
+  ## 综合练习
+  3 道编程题（由易到难）+ 2道概念选择题，附答案
+  ## 知识结构
+  ```mermaid flowchart LR 绘制知识关系
+
+直接输出 Markdown。"""
+    if cat == "math_science":
+        return f"""你是理科教学专家。为「{title}」生成一份综合练习。
+
+学习目标：{goal or '巩固理论知识'}
+{f"知识点：{chr(10)}{kp_lines}" if kp_lines else ""}
+
+要求：
+- 输出 Markdown，结构如下：
+  ## 知识速览
+  表格总结核心定理和公式（至少 6 行，LaTeX）
+  ## 易错点回顾
+  > 5 条常见计算/推导错误及正确做法
+  ## 综合练习
+  5 道计算/证明题（由易到难），附详细推导过程
+  ## 知识结构
+  ```mermaid flowchart LR 绘制定理依赖关系
+
+直接输出 Markdown。"""
+    return f"""你是复习训练专家。为「{title}」生成一份综合复习材料。
+
+学习目标：{goal or '巩固已学知识'}
+{f"涉及知识点：{chr(10)}{kp_lines}" if kp_lines else ""}
+
+要求：
+- 输出 Markdown，结构如下：
+  ## 知识速览
+  用表格总结核心知识点（至少 6 行）
+  ## 易错点回顾
+  > 5 条常见错误及正确做法
+  ## 自测题
+  5 道选择题 + 3 道填空题（附答案）
+
+直接输出 Markdown。"""
+
+
+def _detect_subject_category(course_name: str, section_title: str) -> str:
+    """Detect subject category from course/section context to tailor content style."""
+    text = f"{course_name} {section_title}".lower()
+    math_kw = ["数学", "微积分", "线性代数", "概率", "统计", "高等数学", "离散", "几何", "代数", "拓扑", "数论", "calculus", "linear algebra", "math"]
+    physics_kw = ["物理", "力学", "电磁", "光学", "热学", "量子", "相对论", "physics"]
+    chem_kw = ["化学", "有机", "无机", "分析化学", "物理化学", "chemistry"]
+    prog_kw = ["编程", "python", "java", "c语言", "c++", "数据结构", "算法", "计算机", "代码", "程序设计", "软件开发", "前端", "后端", "数据库", "sql", "操作系统", "网络", "programming", "code"]
+    hist_kw = ["历史", "古代", "近代", "现代", "世界史", "中国史", "文明", "朝代", "history"]
+    lit_kw = ["文学", "哲学", "艺术", "音乐", "美术", "诗歌", "小说", "散文", "literature", "philosophy"]
+    lang_kw = ["英语", "日语", "韩语", "法语", "德语", "西语", "词汇", "语法", "听力", "口语", "写作", "阅读", "翻译", "english", "japanese"]
+    econ_kw = ["经济", "金融", "管理", "营销", "会计", "商", "economics", "finance", "business"]
+
+    if any(kw in text for kw in prog_kw): return "programming"
+    if any(kw in text for kw in math_kw + physics_kw + chem_kw): return "math_science"
+    if any(kw in text for kw in hist_kw + lit_kw): return "humanities"
+    if any(kw in text for kw in lang_kw): return "language"
+    if any(kw in text for kw in econ_kw): return "general"  # econ gets general treatment
+    return "general"
+
+
+def _textbook_content_prompt(title: str, goal: str, kp_lines: str, requirements: str, course_name: str = "") -> str:
+    """Generate textbook-quality content — detailed, systematic, formal like a published textbook section."""
+    req = f"\n额外要求：{requirements}" if requirements else ""
+    cat = _detect_subject_category(course_name, title)
+
+    if cat == "math_science":
+        style = """- 教材级写作：先给直观动机，再给严格定义，再给定理推导，最后给典型例题
+- 定理须完整推导，每一步标注用了什么前置定理或技巧
+- 每个抽象概念配至少两个例子：一个数值计算例 + 一个几何/图形直观解释
+- 数学公式用 LaTeX，重要公式单独成行并编号
+- 用 ```mermaid flowchart LR 展示概念和定理的依赖关系
+- > 引用块标注常见计算错误、概念混淆及其正确理解
+- 附课后练习（5 道不同难度）——不写答案，留作学生练习
+- 严禁出现编程代码"""
+    elif cat == "programming":
+        style = """- 教材级写作：先描述实际应用场景，引出问题，再讲数据结构/算法设计，最后给实现与分析
+- 每个数据结构/算法配完整可运行代码，详细注释解释设计意图而非只是翻译语法
+- 代码后紧跟复杂度分析（时间+空间）和适用场景讨论
+- 算法流程用 ```mermaid flowchart LR 可视化
+- 附常见 bug 与性能陷阱（每个陷阱给错误代码 + 正确代码 + 解释）
+- 附课后练习（3 道编程题 + 2 道分析题）
+- 数学公式仅在分析复杂度时用 LaTeX"""
+    elif cat == "humanities":
+        style = """- 教材级写作：以时间线或思想史脉络为主线，讲清每个时代的背景—核心主张—影响—当代意义
+- 重要内容用表格整理（| 时期/人物 | 核心主张/贡献 | 历史背景 | 后世影响 |）
+- 关键概念给出不同流派的对比分析，讲清分歧的根源
+- 每个小节附「延伸阅读」推荐 2-3 本原典或研究著作并注明推荐理由
+- 严禁出现代码和数学公式"""
+    elif cat == "language":
+        style = """- 教材级写作：按语法体系或主题场景组织，既有规则讲解又有大量地道例句
+- 知识点表格化（| 语法点/词汇 | 规则/释义 | 地道例句 | 常见错误 |）
+- 每个语法规则配 3-5 个从真实语料中提炼的例句
+- 重点词汇标注词性、搭配、近义辨析、使用场景
+- 每节附中英互译练习（5 句）和情景写作（1 题）
+- 严禁出现代码和数学公式"""
+    else:
+        style = """- 教材级写作：从为什么需要这个概念出发，讲清楚来龙去脉，再给系统和严谨的阐述
+- 每个重要概念至少 300 字以上，配 2 个以上具体实例
+- 用 ```mermaid flowchart LR 展示知识点之间的逻辑关系
+- > 引用块标注重点、注意事项和创新应用方向
+- 表格每行独占一行"""
+        if requirements:
+            style += f"\n- 额外要求：{requirements}"
+
+    # Build structure — subjects that benefit from diagrams get a knowledge graph section
+    if cat in ("math_science", "programming", "general"):
+        knowledge_graph = """## 知识结构图
+用 ```mermaid flowchart LR 绘制本节完整知识结构，每个节点对应一个核心概念
+"""
+        mermaid_example = """
+Mermaid 格式：
+```mermaid
+flowchart LR
+  A[核心主题] --> B[子概念1]
+  A --> C[子概念2]
+  B --> D[细节A]
+  C --> E[细节B]
+```
+仅用 flowchart LR，节点 ID 英文，标签中文[方括号]"""
+    else:
+        knowledge_graph = ""
+        mermaid_example = ""
+
+    return f"""你是一位资深教材编写者，请为「{title}」编写达到正式出版教材水准的内容。
+
+学习目标：{goal or '系统掌握本节内容'}
+{f"本节涵盖以下知识点：{chr(10)}{kp_lines}" if kp_lines else ""}
+
+写作要求（教材级质量标准）：
+{style}
+
+教材结构（第一行必须是 # 标题，然后严格按以下顺序）：
+# {title}
+
+## 学习目标
+3-5 个具体可衡量的目标，用"学完本节后，你应该能够："
+
+## 预备知识
+| 预备概念 | 应达到的程度 | 与本节的关联 |
+|---|---|---|
+（至少 3 行，帮学生确认自己是否具备学习本节的先修基础）
+{knowledge_graph}
+## 正文
+按逻辑顺序深入讲解，每个核心概念独立成 ### 小节，每小节至少 300 字，至少 2 个实例。
+禁止用"xxx 是……"一句带过——必须有动机→定义→展开→实例→小结的完整链条。
+
+## 本章练习
+根据学科特点布置适量练习（不写答案）：
+- 基础题：检验概念理解
+- 进阶题：检验灵活运用
+- 思考题：检验深度理解
+
+## 本章小结
+| 关键词 | 核心解释 | 对应小节 |
+|---|---|---|
+（至少 5 行）+ 一段 100 字以上的总结段落，点明本节在整个课程中的位置和重要性
+{mermaid_example}{req}
+
+直接输出 Markdown。"""
+
+
 @router.post("/sections/{section_id}/lecture/generate")
 def generate_section_lecture(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Generate a structured lecture for a section using LLM, persist as Resource."""
@@ -4713,6 +5240,8 @@ def generate_section_lecture(section_id: str, payload: dict[str, Any]) -> dict[s
     knowledge_points = payload.get("knowledgePoints", [])
     resource_type = str(payload.get("type", "lecture")).strip()
     requirements = str(payload.get("requirements", "")).strip()
+    course_name = str(payload.get("courseId", "")).strip()
+    task_type = str(payload.get("task_type", "")).strip()
 
     if not section_title:
         return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
@@ -4750,86 +5279,25 @@ Markdown格式，结构清晰，用小标题组织。{lecture_ctx}"""
 
 Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
     else:
-        prompt = f"""你是一位资深大学教师，请为小节「{section_title}」编写一份达到正式出版教材水准的讲义。
-
-学习目标：{section_goal or '掌握本节知识点'}
-
-{f"本节涵盖以下知识点：{chr(10)}{kp_lines}" if kp_lines else ""}
-
-教材级讲义要求：
-- 概念解释要有"为什么"而不只是"是什么"——讲清楚来龙去脉、设计动机、底层原理，每个概念至少写200字
-- 每个抽象概念配一个具体实例帮助理解
-- 数学公式用 LaTeX（$...$ 或 $$...$$）呈现，重要公式单独成行
-- 复杂流程用 ```mermaid 图可视化
-- > 引用块用于标注重点、注意事项和常见误区
-- 代码示例完整可运行，有输入输出演示
-- 表格每行必须独占一行（表头/分隔行/数据行各一行），禁止把多行表格挤在一行里
-- 正文段落至少2-3句，禁止用空泛的一句话敷衍
-
-输出结构（按顺序）：
-
-## 学习目标
-列出 3-5 个具体可衡量的目标
-
-## 前置知识
-| 概念 | 要求 | 与本节关联 |
-|---|---|---|
-| ... | ... | ... |
-（至少 3 行）
-
-## 知识结构图
-```mermaid 绘制 mindmap，覆盖本节所有概念及其关系
-
-## 核心概念详解
-每个概念用 ### 子标题独立成节：
-- 为什么需要这个概念（动机/背景）
-- 原理阐述（配 LaTeX 公式）
-- 具体实例
-- > 重点提示
-
-## 代码实践
-完整可运行代码（```python），详细注释 + 运行结果
-
-## 常见误区
-> 用引用块逐一列出，每个错误写明为什么错 + 正确做法
-
-## 本节总结
-| 关键词 | 解释 |
-|---|---|
-| ... | ... |
-（至少 5 行） + 一段总结段落
-
-格式要求：
-- **表格每行独占一行，禁止把多行挤在一行**
-- Mermaid mindmap 用 root((主题))，子节点缩进；graph LR 节点 ID 用英文
-- 代码块指定语言
-- 重点用 > 引用块
-- 直接输出 Markdown
-
-表格正确格式（注意每行独立）：
-| 概念 | 说明 | 示例 |
-|---|---|---|
-| 缓存 | 高速小容量存储器 | CPU 三级缓存 |
-| 寄存器 | CPU 内部最快存储 | 通用寄存器 |
-
-Mermaid 示例(必须严格照此格式，用 ```mermaid 包裹，flowchart LR 语法):
-```mermaid
-flowchart LR
-  A[核心主题] --> B[子概念1]
-  A --> C[子概念2]
-  B --> D[细节A]
-  C --> E[细节B]
-```
-铁律:
-- 必须用 ```mermaid 和 ``` 包裹
-- 只用 flowchart LR, 从左到右布局, 禁止 TD/TB/mindmap
-- 节点 ID 英文字母+数字, 标签中文放[方括号]
-- 禁止中文节点 ID
-- 禁止 root/::id1/::icon 等语法"""
+        if task_type == "vocabulary":
+            prompt = _vocabulary_prompt(section_title, section_goal, kp_lines, course_name)
+        elif task_type == "listening":
+            prompt = _listening_prompt(section_title, section_goal, kp_lines, course_name)
+        elif task_type == "grammar":
+            prompt = _grammar_prompt(section_title, section_goal, kp_lines, course_name)
+        elif task_type == "reading":
+            prompt = _reading_task_prompt(section_title, section_goal, kp_lines, course_name)
+        elif task_type == "speaking":
+            prompt = _speaking_prompt(section_title, section_goal, kp_lines, course_name)
+        elif task_type == "writing":
+            prompt = _writing_prompt(section_title, section_goal, kp_lines, course_name)
+        elif task_type == "review":
+            prompt = _review_task_prompt(section_title, section_goal, kp_lines, course_name)
+        else:
+            prompt = _textbook_content_prompt(section_title, section_goal, kp_lines, requirements, course_name)
 
     # 从知识库获取课程内容作为上下文
     kb_context = ""
-    course_name = str(payload.get("courseId", "")).strip()
     chapter_id_in = str(payload.get("chapterId", "")).strip()
     if course_name:
         try:
@@ -4889,7 +5357,7 @@ flowchart LR
                          raw, flags=re.MULTILINE) + "\n```\n"
     # 后处理：清洗空表头等常见格式问题
     raw = _clean_markdown(raw)
-    if not _is_valid_section_lecture(raw, section_title, knowledge_points if isinstance(knowledge_points, list) else []):
+    if not _is_valid_section_lecture(raw, section_title, knowledge_points if isinstance(knowledge_points, list) else [], task_type):
         logger.warning("Rejected invalid lecture output for section %s; using deterministic fallback", section_id)
         raw = _fallback_section_lecture(
             section_title,
@@ -5006,8 +5474,9 @@ mindmap
 
 def _public_tutor_video(result: dict[str, Any]) -> dict[str, Any]:
     raw_status = str(result.get("status") or "failed")
-    script = str(result.get("script") or "").strip()
-    task_id = str(result.get("task_id") or "")
+    inner = result.get("result") if isinstance(result.get("result"), dict) else {}
+    script = str(inner.get("script") or result.get("script") or "").strip()
+    task_id = str(inner.get("task_id") or result.get("task_id") or "")
     if raw_status in {"success", "script_ready"}:
         status, message = "completed", "讲解视频脚本已准备好。"
     elif raw_status == "submitted":
@@ -5110,14 +5579,28 @@ def generate_all_section_resources(section_id: str, payload: dict[str, Any]) -> 
 
     # ── Agent 5: Video via Wan (async) ──
     try:
+        # Look up course name from session for better video prompt
+        course_name = section_title
+        try:
+            from app.db.models import PersonalSubjectModel
+            db_v = SessionLocal()
+            session = db_v.get(SessionModel, session_id)
+            if session and session.subject_id:
+                ps = db_v.get(PersonalSubjectModel, session.subject_id)
+                if ps and ps.name:
+                    course_name = str(ps.name).strip()
+            db_v.close()
+        except Exception:
+            pass
+
         from app.services.multimodal_registry import default_registry
         registry = default_registry()
         _, video_tool = registry.select_tool("micro_lesson_video")
         if video_tool is not None:
             video_result = video_tool.run({
-                "user_message": f"为小节「{section_title}」生成微课讲解视频",
-                "subject_name": section_title,
-                "topic": f"{section_title}: {section_goal}",
+                "user_message": f"为「{course_name}——{section_title}」生成微课讲解视频",
+                "subject_name": course_name,
+                "topic": section_title,
             })
             if video_result.get("status") == "submitted":
                 vid = video_result.get("result", {})
@@ -5360,9 +5843,19 @@ def tutor_video(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     if not section_title:
         return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
 
-    user_msg = f"为小节「{section_title}」生成微课讲解视频"
-    if requirements:
-        user_msg += f"。学生特殊要求：{requirements}"
+    # Look up course name from subject for better video prompt
+    course_name = section_title
+    subject_id = str(payload.get("subjectId") or "").strip()
+    if subject_id:
+        try:
+            db = SessionLocal()
+            from app.db.models import PersonalSubjectModel
+            ps = db.get(PersonalSubjectModel, subject_id)
+            if ps and ps.name:
+                course_name = str(ps.name).strip()
+            db.close()
+        except Exception:
+            pass
 
     try:
         from app.services.multimodal_registry import default_registry
@@ -5372,8 +5865,9 @@ def tutor_video(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             return _product_response(None, session_id=session_id, status="error",
                 message="没有可用的视频生成服务，请检查多模态配置。", source="agent")
         result = tool.run({
-            "user_message": user_msg,
-            "subject_name": section_title,
+            "user_message": f"为「{course_name}——{section_title}」生成微课讲解视频",
+            "subject_name": course_name,
+            "topic": section_title,
         })
         return _product_response({"video": _public_tutor_video(result)}, session_id=session_id, source="agent")
     except Exception as e:
@@ -5431,11 +5925,18 @@ def _recommend_section_resources(
     }
 
     subject_id = str(payload.get("subjectId") or "").strip()
+    course_name = ""
     db = SessionLocal()
     try:
         session = db.get(SessionModel, session_id)
         subject_id = subject_id or str((session.subject_id if session else "") or "")
         feedback_by_url = _external_feedback_by_url(db, session_id, subject_id, section_id) if subject_id else {}
+        # Extract course name for better search queries
+        if subject_id:
+            from app.db.models import PersonalSubjectModel
+            ps = db.get(PersonalSubjectModel, subject_id)
+            if ps:
+                course_name = str(ps.name or "").strip()
     finally:
         db.close()
 
@@ -5450,6 +5951,7 @@ def _recommend_section_resources(
         profile=profile,
         weak_points=weak_points,
         feedback_by_url=feedback_by_url,
+        course_name=course_name,
         progress_callback=progress_callback,
         refresh=bool(payload.get("refresh")),
     )
