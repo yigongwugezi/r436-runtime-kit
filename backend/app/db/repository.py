@@ -355,6 +355,7 @@ def upsert_resource(
         code_blocks=resource_data.get("code_blocks") or resource_data.get("codeBlocks"),
         questions=resource_data.get("questions"),
         ppt_outline=resource_data.get("ppt_outline") or resource_data.get("pptOutline"),
+        resource_metadata=resource_data.get("resource_metadata") or resource_data.get("metadata"),
         bookmarked=resource_data.get("bookmarked", False),
         study_status=resource_data.get("study_status") or resource_data.get("studyStatus", "new"),
         completed_at=_utcnow() if (resource_data.get("study_status") or resource_data.get("studyStatus", "")) == "completed" else resource_data.get("completed_at"),
@@ -380,6 +381,7 @@ def upsert_resource(
         existing.code_blocks = res.code_blocks
         existing.questions = res.questions
         existing.ppt_outline = res.ppt_outline
+        existing.resource_metadata = res.resource_metadata
         existing.bookmarked = res.bookmarked
         existing.study_status = res.study_status
         existing.completed_at = res.completed_at

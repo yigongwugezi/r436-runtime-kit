@@ -9,6 +9,7 @@ import { getCurrentLearner } from '../store/authStore';
 import { getResourceById, updateStudyStatus, autoAdvanceNode, getResourceKnowledgeGraph, batchUpdateStudyStatus, batchSetBookmark, batchExportResources } from '../api/resources';
 import { submitFeedback, logStudyEvent } from '../api/feedback';
 import { getTextbook } from '../api/textbooks';
+import { getGeneratedSectionResources, submitGeneratedSectionResourceFeedback } from '../api/sectionResources';
 import type { Textbook } from '../types/textbook';
 import type { Resource, ResourceType } from '../types/resource';
 import { RESOURCE_TYPE_LABELS } from '../utils/constants';
@@ -24,7 +25,10 @@ const icons: Record<string, React.ReactNode> = {
   case_study: <Code className="w-5 h-5 text-cyan-500" />, video: <Play className="w-5 h-5 text-red-500" />, ppt: <Presentation className="w-5 h-5 text-orange-500" />,
   summary_card: <FileText className="w-5 h-5 text-green-500" />, concept_comparison: <Lightbulb className="w-5 h-5 text-green-500" />,
   worked_example: <Code className="w-5 h-5 text-cyan-500" />, mistake_checklist: <CheckCircle2 className="w-5 h-5 text-green-500" />,
-  review_notes: <BookOpen className="w-5 h-5 text-green-500" />
+  review_notes: <BookOpen className="w-5 h-5 text-green-500" />,
+  knowledge_map: <Brain className="w-5 h-5 text-purple-500" />, process_flow: <ListChecks className="w-5 h-5 text-purple-500" />,
+  concept_diagram: <Lightbulb className="w-5 h-5 text-purple-500" />, execution_trace: <ListChecks className="w-5 h-5 text-purple-500" />,
+  code_trace: <Code className="w-5 h-5 text-cyan-500" />
 };
 const colorMap: Record<string, { bg: string; text: string }> = {
   lecture: { bg: 'bg-blue-50', text: 'text-blue-600' }, mindmap: { bg: 'bg-purple-50', text: 'text-purple-600' },
@@ -33,10 +37,14 @@ const colorMap: Record<string, { bg: string; text: string }> = {
 };
 const diffBadge: Record<string, string> = { easy: 'bg-success-100 text-success-700', medium: 'bg-warning-100 text-warning-700', hard: 'bg-error-100 text-error-700' };
 const diffLabel: Record<string, string> = { easy: '基础', medium: '进阶', hard: '挑战' };
+const qualityLabel: Record<string, string> = { passed: '质检通过', repaired: '已修复', fallback: '本地兜底', failed: '需复核', needs_review: '需复核', fallback_passed: '兜底通过' };
+const qualityBadge: Record<string, string> = { passed: 'bg-success-50 text-success-700', repaired: 'bg-blue-50 text-blue-700', fallback: 'bg-warning-50 text-warning-700', failed: 'bg-error-50 text-error-700', needs_review: 'bg-error-50 text-error-700', fallback_passed: 'bg-warning-50 text-warning-700' };
 const TYPES = ['', 'lecture', 'mindmap', 'quiz', 'reading', 'case_study', 'video', 'ppt', 'textbook'];
 const SORTS = [{ v: 'default', l: '推荐' }, { v: 'newest', l: '最新' }, { v: 'easiest', l: '最简单' }, { v: 'hardest', l: '最困难' }];
 const resourceLabel = (resource: Resource) => RESOURCE_TYPE_LABELS[resource.taskId || ''] || RESOURCE_TYPE_LABELS[resource.type] || resource.type;
 const resourceIcon = (resource: Resource) => icons[resource.taskId || ''] || icons[resource.type];
+const generatedResourceTypes = new Set(['summary_card', 'concept_comparison', 'worked_example', 'mistake_checklist', 'review_notes', 'knowledge_map', 'process_flow', 'concept_diagram', 'execution_trace', 'code_trace']);
+const visibleTags = (tags: string[] = []) => tags.filter((tag) => !generatedResourceTypes.has(tag) && !['section_generated', 'p4_multimodal', 'textbook'].includes(tag) && !tag.startsWith('path_session_'));
 
 function QuizAnswerer({ questions, resourceId }: { questions: any[]; resourceId: string }) {
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -89,21 +97,26 @@ function QuizAnswerer({ questions, resourceId }: { questions: any[]; resourceId:
  * =================================================================== */
 function ResourceDetailView({
   resource,
+  sessionId,
   onBack,
+  backLabel,
+  subjectId,
   onBookmark,
   onComplete,
   onRefetch,
   isReadOnly,
 }: {
   resource: Resource;
+  sessionId: string | null;
   onBack: () => void;
+  backLabel: string;
+  subjectId?: string;
   onBookmark: (id: string) => void;
   isReadOnly?: boolean;
   onComplete: (r: Resource) => void;
   onRefetch: () => void;
 }) {
   const nav = useNavigate();
-  const sessionId = useChatStore(s => s.currentSessionId);
   const [showExplain, setShowExplain] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
   const [showThanks, setShowThanks] = useState(false);
@@ -113,8 +126,50 @@ function ResourceDetailView({
   const [feedbackRating, setFeedbackRating] = useState(0);
   const [feedbackCat, setFeedbackCat] = useState('');
   const [feedbackComment, setFeedbackComment] = useState('');
+  const [feedbackSaving, setFeedbackSaving] = useState(false);
+  const [feedbackError, setFeedbackError] = useState('');
+  const [feedbackSaved, setFeedbackSaved] = useState(false);
 
   const c = colorMap[resource.type] || { bg: 'bg-surface-100', text: 'text-surface-500' };
+  const isGeneratedResource = Boolean(resource.relatedSectionId && generatedResourceTypes.has(resource.taskId || ''));
+
+  useEffect(() => {
+    let active = true;
+    if (!isGeneratedResource || !sessionId || !resource.relatedSectionId) return undefined;
+    getGeneratedSectionResources(resource.relatedSectionId, sessionId, subjectId)
+      .then((items) => {
+        const feedback = items.find((item) => item.id === resource.id)?.feedback;
+        if (!active || !feedback) return;
+        setFeedbackCat(feedback.feedback || '');
+        setFeedbackRating(feedback.rating || 0);
+        setFeedbackComment(feedback.comment || '');
+        setFeedbackSaved(true);
+      })
+      .catch(() => { if (active) setFeedbackError('已保存的评价暂时无法读取。'); });
+    return () => { active = false; };
+  }, [isGeneratedResource, resource.id, resource.relatedSectionId, sessionId, subjectId]);
+
+  const saveFeedback = async () => {
+    setFeedbackError('');
+    setFeedbackSaving(true);
+    try {
+      if (isGeneratedResource && resource.relatedSectionId && resource.taskId) {
+        await submitGeneratedSectionResourceFeedback(resource.relatedSectionId, resource.taskId as any, {
+          sessionId, subjectId, feedback: feedbackCat, rating: feedbackRating, comment: feedbackComment,
+        });
+      } else {
+        await submitFeedback({ sessionId: useChatStore.getState().currentSessionId, resourceId: resource.id, rating: feedbackRating, category: feedbackCat, comment: feedbackComment || undefined });
+        await logStudyEvent({ event: 'feedback', resourceId: resource.id, sessionId: useChatStore.getState().currentSessionId, metadata: { rating: feedbackRating, feedbackType: feedbackCat } });
+      }
+      setFeedbackSaved(true);
+      setShowFeedback(false);
+      setShowThanks(true);
+    } catch {
+      setFeedbackError('评价保存失败，请检查网络后重试。');
+    } finally {
+      setFeedbackSaving(false);
+    }
+  };
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -124,7 +179,7 @@ function ResourceDetailView({
         className="inline-flex items-center gap-2 px-4 py-2 bg-white rounded-xl shadow-soft text-surface-600 hover:text-surface-800 hover:shadow-elevated transition-all text-sm font-medium"
       >
         <ArrowLeft className="w-4 h-4" />
-        返回资源库
+        {backLabel}
       </button>
 
       {/* 头部卡片 */}
@@ -137,7 +192,8 @@ function ResourceDetailView({
             <h1 className="text-xl font-bold text-surface-800 mb-2">{resource.title}</h1>
             <div className="flex flex-wrap items-center gap-2 mb-3">
               <span className={`px-2.5 py-1 rounded-lg text-xs font-medium ${diffBadge[resource.difficulty]}`}>{diffLabel[resource.difficulty]}</span>
-              <span className="px-2.5 py-1 rounded-lg text-xs text-surface-500 bg-surface-50">{RESOURCE_TYPE_LABELS[resource.type]}</span>
+               <span className="px-2.5 py-1 rounded-lg text-xs text-surface-500 bg-surface-50">{resourceLabel(resource)}</span>
+               {resource.qualityStatus && <span className={`px-2.5 py-1 rounded-lg text-xs ${qualityBadge[resource.qualityStatus] || 'bg-surface-50 text-surface-500'}`}>{qualityLabel[resource.qualityStatus] || resource.qualityStatus}</span>}
               <span className="text-xs text-surface-400">· {formatDuration(resource.estimatedMinutes)}</span>
               <span className="text-xs text-surface-400">· {timeAgo(resource.createdAt)}</span>
               <SourceBadge source={resource.source || 'system_inferred'} size="sm" />
@@ -169,11 +225,11 @@ function ResourceDetailView({
             </div>
           </div>
         )}
-        {resource.tags?.length > 0 && (
+        {visibleTags(resource.tags).length > 0 && (
           <div className="flex items-start gap-2">
             <span className="text-sm text-surface-400 flex-shrink-0 mt-0.5">🏷️ 标签：</span>
             <div className="flex flex-wrap gap-1.5">
-              {resource.tags.map((t: string) => (
+              {visibleTags(resource.tags).map((t: string) => (
                 <span key={t} className="px-2 py-0.5 bg-surface-100 text-surface-500 rounded-md text-[10px] font-medium">{t}</span>
               ))}
             </div>
@@ -212,7 +268,7 @@ function ResourceDetailView({
       {resource.content && (
         <div className="bg-white rounded-2xl shadow-soft p-6">
           <div className="prose-custom">
-            {resource.type === 'mindmap' ? (resource.mermaidDef ? <div className="p-4 bg-white rounded-xl border border-surface-200"><MermaidDiagram definition={resource.mermaidDef} /></div> : <Markdown content={resource.content} />) : resource.type === 'quiz' && resource.questions?.length > 0 ? <QuizAnswerer questions={resource.questions} resourceId={resource.id} /> : <Markdown content={resource.content || '暂无内容'} />}
+            {resource.type === 'mindmap' ? (resource.mermaidDef ? <><div className="p-4 bg-white rounded-xl border border-surface-200"><MermaidDiagram definition={resource.mermaidDef} /></div>{['knowledge_map', 'process_flow', 'concept_diagram', 'execution_trace'].includes(resource.taskId || '') && <div className="mt-4"><Markdown content={resource.content || ''} /></div>}</> : <Markdown content={resource.content} />) : resource.type === 'case_study' && resource.taskId === 'code_trace' ? <>{resource.mermaidDef && <div className="mb-4 p-4 bg-white rounded-xl border border-surface-200"><MermaidDiagram definition={resource.mermaidDef} /></div>}<Markdown content={resource.content || '暂无内容'} /></> : resource.type === 'quiz' && resource.questions?.length > 0 ? <QuizAnswerer questions={resource.questions} resourceId={resource.id} /> : <Markdown content={resource.content || '暂无内容'} />}
             {resource.type === 'case_study' && resource.codeBlocks?.length > 0 && <div className="space-y-4 mt-4">{resource.codeBlocks.map((b, i) => <div key={i} className="bg-surface-800 text-surface-100 rounded-xl overflow-hidden"><div className="px-4 py-1.5 bg-surface-700 text-[10px]">{b.language || 'code'}</div><pre className="text-xs p-4 overflow-x-auto"><code>{b.code}</code></pre></div>)}</div>}
             {(resource.type === 'video' || resource.type === 'ppt') && resource.pptOutline?.length > 0 && <div className="space-y-3">{resource.pptOutline.map((s, i) => <div key={i} className="p-4 bg-white border border-surface-200 rounded-xl"><div className="flex items-center gap-2 mb-2"><span className="w-5 h-5 rounded-full bg-primary-100 text-primary-600 text-[10px] font-bold flex items-center justify-center">{i + 1}</span><h4 className="text-sm font-semibold text-surface-800">{s.title}</h4></div>{s.bullets?.length > 0 && <ul className="space-y-1 ml-7">{s.bullets.map((b, bi) => <li key={bi} className="text-xs text-surface-600 list-disc">{b}</li>)}</ul>}</div>)}</div>}
           </div>
@@ -249,30 +305,24 @@ function ResourceDetailView({
       )}
 
       {/* 反馈区 */}
-      {!isReadOnly && !showFeedback && !showThanks && (
-        <button onClick={() => setShowFeedback(true)} className="inline-flex items-center gap-1.5 px-4 py-2 bg-white rounded-xl shadow-soft text-surface-500 text-xs font-medium hover:bg-surface-50 transition-colors"><MessageSquare className="w-3.5 h-3.5" />评价这份资源</button>
+      {!isReadOnly && !showFeedback && (
+        <button onClick={() => { setShowThanks(false); setShowFeedback(true); }} className="inline-flex items-center gap-1.5 px-4 py-2 bg-white rounded-xl shadow-soft text-surface-500 text-xs font-medium hover:bg-surface-50 transition-colors"><MessageSquare className="w-3.5 h-3.5" />{feedbackSaved ? '修改评价' : '评价这份资源'}</button>
       )}
       {!isReadOnly && showFeedback && (
         <div className="bg-white rounded-2xl shadow-soft p-5 space-y-3 animate-fade-in">
-          <h4 className="text-sm font-semibold text-surface-700 flex items-center gap-2"><MessageSquare className="w-4 h-4 text-primary-500" />对这份资源评价</h4>
+          <h4 className="text-sm font-semibold text-surface-700 flex items-center gap-2"><MessageSquare className="w-4 h-4 text-primary-500" />内容反馈</h4>
           <div className="flex flex-wrap gap-1.5">
-            {[{ v: 'helpful', l: '👍 有帮助' }, { v: 'too_hard', l: '😓 太难' }, { v: 'too_easy', l: '😅 太简单' }, { v: 'unclear', l: '🤔 不清楚' }, { v: 'other', l: '💬 其他' }].map(cat => (
+            {[{ v: 'helpful', l: '有帮助' }, { v: 'too_hard', l: '太难' }, { v: 'too_easy', l: '太简单' }, { v: 'not_relevant', l: '不相关' }, { v: 'other', l: '其他' }].map(cat => (
               <button key={cat.v} onClick={() => setFeedbackCat(feedbackCat === cat.v ? '' : cat.v)} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${feedbackCat === cat.v ? 'bg-primary-600 text-white' : 'bg-white border border-surface-200 text-surface-500 hover:border-primary-300'}`}>{cat.l}</button>
             ))}
           </div>
-          <div className="flex items-center gap-1">
+          <div><p className="mb-1 text-xs text-surface-500">总体评分</p><div className="flex items-center gap-1">
             {[1, 2, 3, 4, 5].map(i => <button key={i} onClick={() => setFeedbackRating(i)} className="transition-transform hover:scale-110"><Star className="w-5 h-5" fill={feedbackRating >= i ? '#f59e0b' : 'none'} stroke={feedbackRating >= i ? '#f59e0b' : '#d1d5db'} strokeWidth={1.5} /></button>)}
-          </div>
-          <textarea value={feedbackComment} onChange={e => setFeedbackComment(e.target.value)} placeholder="更多想法…（选填）" rows={2} className="w-full resize-none bg-white border border-surface-200 rounded-xl px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-primary-200" />
+          </div></div>
+          <textarea value={feedbackComment} onChange={e => setFeedbackComment(e.target.value)} placeholder="更多想法（选填）" rows={2} className="w-full resize-none bg-white border border-surface-200 rounded-xl px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-primary-200" />
+          {feedbackError && <p className="text-xs text-error-600">{feedbackError}</p>}
           <div className="flex items-center gap-2">
-            <button onClick={async () => {
-              try {
-                await submitFeedback({ sessionId: useChatStore.getState().currentSessionId, resourceId: resource.id, rating: feedbackRating, category: feedbackCat, comment: feedbackComment || undefined });
-                await logStudyEvent({ event: 'feedback', resourceId: resource.id, sessionId: useChatStore.getState().currentSessionId, metadata: { rating: feedbackRating, feedbackType: feedbackCat } });
-              } catch { }
-              setShowFeedback(false);
-              setShowThanks(true);
-            }} className="px-4 py-2 bg-primary-600 text-white rounded-xl text-xs font-semibold hover:bg-primary-700 flex items-center gap-1.5"><Send className="w-3 h-3" />提交评价</button>
+            <button onClick={saveFeedback} disabled={feedbackSaving || !feedbackCat} className="px-4 py-2 bg-primary-600 text-white rounded-xl text-xs font-semibold hover:bg-primary-700 disabled:opacity-50 flex items-center gap-1.5"><Send className="w-3 h-3" />{feedbackSaving ? '保存中…' : feedbackSaved ? '更新评价' : '提交评价'}</button>
             <button onClick={() => setShowFeedback(false)} className="px-3 py-2 text-xs text-surface-400 hover:text-surface-600">取消</button>
           </div>
         </div>
@@ -280,7 +330,7 @@ function ResourceDetailView({
 
       {showThanks && (
         <div className="bg-white rounded-2xl shadow-soft p-4 border border-success-200">
-          <div className="flex items-center gap-2 text-xs text-success-600"><CheckCircle2 className="w-4 h-4" />感谢你的反馈！</div>
+          <div className="flex items-center gap-2 text-xs text-success-600"><CheckCircle2 className="w-4 h-4" />评价已保存，可随时修改。</div>
         </div>
       )}
 
@@ -428,7 +478,7 @@ function ResourceListView({
             </div>
             <div className="flex items-center gap-3 overflow-x-auto py-1">
               <span className="text-sm text-surface-500 flex-shrink-0">质检:</span>
-              {['', 'passed', 'needs_review', 'fallback_passed'].map(s => <button key={s || 'all'} onClick={() => { setActiveQuality(s || ''); onApplyFilter({ qualityStatus: s || undefined }); }} className={`flex-shrink-0 px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${activeQuality === s ? 'bg-surface-800 text-white' : !s && !activeQuality ? 'bg-surface-800 text-white' : 'bg-surface-100 text-surface-500 hover:bg-surface-200'}`}>{s === 'passed' ? '已通过' : s === 'needs_review' ? '需复核' : s === 'fallback_passed' ? '兜底通过' : '全部'}</button>)}
+               {['', 'passed', 'repaired', 'fallback', 'failed', 'needs_review', 'fallback_passed'].map(s => <button key={s || 'all'} onClick={() => { setActiveQuality(s || ''); onApplyFilter({ qualityStatus: s || undefined }); }} className={`flex-shrink-0 px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${activeQuality === s ? 'bg-surface-800 text-white' : !s && !activeQuality ? 'bg-surface-800 text-white' : 'bg-surface-100 text-surface-500 hover:bg-surface-200'}`}>{qualityLabel[s] || '全部'}</button>)}
             </div>
           </div>
         )}
@@ -455,7 +505,7 @@ function ResourceListView({
                     <div key={r.id} onClick={() => selectionMode ? (setSelectedIds(prev => { const n = new Set(prev); n.has(r.id) ? n.delete(r.id) : n.add(r.id); return n; })) : nav(`/resources/${r.id}`)} className={`relative bg-white rounded-2xl shadow-soft hover:shadow-elevated transition-all duration-300 overflow-hidden cursor-pointer ${selectionMode && selectedIds.has(r.id) ? 'ring-2 ring-primary-400 shadow-elevated' : selectionMode ? 'hover:ring-2 hover:ring-surface-300' : 'group'}`}>
                       {selectionMode && <div className="absolute top-3 left-3 z-20">{selectedIds.has(r.id) ? <CheckCircle2 className="w-5 h-5 text-primary-600 drop-shadow-sm" /> : <div className="w-5 h-5 rounded-full border-2 border-surface-300 bg-white/80" />}</div>}
                       <div className="relative h-32 bg-gradient-to-br from-surface-100 to-surface-200 flex items-center justify-center"><div className={`w-16 h-16 rounded-2xl ${c.bg} flex items-center justify-center`}>{resourceIcon(r)}</div><div className={`absolute top-3 left-3 px-2.5 py-1 rounded-lg ${c.bg} ${c.text} flex items-center gap-1.5 text-xs font-medium`}>{resourceLabel(r)}</div>{r.studyStatus === 'completed' && <CheckCircle2 size={18} className="absolute top-3 right-3 text-success-500" />}</div>
-                      <div className="p-5"><h4 className="font-semibold text-surface-800 line-clamp-2 group-hover:text-primary-600 transition-colors mb-2">{r.title}</h4><p className="text-sm text-surface-500 line-clamp-2 mb-3">{r.description}</p>{r.relatedChapter && <p className="text-xs text-surface-400 mb-2 truncate">📖 {r.relatedChapter}</p>}<div className="flex items-center justify-between text-xs text-surface-400"><div className="flex items-center gap-2"><Clock size={12} />{formatDuration(r.estimatedMinutes)}</div><span className={`px-2 py-0.5 rounded ${diffBadge[r.difficulty]}`}>{diffLabel[r.difficulty]}</span></div></div>
+                      <div className="p-5"><h4 className="font-semibold text-surface-800 line-clamp-2 group-hover:text-primary-600 transition-colors mb-2">{r.title}</h4><p className="text-sm text-surface-500 line-clamp-2 mb-3">{r.description}</p>{r.relatedChapter && <p className="text-xs text-surface-400 mb-2 truncate">📖 {r.relatedChapter}</p>}<div className="flex items-center justify-between text-xs text-surface-400"><div className="flex items-center gap-2"><Clock size={12} />{formatDuration(r.estimatedMinutes)}</div><div className="flex items-center gap-1"><span className={`px-2 py-0.5 rounded ${diffBadge[r.difficulty]}`}>{diffLabel[r.difficulty]}</span>{r.qualityStatus && <span className={`px-2 py-0.5 rounded ${qualityBadge[r.qualityStatus] || 'bg-surface-100 text-surface-500'}`}>{qualityLabel[r.qualityStatus] || r.qualityStatus}</span>}</div></div></div>
                     </div>
                   ); })}
                 </div>
@@ -465,7 +515,7 @@ function ResourceListView({
                     <div key={r.id} onClick={() => selectionMode ? (setSelectedIds(prev => { const n = new Set(prev); n.has(r.id) ? n.delete(r.id) : n.add(r.id); return n; })) : nav(`/resources/${r.id}`)} className={`bg-white rounded-xl p-4 shadow-soft hover:shadow-elevated transition-all cursor-pointer flex items-center gap-4 ${selectionMode && selectedIds.has(r.id) ? 'ring-2 ring-primary-400 shadow-elevated' : selectionMode ? 'hover:ring-2 hover:ring-surface-300' : 'group'}`}>
                       {selectionMode && <div className="flex-shrink-0">{selectedIds.has(r.id) ? <CheckCircle2 className="w-5 h-5 text-primary-600" /> : <div className="w-5 h-5 rounded-full border-2 border-surface-300" />}</div>}
                       <div className={`w-12 h-12 rounded-xl ${c.bg} flex items-center justify-center flex-shrink-0`}>{resourceIcon(r)}</div>
-                      <div className="flex-1 min-w-0"><div className="flex items-center gap-2 mb-1"><h4 className="font-semibold text-surface-800 group-hover:text-primary-600 transition-colors truncate">{r.title}</h4><span className={`flex-shrink-0 px-2 py-0.5 rounded text-xs ${diffBadge[r.difficulty]}`}>{diffLabel[r.difficulty]}</span></div><p className="text-sm text-surface-500 truncate">{r.description}</p><div className="flex items-center gap-3 mt-1.5 text-xs text-surface-400"><span className="flex items-center gap-1"><Clock size={12} />{formatDuration(r.estimatedMinutes)}</span>{r.relatedChapter && <span className="truncate">📖 {r.relatedChapter}</span>}<SourceBadge source={r.source || 'system_inferred'} size="xs" /></div></div>
+                       <div className="flex-1 min-w-0"><div className="flex items-center gap-2 mb-1"><h4 className="font-semibold text-surface-800 group-hover:text-primary-600 transition-colors truncate">{r.title}</h4><span className={`flex-shrink-0 px-2 py-0.5 rounded text-xs ${diffBadge[r.difficulty]}`}>{diffLabel[r.difficulty]}</span>{r.qualityStatus && <span className={`flex-shrink-0 px-2 py-0.5 rounded text-xs ${qualityBadge[r.qualityStatus] || 'bg-surface-100 text-surface-500'}`}>{qualityLabel[r.qualityStatus] || r.qualityStatus}</span>}</div><p className="text-sm text-surface-500 truncate">{r.description}</p><div className="flex items-center gap-3 mt-1.5 text-xs text-surface-400"><span className="flex items-center gap-1"><Clock size={12} />{formatDuration(r.estimatedMinutes)}</span>{r.relatedChapter && <span className="truncate">📖 {r.relatedChapter}</span>}<SourceBadge source={r.source || 'system_inferred'} size="xs" /></div></div>
                       <div className="flex items-center gap-2">{r.studyStatus === 'completed' && <CheckCircle2 size={18} className="text-success-500" />}{r.bookmarked && <BookmarkCheck size={18} className="text-primary-500" />}<ChevronRight size={18} className="text-surface-300 group-hover:text-primary-500 transition-colors" /></div>
                     </div>
                   ); })}
@@ -495,8 +545,7 @@ export default function ResourceLibrary() {
     return Object.keys(f).length > 0 ? f : undefined;
   }, [searchParams]);
 
-  const { resources, total, loading, error, applyFilter, toggleBookmark, refetch } = useResources(initialFilter);
-  const sessionId = useChatStore(s => s.currentSessionId);
+  const { resources, total, loading, error, applyFilter, toggleBookmark, refetch, sessionId } = useResources(initialFilter);
   const isParent = getCurrentLearner()?.role === 'parent';
   const activeSubject = useSubjectStore((s) => s.activeSubject);
 
@@ -513,13 +562,15 @@ export default function ResourceLibrary() {
   const [detailResource, setDetailResource] = useState<Resource | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
+  const detailSessionId = searchParams.get('source') === 'lecture' ? (searchParams.get('sessionId') || sessionId) : sessionId;
+  const detailSubjectId = searchParams.get('source') === 'lecture' ? (searchParams.get('subjectId') || activeSubject?.id) : activeSubject?.id;
 
   // 当路由参数变化时获取资源详情
   useEffect(() => {
-    if (params.id && sessionId) {
+    if (params.id && detailSessionId) {
       setDetailLoading(true);
       setDetailError('');
-      getResourceById(params.id, { sessionId })
+      getResourceById(params.id, { sessionId: detailSessionId, subjectId: detailSubjectId })
         .then(res => {
           setDetailResource(res.resource);
         })
@@ -531,7 +582,7 @@ export default function ResourceLibrary() {
       setDetailResource(null);
       setDetailError('');
     }
-  }, [params.id, sessionId]);
+  }, [params.id, detailSessionId, detailSubjectId]);
 
   const handleBookmark = async (id: string) => {
     await toggleBookmark(id);
@@ -543,7 +594,7 @@ export default function ResourceLibrary() {
 
   const handleComplete = async (r: Resource) => {
     const ns = r.studyStatus === 'completed' ? 'new' : 'completed';
-    const sid = useChatStore.getState().currentSessionId;
+    const sid = sessionId || useChatStore.getState().currentSessionId;
     try {
       await updateStudyStatus(r.id, ns, sid);
       // Auto-advance the learning path node when a resource is completed
@@ -568,7 +619,17 @@ export default function ResourceLibrary() {
     }
   };
 
+  const lectureReturn = (() => {
+    const source = searchParams.get('source');
+    const returnTo = searchParams.get('returnTo') || '';
+    return source === 'lecture' && returnTo.startsWith('/lecture/section/') ? returnTo : '';
+  })();
+
   const handleBack = () => {
+    if (lectureReturn) {
+      nav(lectureReturn);
+      return;
+    }
     const query = searchParams.toString();
     nav(`/resources${query ? `?${query}` : ''}`);
   };
@@ -580,10 +641,10 @@ export default function ResourceLibrary() {
     }
     if (detailError) {
       return <PageError title="资源加载失败" description={detailError} onRetry={() => {
-        if (params.id && sessionId) {
+        if (params.id && detailSessionId) {
           setDetailLoading(true);
           setDetailError('');
-          getResourceById(params.id, { sessionId })
+          getResourceById(params.id, { sessionId: detailSessionId, subjectId: detailSubjectId })
             .then(res => setDetailResource(res.resource))
             .catch(err => setDetailError(err?.response?.data?.message || err?.message || '资源加载失败'))
             .finally(() => setDetailLoading(false));
@@ -595,8 +656,11 @@ export default function ResourceLibrary() {
     }
     return (
       <ResourceDetailView
-        resource={detailResource}
-        onBack={handleBack}
+         resource={detailResource}
+         sessionId={detailSessionId}
+         onBack={handleBack}
+         backLabel={lectureReturn ? '返回当前讲义' : '返回资源库'}
+         subjectId={detailSubjectId}
         onBookmark={handleBookmark}
         onComplete={handleComplete}
         onRefetch={refetch}

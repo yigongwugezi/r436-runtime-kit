@@ -26,7 +26,7 @@ export type DifficultyLevel = 'easy' | 'medium' | 'hard';
 export type StudyStatus = 'new' | 'in_progress' | 'completed';
 
 /** 质检状态 */
-export type QualityStatus = 'passed' | 'needs_review' | 'fallback_passed';
+export type QualityStatus = 'passed' | 'repaired' | 'fallback' | 'failed' | 'needs_review' | 'fallback_passed';
 
 /** 审核状态 */
 export type ReviewStatus = 'passed' | 'warning' | 'blocked';
@@ -103,6 +103,8 @@ export interface Resource {
   evidence?: string[];
   /** 兜底原因（仅 fallback 资源有） */
   fallbackReason?: string;
+  /** P4 resource generation and quality metadata. */
+  resourceMetadata?: Record<string, unknown>;
 }
 
 export interface CodeBlock {

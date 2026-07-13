@@ -2,11 +2,56 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+async def _direct_llm_fallback(
+    message: str,
+    history: list | None,
+    profile_context: str,
+    persona_context: str,
+) -> str:
+    """Keep chat available when DeepTutor's runtime cannot reach its provider."""
+    from app.config import settings
+    from app.services.llm_client import MockLLMClient, get_llm_client
+
+    client = get_llm_client(settings.llm_provider)
+    if isinstance(client, MockLLMClient):
+        return ""
+    messages: list[dict[str, str]] = []
+    if persona_context:
+        messages.append({"role": "system", "content": persona_context})
+    if profile_context:
+        messages.append({"role": "system", "content": profile_context})
+    messages.extend(
+        {"role": str(item.get("role", "user")), "content": str(item.get("content", ""))}
+        for item in (history or [])[-12:]
+        if isinstance(item, dict) and item.get("content")
+    )
+    messages.append({"role": "user", "content": message})
+    try:
+        return str(await asyncio.to_thread(client.chat, messages) or "").strip()
+    except Exception as exc:
+        logger.warning("Direct LLM fallback failed: %s", exc)
+        return ""
+
+
+async def _chat_fallback(
+    capability: str,
+    fallback_to_configured_llm: bool,
+    message: str,
+    history: list | None,
+    profile_context: str,
+    persona_context: str,
+) -> str:
+    if capability != "chat" or not fallback_to_configured_llm:
+        return ""
+    return await _direct_llm_fallback(message, history, profile_context, persona_context)
 
 
 def _setup_config():
@@ -37,6 +82,7 @@ async def deeptutor_call_async(
     profile_context: str = "",
     persona_context: str = "",
     config_overrides: dict | None = None,
+    fallback_to_configured_llm: bool = False,
 ) -> str:
     """Proper async DeepTutor call — no nest_asyncio, no asyncio.run.
 
@@ -51,9 +97,13 @@ async def deeptutor_call_async(
             for profiling conversations.
         config_overrides: Per-request config overrides passed to the
             capability (e.g. {"render_mode": "mermaid"} for visualize).
+        fallback_to_configured_llm: Allow normal chat to use the configured
+            provider only after DeepTutor fails or returns no content.
     """
     if not _setup_config():
-        return ""
+        return await _chat_fallback(
+            capability, fallback_to_configured_llm, message, history, profile_context, persona_context
+        )
     try:
         from deeptutor.runtime import ChatOrchestrator
         from deeptutor.core.context import UnifiedContext
@@ -73,10 +123,15 @@ async def deeptutor_call_async(
         async for event in ChatOrchestrator().handle(ctx):
             if event.type == StreamEventType.CONTENT:
                 parts.append(str(event.content or ""))
-        return "".join(parts)
+        reply = "".join(parts).strip()
+        if reply:
+            return reply
+        logger.warning("DeepTutor %s returned no content", capability)
     except Exception as e:
         logger.warning("DeepTutor %s failed: %s", capability, e)
-        return ""
+    return await _chat_fallback(
+        capability, fallback_to_configured_llm, message, history, profile_context, persona_context
+    )
 
 
 # Synchronous wrappers for sync agent use
@@ -87,9 +142,13 @@ def deeptutor_call(
     profile_context: str = "",
     persona_context: str = "",
     config_overrides: dict | None = None,
+    fallback_to_configured_llm: bool = False,
 ) -> str:
     import asyncio, concurrent.futures
-    async def _call(): return await deeptutor_call_async(capability, message, history, profile_context, persona_context, config_overrides)
+    async def _call(): return await deeptutor_call_async(
+        capability, message, history, profile_context, persona_context, config_overrides,
+        fallback_to_configured_llm,
+    )
     try:
         loop = asyncio.get_running_loop()
         with concurrent.futures.ThreadPoolExecutor() as pool:

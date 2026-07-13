@@ -239,6 +239,7 @@ class ResourceModel(Base):
     code_blocks: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     questions: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     ppt_outline: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    resource_metadata: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True, default=None)
 
     # ── State & provenance ────────────────────────────────────────────
     bookmarked: Mapped[bool] = mapped_column(Boolean, default=False)

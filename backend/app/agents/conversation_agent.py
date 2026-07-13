@@ -692,7 +692,10 @@ action："""
         # ── Build student profile context for DeepTutor ──
         profile_context = self._build_profile_context_for_dt()
 
-        return deeptutor_call("chat", user_message, history or [], profile_context)
+        return deeptutor_call(
+            "chat", user_message, history or [], profile_context,
+            fallback_to_configured_llm=True,
+        )
 
     def _build_profile_context_for_dt(self) -> str:
         """Build a concise student-profile summary for DeepTutor's memory_context.

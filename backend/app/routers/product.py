@@ -31,7 +31,7 @@ from app.agents.diagnosis_agent import DiagnosisAgent
 from app.agents.multimodal_agent import MultimodalAgent
 from app.config import settings
 from app.db.engine import SessionLocal
-from app.db.models import AnswerRecordModel, DailyTaskModel, LearnerModel, PracticeQuestionModel, ResourceModel, SessionModel
+from app.db.models import AnswerRecordModel, DailyTaskModel, LearnerModel, LearningEventModel, PracticeQuestionModel, ResourceModel, SessionModel
 from app.db.repository import (
     get_bookmarked_ids,
     get_daily_tasks as repo_get_daily_tasks,
@@ -60,7 +60,15 @@ from app.schemas.feedback import FeedbackSignal
 from app.utils.errors import InvalidEventTypeError, MissingSessionIdError, NotFoundError
 from app.utils.profile_facts import apply_state_facts_to_result, profile_item
 from app.utils.profile_normalizer import PROFILE_DIMENSION_LABELS, normalize_profile_dimensions
-from app.services.profile_v2 import INTEREST_QUESTIONS, assess_interest, build_profile_v2, update_context as update_profile_v2_context, update_self_report
+from app.services.profile_v2 import (
+    INTEREST_QUESTIONS,
+    apply_conversation_sync,
+    assess_interest,
+    build_profile_v2,
+    preview_conversation_sync,
+    update_context as update_profile_v2_context,
+    update_self_report,
+)
 from app.services.conversation_state import conversation_store
 from app.services.course_catalog import course_catalog
 from app.services.learning_tracker import learning_tracker
@@ -2029,13 +2037,26 @@ def _profile_v2(session_id: str, legacy: dict[str, Any] | None = None) -> dict[s
     state = conversation_store.get(session_id)
     legacy = legacy or ag_get_profile(session_id) or {}
     prefs = legacy.get("preferences") if isinstance(legacy.get("preferences"), dict) else {}
+    db = SessionLocal()
+    try:
+        session = db.get(SessionModel, session_id)
+        subject_id = str((session.subject_id if session else "") or "")
+    finally:
+        db.close()
     course = course_catalog.match_course(str(state.facts.get("target_course") or ""))
+    if subject_id:
+        course = {**(course or {}), "course_id": subject_id}
+    existing = prefs.get("profile_v2") if isinstance(prefs, dict) else None
+    existing_subject = str(((existing or {}).get("subject_context") or {}).get("subject_id") or "") if isinstance(existing, dict) else ""
+    if subject_id and existing_subject and existing_subject != subject_id:
+        existing = None
     return build_profile_v2(
         dimensions=legacy.get("dimensions") if isinstance(legacy.get("dimensions"), list) else [],
         facts=state.facts,
         course=course,
         weaknesses=legacy.get("weaknesses") if isinstance(legacy.get("weaknesses"), list) else [],
-        existing=prefs.get("profile_v2") if isinstance(prefs, dict) else None,
+        existing=existing,
+        session_id=session_id,
     )
 
 
@@ -2140,6 +2161,81 @@ def _ensure_session_linked(
         logger.warning("Failed to link session %s to subject/learner", session_id, exc_info=True)
     finally:
         db.close()
+
+
+def _require_matching_subject(session_id: str, subject_id: str) -> None:
+    """Reject a sync request that tries to reuse another subject session."""
+    if not subject_id:
+        raise HTTPException(status_code=400, detail="subjectId required")
+    db = SessionLocal()
+    try:
+        session = db.get(SessionModel, session_id)
+        if session and session.subject_id and session.subject_id != subject_id:
+            raise HTTPException(status_code=409, detail="当前会话不属于该科目")
+    finally:
+        db.close()
+    _ensure_session_linked(session_id, subject_id=subject_id)
+
+
+_EXTERNAL_FEEDBACK_TYPES = {"helpful", "not_relevant", "too_hard", "too_easy"}
+
+
+def _external_feedback_by_url(db: Any, session_id: str, subject_id: str, section_id: str) -> dict[str, str]:
+    feedback: dict[str, str] = {}
+    events = db.query(LearningEventModel).filter(
+        LearningEventModel.session_id == session_id,
+        LearningEventModel.event_type == "external_resource_feedback",
+    ).order_by(LearningEventModel.created_at.asc()).all()
+    for event in events:
+        metadata = event.metadata_ if isinstance(event.metadata_, dict) else {}
+        if metadata.get("subject_id") == subject_id and metadata.get("section_id") == section_id and metadata.get("url_hash"):
+            feedback[str(metadata["url_hash"])] = str(metadata.get("feedback") or "")
+    return feedback
+
+
+def _upsert_external_feedback(
+    db: Any,
+    *,
+    session_id: str,
+    subject_id: str,
+    section_id: str,
+    url: str,
+    resource_type: str,
+    feedback: str,
+) -> dict[str, Any]:
+    from urllib.parse import urlparse
+    from app.services.section_resource_recommendations import RESOURCE_TYPES, normalize_url, resource_feedback_key
+
+    normalized = normalize_url(url)
+    if not normalized or resource_type not in RESOURCE_TYPES or feedback not in _EXTERNAL_FEEDBACK_TYPES:
+        raise HTTPException(status_code=400, detail="invalid external resource feedback")
+    url_hash = resource_feedback_key(normalized)
+    metadata = {
+        "subject_id": subject_id,
+        "section_id": section_id,
+        "url_hash": url_hash,
+        "resource_type": resource_type,
+        "domain": urlparse(normalized).netloc.lower().removeprefix("www."),
+        "feedback": feedback,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    existing = db.query(LearningEventModel).filter(
+        LearningEventModel.session_id == session_id,
+        LearningEventModel.event_type == "external_resource_feedback",
+        LearningEventModel.resource_id == f"external:{url_hash}",
+    ).first()
+    if existing:
+        previous = existing.metadata_ if isinstance(existing.metadata_, dict) else {}
+        existing.metadata_ = {**metadata, "created_at": previous.get("created_at") or metadata["updated_at"]}
+    else:
+        db.add(LearningEventModel(
+            session_id=session_id,
+            event_type="external_resource_feedback",
+            resource_id=f"external:{url_hash}",
+            metadata_={**metadata, "created_at": metadata["updated_at"]},
+        ))
+    db.commit()
+    return metadata
 
 
 @router.get("/profile")
@@ -2249,6 +2345,33 @@ def update_profile_context(payload: dict[str, Any], auth: AuthContext = Depends(
     profile_v2 = update_profile_v2_context(_profile_v2(session_id), updates)
     _save_profile_v2(session_id, profile_v2)
     return _product_response({"profileV2": profile_v2}, session_id=session_id, source="user_input")
+
+
+@router.post("/profiles/{subject_id}/sync-from-conversation")
+def sync_profile_from_conversation(
+    subject_id: str,
+    payload: dict[str, Any],
+    auth: AuthContext = Depends(reject_parent),
+) -> dict[str, Any]:
+    """Preview or apply explicit learner facts from this session's user messages."""
+    session_id = _payload_session_id(payload)
+    subject_id = str(subject_id).strip()
+    _require_matching_subject(session_id, subject_id)
+    db = SessionLocal()
+    try:
+        messages = repo_get_messages(db, session_id)
+    finally:
+        db.close()
+    profile_v2 = _profile_v2(session_id)
+    context = profile_v2.setdefault("subject_context", {})
+    context["subject_id"] = subject_id
+    context["session_id"] = session_id
+    preview = preview_conversation_sync(profile_v2, messages, session_id=session_id, subject_id=subject_id)
+    if payload.get("preview", True) is not False:
+        return _product_response({"preview": preview, "profileV2": profile_v2}, session_id=session_id, subject_id=subject_id, source="conversation_explicit")
+    updated = apply_conversation_sync(profile_v2, preview)
+    _save_profile_v2(session_id, updated)
+    return _product_response({"preview": preview, "profileV2": updated, "applied": True}, session_id=session_id, subject_id=subject_id, source="conversation_explicit")
 
 
 @router.patch("/profile/v2/self-report")
@@ -2508,10 +2631,17 @@ def get_resources(
         return True
 
     def _normalize(item: dict[str, Any]) -> dict[str, Any]:
+        metadata = item.get("resource_metadata") if isinstance(item.get("resource_metadata"), dict) else {}
+        task_id = item.get("taskId", item.get("task_id", ""))
+        title = item.get("title", "学习资源")
+        if "section_generated" in (item.get("tags") or []):
+            from app.services.structured_multimodal_resources import STRUCTURED_RESOURCE_DEFINITIONS, normalized_resource_title
+            if task_id in STRUCTURED_RESOURCE_DEFINITIONS:
+                title = normalized_resource_title(title, task_id, item.get("knowledgePoints", item.get("knowledge_points", [])))
         return {
             "id": item["id"],
             "type": _resource_type(item.get("type", "lecture")),
-            "title": item.get("title", "学习资源"),
+            "title": title,
             "description": item.get("description", ""),
             "content": item.get("content", ""),
             "knowledgePoints": item.get("knowledgePoints", item.get("knowledge_points", [])),
@@ -2531,15 +2661,16 @@ def get_resources(
             "relatedStageId": item.get("relatedStageId", item.get("related_stage_id", "")),
             "relatedChapterId": item.get("relatedChapterId", item.get("related_chapter_id", "")),
             "relatedSectionId": item.get("relatedSectionId", item.get("related_section_id", "")),
-            "taskId": item.get("taskId", item.get("task_id", "")),
+            "taskId": task_id,
             "relatedChapter": item.get("relatedChapter", item.get("related_chapter", "")),
             "relatedKnowledgePoints": item.get("relatedKnowledgePoints", item.get("related_knowledge_points", [])),
-            "qualityStatus": item.get("qualityStatus", item.get("quality_status", "")),
-            "sourceType": item.get("sourceType", item.get("source_type", "")),
-            "generationMode": item.get("generationMode", item.get("generation_mode", "")),
+            "qualityStatus": item.get("qualityStatus", item.get("quality_status", metadata.get("quality_status", ""))),
+            "sourceType": item.get("sourceType", item.get("source_type", metadata.get("generation_source", ""))),
+            "generationMode": item.get("generationMode", item.get("generation_mode", metadata.get("generation_mode", ""))),
             "reason": item.get("reason", ""),
             "evidence": item.get("evidence", []),
             "fallbackReason": item.get("fallbackReason", item.get("fallback_reason", "")),
+            "resourceMetadata": metadata,
         }
 
     # Merge DB resources with in-memory resources
@@ -2653,11 +2784,18 @@ def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "") -> 
     db_match = next((r for r in db_resources if r["id"] == resource_id), None)
     if db_match:
         bookmarks = _get_bookmarks(session_id)
+        metadata = db_match.get("resource_metadata") if isinstance(db_match.get("resource_metadata"), dict) else {}
+        title = db_match.get("title", "学习资源")
+        task_id = db_match.get("task_id", "")
+        if "section_generated" in (db_match.get("tags") or []):
+            from app.services.structured_multimodal_resources import STRUCTURED_RESOURCE_DEFINITIONS, normalized_resource_title
+            if task_id in STRUCTURED_RESOURCE_DEFINITIONS:
+                title = normalized_resource_title(title, task_id, db_match.get("knowledge_points", []))
         return _product_response(
             {"resource": {
                 "id": db_match["id"],
                 "type": _resource_type(db_match.get("type", "lecture")),
-                "title": db_match.get("title", "学习资源"),
+                "title": title,
                 "description": db_match.get("description", ""),
                 "content": db_match.get("content", ""),
                 "knowledgePoints": db_match.get("knowledge_points", []),
@@ -2676,7 +2814,11 @@ def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "") -> 
                 "relatedStageId": db_match.get("related_stage_id", ""),
                 "relatedChapterId": db_match.get("related_chapter_id", ""),
                 "relatedSectionId": db_match.get("related_section_id", ""),
-                "taskId": db_match.get("task_id", ""),
+                "taskId": task_id,
+                "qualityStatus": metadata.get("quality_status", ""),
+                "sourceType": metadata.get("generation_source", ""),
+                "generationMode": metadata.get("generation_mode", ""),
+                "resourceMetadata": metadata,
             }},
             session_id=session_id, subject_id=subjectId, source="db",
         )
@@ -5247,8 +5389,11 @@ def poll_video_task(task_id: str) -> dict[str, Any]:
     return {"status": "success", "data": result}
 
 
-@router.post("/sections/{section_id}/resources/recommendations")
-def recommend_section_resources(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _recommend_section_resources(
+    section_id: str,
+    payload: dict[str, Any],
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     """Return real external links for a section without archiving them as resources."""
     session_id = _payload_session_id(payload)
     section_title = str(payload.get("sectionTitle") or "").strip()
@@ -5278,6 +5423,22 @@ def recommend_section_resources(section_id: str, payload: dict[str, Any]) -> dic
     except Exception:
         pass
 
+    profile_v2 = _profile_v2(session_id, profile or {})
+    profile = {
+        **(profile or {}),
+        "subject_context": profile_v2.get("subject_context") or {},
+        "knowledge_mastery": profile_v2.get("knowledge_mastery") or [],
+    }
+
+    subject_id = str(payload.get("subjectId") or "").strip()
+    db = SessionLocal()
+    try:
+        session = db.get(SessionModel, session_id)
+        subject_id = subject_id or str((session.subject_id if session else "") or "")
+        feedback_by_url = _external_feedback_by_url(db, session_id, subject_id, section_id) if subject_id else {}
+    finally:
+        db.close()
+
     from app.services.section_resource_recommendations import SectionResourceRecommendationService
     result = SectionResourceRecommendationService().recommend(
         session_id=session_id,
@@ -5288,8 +5449,72 @@ def recommend_section_resources(section_id: str, payload: dict[str, Any]) -> dic
         resource_types=payload.get("resourceTypes") if isinstance(payload.get("resourceTypes"), list) else [],
         profile=profile,
         weak_points=weak_points,
+        feedback_by_url=feedback_by_url,
+        progress_callback=progress_callback,
+        refresh=bool(payload.get("refresh")),
     )
+    return result
+
+
+@router.post("/sections/{section_id}/resources/recommendations")
+def recommend_section_resources(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Return real external links without archiving them as learning resources."""
+    session_id = _payload_session_id(payload)
+    result = _recommend_section_resources(section_id, payload)
     return _product_response({"recommendations": result}, session_id=session_id, source="duckduckgo")
+
+
+@router.post("/sections/{section_id}/resources/recommendations/stream")
+def stream_section_resource_recommendations(section_id: str, payload: dict[str, Any]) -> StreamingResponse:
+    """Stream safe, real ResourceAgent search stages for the lecture workspace."""
+    _payload_session_id(payload)
+
+    def event_stream():
+        events: Queue[dict[str, Any] | None] = Queue()
+
+        def worker() -> None:
+            try:
+                result = _recommend_section_resources(section_id, payload, events.put)
+                events.put({"event": "result", "recommendations": result})
+            except Exception:
+                events.put({"event": "result", "recommendations": {"query": [], "resources": [], "status": "failed", "warnings": ["\u641c\u7d22\u670d\u52a1\u6682\u65f6\u4e0d\u7a33\u5b9a\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002"]}})
+            finally:
+                events.put(None)
+
+        threading.Thread(target=worker, daemon=True).start()
+        while True:
+            event = events.get()
+            if event is None:
+                break
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+
+
+@router.post("/sections/{section_id}/resources/feedback")
+def feedback_on_section_resource(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Persist one scoped external recommendation signal without creating a resource."""
+    session_id = _payload_session_id(payload)
+    subject_id = str(payload.get("subjectId") or "").strip()
+    feedback = str(payload.get("feedback") or "").strip()
+    url = str(payload.get("url") or "").strip()
+    resource_type = str(payload.get("resourceType") or "").strip()
+    db = SessionLocal()
+    try:
+        session = db.get(SessionModel, session_id)
+        resolved_subject = subject_id or str((session.subject_id if session else "") or "")
+        if not resolved_subject:
+            raise HTTPException(status_code=400, detail="subjectId required")
+        if session and session.subject_id and session.subject_id != resolved_subject:
+            raise HTTPException(status_code=409, detail="当前会话不属于该科目")
+        _ensure_session_linked(session_id, subject_id=resolved_subject)
+        saved = _upsert_external_feedback(
+            db, session_id=session_id, subject_id=resolved_subject, section_id=section_id,
+            url=url, resource_type=resource_type, feedback=feedback,
+        )
+        return _product_response({"feedback": saved}, session_id=session_id, subject_id=resolved_subject, source="user_input")
+    finally:
+        db.close()
 
 
 def _section_path_context(session_id: str, section_id: str) -> dict[str, Any]:
@@ -5313,13 +5538,17 @@ def _section_path_context(session_id: str, section_id: str) -> dict[str, Any]:
 @router.post("/sections/{section_id}/resources/generate")
 def generate_section_resource(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Generate one small section resource and archive it in the existing library."""
+    from app.services.section_generated_resources import SectionGeneratedResourcesService
+
     session_id = _payload_session_id(payload)
+    subject_id = _payload_subject_id(payload)
+    if subject_id:
+        _require_matching_subject(session_id, subject_id)
     resource_type = str(payload.get("resourceType") or "").strip()
     context = _section_path_context(session_id, section_id)
     section_title = str(payload.get("sectionTitle") or context.get("section_title") or "").strip()
     if not section_title:
         return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
-    from app.services.section_generated_resources import SectionGeneratedResourcesService
     service = SectionGeneratedResourcesService()
     try:
         db = SessionLocal()
@@ -5340,7 +5569,10 @@ def generate_section_resource(section_id: str, payload: dict[str, Any]) -> dict[
             knowledge_points=payload.get("knowledgePoints") if isinstance(payload.get("knowledgePoints"), list) else context.get("knowledge_points", []),
             resource_type=resource_type,
             profile=_profile_v2(session_id),
+            feedback=str(payload.get("feedback") or "").strip(),
         )
+        if existing is not None:
+            resource["id"] = existing.id
         saved = service.persist(db, session_id, resource)
         return _product_response({"resource": service.serialize(saved), "reused": False}, session_id=session_id, source="agent")
     except ValueError:
@@ -5349,18 +5581,106 @@ def generate_section_resource(section_id: str, payload: dict[str, Any]) -> dict[
         db.close()
 
 
+def _generated_feedback(
+    db: Any, session_id: str, subject_id: str, section_id: str, resource_type: str,
+) -> dict[str, Any] | None:
+    event_id = f"generated:{section_id}:{resource_type}"
+    events = db.query(LearningEventModel).filter(
+        LearningEventModel.session_id == session_id,
+        LearningEventModel.event_type == "generated_resource_feedback",
+        LearningEventModel.resource_id == event_id,
+    ).order_by(LearningEventModel.id.desc()).all()
+    for event in events:
+        metadata = event.metadata_ if isinstance(event.metadata_, dict) else {}
+        if str(metadata.get("subject_id") or "") == subject_id:
+            return dict(metadata)
+    return None
+
+
+def _upsert_generated_feedback(
+    db: Any, session_id: str, subject_id: str, section_id: str, resource_type: str,
+    feedback: str, rating: int = 0, comment: str = "",
+) -> dict[str, Any]:
+    event_id = f"generated:{section_id}:{resource_type}"
+    metadata = {
+        "subject_id": subject_id,
+        "section_id": section_id,
+        "resource_type": resource_type,
+        "feedback": feedback,
+        "rating": max(0, min(int(rating or 0), 5)),
+        "comment": str(comment or "").strip()[:500],
+    }
+    event = next((row for row in db.query(LearningEventModel).filter(
+        LearningEventModel.session_id == session_id,
+        LearningEventModel.event_type == "generated_resource_feedback",
+        LearningEventModel.resource_id == event_id,
+    ).order_by(LearningEventModel.id.desc()).all() if str((row.metadata_ or {}).get("subject_id") or "") == subject_id), None)
+    if event:
+        event.metadata_ = metadata
+    else:
+        db.add(LearningEventModel(
+            session_id=session_id,
+            event_type="generated_resource_feedback",
+            resource_id=event_id,
+            metadata_=metadata,
+        ))
+    db.commit()
+    return metadata
+
+
+@router.post("/sections/{section_id}/generated-resources/{resource_type}/feedback")
+def feedback_on_generated_section_resource(section_id: str, resource_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Upsert feedback in the session + subject + section + resource scope."""
+    session_id = _payload_session_id(payload)
+    feedback = str(payload.get("feedback") or "").strip()
+    allowed_feedback = {"helpful", "not_relevant", "too_hard", "too_easy", "other"}
+    from app.services.section_generated_resources import RESOURCE_DEFINITIONS, SectionGeneratedResourcesService
+
+    if resource_type not in RESOURCE_DEFINITIONS or feedback not in allowed_feedback:
+        raise HTTPException(status_code=400, detail="invalid generated resource feedback")
+    db = SessionLocal()
+    try:
+        resource = SectionGeneratedResourcesService().existing(db, session_id, section_id, resource_type)
+        if resource is None:
+            raise HTTPException(status_code=404, detail="generated resource not found")
+        session = db.get(SessionModel, session_id)
+        subject_id = str(payload.get("subjectId") or (session.subject_id if session else "") or "")
+        if subject_id:
+            _require_matching_subject(session_id, subject_id)
+        metadata = _upsert_generated_feedback(
+            db, session_id, subject_id, section_id, resource_type, feedback,
+            int(payload.get("rating") or 0), str(payload.get("comment") or ""),
+        )
+        return _product_response({"feedback": metadata}, session_id=session_id, subject_id=subject_id, source="user_input")
+    finally:
+        db.close()
+
+
 @router.get("/sections/{section_id}/generated-resources")
-def get_generated_section_resources(section_id: str, sessionId: str = "") -> dict[str, Any]:
+def get_generated_section_resources(section_id: str, sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
     """Read only resources generated for the current section."""
     session_id = _require_session_id(sessionId)
     from app.services.section_generated_resources import SectionGeneratedResourcesService
+    from app.services.structured_multimodal_resources import STRUCTURED_RESOURCE_DEFINITIONS, normalized_resource_title
     try:
         db = SessionLocal()
+        session = db.get(SessionModel, session_id)
+        subject_id = str(subjectId or (session.subject_id if session else "") or "")
+        if subject_id:
+            _require_matching_subject(session_id, subject_id)
         rows = db.query(ResourceModel).filter(
             ResourceModel.session_id == session_id,
             ResourceModel.related_section_id == section_id,
         ).order_by(ResourceModel.updated_at.desc()).all()
-        resources = [SectionGeneratedResourcesService.serialize(row) for row in rows if "section_generated" in (row.tags or [])]
+        resources = []
+        for row in rows:
+            if "section_generated" not in (row.tags or []):
+                continue
+            item = SectionGeneratedResourcesService.serialize(row)
+            if item["resourceType"] in STRUCTURED_RESOURCE_DEFINITIONS:
+                item["title"] = normalized_resource_title(row.title, item["resourceType"], row.knowledge_points)
+            item["feedback"] = _generated_feedback(db, session_id, subject_id, section_id, item["resourceType"])
+            resources.append(item)
         return _product_response({"resources": resources}, session_id=session_id, source="db")
     finally:
         db.close()
@@ -5385,6 +5705,9 @@ def _chapter_path_context(session_id: str, chapter_id: str) -> dict[str, Any]:
 def generate_chapter_mindmap(chapter_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Generate one local Mermaid mind map for a chapter and archive it."""
     session_id = _payload_session_id(payload)
+    subject_id = _payload_subject_id(payload)
+    if subject_id:
+        _require_matching_subject(session_id, subject_id)
     context = _chapter_path_context(session_id, chapter_id)
     chapter_title = str(payload.get("chapterTitle") or context.get("chapter_title") or "").strip()
     if not chapter_title:
@@ -5398,6 +5721,7 @@ def generate_chapter_mindmap(chapter_id: str, payload: dict[str, Any]) -> dict[s
             stage_id=str(payload.get("stageId") or context.get("stage_id") or ""),
             chapter_id=chapter_id, chapter_title=chapter_title,
             sections=payload.get("sections") if isinstance(payload.get("sections"), list) else context.get("sections", []),
+            session_id=session_id,
         )
         saved = service.persist(db, session_id, resource)
         return _product_response({"mindmap": service.serialize(saved), "reused": False}, session_id=session_id, source="agent")
@@ -5425,6 +5749,9 @@ def get_chapter_mindmap(chapter_id: str, sessionId: str = "") -> dict[str, Any]:
 def generate_section_mindmap(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Generate a mindmap scoped to a single section's knowledge points."""
     session_id = _payload_session_id(payload)
+    subject_id = _payload_subject_id(payload)
+    if subject_id:
+        _require_matching_subject(session_id, subject_id)
     section_title = str(payload.get("sectionTitle") or "").strip()
     knowledge_points = payload.get("knowledgePoints") if isinstance(payload.get("knowledgePoints"), list) else []
     if not section_title:
@@ -5439,8 +5766,8 @@ def generate_section_mindmap(section_id: str, payload: dict[str, Any]) -> dict[s
             chapter_id=section_id,
             chapter_title=section_title,
             sections=[{"title": section_title, "knowledgePoints": knowledge_points}],
+            session_id=session_id,
         )
-        resource["id"] = f"section_{section_id}_mindmap"
         resource["title"] = f"{section_title} · 小节思维导图"
         saved = service.persist(db, session_id, resource)
         return _product_response({"mindmap": service.serialize(saved), "reused": False}, session_id=session_id, source="agent")
@@ -5456,7 +5783,7 @@ def get_section_mindmap(section_id: str, sessionId: str = "") -> dict[str, Any]:
     from app.services.chapter_mindmap_resources import ChapterMindmapResourceService
     try:
         db = SessionLocal()
-        resource = ChapterMindmapResourceService().existing(db, session_id, f"section_{section_id}_mindmap")
+        resource = ChapterMindmapResourceService().existing(db, session_id, section_id)
         return _product_response({"mindmap": ChapterMindmapResourceService.serialize(resource) if resource else None}, session_id=session_id, source="db")
     finally:
         db.close()

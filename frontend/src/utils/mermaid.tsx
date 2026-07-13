@@ -5,7 +5,7 @@ import mermaid from 'mermaid';
 mermaid.initialize({
   startOnLoad: false,
   theme: 'default',
-  securityLevel: 'loose',
+  securityLevel: 'strict',
   suppressErrorRendering: true,
   fontFamily: 'var(--font-sans)',
 });

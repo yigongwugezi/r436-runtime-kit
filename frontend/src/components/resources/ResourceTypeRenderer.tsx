@@ -235,12 +235,7 @@ function MindmapRenderer({ resource }: Props) {
       <div className="p-4 bg-white rounded-xl border border-gray-100 overflow-auto" style={{ minHeight: 200 }}>
         <div ref={containerRef} className="flex items-center justify-center" />
         {svg && <div dangerouslySetInnerHTML={{ __html: svg }} className="flex items-center justify-center [&>svg]:w-full [&>svg]:h-auto [&>svg]:min-w-[600px]" />}
-        {error && (
-          <details className="mt-3">
-            <summary className="text-[10px] text-gray-400 cursor-pointer">渲染失败，查看源码</summary>
-            <pre className="text-xs text-gray-500 font-mono whitespace-pre-wrap mt-1 p-2 bg-gray-50 rounded">{mermaidCode}</pre>
-          </details>
-        )}
+        {error && <div className="mt-3 rounded-lg bg-surface-50 p-3 text-xs text-surface-600"><p>图形暂不能渲染，以下是本节的结构化说明。</p><div className="mt-2"><Markdown content={resource.content || '暂无可用的结构化说明。'} /></div></div>}
       </div>
     </div>
   );

@@ -1,7 +1,8 @@
 from app.agents.profile_agent import ProfileAgent
 from app.routers.product import update_profile
+from app.services.conversation_state import ConversationState, ConversationStore
 from app.services.profile_extractor import extract_profile_facts
-from app.services.profile_v2 import assess_interest, build_profile_v2, update_context, update_self_report
+from app.services.profile_v2 import apply_conversation_sync, assess_interest, build_profile_v2, preview_conversation_sync, update_context, update_self_report
 from fastapi import HTTPException
 
 
@@ -24,7 +25,7 @@ def main() -> None:
 
     language = build_profile_v2(facts={"target_course": "英语", "learning_goal": "考试", "time_budget": "每天30分钟"}, course={"course_name": "英语"})
     assert language["subject_context"]["subject_category"] == "language"
-    assert set(by_key(language["subject_dimensions"])) == {"vocabulary", "grammar", "reading", "writing"}
+    assert set(by_key(language["subject_dimensions"])) == {"vocabulary", "grammar", "reading", "listening", "writing", "speaking"}
 
     legacy = build_profile_v2(dimensions=[{"key": "coding_ability", "value": "待补充", "score": 50, "source": "rule_based_fallback", "evidence": ""}], course={"course_name": "高等数学"})
     assert all(item["score"] is None for item in legacy["subject_dimensions"])
@@ -54,6 +55,61 @@ def main() -> None:
     assert set(explicit_profile["subject_context"]["content_preferences"]) == {"example_first", "practice_after_explanation"}
     assert all(item["score"] is None for item in explicit_profile["subject_dimensions"])
     assert explicit_profile["profile_completeness"] < 0.83
+
+    weekly_facts = extract_profile_facts("\u4e00\u5468\u5185\u590d\u4e60\u6570\u636e\u7ed3\u6784\uff0c\u6bcf\u5929\u53ef\u4ee5\u5b66\u4e60\u4e00\u5c0f\u65f6\u3002C\u8bed\u8a00\u57fa\u7840\u8fd8\u53ef\u4ee5\uff0c\u94fe\u8868\u548c\u6811\u6bd4\u8f83\u8584\u5f31\uff0c\u559c\u6b22\u5148\u770b\u4f8b\u9898\uff0c\u518d\u5b8c\u6210\u7ec3\u4e60\u3002").facts
+    weekly = build_profile_v2(facts=weekly_facts, course={"course_name": "\u6570\u636e\u7ed3\u6784"})
+    weekly_context = weekly["subject_context"]
+    assert weekly_context["deadline"] == "\u4e00\u5468" and weekly_context["daily_minutes"] == 60
+    assert weekly_context["content_preferences"] == ["example_first", "practice_after_explanation"]
+    assert {item["label"] for item in weekly["knowledge_mastery"] if item["status"] == "weak"} == {"\u94fe\u8868", "\u6811"}
+    assert by_key(weekly["general_states"])["interest"]["self_report"] is None
+    assert weekly["profile_completeness"] == 0.67
+
+    existing = {"profile_version": 2, "subject_context": {"daily_minutes": 50, "deadline": "\u5f85\u8865\u5145", "background": {"value": ""}}, "profile_completeness": 0.86}
+    merged = build_profile_v2(facts=weekly_facts, course={"course_name": "\u6570\u636e\u7ed3\u6784"}, existing=existing)
+    assert merged["subject_context"]["daily_minutes"] == 60 and merged["subject_context"]["deadline"] == "\u4e00\u5468"
+    assert merged["profile_completeness"] == 0.67
+
+    corrupted = build_profile_v2(
+        facts={"target_course": "\u6570\u636e\u7ed3\u6784", "learning_goal": "\u590d\u4e60", "daily_minutes": "60", "deadline": "\u4e00\u5468", "background": "\u5927\u4e8c\u5b66\u751f", "knowledge_base": "\u6bcf\u5929\uff1a\u8fd8\u53ef\u4ee5\uff1b\u8bed\u8a00\u57fa\u7840\uff1a\u8fd8\u53ef\u4ee5", "content_preferences": "example_first,practice_after_explanation"},
+        course={"course_name": "\u6570\u636e\u7ed3\u6784"},
+    )
+    assert corrupted["subject_context"]["prior_experience"] == []
+    assert corrupted["profile_completeness"] == 0.83
+
+    extracted_state = ConversationState(session_id="profile_v2_extraction")
+    state_text = "我是大二学生，想在一周内复习数据结构，每天可以学习一小时。我的C语言基础还可以，但链表和树比较薄弱。我喜欢先看例题，再完成练习。"
+    ConversationStore().extract_facts(extracted_state, state_text)
+    assert extracted_state.facts["knowledge_base"] == "C\u8bed\u8a00\u57fa\u7840\uff1a\u8fd8\u53ef\u4ee5"
+    assert extracted_state.facts["target_course"] == "\u6570\u636e\u7ed3\u6784"
+    assert extracted_state.facts["weak_points"] == "\u94fe\u8868\u3001\u6811\u8f83\u8584\u5f31"
+    assert extracted_state.facts["daily_minutes"] == "60"
+
+    readiness = ConversationStore().readiness(ConversationState(
+        session_id="profile_v2_readiness",
+        facts={"target_course": "\u6570\u636e\u7ed3\u6784", "daily_minutes": "60", "deadline": "\u4e00\u5468"},
+    ))
+    assert readiness["filledCount"] == 1
+
+    sync_text = "我是大二学生，想在一周内复习数据结构，每天可以学习一小时。我的C语言基础还可以，但链表和树比较薄弱。我喜欢先看例题，再完成练习。"
+    sync_profile = build_profile_v2(course={"course_name": "数据结构", "course_id": "subject_ds"}, session_id="sync_a")
+    preview = preview_conversation_sync(sync_profile, [{"role": "assistant", "content": "你好"}, {"role": "user", "content": sync_text}], session_id="sync_a", subject_id="subject_ds")
+    values = {item["field"]: item.get("value") for item in preview["added"] + preview["updates"] if item["field"] != "knowledge_mastery"}
+    assert values["daily_minutes"] == 60 and values["background"] == "大二学生"
+    assert {"链表", "树"}.issubset({item["value"] for item in preview["added"] if item["field"] == "knowledge_mastery"})
+    assert values["content_preferences"] == ["example_first", "practice_after_explanation"]
+    applied = apply_conversation_sync(sync_profile, preview)
+    assert applied["subject_context"]["daily_minutes"] == 60
+    assert not preview_conversation_sync(applied, [{"role": "user", "content": sync_text}], session_id="sync_a", subject_id="subject_ds")["has_changes"]
+    assert "raw_text" not in str(applied)
+    manual = update_context(applied, {"daily_minutes": 90})
+    conflict = preview_conversation_sync(manual, [{"role": "user", "content": sync_text}], session_id="sync_a", subject_id="subject_ds")
+    assert conflict["conflicts"] and manual["subject_context"]["daily_minutes"] == 90
+
+    physics = build_profile_v2(facts={"target_course": "大学物理"}, course={"course_name": "大学物理"})
+    generic = build_profile_v2(facts={"target_course": "艺术史"}, course={"course_name": "艺术史"})
+    assert len(physics["subject_dimensions"]) == len(generic["subject_dimensions"]) == 6
+    assert "debugging" not in by_key(physics["subject_dimensions"])
     print("profile v2: PASS")
 
 

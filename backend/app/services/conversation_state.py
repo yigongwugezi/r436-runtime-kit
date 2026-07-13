@@ -867,15 +867,15 @@ class ConversationStore:
             set_fact("preference", "、".join(dict.fromkeys(formats)) or text)
 
         extracted_profile_facts = extract_profile_facts(text)
+        # Explicit facts are more precise than the broad rules above for this message.
         for key, value in extracted_profile_facts.facts.items():
-            if key not in state.facts or not state.facts[key]:
-                # Map daily_minutes → time_budget so PlannerAgent gets consistent data
-                if key == "daily_minutes":
-                    existing = str(state.facts.get("time_budget", "")).strip()
-                    if not existing or existing in ("未提及", "待补充", "未知", "", "无"):
-                        set_fact("time_budget", f"每天{int(value) // 60}小时" if int(value) >= 60 else f"每天{value}分钟")
-                else:
-                    set_fact(key, value)
+            # Map daily_minutes → time_budget so PlannerAgent gets consistent data
+            if key == "daily_minutes":
+                existing = str(state.facts.get("time_budget", "")).strip()
+                if not existing or existing in ("未提及", "待补充", "未知", "", "无"):
+                    set_fact("time_budget", f"每天{int(value) // 60}小时" if int(value) >= 60 else f"每天{value}分钟")
+            else:
+                set_fact(key, value, force=True)
         for key, values in extracted_profile_facts.supplemental.items():
             for value in values:
                 add_supplemental(key, value)
@@ -901,13 +901,15 @@ class ConversationStore:
             if not cleaned:
                 return
             old_value = state.facts.get(key, "")
-            cleaned = self._merge_time_budget(old_value, cleaned)
+            if not force:
+                cleaned = self._merge_time_budget(old_value, cleaned)
         elif key == "weak_points":
             cleaned = self._clean_fact_value(value)
             if not cleaned:
                 return
             old_value = state.facts.get(key, "")
-            cleaned = self._merge_list_fact(old_value, cleaned)
+            if not force:
+                cleaned = self._merge_list_fact(old_value, cleaned)
         else:
             cleaned = self._clean_fact_value(value)
             if not cleaned:
@@ -1055,7 +1057,12 @@ class ConversationStore:
         return "deep" if has_detail else "moderate"
 
     def readiness(self, state: ConversationState) -> dict[str, Any]:
-        filled = {k for k, v in state.facts.items() if v and str(v).strip()}
+        # Profile V2 may add normalized facts such as daily_minutes.  Readiness
+        # remains a score for the legacy conversation contract only.
+        filled = {
+            key for key, value in state.facts.items()
+            if key in PROFILE_FIELD_DEFS and value and str(value).strip()
+        }
         missing_core = [key for key in CORE_FIELDS if key not in filled]
 
         # Depth gate: a field counts as "deep-filled" only when its value
@@ -1211,7 +1218,14 @@ class ConversationStore:
         return next((normalized for raw, normalized in MAJOR_ALIASES if raw in value or normalized in value), "")
 
     def _extract_knowledge_levels(self, text: str) -> tuple[list[str], list[str]]:
-        strengths: list[str] = []
+        strengths = [
+            f"{re.sub(r'\s+', '', match.group(1))}：{self._level_label(match.group(0))}"
+            for match in re.finditer(
+                r"((?:C\s*(?:\+\+)?\s*语言|Python|Java|JavaScript)\s*基础)\s*(?:还可以|不错|较好|熟悉)",
+                text,
+                flags=re.IGNORECASE,
+            )
+        ]
         weaknesses: list[str] = []
         segments = [segment.strip() for segment in re.split(r"[，。,.!?！？；;、]", text) if segment.strip()]
         for segment in segments:
@@ -1227,11 +1241,13 @@ class ConversationStore:
             if front_weak_match:
                 weaknesses.append(f"{front_weak_match.group(1)}：薄弱")
                 continue
+            if re.search(r"(?:C\s*(?:\+\+)?\s*语言|Python|Java|JavaScript)\s*基础\s*(?:还可以|不错|较好|熟悉)", segment, flags=re.IGNORECASE):
+                continue
             strength_match = re.search(r"([A-Za-z+#一-鿿]{2,20}?)(?:还可以|可以|较好|不错|熟悉|会)", segment)
             if strength_match:
                 topic = strength_match.group(1).rstrip("还也都很较比较")
                 strengths.append(f"{topic}：{self._level_label(segment)}")
-        return strengths, weaknesses
+        return list(dict.fromkeys(strengths)), list(dict.fromkeys(weaknesses))
 
     def _level_label(self, segment: str) -> str:
         if any(word in segment for word in ["较好", "不错", "熟悉"]):

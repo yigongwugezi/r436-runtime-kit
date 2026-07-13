@@ -25,6 +25,8 @@ def main() -> None:
         "生成例题详解": ["worked_example"],
         "生成易错点清单": ["mistake_checklist"],
         "生成复习笔记": ["review_notes"],
+        "生成知识结构图": ["knowledge_map"],
+        "生成执行过程图": ["execution_trace"],
         "生成本节资源": list(chat_router._SECTION_RESOURCE_REQUESTS),
     }
     for message, resource_types in expected.items():

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from hashlib import sha1
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -9,6 +10,8 @@ from sqlalchemy.orm import Session
 from app.db.models import ResourceModel
 from app.db.repository import upsert_resource
 from app.services.multimodal_provider import MindMapTool
+from app.services.resource_quality import ResourceQualityReviewer
+from app.services.structured_multimodal_resources import sanitize_mermaid
 
 
 class ChapterMindmapResourceService:
@@ -16,11 +19,15 @@ class ChapterMindmapResourceService:
         self._tool = tool or MindMapTool()
 
     @staticmethod
-    def resource_id(chapter_id: str) -> str:
-        return f"chapter_{chapter_id}_mindmap"
+    def resource_id(chapter_id: str, session_id: str = "") -> str:
+        base = f"chapter_{chapter_id}_mindmap"
+        return f"{base}_{sha1(session_id.encode()).hexdigest()[:10]}" if session_id else base
 
     def existing(self, db: Session, session_id: str, chapter_id: str) -> ResourceModel | None:
-        return db.get(ResourceModel, self.resource_id(chapter_id))
+        return db.query(ResourceModel).filter(
+            ResourceModel.session_id == session_id,
+            ResourceModel.id.in_((self.resource_id(chapter_id, session_id), self.resource_id(chapter_id))),
+        ).order_by(ResourceModel.updated_at.desc()).first()
 
     def generate(
         self,
@@ -30,6 +37,7 @@ class ChapterMindmapResourceService:
         chapter_id: str,
         chapter_title: str,
         sections: list[dict[str, Any]],
+        session_id: str = "",
     ) -> dict[str, Any]:
         children = [
             {"title": str(section.get("title") or ""), "children": self._points(section.get("knowledge_points") or section.get("knowledgePoints") or [])}
@@ -37,12 +45,16 @@ class ChapterMindmapResourceService:
         ]
         result = self._tool.run({"topic": chapter_title, "learning_path": {"stages": [{"title": chapter_title, "tasks": children}]}})
         mermaid = str((result.get("result") or {}).get("mermaid") or "").strip() if isinstance(result, dict) else ""
+        used_fallback = not bool(mermaid)
+        mermaid = sanitize_mermaid(mermaid)
         if not self._valid_mermaid(mermaid):
             mermaid = self._fallback_mermaid(chapter_title, children)
+            used_fallback = True
+        mermaid = sanitize_mermaid(mermaid)
         if not self._valid_mermaid(mermaid):
             raise ValueError("mindmap generation failed")
-        return {
-            "id": self.resource_id(chapter_id),
+        resource = {
+            "id": self.resource_id(chapter_id, session_id),
             "type": "mindmap",
             "title": f"{chapter_title} · 章节思维导图",
             "description": "基于当前章节小节和知识点生成的 Mermaid 思维导图",
@@ -58,7 +70,17 @@ class ChapterMindmapResourceService:
             "related_chapter_id": chapter_id,
             "related_section_id": "",
             "task_id": "chapter_mindmap",
+            "personalization": {"learner_level": "general"},
+            "generation_source": "local_fallback" if used_fallback else str(result.get("provider") or "multimodal_tool"),
+            "generation_mode": "fallback" if used_fallback else "provider",
+            "used_fallback": used_fallback,
+            "used_llm": not used_fallback,
         }
+        return ResourceQualityReviewer().review(
+            resource,
+            section_title=chapter_title,
+            knowledge_points=resource["knowledge_points"],
+        )
 
     @staticmethod
     def persist(db: Session, session_id: str, resource: dict[str, Any]) -> ResourceModel:

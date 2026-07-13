@@ -315,6 +315,10 @@ def _extract_learning_levels(text: str, result: ExtractedProfileFacts) -> None:
         elif any(word in window for word in GOOD_WORDS):
             strengths.append(f"{course}\uff1a{zh('8fd8 53ef 4ee5')}")
 
+    language_base = re.search(r"((?:C\s*(?:\+\+)?\s*语言|Python|Java|JavaScript)\s*基础)\s*(还可以|不错|较好|熟悉)", text, re.IGNORECASE)
+    if language_base:
+        strengths.append(f"{re.sub(r'\s+', '', language_base.group(1))}：还可以")
+
     if strengths:
         _put_fact(result, "knowledge_base", "\uff1b".join(strengths))
     if weaknesses:
@@ -325,7 +329,9 @@ def _extract_learning_levels(text: str, result: ExtractedProfileFacts) -> None:
         text,
     )
     if weak_fragment and "weak_points" not in result.facts:
-        _put_fact(result, "weak_points", f"{weak_fragment.group(1)}{zh('8f83 8584 5f31')}")
+        points = [re.sub(r"(?:比较|较)$", "", re.sub(r"^(?:但|我|的)", "", point)).strip() for point in re.split(r"[、，,和与及]", weak_fragment.group(1))]
+        points = [point for point in points if 0 < len(point) <= 12]
+        _put_fact(result, "weak_points", "、".join(points) + zh("8f83 8584 5f31"))
 
 
 def _course_window(text: str, course: str) -> str:

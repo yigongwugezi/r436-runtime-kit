@@ -33,4 +33,9 @@ export const RESOURCE_TYPE_LABELS: Record<string, string> = {
   worked_example: '例题详解',
   mistake_checklist: '易错点清单',
   review_notes: '复习笔记',
+  knowledge_map: '知识结构图',
+  process_flow: '学习流程图',
+  concept_diagram: '概念对比图',
+  execution_trace: '执行过程图',
+  code_trace: '代码运行轨迹',
 };
