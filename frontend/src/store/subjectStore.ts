@@ -175,8 +175,14 @@ export const useSubjectStore = create<SubjectStore>((set, get) => ({
       const learner = getCurrentLearner();
       const learnerId = learner?.id || 'anonymous';
       try {
-        localStorage.removeItem(runtimeStorageKeys.chatSession(`${learnerId}_${id}`).primary);
-        localStorage.removeItem(runtimeStorageKeys.chatSessions(`${learnerId}_${id}`).primary);
+        const sessionKey = runtimeStorageKeys.chatSession(`${learnerId}_${id}`);
+        const sessionsKey = runtimeStorageKeys.chatSessions(`${learnerId}_${id}`);
+        localStorage.removeItem(sessionKey.primary);
+        localStorage.removeItem(sessionsKey.primary);
+        // Also clean up legacy keys — old data under "eduagent_*" prefix
+        for (const legacy of [...(sessionKey.legacy || []), ...(sessionsKey.legacy || [])]) {
+          localStorage.removeItem(legacy);
+        }
       } catch { /* ignore storage errors */ }
 
       const active = get().activeSubject;

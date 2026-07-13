@@ -125,11 +125,14 @@ def _env(*names: str, default: str = "") -> str:
     return default
 
 
-def _json_post(url: str, payload: dict[str, Any], api_key: str, timeout: int = 60) -> dict[str, Any]:
+def _json_post(url: str, payload: dict[str, Any], api_key: str, timeout: int = 60, extra_headers: dict[str, str] | None = None) -> dict[str, Any]:
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    if extra_headers:
+        headers.update(extra_headers)
     response = httpx.post(
         url,
         json=payload,
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        headers=headers,
         timeout=timeout,
     )
     if response.status_code >= 400:
@@ -681,6 +684,10 @@ class MindMapTool:
     name = "MindMapTool"
     provider = "deeptutor_mindmap"
 
+    @staticmethod
+    def is_configured() -> bool:
+        return True  # Always available via data-driven fallback
+
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         logger = logging.getLogger(__name__)
         topic = _text(context.get("topic") or context.get("course_name") or context.get("subject_name"))
@@ -785,6 +792,10 @@ class QwenVisionProvider:
     name = "QwenVisionProvider"
     provider = "qwen_vl"
 
+    @staticmethod
+    def is_configured() -> bool:
+        return bool(_env("DASHSCOPE_API_KEY", "QWEN_API_KEY"))
+
     def __init__(self, post_json: Any | None = None) -> None:
         self.post_json = post_json or _json_post
 
@@ -855,6 +866,13 @@ class SparkVisionProvider:
     provider = "spark_vision"
 
     SPARK_VISION_URL = "wss://spark-api.cn-huabei-1.xf-yun.com/v2.1/image"
+
+    @staticmethod
+    def is_configured() -> bool:
+        from app.config import settings
+        app_id = settings.spark_vision_app_id or settings.spark_app_id
+        api_key = settings.spark_vision_api_key or settings.spark_api_key
+        return bool(app_id) and bool(api_key)
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         from app.config import settings
@@ -936,6 +954,12 @@ class QwenImageProvider:
     name = "QwenImageProvider"
     provider = "qwen_image"
 
+    @staticmethod
+    def is_configured() -> bool:
+        api_key = _env("DASHSCOPE_API_KEY", "QWEN_API_KEY")
+        model = _env("QWEN_IMAGE_MODEL", default="qwen-image")
+        return bool(api_key) and bool(model)
+
     def __init__(self, post_json: Any | None = None) -> None:
         self.post_json = post_json or _json_post
 
@@ -977,19 +1001,63 @@ class WanVideoProvider:
     name = "WanVideoProvider"
     provider = "wan_video"
 
+    @staticmethod
+    def is_configured() -> bool:
+        api_key = _env("DASHSCOPE_API_KEY", "WAN_API_KEY", "QWEN_API_KEY")
+        model = _env("WAN_VIDEO_MODEL", default="wanx2.1-t2v-turbo")
+        return bool(api_key) and bool(model)
+
     def __init__(self, post_json: Any | None = None) -> None:
         self.post_json = post_json or _json_post
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
+        """Submit a video generation task to DashScope Wan (async).
+
+        Returns immediately with a task_id and status='submitted' so the
+        caller can poll for completion via WanVideoProvider.poll_task().
+        """
         script = _micro_lesson_script(context)
         api_key = _env("DASHSCOPE_API_KEY", "WAN_API_KEY", "QWEN_API_KEY")
         model = _env("WAN_VIDEO_MODEL", default="wanx2.1-t2v-turbo")
-        endpoint = _env("WAN_VIDEO_ENDPOINT", default="https://dashscope.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis")
+        endpoint = _env("WAN_VIDEO_ENDPOINT") or _env("WAN_VIDEO_BASE_URL", default="https://dashscope.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis")
         if not api_key or not model:
             return _response(status="script_ready_provider_not_configured", provider=self.provider, result=script, warnings=["Wan video provider is not configured."], trace={"required_env": ["QWEN_API_KEY/DASHSCOPE_API_KEY/WAN_API_KEY", "WAN_VIDEO_MODEL"]})
         try:
-            body = self.post_json(endpoint, {"model": model, "prompt": script["script"]}, api_key, int(os.getenv("WAN_TIMEOUT", "60")))
-            result = {**script, "task_id": _text(body.get("task_id") or body.get("output", {}).get("task_id")), "task_status": _text(body.get("status") or body.get("output", {}).get("task_status") or "submitted"), "video_url": _text(body.get("video_url") or body.get("output", {}).get("video_url")), "remote_result": body}
-            return _response(status="success", provider=self.provider, result=result, trace={"model": model, "endpoint": endpoint})
-        except Exception as exc:
+            body = self.post_json(endpoint, {
+                "model": model,
+                "input": {"prompt": script["script"]},
+                "parameters": {"duration": 5, "size": "1280*720"},
+            }, api_key, int(os.getenv("WAN_TIMEOUT", "30")), extra_headers={"X-DashScope-Async": "enable"})
+            task_id = _text(body.get("output", {}).get("task_id"))
+            if not task_id:
+                return _response(status="failed", provider=self.provider, result=script, warnings=["DashScope did not return a task_id."], trace={"model": model, "endpoint": endpoint, "response_keys": list(body.keys())})
+            req_id = _text(body.get("request_id"))
+            return _response(status="submitted", provider=self.provider, result={**script, "task_id": task_id, "task_status": "submitted", "request_id": req_id}, trace={"model": model, "endpoint": endpoint})
+        except (HttpClientError, httpx.HTTPError, TimeoutError, OSError, json.JSONDecodeError) as exc:
             return _response(status="failed", provider=self.provider, result=script, warnings=[str(exc)], trace={"model": model, "endpoint": endpoint})
+
+    @staticmethod
+    def poll_task(task_id: str) -> dict[str, Any]:
+        """Poll a DashScope async video generation task.
+
+        Returns:
+            {"status": "success", "video_url": "..."}
+            {"status": "pending", "task_status": "RUNNING"}
+            {"status": "failed", "message": "..."}
+        """
+        api_key = _env("DASHSCOPE_API_KEY", "WAN_API_KEY", "QWEN_API_KEY")
+        endpoint = f"https://dashscope.aliyuncs.com/api/v1/tasks/{task_id}"
+        try:
+            body = _json_post(endpoint, {}, api_key, timeout=15)
+            output = body.get("output", {})
+            task_status = _text(output.get("task_status"))
+            if task_status == "SUCCEEDED":
+                video_url = _text(output.get("video_url") or (output.get("results") or {}).get("video_url"))
+                if video_url:
+                    return {"status": "success", "video_url": video_url}
+                return {"status": "failed", "message": "task SUCCEEDED but no video_url returned"}
+            if task_status in ("FAILED", "CANCELED", "TERMINATED"):
+                return {"status": "failed", "message": _text(output.get("message") or task_status)}
+            return {"status": "pending", "task_status": task_status or "UNKNOWN"}
+        except (HttpClientError, httpx.HTTPError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+            return {"status": "failed", "message": str(exc)}

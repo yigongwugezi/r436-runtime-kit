@@ -41,7 +41,13 @@ async def lifespan(app: FastAPI):
     learning_tracker.enable_db()
 
     # Push settings to os.environ for multimodal providers that read via os.getenv
-    for key in ("QWEN_API_KEY", "QWEN_BASE_URL", "QWEN_VL_MODEL", "QWEN_IMAGE_MODEL", "WAN_API_KEY", "WAN_VIDEO_MODEL"):
+    for key in (
+        "QWEN_API_KEY", "QWEN_BASE_URL", "QWEN_VL_MODEL", "QWEN_IMAGE_MODEL",
+        "WAN_API_KEY", "WAN_VIDEO_MODEL",
+        "SPARK_APP_ID", "SPARK_API_KEY", "SPARK_API_SECRET",
+        "SPARK_VISION_APP_ID", "SPARK_VISION_API_KEY", "SPARK_VISION_API_SECRET",
+        "DASHSCOPE_API_KEY",
+    ):
         val = getattr(settings, key.lower(), "") or ""
         if val and not os.environ.get(key):
             os.environ[key] = val

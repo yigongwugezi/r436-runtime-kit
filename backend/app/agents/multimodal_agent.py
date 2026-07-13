@@ -59,7 +59,7 @@ def _infer_task_type(context: dict[str, Any]) -> str:
 def _public_status(status: Any) -> tuple[str, str | None]:
     """Expose a small provider-agnostic status contract to the UI."""
     raw_status = _text(status) or "failed"
-    if raw_status in {"success", "partial_success", "needs_manual_review", "script_ready"}:
+    if raw_status in {"success", "partial_success", "needs_manual_review", "script_ready", "submitted"}:
         return "completed", None
     if raw_status in {"provider_not_configured", "script_ready_provider_not_configured"}:
         return "provider_not_configured", None

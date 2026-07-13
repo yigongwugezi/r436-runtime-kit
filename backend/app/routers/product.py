@@ -2882,6 +2882,31 @@ def generate_resource(payload: dict[str, Any], auth: AuthContext = Depends(rejec
     subject_id = str(payload.get("subjectId", "")).strip()
     _ensure_session_linked(session_id, subject_id=subject_id)
 
+    # ── Video: route to WanVideoProvider for real async generation ──
+    if resource_type == "video":
+        from app.services.multimodal_registry import default_registry
+        registry = default_registry()
+        _, tool = registry.select_tool("video_generation")
+        if tool is not None:
+            video_result = tool.run({
+                "user_message": f"为「{topic}」生成微课讲解视频",
+                "subject_name": topic,
+                "topic": topic,
+            })
+            vid = video_result.get("result", {})
+            resource = {
+                "id": f"vid_{session_id}_{hash(topic) % 10000:04d}",
+                "type": "video",
+                "title": f"{topic} - 教学视频",
+                "content": vid.get("script", ""),
+                "format": "video",
+                "difficulty": difficulty or "medium",
+                "source": "wan_video",
+                "task_id": vid.get("task_id", ""),
+                "task_status": video_result.get("status", ""),
+            }
+            return _product_response({"resource": resource}, session_id=session_id, source="agent")
+
     parts = [f"请为「{topic}」"]
     if resource_type:
         type_labels = {
@@ -2890,7 +2915,6 @@ def generate_resource(payload: dict[str, Any], auth: AuthContext = Depends(rejec
             "quiz": "生成一套练习题（含答案和解析）",
             "reading": "生成一份拓展阅读材料",
             "case_study": "生成一个实操案例（含代码示例）",
-            "video": "生成一份教学视频脚本/动画大纲",
             "ppt": "生成一份PPT大纲",
         }
         parts.append(type_labels.get(resource_type, f"生成{resource_type}类型的资源"))
@@ -4841,8 +4865,11 @@ mindmap
 def _public_tutor_video(result: dict[str, Any]) -> dict[str, Any]:
     raw_status = str(result.get("status") or "failed")
     script = str(result.get("script") or "").strip()
+    task_id = str(result.get("task_id") or "")
     if raw_status in {"success", "script_ready"}:
         status, message = "completed", "讲解视频脚本已准备好。"
+    elif raw_status == "submitted":
+        status, message = "submitted", "视频任务已提交，正在生成中…"
     elif raw_status in {"provider_not_configured", "script_ready_provider_not_configured"}:
         status = "provider_not_configured"
         message = "视频暂不能生成，但脚本已准备好。" if script else "讲解视频服务暂未配置，当前可以先查看或生成视频脚本。"
@@ -4850,8 +4877,9 @@ def _public_tutor_video(result: dict[str, Any]) -> dict[str, Any]:
         status, message = "generation_failed", "讲解视频生成失败，请稍后重试。"
     return {
         "status": status,
-        "provider": str(result.get("provider") or "spark_video"),
+        "provider": str(result.get("provider") or "wan_video"),
         "script": script,
+        "task_id": task_id,
         "userMessage": message,
         "metadata": {"raw_status": raw_status},
     }
@@ -4938,19 +4966,28 @@ def generate_all_section_resources(section_id: str, payload: dict[str, Any]) -> 
     except Exception as e:
         logger.warning("QuestionAgent failed: %s", e)
 
-    # ── Agent 5: Video via DeepTutor ──
+    # ── Agent 5: Video via Wan (async) ──
     try:
-        from app.services.deeptutor_client import generate_video_script
-        video_script = generate_video_script(f"{section_title}: {section_goal}")
-        if video_script and len(video_script) > 50:
-            import uuid as _uuid
-            results["resources"].append({
-                "resource_id": _uuid.uuid4().hex[:12],
-                "type": "video", "title": f"{section_title} - 教学视频脚本",
-                "content": video_script, "format": "text", "difficulty": "medium",
-                "source": "deeptutor", "quality_status": "passed",
+        from app.services.multimodal_registry import default_registry
+        registry = default_registry()
+        _, video_tool = registry.select_tool("micro_lesson_video")
+        if video_tool is not None:
+            video_result = video_tool.run({
+                "user_message": f"为小节「{section_title}」生成微课讲解视频",
+                "subject_name": section_title,
+                "topic": f"{section_title}: {section_goal}",
             })
-            results["agents_run"].append("video_generation")
+            if video_result.get("status") == "submitted":
+                vid = video_result.get("result", {})
+                import uuid as _uuid_v
+                results["resources"].append({
+                    "resource_id": _uuid_v.uuid4().hex[:12],
+                    "type": "video", "title": f"{section_title} - 教学视频",
+                    "content": vid.get("script", ""), "format": "text",
+                    "task_id": vid.get("task_id", ""), "task_status": "submitted",
+                    "difficulty": "medium", "source": "wan_video", "quality_status": "pending",
+                })
+                results["agents_run"].append("video_generation")
     except Exception as e:
         logger.warning("Video generation failed: %s", e)
 
@@ -5186,9 +5223,13 @@ def tutor_video(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         user_msg += f"。学生特殊要求：{requirements}"
 
     try:
-        from app.services.spark_provider import SparkVideoProvider
-        provider = SparkVideoProvider()
-        result = provider.run({
+        from app.services.multimodal_registry import default_registry
+        registry = default_registry()
+        _, tool = registry.select_tool("micro_lesson_video")
+        if tool is None:
+            return _product_response(None, session_id=session_id, status="error",
+                message="没有可用的视频生成服务，请检查多模态配置。", source="agent")
+        result = tool.run({
             "user_message": user_msg,
             "subject_name": section_title,
         })
@@ -5196,6 +5237,14 @@ def tutor_video(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     except Exception as e:
         logger.warning("Tutor video failed for section %s: %s", section_id, e)
         return _product_response(None, session_id=session_id, status="error", message=f"视频生成失败: {e}", source="agent")
+
+
+@router.get("/video/task/{task_id}")
+def poll_video_task(task_id: str) -> dict[str, Any]:
+    """轮询 Wan 视频生成任务状态。"""
+    from app.services.multimodal_provider import WanVideoProvider
+    result = WanVideoProvider.poll_task(task_id)
+    return {"status": "success", "data": result}
 
 
 @router.post("/sections/{section_id}/resources/recommendations")

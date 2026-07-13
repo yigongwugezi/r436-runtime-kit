@@ -548,7 +548,7 @@ class ConversationStore:
 
         known_facts = "\n".join(
             f"- {PROFILE_FIELD_DEFS[k]['label']}：{v}"
-            for k, v in state.facts.items() if v
+            for k, v in state.facts.items() if v and k in PROFILE_FIELD_DEFS
         ) or "- 暂无已记录信息"
 
         history_text = "\n".join(
@@ -869,7 +869,13 @@ class ConversationStore:
         extracted_profile_facts = extract_profile_facts(text)
         for key, value in extracted_profile_facts.facts.items():
             if key not in state.facts or not state.facts[key]:
-                set_fact(key, value)
+                # Map daily_minutes → time_budget so PlannerAgent gets consistent data
+                if key == "daily_minutes":
+                    existing = str(state.facts.get("time_budget", "")).strip()
+                    if not existing or existing in ("未提及", "待补充", "未知", "", "无"):
+                        set_fact("time_budget", f"每天{int(value) // 60}小时" if int(value) >= 60 else f"每天{value}分钟")
+                else:
+                    set_fact(key, value)
         for key, values in extracted_profile_facts.supplemental.items():
             for value in values:
                 add_supplemental(key, value)
@@ -1060,7 +1066,7 @@ class ConversationStore:
             if self._fact_depth(state.facts.get(k, "")) in ("moderate", "deep")
         }
         shallow_fields = [
-            {"key": k, "label": PROFILE_FIELD_DEFS[k]["label"], "value": state.facts[k]}
+            {"key": k, "label": PROFILE_FIELD_DEFS[k]["label"], "value": state.facts[k]} if k in PROFILE_FIELD_DEFS else {"key": k, "label": k, "value": state.facts[k]}
             for k in filled if k not in deep_filled
         ]
 

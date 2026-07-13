@@ -149,6 +149,11 @@ def generate_video(prompt: str) -> dict[str, Any]:
 class SparkImageProvider:
     """兼容 MultimodalAgent 的图片生成工具接口。"""
 
+    @staticmethod
+    def is_configured() -> bool:
+        from app.config import settings
+        return bool(settings.spark_app_id) and bool(settings.spark_api_key)
+
     def __init__(self) -> None:
         pass
 
@@ -163,6 +168,11 @@ class SparkImageProvider:
 
 class SparkVideoProvider:
     """兼容 MultimodalAgent 的视频生成工具接口。"""
+
+    @staticmethod
+    def is_configured() -> bool:
+        from app.config import settings
+        return bool(settings.spark_app_id) and bool(settings.spark_api_key)
 
     def __init__(self) -> None:
         pass

@@ -854,14 +854,12 @@ action："""
             "生成吧", "开始吧", "按这些信息生成",
         ]
         if any(p in compact for p in _GEN_PLAN):
-            # If course is known but no mode selected → show mode picker first
+            # If course is known but no mode selected → route to planner anyway.
+            # The orchestrator will show the mode picker directly, not via chat.
             profile_facts = context.get("profile_facts", {}) if isinstance(context.get("profile_facts"), dict) else {}
             course = str(profile_facts.get("target_course", ""))
             if course and not has_focus and not has_daily and not has_textbook and not has_project and not has_lang_subject:
-                # Course known, user wants a plan, but no mode picked yet.
-                # Return action="none" so the conversation flow shows the mode picker
-                # (via _build_chat_persona → DeepTutor → [[mode-pick:...]])
-                return self._fallback_result("none", "needs_mode_picker_before_plan")
+                return self._fallback_result("plan", "explicit_generation_request")
             return self._fallback_result("plan", "explicit_generation_request")
 
         _GEN_FULL = ["完整方案", "全套方案", "全部方案", "整套方案", "生成全套", "全部生成"]

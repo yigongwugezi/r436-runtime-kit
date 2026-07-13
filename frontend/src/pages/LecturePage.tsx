@@ -330,12 +330,44 @@ export default function LecturePage() {
         userMessage: data?.message || '讲解视频生成失败，请稍后重试。',
       };
       setVideoResult(video);
+      // Async video: poll for completion
+      if (video.status === 'submitted' && video.task_id) {
+        const poll = async () => {
+          for (let i = 0; i < 30; i++) {
+            await new Promise(r => setTimeout(r, 10000)); // 10s interval
+            try {
+              const pr = await fetch(`/api/video/task/${encodeURIComponent(video.task_id)}`);
+              const pd = await pr.json();
+              const pollData = pd?.data || pd;
+              if (pollData.status === 'success' && pollData.video_url) {
+                setVideoResult({ ...video, status: 'completed', url: pollData.video_url, userMessage: '视频已生成！' });
+                setVideoGenerating(false);
+                generatePanelRef.current?.updateRecord(cid, { status: 'ready', content: pollData.video_url || '' });
+                return;
+              }
+              if (pollData.status === 'failed') {
+                setVideoResult({ ...video, status: 'generation_failed', userMessage: pollData.message || '视频生成失败' });
+                setVideoGenerating(false);
+                generatePanelRef.current?.updateRecord(cid, { status: 'error' });
+                return;
+              }
+            } catch { /* retry */ }
+          }
+          setVideoResult({ ...video, status: 'generation_failed', userMessage: '视频生成超时，请稍后重试。' });
+          setVideoGenerating(false);
+          generatePanelRef.current?.updateRecord(cid, { status: 'error' });
+        };
+        poll();
+        return; // don't setVideoGenerating(false) yet — poll handles it
+      }
       const ok = video.status !== 'generation_failed';
       generatePanelRef.current?.updateRecord(cid, { status: ok ? 'ready' : 'error', content: video.script || video.url || '' });
+      setVideoGenerating(false);
     } catch {
       setVideoResult({ status: 'generation_failed', userMessage: '讲解视频生成失败，请稍后重试。' });
       generatePanelRef.current?.updateRecord(cid, { status: 'error' });
-    } finally { setVideoGenerating(false); }
+      setVideoGenerating(false);
+    }
   }, [sessionId, currentSection, activeSectionId]);
 
   const handleSendChat = useCallback(async () => {
@@ -950,7 +982,12 @@ export default function LecturePage() {
                     <button onClick={() => handleGenerateVideo()} disabled={videoGenerating}
                       className="w-full p-2.5 rounded-lg bg-surface-50 hover:bg-surface-100 transition-colors text-left border border-transparent hover:border-surface-200 disabled:opacity-50">
                       <span className="text-xs font-medium text-surface-700">讲解视频</span>
-                      <p className="text-[10px] text-surface-400 mt-0.5">{videoGenerating ? '生成中…' : videoResult?.script ? '已生成，点击查看' : '微课视频脚本'}</p>
+                      <p className="text-[10px] text-surface-400 mt-0.5">
+                        {videoGenerating && videoResult?.status === 'submitted' ? '视频正在生成中…' :
+                         videoGenerating ? '提交中…' :
+                         videoResult?.status === 'completed' ? '视频已生成，点击查看' :
+                         videoResult?.script ? '已生成脚本，点击查看' : '微课视频/脚本'}
+                      </p>
                     </button>
                   </div>
                 </div>
@@ -1096,6 +1133,35 @@ export default function LecturePage() {
                   }).then(r => r.json());
                   const data = res?.data || res;
                   if (data?.lecture_content) store.setLecture(`${sessionId}:${activeSectionId}`, data.lecture_content);
+                  // Check for async video task
+                  const videoResource = (data?.resources || []).find((r: any) => r.task_id);
+                  if (videoResource?.task_id) {
+                    setVideoResult({ status: 'submitted', task_id: videoResource.task_id, script: videoResource.content, userMessage: '视频正在生成中…' });
+                    setVideoGenerating(true);
+                    const poll = async () => {
+                      for (let i = 0; i < 30; i++) {
+                        await new Promise(r => setTimeout(r, 10000));
+                        try {
+                          const pr = await fetch(`/api/video/task/${encodeURIComponent(videoResource.task_id)}`);
+                          const pd = await pr.json();
+                          const pollData = pd?.data || pd;
+                          if (pollData.status === 'success' && pollData.video_url) {
+                            setVideoResult((prev: any) => ({ ...prev, status: 'completed', url: pollData.video_url, userMessage: '视频已生成！' }));
+                            setVideoGenerating(false);
+                            return;
+                          }
+                          if (pollData.status === 'failed') {
+                            setVideoResult((prev: any) => ({ ...prev, status: 'generation_failed', userMessage: pollData.message || '视频生成失败' }));
+                            setVideoGenerating(false);
+                            return;
+                          }
+                        } catch { /* retry */ }
+                      }
+                      setVideoResult((prev: any) => ({ ...prev, status: 'generation_failed', userMessage: '视频生成超时，请稍后重试。' }));
+                      setVideoGenerating(false);
+                    };
+                    poll();
+                  }
                 } catch {} finally { setGenAll(false); }
               }}
             />
