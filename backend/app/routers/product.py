@@ -2631,6 +2631,7 @@ def get_resources(
         return True
 
     def _normalize(item: dict[str, Any]) -> dict[str, Any]:
+        metadata = item.get("resource_metadata") if isinstance(item.get("resource_metadata"), dict) else {}
         return {
             "id": item["id"],
             "type": _resource_type(item.get("type", "lecture")),
@@ -2657,12 +2658,13 @@ def get_resources(
             "taskId": item.get("taskId", item.get("task_id", "")),
             "relatedChapter": item.get("relatedChapter", item.get("related_chapter", "")),
             "relatedKnowledgePoints": item.get("relatedKnowledgePoints", item.get("related_knowledge_points", [])),
-            "qualityStatus": item.get("qualityStatus", item.get("quality_status", "")),
-            "sourceType": item.get("sourceType", item.get("source_type", "")),
-            "generationMode": item.get("generationMode", item.get("generation_mode", "")),
+            "qualityStatus": item.get("qualityStatus", item.get("quality_status", metadata.get("quality_status", ""))),
+            "sourceType": item.get("sourceType", item.get("source_type", metadata.get("generation_source", ""))),
+            "generationMode": item.get("generationMode", item.get("generation_mode", metadata.get("generation_mode", ""))),
             "reason": item.get("reason", ""),
             "evidence": item.get("evidence", []),
             "fallbackReason": item.get("fallbackReason", item.get("fallback_reason", "")),
+            "resourceMetadata": metadata,
         }
 
     # Merge DB resources with in-memory resources
@@ -2776,6 +2778,7 @@ def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "") -> 
     db_match = next((r for r in db_resources if r["id"] == resource_id), None)
     if db_match:
         bookmarks = _get_bookmarks(session_id)
+        metadata = db_match.get("resource_metadata") if isinstance(db_match.get("resource_metadata"), dict) else {}
         return _product_response(
             {"resource": {
                 "id": db_match["id"],
@@ -2800,6 +2803,10 @@ def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "") -> 
                 "relatedChapterId": db_match.get("related_chapter_id", ""),
                 "relatedSectionId": db_match.get("related_section_id", ""),
                 "taskId": db_match.get("task_id", ""),
+                "qualityStatus": metadata.get("quality_status", ""),
+                "sourceType": metadata.get("generation_source", ""),
+                "generationMode": metadata.get("generation_mode", ""),
+                "resourceMetadata": metadata,
             }},
             session_id=session_id, subject_id=subjectId, source="db",
         )
@@ -5431,6 +5438,9 @@ def _section_path_context(session_id: str, section_id: str) -> dict[str, Any]:
 def generate_section_resource(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Generate one small section resource and archive it in the existing library."""
     session_id = _payload_session_id(payload)
+    subject_id = _payload_subject_id(payload)
+    if subject_id:
+        _require_matching_subject(session_id, subject_id)
     resource_type = str(payload.get("resourceType") or "").strip()
     context = _section_path_context(session_id, section_id)
     section_title = str(payload.get("sectionTitle") or context.get("section_title") or "").strip()
@@ -5457,11 +5467,53 @@ def generate_section_resource(section_id: str, payload: dict[str, Any]) -> dict[
             knowledge_points=payload.get("knowledgePoints") if isinstance(payload.get("knowledgePoints"), list) else context.get("knowledge_points", []),
             resource_type=resource_type,
             profile=_profile_v2(session_id),
+            feedback=str(payload.get("feedback") or "").strip(),
         )
+        if existing is not None:
+            resource["id"] = existing.id
         saved = service.persist(db, session_id, resource)
         return _product_response({"resource": service.serialize(saved), "reused": False}, session_id=session_id, source="agent")
     except ValueError:
         return _product_response(None, session_id=session_id, status="error", message="unsupported resourceType", source="agent")
+    finally:
+        db.close()
+
+
+@router.post("/sections/{section_id}/generated-resources/{resource_type}/feedback")
+def feedback_on_generated_section_resource(section_id: str, resource_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Store section-scoped feedback without changing external-search feedback."""
+    session_id = _payload_session_id(payload)
+    feedback = str(payload.get("feedback") or "").strip()
+    allowed_feedback = {"helpful", "not_relevant", "too_hard", "too_easy"}
+    from app.services.section_generated_resources import RESOURCE_DEFINITIONS, SectionGeneratedResourcesService
+
+    if resource_type not in RESOURCE_DEFINITIONS or feedback not in allowed_feedback:
+        raise HTTPException(status_code=400, detail="invalid generated resource feedback")
+    db = SessionLocal()
+    try:
+        resource = SectionGeneratedResourcesService().existing(db, session_id, section_id, resource_type)
+        if resource is None:
+            raise HTTPException(status_code=404, detail="generated resource not found")
+        session = db.get(SessionModel, session_id)
+        subject_id = str(payload.get("subjectId") or (session.subject_id if session else "") or "")
+        event_id = f"generated:{section_id}:{resource_type}"
+        event = db.query(LearningEventModel).filter(
+            LearningEventModel.session_id == session_id,
+            LearningEventModel.event_type == "generated_resource_feedback",
+            LearningEventModel.resource_id == event_id,
+        ).first()
+        metadata = {"subject_id": subject_id, "section_id": section_id, "resource_type": resource_type, "feedback": feedback}
+        if event:
+            event.metadata_ = metadata
+        else:
+            db.add(LearningEventModel(
+                session_id=session_id,
+                event_type="generated_resource_feedback",
+                resource_id=event_id,
+                metadata_=metadata,
+            ))
+        db.commit()
+        return _product_response({"feedback": metadata}, session_id=session_id, subject_id=subject_id, source="user_input")
     finally:
         db.close()
 
@@ -5502,6 +5554,9 @@ def _chapter_path_context(session_id: str, chapter_id: str) -> dict[str, Any]:
 def generate_chapter_mindmap(chapter_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Generate one local Mermaid mind map for a chapter and archive it."""
     session_id = _payload_session_id(payload)
+    subject_id = _payload_subject_id(payload)
+    if subject_id:
+        _require_matching_subject(session_id, subject_id)
     context = _chapter_path_context(session_id, chapter_id)
     chapter_title = str(payload.get("chapterTitle") or context.get("chapter_title") or "").strip()
     if not chapter_title:
@@ -5515,6 +5570,7 @@ def generate_chapter_mindmap(chapter_id: str, payload: dict[str, Any]) -> dict[s
             stage_id=str(payload.get("stageId") or context.get("stage_id") or ""),
             chapter_id=chapter_id, chapter_title=chapter_title,
             sections=payload.get("sections") if isinstance(payload.get("sections"), list) else context.get("sections", []),
+            session_id=session_id,
         )
         saved = service.persist(db, session_id, resource)
         return _product_response({"mindmap": service.serialize(saved), "reused": False}, session_id=session_id, source="agent")
@@ -5542,6 +5598,9 @@ def get_chapter_mindmap(chapter_id: str, sessionId: str = "") -> dict[str, Any]:
 def generate_section_mindmap(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Generate a mindmap scoped to a single section's knowledge points."""
     session_id = _payload_session_id(payload)
+    subject_id = _payload_subject_id(payload)
+    if subject_id:
+        _require_matching_subject(session_id, subject_id)
     section_title = str(payload.get("sectionTitle") or "").strip()
     knowledge_points = payload.get("knowledgePoints") if isinstance(payload.get("knowledgePoints"), list) else []
     if not section_title:
@@ -5556,8 +5615,8 @@ def generate_section_mindmap(section_id: str, payload: dict[str, Any]) -> dict[s
             chapter_id=section_id,
             chapter_title=section_title,
             sections=[{"title": section_title, "knowledgePoints": knowledge_points}],
+            session_id=session_id,
         )
-        resource["id"] = f"section_{section_id}_mindmap"
         resource["title"] = f"{section_title} · 小节思维导图"
         saved = service.persist(db, session_id, resource)
         return _product_response({"mindmap": service.serialize(saved), "reused": False}, session_id=session_id, source="agent")
@@ -5573,7 +5632,7 @@ def get_section_mindmap(section_id: str, sessionId: str = "") -> dict[str, Any]:
     from app.services.chapter_mindmap_resources import ChapterMindmapResourceService
     try:
         db = SessionLocal()
-        resource = ChapterMindmapResourceService().existing(db, session_id, f"section_{section_id}_mindmap")
+        resource = ChapterMindmapResourceService().existing(db, session_id, section_id)
         return _product_response({"mindmap": ChapterMindmapResourceService.serialize(resource) if resource else None}, session_id=session_id, source="db")
     finally:
         db.close()

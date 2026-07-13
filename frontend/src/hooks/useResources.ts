@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as resourcesApi from '../api/resources';
+import { getSubjectSession } from '../api/subjects';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
 import type { Resource, ResourceFilter } from '../types/resource';
@@ -17,13 +18,28 @@ export function useResources(initialFilter?: ResourceFilter) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<ResourceFilter>(initialFilter || {});
+  const [subjectSessionId, setSubjectSessionId] = useState<string | null>(null);
   const lastReadKeyRef = useRef<string | undefined>(undefined);
   const lastInitialFilterRef = useRef<string | undefined>(undefined);
   const fetchingRef = useRef(false);
   const pendingFilterRef = useRef<ResourceFilter | undefined>(undefined);
 
+  useEffect(() => {
+    let active = true;
+    if (!subjectId) { setSubjectSessionId(sessionId || null); return () => { active = false; }; }
+    setSubjectSessionId(null);
+    getSubjectSession(subjectId).then((resolved) => {
+      if (active) setSubjectSessionId(resolved || sessionId || null);
+    }).catch(() => {
+      if (active) setSubjectSessionId(sessionId || null);
+    });
+    return () => { active = false; };
+  }, [sessionId, subjectId]);
+
+  const effectiveSessionId = subjectId ? subjectSessionId : sessionId;
+
   const doFetch = useCallback(async (f: ResourceFilter) => {
-    if (!sessionId) { setLoading(false); return; }
+    if (!effectiveSessionId) { setLoading(false); return; }
     if (fetchingRef.current) {
       pendingFilterRef.current = f;
       return;
@@ -36,7 +52,7 @@ export function useResources(initialFilter?: ResourceFilter) {
     setResources([]);
     setTotal(0);
     try {
-      const params: Record<string, any> = { ...f, sessionId };
+      const params: Record<string, any> = { ...f, sessionId: effectiveSessionId };
       if (subjectId) params.subjectId = subjectId;
       const res = await resourcesApi.getResources(params as any);
       if (pendingFilterRef.current === undefined) {
@@ -62,7 +78,7 @@ export function useResources(initialFilter?: ResourceFilter) {
         doFetch(pendingFilterRef.current);
       }
     }
-  }, [sessionId, subjectId]);
+  }, [effectiveSessionId, subjectId]);
 
   // ── 统一触发获取：mount / session / subject / dataVersion / initialFilter 任一变化 → 拉数据
   // 用 session 级 version 做 readKey，确保：
@@ -70,8 +86,8 @@ export function useResources(initialFilter?: ResourceFilter) {
   //   2. 切换 sessionId 时必拉（readKey 含 sessionId）
   //   3. dataVersion 变化时必拉（dataVersion 含在 readKey 中）
   //   4. subjectId 作为可选过滤（含在 readKey 中）
-  const readKey = sessionId
-    ? `${sessionId}:${dataVersion}:${subjectId || ''}`
+  const readKey = effectiveSessionId
+    ? `${effectiveSessionId}:${dataVersion}:${subjectId || ''}`
     : undefined;
   useEffect(() => {
     const initialFilterKey = JSON.stringify(initialFilter || {});
@@ -100,13 +116,14 @@ export function useResources(initialFilter?: ResourceFilter) {
   );
 
   const toggleBookmark = useCallback(async (id: string) => {
-    const params: Record<string, string> = { sessionId };
+    if (!effectiveSessionId) return;
+    const params: Record<string, string> = { sessionId: effectiveSessionId };
     if (subjectId) params.subjectId = subjectId;
     const res = await resourcesApi.toggleBookmark(id, params as any);
     setResources((prev) =>
       prev.map((resource) => (resource.id === id ? { ...resource, bookmarked: res.bookmarked } : resource)),
     );
-  }, [sessionId, subjectId]);
+  }, [effectiveSessionId, subjectId]);
 
   const updateResource = useCallback((id: string, updates: Partial<Resource>) => {
     setResources((prev) =>
@@ -126,6 +143,7 @@ export function useResources(initialFilter?: ResourceFilter) {
     applyFilter,
     toggleBookmark,
     updateResource,
+    sessionId: effectiveSessionId,
     refetch: () => doFetch(filter),
   };
 }

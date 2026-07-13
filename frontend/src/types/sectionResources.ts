@@ -1,4 +1,6 @@
-export type GeneratedSectionResourceType = 'summary_card' | 'concept_comparison' | 'worked_example' | 'mistake_checklist' | 'review_notes';
+export type GeneratedSectionResourceType =
+  | 'summary_card' | 'concept_comparison' | 'worked_example' | 'mistake_checklist' | 'review_notes'
+  | 'knowledge_map' | 'process_flow' | 'concept_diagram' | 'execution_trace' | 'code_trace';
 
 export interface ExternalSectionResource {
   title: string;
@@ -32,6 +34,12 @@ export interface GeneratedSectionResource {
   sectionId: string;
   chapterId: string;
   stageId: string;
+  mermaidDef?: string;
+  format?: string;
+  quality?: 'passed' | 'repaired' | 'fallback' | 'failed' | '';
+  qualityScore?: number | null;
+  personalization?: Record<string, unknown>;
+  workflowTrace?: Array<{ agent: string; status: string; summary: string }>;
   createdAt: number;
 }
 

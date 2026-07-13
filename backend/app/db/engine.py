@@ -103,6 +103,7 @@ def init_db() -> None:
             "code_blocks": "JSON",
             "questions": "JSON",
             "ppt_outline": "JSON",
+            "metadata": "JSON",
             "bookmarked": "BOOLEAN DEFAULT 0",
             "study_status": "VARCHAR(16) DEFAULT 'new'",
             "source": "VARCHAR(16) DEFAULT 'agent_generated'",

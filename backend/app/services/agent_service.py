@@ -236,6 +236,7 @@ def get_resources(session_id: str) -> list[dict[str, Any]]:
                 "code_blocks": r.code_blocks,
                 "questions": r.questions,
                 "ppt_outline": r.ppt_outline,
+                "resource_metadata": r.resource_metadata or {},
                 "bookmarked": r.bookmarked or False,
                 "study_status": r.study_status or "new",
                 "completed_at": r.completed_at.isoformat() if r.completed_at else None,

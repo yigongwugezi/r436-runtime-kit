@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha1
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -10,6 +11,8 @@ from sqlalchemy.orm import Session
 from app.db.models import ResourceModel
 from app.db.repository import upsert_resource
 from app.services.llm_client import get_llm_client
+from app.services.resource_quality import ResourceQualityReviewer
+from app.services.structured_multimodal_resources import STRUCTURED_RESOURCE_DEFINITIONS, build_structured_resource
 
 
 RESOURCE_DEFINITIONS = {
@@ -18,6 +21,7 @@ RESOURCE_DEFINITIONS = {
     "worked_example": ("例题详解", "practice"),
     "mistake_checklist": ("易错清单", "reading"),
     "review_notes": ("复习笔记", "reading"),
+    **STRUCTURED_RESOURCE_DEFINITIONS,
 }
 PROFILE_KEYS = {"major_background", "knowledge_base", "learning_goal", "cognitive_style", "error_patterns", "coding_ability"}
 
@@ -29,11 +33,18 @@ class SectionGeneratedResourcesService:
         self._llm_client = llm_client or get_llm_client()
 
     @staticmethod
-    def resource_id(section_id: str, resource_type: str) -> str:
-        return f"section_{section_id}_{resource_type}"
+    def resource_id(section_id: str, resource_type: str, session_id: str = "") -> str:
+        """Use a session suffix for new records without losing legacy readability."""
+        base = f"section_{section_id}_{resource_type}"
+        return f"{base}_{sha1(session_id.encode()).hexdigest()[:10]}" if session_id else base
 
     def existing(self, db: Session, session_id: str, section_id: str, resource_type: str) -> ResourceModel | None:
-        return db.get(ResourceModel, self.resource_id(section_id, resource_type))
+        scoped_id = self.resource_id(section_id, resource_type, session_id)
+        legacy_id = self.resource_id(section_id, resource_type)
+        return db.query(ResourceModel).filter(
+            ResourceModel.session_id == session_id,
+            ResourceModel.id.in_((scoped_id, legacy_id)),
+        ).order_by(ResourceModel.updated_at.desc()).first()
 
     def generate(
         self,
@@ -48,12 +59,81 @@ class SectionGeneratedResourcesService:
         knowledge_points: list[Any],
         resource_type: str,
         profile: dict[str, Any] | None = None,
+        feedback: str = "",
     ) -> dict[str, Any]:
         if resource_type not in RESOURCE_DEFINITIONS:
             raise ValueError("unsupported resourceType")
         label, storage_type = RESOURCE_DEFINITIONS[resource_type]
         points = self._points(knowledge_points)
         personalization = self._personalization(profile, section_title, points)
+        if resource_type in STRUCTURED_RESOURCE_DEFINITIONS:
+            from app.agents.multimodal_agent import MultimodalAgent
+
+            multimodal_context = {
+                "task_type": "structured_learning_resource",
+                "resource_type": resource_type,
+                "section_title": section_title,
+                "knowledge_points": points,
+                "profile": profile or {},
+                "feedback": feedback,
+            }
+            result = MultimodalAgent().run(multimodal_context)
+            generated = result.get("result") if isinstance(result.get("result"), dict) else {}
+            if result.get("status") != "completed" or not generated:
+                generated = build_structured_resource(multimodal_context)
+                generated["used_fallback"] = True
+            resource = {
+                **generated,
+                "id": self.resource_id(section_id, resource_type, session_id),
+                "knowledge_points": points,
+                "tags": ["section_generated", resource_type, path_id, "p4_multimodal"],
+                "difficulty": "easy" if personalization["level"] == "beginner" else "medium",
+                "estimated_minutes": 12,
+                "source": "agent_generated",
+                "source_type": "rule_based_fallback",
+                "related_stage_id": stage_id,
+                "related_chapter_id": chapter_id,
+                "related_section_id": section_id,
+                "task_id": resource_type,
+                "generated_type": resource_type,
+                "generation_status": "completed",
+                "quality_status": "passed",
+                "workflow_trace": self._workflow_trace(resource_type, profile, feedback),
+            }
+            reviewed = ResourceQualityReviewer().review(resource, section_title=section_title, knowledge_points=points)
+            metadata = reviewed.get("resource_metadata") if isinstance(reviewed.get("resource_metadata"), dict) else {}
+            if metadata.get("quality_status") == "failed":
+                # The structured agent is local by design.  One deterministic rebuild is
+                # safer than retrying a provider or persisting an unrenderable resource.
+                fallback = build_structured_resource(multimodal_context)
+                reviewed.update(fallback)
+                reviewed.update({
+                    "id": self.resource_id(section_id, resource_type, session_id),
+                    "knowledge_points": points,
+                    "tags": resource["tags"],
+                    "difficulty": resource["difficulty"],
+                    "estimated_minutes": resource["estimated_minutes"],
+                    "source": "agent_generated",
+                    "source_type": "rule_based_fallback",
+                    "related_stage_id": stage_id,
+                    "related_chapter_id": chapter_id,
+                    "related_section_id": section_id,
+                    "task_id": resource_type,
+                    "generated_type": resource_type,
+                    "generation_status": "completed",
+                    "generation_source": "local_fallback",
+                    "generation_mode": "fallback",
+                    "used_fallback": True,
+                })
+                reviewed = ResourceQualityReviewer().review(reviewed, section_title=section_title, knowledge_points=points)
+                metadata = reviewed.get("resource_metadata") if isinstance(reviewed.get("resource_metadata"), dict) else {}
+                metadata = {**metadata, "quality_status": "fallback", "fallback_reason": "质量审查未通过，已使用本地模板重建"}
+            reviewed["quality_status"] = metadata.get("quality_status", "failed")
+            reviewed["resource_metadata"] = {
+                **metadata,
+                "workflow_trace": self._workflow_trace(resource_type, profile, feedback, reviewed["quality_status"]),
+            }
+            return reviewed
         prompt = (
             f"为小节「{section_title}」生成{label}。知识点：{'、'.join(points) or section_title}。"
             f"讲义摘要：{lecture_content[:900]}。学习适配：基础={personalization['level']}；偏好={'、'.join(personalization['preferences']) or '无'}；"
@@ -67,7 +147,7 @@ class SectionGeneratedResourcesService:
             content = self._fallback(resource_type, section_title, points, lecture_content, personalization)
 
         return {
-            "id": self.resource_id(section_id, resource_type),
+            "id": self.resource_id(section_id, resource_type, session_id),
             "type": storage_type,
             "title": f"{section_title} · {label}",
             "description": f"为当前小节生成的{label}",
@@ -103,8 +183,45 @@ class SectionGeneratedResourcesService:
             "sectionId": resource.related_section_id or "",
             "chapterId": resource.related_chapter_id or "",
             "stageId": resource.related_stage_id or "",
+            "mermaidDef": resource.mermaid_def or "",
+            "format": resource.format or "text",
+            "quality": resource.resource_metadata.get("quality_status") if isinstance(resource.resource_metadata, dict) else "",
+            "qualityScore": resource.resource_metadata.get("quality_score") if isinstance(resource.resource_metadata, dict) else None,
+            "workflowTrace": resource.resource_metadata.get("workflow_trace", []) if isinstance(resource.resource_metadata, dict) else [],
+            "personalization": resource.resource_metadata.get("personalization", {}) if isinstance(resource.resource_metadata, dict) else {},
             "createdAt": int(resource.created_at.timestamp() * 1000) if resource.created_at else 0,
         }
+
+    @staticmethod
+    def _workflow_trace(
+        resource_type: str,
+        profile: dict[str, Any] | None,
+        feedback: str,
+        quality_status: str = "passed",
+    ) -> list[dict[str, Any]]:
+        from datetime import datetime, timezone
+
+        has_profile = bool(profile)
+        timestamp = datetime.now(timezone.utc).isoformat()
+        def step(agent: str, capability: str, provider: str, used_fallback: bool, summary: str) -> dict[str, Any]:
+            return {
+                "agent": agent,  # Kept for the existing lightweight frontend renderer.
+                "agent_name": agent,
+                "capability": capability,
+                "status": "completed",
+                "started_at": timestamp,
+                "finished_at": timestamp,
+                "provider": provider,
+                "used_fallback": used_fallback,
+                "summary": summary,
+            }
+        return [
+            step("ProfileAgent", "读取最小画像上下文", "profile_store", not has_profile, "读取当前小节所需的最小画像信息" if has_profile else "当前无可用画像，使用通用学习适配"),
+            step("ResourceAgent", "构建资源生成任务", "resource_task_builder", False, f"创建 {RESOURCE_DEFINITIONS[resource_type][0]} 生成任务"),
+            step("MultimodalAgent", "生成结构化可视化", "local_template", True, "使用本地结构化模板生成可渲染内容"),
+            step("ResourceQualityReviewer", "审查主题、结构与渲染安全", "resource_quality_reviewer", quality_status == "fallback", "完成主题、结构、渲染与安全检查"),
+            step("ResourceModel", "持久化当前会话资源", "database", False, "按当前会话和小节范围持久化资源"),
+        ]
 
     @staticmethod
     def _points(items: list[Any]) -> list[str]:

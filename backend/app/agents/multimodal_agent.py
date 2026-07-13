@@ -93,6 +93,24 @@ class MultimodalAgent:
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         task_type = _infer_task_type(context)
+        if task_type == "structured_learning_resource":
+            from app.services.structured_multimodal_resources import build_structured_resource
+
+            result = build_structured_resource(context)
+            return {
+                "status": "completed",
+                "provider": "local_template",
+                "task_type": task_type,
+                "tool": "local_structured_template",
+                "title": result["title"],
+                "content": result["content"],
+                "content_url": None,
+                "metadata": {"raw_status": "completed", "tool": "local_structured_template"},
+                "error_code": None,
+                "user_message": _text(context.get("user_message")),
+                "warnings": [],
+                "result": result,
+            }
         tool_name, tool = self.registry.select_tool(task_type)
         if not tool:
             return {

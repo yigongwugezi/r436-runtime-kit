@@ -24,6 +24,11 @@ _SECTION_RESOURCE_REQUESTS = {
     "worked_example": ("生成例题详解", "生成例题"),
     "mistake_checklist": ("生成易错点清单", "生成易错清单"),
     "review_notes": ("生成复习笔记",),
+    "knowledge_map": ("生成知识结构图", "生成知识图谱"),
+    "process_flow": ("生成学习流程图", "生成过程流程图"),
+    "concept_diagram": ("生成概念对比图", "生成概念关系图"),
+    "execution_trace": ("生成执行过程图", "生成执行轨迹"),
+    "code_trace": ("生成代码运行轨迹", "生成代码执行轨迹"),
 }
 _SECTION_RESOURCE_GUIDANCE = "请先进入一个小节的讲义页面，再生成对应的学习资源。"
 
