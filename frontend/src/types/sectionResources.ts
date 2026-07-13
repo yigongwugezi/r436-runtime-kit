@@ -24,6 +24,17 @@ export interface SectionRecommendationResult {
   warnings: string[];
 }
 
+export interface SearchProgressEvent {
+  event: 'search_progress';
+  stage: 'topic_analysis' | 'cache' | 'primary_search' | 'fallback_search' | 'quality_filter' | 'personalized_ranking' | 'completed';
+  status: 'running' | 'completed';
+  fallback_used?: boolean;
+  stale?: boolean;
+  candidate_count?: number;
+  result_count?: number;
+  source_count?: number;
+}
+
 export interface GeneratedSectionResource {
   id: string;
   title: string;

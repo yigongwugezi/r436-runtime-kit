@@ -10,11 +10,11 @@ import {
   generatedResourceLabels,
   getSectionMindmap,
   getGeneratedSectionResources,
-  recommendSectionResources,
+  streamSectionResourceRecommendations,
   submitSectionResourceFeedback,
   submitGeneratedSectionResourceFeedback,
 } from '../../api/sectionResources';
-import type { ChapterMindmap, GeneratedSectionResource, GeneratedSectionResourceType, SectionRecommendationResult } from '../../types/sectionResources';
+import type { ChapterMindmap, GeneratedSectionResource, GeneratedSectionResourceType, SearchProgressEvent, SectionRecommendationResult } from '../../types/sectionResources';
 import type { Section } from '../../types/learningPath';
 
 interface Props {
@@ -37,6 +37,15 @@ const platformLabels: Record<string, string> = { bilibili: 'B站', youtube: 'You
 const trustLabels: Record<string, string> = { official: '官方来源', educational: '教育来源', general: '普通来源' };
 const matchLevelLabels: Record<string, string> = { exact_topic: '精确匹配', chapter_level: '章节匹配', course_level: '课程拓展', expanded_research: '拓展论文' };
 type GeneratedFeedback = NonNullable<GeneratedSectionResource['feedback']>['feedback'];
+const searchStageLabels: Record<SearchProgressEvent['stage'], string> = {
+  topic_analysis: '\u5df2\u8bc6\u522b\u5b66\u4e60\u4e3b\u9898',
+  cache: '\u5df2\u68c0\u67e5\u8fd1\u671f\u7ed3\u679c',
+  primary_search: '\u6b63\u5728\u641c\u7d22\u9996\u9009\u516c\u5f00\u8d44\u6e90',
+  fallback_search: '\u6b63\u5728\u8865\u5145\u76f8\u5173\u516c\u5f00\u8d44\u6e90',
+  quality_filter: '\u6b63\u5728\u68c0\u67e5\u8d44\u6e90\u76f8\u5173\u6027',
+  personalized_ranking: '\u6b63\u5728\u6839\u636e\u5b66\u4e60\u9700\u6c42\u6392\u5e8f',
+  completed: '\u641c\u7d22\u5b8c\u6210',
+};
 
 function safeExternalUrl(url: string): boolean {
   try { return ['http:', 'https:'].includes(new URL(url).protocol); } catch { return false; }
@@ -48,6 +57,8 @@ export default function SectionResourceWorkspace(props: Props) {
   const subjectId = useSubjectStore((state) => state.activeSubject?.id ?? state.activeClassSubject?.subject);
   const [recommendations, setRecommendations] = useState<SectionRecommendationResult | null>(null);
   const [searching, setSearching] = useState(false);
+  const [searchProgress, setSearchProgress] = useState<SearchProgressEvent[]>([]);
+  const [progressExpanded, setProgressExpanded] = useState(true);
   const [resourceFilter, setResourceFilter] = useState<'all' | 'video' | 'article' | 'course' | 'paper' | 'document'>('all');
   const [generated, setGenerated] = useState<GeneratedSectionResource[]>([]);
   const [generating, setGenerating] = useState<GeneratedSectionResourceType | null>(null);
@@ -77,14 +88,22 @@ export default function SectionResourceWorkspace(props: Props) {
     if (!sessionId || !section) return;
     const requestId = ++requestSerial.current;
     setSearching(true);
+    setSearchProgress([]);
+    setProgressExpanded(true);
     setNotice('');
     try {
-      const result = await recommendSectionResources(section.id, {
+      const result = await streamSectionResourceRecommendations(section.id, {
         sessionId, sectionTitle: section.title, knowledgePoints: section.knowledgePoints,
         subjectId,
         language: 'zh-CN', resourceTypes: filter === 'all' ? ['video', 'article', 'course', 'document', 'paper'] : [filter],
+        refresh: Boolean(recommendations),
+      }, (event) => {
+        if (requestId === requestSerial.current) setSearchProgress((events) => [...events, event]);
       });
-      if (requestId === requestSerial.current) setRecommendations(result);
+      if (requestId === requestSerial.current) {
+        setRecommendations(result);
+        setProgressExpanded(false);
+      }
     } catch {
       if (requestId === requestSerial.current) setRecommendations({ query: [], resources: [], status: 'failed', warnings: ['外部资源检索失败，请稍后重试。'] });
     } finally { if (requestId === requestSerial.current) setSearching(false); }
@@ -199,6 +218,18 @@ export default function SectionResourceWorkspace(props: Props) {
     </div>
 
     {/* ── 推送结果 ── */}
+    {searchProgress.length > 0 && <details open={searching || progressExpanded} onToggle={(event) => setProgressExpanded((event.currentTarget as HTMLDetailsElement).open)} className="rounded-xl border border-surface-100 bg-surface-50 p-3 text-[11px] text-surface-600">
+      <summary className="cursor-pointer font-medium text-surface-700">
+        {searching ? '\u6b63\u5728\u4e3a\u4f60\u5bfb\u627e\u5b66\u4e60\u8d44\u6e90' : `\u641c\u7d22\u5b8c\u6210 \u00b7 \u68c0\u67e5 ${searchProgress[searchProgress.length - 1]?.source_count || 0} \u4e2a\u6765\u6e90 \u00b7 \u63a8\u8350 ${searchProgress[searchProgress.length - 1]?.result_count || 0} \u6761\u9ad8\u76f8\u5173\u8d44\u6e90`}
+      </summary>
+      <ol className="mt-2 space-y-1.5">
+        {searchProgress.map((event, index) => <li key={`${event.stage}-${index}`} className="flex gap-2">
+          <span className={event.status === 'running' ? 'animate-pulse text-primary-600' : 'text-success-600'}>{event.status === 'running' ? '\u25cf' : '\u2713'}</span>
+          <span>{searchStageLabels[event.stage]}{event.fallback_used ? '\uff0c\u9996\u9009\u7ed3\u679c\u4e0d\u8db3\uff0c\u5df2\u81ea\u52a8\u5c1d\u8bd5\u5907\u7528\u6765\u6e90' : ''}{event.stale ? '\uff0c\u5b9e\u65f6\u641c\u7d22\u6682\u65f6\u4e0d\u7a33\u5b9a' : ''}</span>
+        </li>)}
+      </ol>
+    </details>}
+
     {recommendations && (
       <div className="space-y-1.5">
         {!recommendations.resources.length && <p className="rounded-lg bg-surface-50 px-3 py-2 text-[11px] text-surface-500">{recommendations.status === 'search_unavailable' ? '外部搜索暂不可用，请稍后重试。' : recommendations.status === 'expanded_no_results' ? '已扩大搜索范围，仍未找到高相关公开资源。' : recommendations.status === 'no_high_relevance' ? '暂无高相关公开资源，可调整知识点后重试。' : '未找到与当前小节匹配的公开资源。'}</p>}

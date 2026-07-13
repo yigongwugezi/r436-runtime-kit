@@ -5340,8 +5340,11 @@ def tutor_video(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         return _product_response(None, session_id=session_id, status="error", message=f"视频生成失败: {e}", source="agent")
 
 
-@router.post("/sections/{section_id}/resources/recommendations")
-def recommend_section_resources(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _recommend_section_resources(
+    section_id: str,
+    payload: dict[str, Any],
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     """Return real external links for a section without archiving them as resources."""
     session_id = _payload_session_id(payload)
     section_title = str(payload.get("sectionTitle") or "").strip()
@@ -5398,8 +5401,45 @@ def recommend_section_resources(section_id: str, payload: dict[str, Any]) -> dic
         profile=profile,
         weak_points=weak_points,
         feedback_by_url=feedback_by_url,
+        progress_callback=progress_callback,
+        refresh=bool(payload.get("refresh")),
     )
+    return result
+
+
+@router.post("/sections/{section_id}/resources/recommendations")
+def recommend_section_resources(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Return real external links without archiving them as learning resources."""
+    session_id = _payload_session_id(payload)
+    result = _recommend_section_resources(section_id, payload)
     return _product_response({"recommendations": result}, session_id=session_id, source="duckduckgo")
+
+
+@router.post("/sections/{section_id}/resources/recommendations/stream")
+def stream_section_resource_recommendations(section_id: str, payload: dict[str, Any]) -> StreamingResponse:
+    """Stream safe, real ResourceAgent search stages for the lecture workspace."""
+    _payload_session_id(payload)
+
+    def event_stream():
+        events: Queue[dict[str, Any] | None] = Queue()
+
+        def worker() -> None:
+            try:
+                result = _recommend_section_resources(section_id, payload, events.put)
+                events.put({"event": "result", "recommendations": result})
+            except Exception:
+                events.put({"event": "result", "recommendations": {"query": [], "resources": [], "status": "failed", "warnings": ["\u641c\u7d22\u670d\u52a1\u6682\u65f6\u4e0d\u7a33\u5b9a\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002"]}})
+            finally:
+                events.put(None)
+
+        threading.Thread(target=worker, daemon=True).start()
+        while True:
+            event = events.get()
+            if event is None:
+                break
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
 
 @router.post("/sections/{section_id}/resources/feedback")

@@ -1,9 +1,38 @@
-import client from './client';
-import type { ChapterMindmap, GeneratedSectionResource, GeneratedSectionResourceType, SectionRecommendationResult } from '../types/sectionResources';
+import client, { streamRequest } from './client';
+import type { ChapterMindmap, GeneratedSectionResource, GeneratedSectionResourceType, SearchProgressEvent, SectionRecommendationResult } from '../types/sectionResources';
 
 export async function recommendSectionResources(sectionId: string, payload: Record<string, unknown>): Promise<SectionRecommendationResult> {
   const { data } = await client.post(`/api/sections/${encodeURIComponent(sectionId)}/resources/recommendations`, payload);
   return data.recommendations;
+}
+
+export async function streamSectionResourceRecommendations(
+  sectionId: string,
+  payload: Record<string, unknown>,
+  onProgress: (event: SearchProgressEvent) => void,
+): Promise<SectionRecommendationResult> {
+  const reader = await streamRequest(`/api/sections/${encodeURIComponent(sectionId)}/resources/recommendations/stream`, payload);
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const blocks = buffer.split('\n\n');
+      buffer = blocks.pop() || '';
+      for (const block of blocks) {
+        const data = block.split('\n').find((line) => line.startsWith('data: '))?.slice(6);
+        if (!data) continue;
+        const event = JSON.parse(data) as SearchProgressEvent | { event: 'result'; recommendations: SectionRecommendationResult };
+        if (event.event === 'result') return event.recommendations;
+        onProgress(event);
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  throw new Error('Search stream ended without a result');
 }
 
 export async function submitSectionResourceFeedback(sectionId: string, payload: Record<string, unknown>): Promise<{ feedback: Record<string, string> }> {
