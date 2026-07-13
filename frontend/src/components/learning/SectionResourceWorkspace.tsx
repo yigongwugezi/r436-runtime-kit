@@ -177,7 +177,7 @@ export default function SectionResourceWorkspace(props: Props) {
     try {
       const result = await generateSectionMindmap(section.id, {
         sessionId, pathId, stageId, sectionTitle: section.title,
-        subjectId, knowledgePoints: section.knowledgePoints,
+        subjectId, knowledgePoints: section.knowledgePoints, lectureContent,
         regenerate: Boolean(mindmap),
       });
       setMindmap(result.mindmap);

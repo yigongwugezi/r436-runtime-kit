@@ -6256,6 +6256,7 @@ def generate_section_mindmap(section_id: str, payload: dict[str, Any]) -> dict[s
         _require_matching_subject(session_id, subject_id)
     section_title = str(payload.get("sectionTitle") or "").strip()
     knowledge_points = payload.get("knowledgePoints") if isinstance(payload.get("knowledgePoints"), list) else []
+    lecture_content = str(payload.get("lectureContent") or "").strip()
     if not section_title:
         return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
     from app.services.chapter_mindmap_resources import ChapterMindmapResourceService
@@ -6269,6 +6270,7 @@ def generate_section_mindmap(section_id: str, payload: dict[str, Any]) -> dict[s
             chapter_title=section_title,
             sections=[{"title": section_title, "knowledgePoints": knowledge_points}],
             session_id=session_id,
+            lecture_content=lecture_content,
         )
         resource["title"] = f"{section_title} · 小节思维导图"
         saved = service.persist(db, session_id, resource)

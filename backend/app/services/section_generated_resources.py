@@ -80,6 +80,7 @@ class SectionGeneratedResourcesService:
                 "knowledge_points": points,
                 "profile": profile or {},
                 "feedback": feedback,
+                "lecture_content": lecture_content[:2000] if lecture_content else "",
             }
             result = MultimodalAgent().run(multimodal_context)
             generated = result.get("result") if isinstance(result.get("result"), dict) else {}

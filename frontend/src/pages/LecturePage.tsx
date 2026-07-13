@@ -239,6 +239,9 @@ export default function LecturePage() {
     return () => { cancelled = true; };
   }, [isTextbookMode, activeSubject?.id, currentSection?.textbookSectionId]);
 
+  // Resolved content: textbook content in textbook mode, generated lecture otherwise
+  const effectiveLectureContent = isTextbookMode ? textbookLectureContent : lecture;
+
   // ── 加载已有讲义（优先读缓存）──
   useEffect(() => {
     if (!activeSectionId || !sessionId) return;
@@ -360,7 +363,7 @@ export default function LecturePage() {
     try {
       const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/tutor/video`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, requirements: requirements || '' }),
+        body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, lectureContent: effectiveLectureContent, requirements: requirements || '' }),
       });
       const data = await res.json();
       const video = data?.data?.video || {
@@ -1088,7 +1091,7 @@ export default function LecturePage() {
                 chapterId={chapterCtx?.chapter.id || ''}
                 chapterTitle={chapterCtx?.chapter.title || ''}
                 section={currentSection}
-                lectureContent={isTextbookMode ? textbookLectureContent : lecture}
+                lectureContent={effectiveLectureContent}
                 sections={sections}
                 legacyMindmapId={chapterCtx?.chapter.mindmapId}
               />
@@ -1143,7 +1146,7 @@ export default function LecturePage() {
                 try {
                   const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/lecture/generate`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal, type: 'reading', knowledgePoints: currentSection.knowledgePoints || [], lectureContent: lecture.slice(0, 3000), requirements: requirements || '' }),
+                    body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal, type: 'reading', knowledgePoints: currentSection.knowledgePoints || [], lectureContent: effectiveLectureContent.slice(0, 3000), requirements: requirements || '' }),
                   });
                   const data = await res.json();
                   const ok = !!data?.data?.lecture?.content;
@@ -1157,7 +1160,7 @@ export default function LecturePage() {
                 try {
                   const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/lecture/generate`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal, type: 'practice', knowledgePoints: currentSection.knowledgePoints || [], lectureContent: lecture.slice(0, 3000), requirements: requirements || '' }),
+                    body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal, type: 'practice', knowledgePoints: currentSection.knowledgePoints || [], lectureContent: effectiveLectureContent.slice(0, 3000), requirements: requirements || '' }),
                   });
                   const data = await res.json();
                   const ok = !!data?.data?.lecture?.content;
@@ -1174,7 +1177,7 @@ export default function LecturePage() {
                     sessionId, pathId: path?.id || '', stageId: chapterCtx?.stage.id || '',
                     sectionTitle: currentSection.title,
                     knowledgePoints: currentSection.knowledgePoints || [],
-                    regenerate: false,
+                    lectureContent: effectiveLectureContent, regenerate: false,
                   });
                   const mm = (r as any)?.mindmap || r;
                   generatePanelRef.current?.updateRecord(cardId, { status: 'ready', content: mm?.mermaidDef || '' });
@@ -1188,7 +1191,7 @@ export default function LecturePage() {
                 try {
                   const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/generate-all`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal || '', chapterId: chapterCtx?.chapter.id || '', stageId: chapterCtx?.stage.id || '', knowledgePoints: currentSection.knowledgePoints || [] }),
+                    body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal || '', chapterId: chapterCtx?.chapter.id || '', stageId: chapterCtx?.stage.id || '', knowledgePoints: currentSection.knowledgePoints || [], lectureContent: effectiveLectureContent }),
                   }).then(r => r.json());
                   const data = res?.data || res;
                   if (data?.lecture_content) store.setLecture(`${sessionId}:${activeSectionId}`, data.lecture_content);
@@ -1231,7 +1234,7 @@ export default function LecturePage() {
               pathId={path?.id || ''}
               stageId={chapterCtx?.stage.id || ''}
               chapterId={chapterCtx?.chapter.id || ''}
-              lectureContent={lecture}
+              lectureContent={effectiveLectureContent}
             />
             </>
           )}
