@@ -136,6 +136,26 @@ class RagQueryEngine:
 
         return SearchResponse(query=query, results=results, total=len(results))
 
+    def insert_nodes(self, nodes: list) -> int:
+        """Insert pre-embedded TextNode objects into the FAISS index at runtime.
+
+        Returns the number of nodes inserted.  Persists the updated index to disk.
+        """
+        if not self.wait_until_ready():
+            raise RAGServiceError("RAG engine is not ready for insertion")
+
+        from app.rag.store import _persist_dir
+
+        try:
+            self._index.insert_nodes(nodes)
+            persist_dir = _persist_dir(self._config)
+            self._index.storage_context.persist(persist_dir=persist_dir)
+            logger.info("Inserted %d web nodes into RAG index and persisted", len(nodes))
+            return len(nodes)
+        except Exception as exc:
+            logger.error("Failed to insert nodes into RAG index: %s", exc)
+            raise RAGServiceError(cause=exc) from exc
+
     def is_ready(self) -> bool:
         """Check whether the RAG index is loaded and queryable."""
         if self._ready is not None:

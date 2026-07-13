@@ -330,6 +330,10 @@ def _build_chat_persona(facts: dict[str, str]) -> str:
     if other_missing:
         parts.append(f"尚未了解：{'、'.join(_LABEL_MAP.get(k, k) for k in other_missing)}")
     parts.append("\n记住：深入了解每个维度是生成个性化方案的前提。不要急着跳到生成。")
+    parts.append(
+        "\n⚠️ 一次只深入一个维度，问一个问题。绝对禁止用 | 分隔多个问题——"
+        "那是填表式提问，不是自然对话。学生回答后再自然过渡到下一个维度。"
+    )
 
     return "\n".join(parts)
 
@@ -514,20 +518,23 @@ async def _conversation_node(state: dict) -> dict:
         except Exception:
             pass
 
-    if not reply:
-        try:
-            # ── Build profile context for DeepTutor ──
-            profile_facts = state.get("profile_facts", {}) or {}
-            profile_context = _build_profile_context(profile_facts)
-            persona_context = _build_chat_persona(profile_facts)
+    # Always use persona-aware DeepTutor for chat intents so probing
+    # instructions reach the model every turn.  The ConversationAgent's
+    # pre-generated reply is kept as a fallback.
+    try:
+        profile_facts = state.get("profile_facts", {}) or {}
+        profile_context = _build_profile_context(profile_facts)
+        persona_context = _build_chat_persona(profile_facts)
 
-            reply = await deeptutor.chat(
-                msg, state.get("messages", []) or [],
-                profile_context=profile_context,
-                persona_context=persona_context,
-            )
-        except Exception:
-            reply = ""
+        dt_reply = await deeptutor.chat(
+            msg, state.get("messages", []) or [],
+            profile_context=profile_context,
+            persona_context=persona_context,
+        )
+        if dt_reply and len(dt_reply) > 10:
+            reply = dt_reply
+    except Exception:
+        pass  # keep the pre-existing reply as fallback
     state["final_reply"] = reply or "你好！我是EduAgent学习助手，有什么可以帮你的？"
     state.setdefault("agent_steps", []).append({"node": "conversation"})
     return state

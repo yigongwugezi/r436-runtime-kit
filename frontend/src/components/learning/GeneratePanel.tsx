@@ -49,7 +49,7 @@ interface Props {
 }
 
 const TYPES = [
-  { type: 'lecture', label: '课程讲义', desc: '专业课程讲解文档' },
+  { type: 'lecture', label: '课程教材', desc: '正式出版级别的教材内容' },
   { type: 'quiz', label: '练习题目', desc: '选择题/判断题/简答题' },
   { type: 'mindmap', label: '思维导图', desc: '知识点结构可视化' },
   { type: 'video', label: '教学视频', desc: '微课视频脚本/动画' },

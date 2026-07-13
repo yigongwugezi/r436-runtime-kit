@@ -258,7 +258,13 @@ class ConversationAgent(BaseAgent):
         }
         if exec_action and exec_action in VALID_EXECUTE_ACTIONS:
             if action in ("none", "tutoring", ""):
-                action = exec_action
+                # Profile-depth gate: don't let LLM's <execute>plan</execute> bypass
+                # the same check that _rule_fallback enforces.  If the profile isn't
+                # deep enough yet, downgrade to a proposal instead of executing.
+                if exec_action == "plan" and not self._is_profile_ready_for_plan(context):
+                    context["_llm_proposal"] = "plan"
+                else:
+                    action = exec_action
             elif action != exec_action and not context.get("_llm_proposal"):
                 context["_llm_proposal"] = exec_action
 
@@ -770,6 +776,36 @@ action："""
 
         return text, action, facts
 
+    # Dimensions that must be deep enough before plan generation is allowed
+    _PLAN_GATE_DIMS = ("background", "target_course", "knowledge_base", "weak_points", "learning_goal", "time_budget", "preference")
+    _PLAN_GATE_MIN_DEEP = len(_PLAN_GATE_DIMS)  # ALL core dims must have deep answers — personalised planning requires full understanding
+
+    @classmethod
+    def _is_profile_ready_for_plan(cls, context: dict[str, Any]) -> bool:
+        """Return True only if the student profile has enough depth to warrant plan generation.
+
+        Without this gate, "帮我规划" would immediately trigger the planner even
+        when the student has said nothing about their background, foundation, or goals.
+        """
+        from app.services.conversation_state import _SHALLOW_PATTERNS
+
+        profile_facts = context.get("profile_facts", {})
+        if isinstance(profile_facts, dict):
+            facts = profile_facts
+        else:
+            facts = getattr(profile_facts, "facts", {}) or {}
+
+        deep_count = 0
+        for dim in cls._PLAN_GATE_DIMS:
+            val = str(facts.get(dim, "")).strip()
+            if not val or val in ("未提及", "待补充", "未知", "", "无"):
+                continue
+            # Shallow check: short answers or generic phrases
+            if len(val) >= 8 and not any(p in val for p in _SHALLOW_PATTERNS if len(val) < len(p) + 8):
+                deep_count += 1
+
+        return deep_count >= cls._PLAN_GATE_MIN_DEEP
+
     def _rule_fallback(self, message, context):
         """Conservative intent classifier -- default to 'none' (casual chat).
 
@@ -857,8 +893,12 @@ action："""
             "生成吧", "开始吧", "按这些信息生成",
         ]
         if any(p in compact for p in _GEN_PLAN):
-            # If course is known but no mode selected → route to planner anyway.
-            # The orchestrator will show the mode picker directly, not via chat.
+            # Profile-depth gate: don't jump to planner if we barely know the student.
+            # The conversation agent will naturally probe first, then re-trigger plan
+            # via <proposal>plan</proposal> once the profile is deep enough.
+            if not self._is_profile_ready_for_plan(context):
+                return self._fallback_result("none", "plan_requested_but_profile_shallow", needs_clarification=True)
+            # Profile is ready → route to planner. Mode picker if no explicit mode selected.
             profile_facts = context.get("profile_facts", {}) if isinstance(context.get("profile_facts"), dict) else {}
             course = str(profile_facts.get("target_course", ""))
             if course and not has_focus and not has_daily and not has_textbook and not has_project and not has_lang_subject:
