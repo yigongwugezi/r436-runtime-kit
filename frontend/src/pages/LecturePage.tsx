@@ -6,6 +6,7 @@ import { useSubjectStore } from '../store/subjectStore';
 import { useLectureStore } from '../store/lectureStore';
 import { ChevronLeft, ChevronRight, Sparkles, MessageCircle, Send, Brain, BookOpen, ArrowLeft, ArrowRight, Target, Lightbulb, Layers, Clock, GraduationCap, Hash, CheckCircle2, Check, X, Loader2, HelpCircle, RefreshCw, FileText } from 'lucide-react';
 import Markdown from '../utils/markdown';
+import MermaidDiagram from '../utils/mermaid';
 import { generateSectionQuiz, submitQuizAttempt } from '../api/assessment';
 import type { Chapter, LearningStage, PathNode, Section, ContentStatus } from '../types/learningPath';
 import type { LinkedQuestion, QuizResult, WeakPoint } from '../types/assessment';
