@@ -5256,8 +5256,7 @@ flowchart LR
 直接输出 Markdown。"""
 
 
-@router.post("/sections/{section_id}/lecture/generate")
-def generate_section_lecture(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _generate_section_lecture(section_id: str, payload: dict[str, Any], workflow_task: Any = None) -> dict[str, Any]:
     """Generate a structured lecture for a section using LLM, persist as Resource."""
     session_id = _payload_session_id(payload)
     section_title = str(payload.get("sectionTitle", "")).strip()
@@ -5362,6 +5361,10 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
     req_context = f"\n\n## 学生特殊要求（必须严格遵循，优先级最高）\n{requirements}" if requirements else ""
 
     client = _llm_client()
+    if workflow_task is not None:
+        from app.services.workflow_tasks import workflow_task_manager
+        workflow_task_manager.check_cancelled(workflow_task)
+        workflow_task_manager.emit(workflow_task, "stage_started", "content_generation", "running", label="生成讲义正文")
     try:
         raw = client.chat(
             messages=[{"role": "user", "content": prompt + kb_context + req_context}],
@@ -5392,6 +5395,10 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
             section_goal,
             knowledge_points if isinstance(knowledge_points, list) else [],
         )
+
+    if workflow_task is not None:
+        workflow_task_manager.emit(workflow_task, "preview_updated", "content_validation", "completed", label="讲义内容已生成，正在检查", text_delta=raw)
+        workflow_task_manager.check_cancelled(workflow_task)
 
     # 图文并茂：为每个 ## 主章节生成星火配图
     raw = _inject_spark_images(raw, section_title)
@@ -5429,6 +5436,11 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
         "createdAt": int(time.time() * 1000),
     }
     return _product_response({"lecture": lecture_data}, session_id=session_id, source="agent")
+
+
+@router.post("/sections/{section_id}/lecture/generate")
+def generate_section_lecture(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return _generate_section_lecture(section_id, payload)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -6075,8 +6087,7 @@ def _section_path_context(session_id: str, section_id: str) -> dict[str, Any]:
     return {}
 
 
-@router.post("/sections/{section_id}/resources/generate")
-def generate_section_resource(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _generate_section_resource(section_id: str, payload: dict[str, Any], workflow_task: Any = None) -> dict[str, Any]:
     """Generate one small section resource and archive it in the existing library."""
     from app.services.section_generated_resources import SectionGeneratedResourcesService
 
@@ -6111,6 +6122,10 @@ def generate_section_resource(section_id: str, payload: dict[str, Any]) -> dict[
             profile=_profile_v2(session_id),
             feedback=str(payload.get("feedback") or "").strip(),
         )
+        if workflow_task is not None:
+            from app.services.workflow_tasks import workflow_task_manager
+            workflow_task_manager.emit(workflow_task, "preview_updated", "quality_check", "completed", label="内容已生成，正在检查质量", text_delta=str(resource.get("content") or ""))
+            workflow_task_manager.check_cancelled(workflow_task)
         if existing is not None:
             resource["id"] = existing.id
         saved = service.persist(db, session_id, resource)
@@ -6119,6 +6134,11 @@ def generate_section_resource(section_id: str, payload: dict[str, Any]) -> dict[
         return _product_response(None, session_id=session_id, status="error", message="unsupported resourceType", source="agent")
     finally:
         db.close()
+
+
+@router.post("/sections/{section_id}/resources/generate")
+def generate_section_resource(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return _generate_section_resource(section_id, payload)
 
 
 def _generated_feedback(

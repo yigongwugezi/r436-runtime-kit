@@ -107,6 +107,15 @@ class Settings(BaseSettings):
     search_dynamic_provider_order_enabled: bool = True
     search_reset_client_on_network_error: bool = True
 
+    # In-process long-running workflow progress (temporary state only)
+    workflow_task_ttl_seconds: int = 1800
+    workflow_task_max_entries: int = 500
+    workflow_event_buffer_max: int = 200
+    workflow_preview_max_chars: int = 12000
+    workflow_progress_event_throttle_ms: int = 100
+    workflow_max_concurrent_tasks_per_user: int = 3
+    workflow_heartbeat_seconds: int = 15
+
     # ── RAG / Vector Search ───────────────────────────────────────────
     rag_enabled: bool = True
     """When False the RAG router is not registered and the query engine
