@@ -1141,6 +1141,7 @@ class ManimVideoProvider:
         if narration_text and len(narration_text) > 20:
             self.output_dir.mkdir(parents=True, exist_ok=True)
             _tmp_job = uuid.uuid4().hex
+            narration_text = self._clean_markdown(narration_text)
             _tmp_audio = self._generate_narration(narration_text, _tmp_job)
             if _tmp_audio:
                 narrative_duration = self._get_video_duration(_tmp_audio)
@@ -1218,7 +1219,7 @@ class ManimVideoProvider:
             if attempt < MAX_RETRIES:
                 fixed = self._fix_script(code_llm, manim_code, result.stderr or "", result.stdout or "", topic, subject, kb_context)
                 if fixed and len(fixed) > 30:
-                    manim_code = fixed
+                    manim_code = self._scrub_code(fixed)  # re-scrub to catch any re-introduced issues
                     script_path.write_text(manim_code, encoding="utf-8")
                 else:
                     break  # LLM couldn't fix it, give up
@@ -1325,6 +1326,7 @@ Fix ALL bugs then output the COMPLETE corrected code. DeepSeek common mistakes:
 - All Tex() → Text() (Manim CE v0.20)
 - Add `import numpy as np` if using np
 - Scene class must be "EduScene"
+- ⚠️ Remove ALL SVGMobject() and ImageMobject() calls — those asset files do not exist in the project
 
 Only output corrected code, no explanation."""
 
@@ -1365,6 +1367,7 @@ Only output corrected code, no explanation."""
 - MathTex 公式，Text 中文
 - 围绕知识点逐步展开：概念→推导→例题→总结
 - 每个重要元素后 self.wait() 停顿
+- ⚠️ 禁止使用 SVGMobject、ImageMobject 等需要外部资源文件的 API（项目没有这些资源文件）
 
 只输出 JSON。"""
 
@@ -1404,12 +1407,40 @@ Only output corrected code, no explanation."""
             code = code.replace(key, value)
         # 4. Fix Tex() → Text() (any surviving Tex calls)
         code = _re.sub(r'(?<!Math)Tex\(', 'Text(', code)
-        # 5. Ensure imports
+        # 5. Strip SVGMobject/ImageMobject calls — no external assets exist
+        code = _re.sub(r'SVGMobject\s*\([^)]*\)', 'Square()', code)
+        code = _re.sub(r'ImageMobject\s*\([^)]*\)', 'Square()', code)
+        # 6. Ensure imports
         if "from manim import" not in code:
             code = "from manim import *\n" + code
         if "import numpy as np" not in code:
             code = code.replace("from manim import *", "from manim import *\nimport numpy as np")
         return code
+
+    @staticmethod
+    def _clean_markdown(text: str) -> str:
+        """Strip Markdown formatting that TTS would read aloud (**, *, `, #, etc.)."""
+        import re as _re
+        # Remove bold/italic markers
+        text = _re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+        text = _re.sub(r'\*(.+?)\*', r'\1', text)
+        text = _re.sub(r'__(.+?)__', r'\1', text)
+        text = _re.sub(r'_(.+?)_', r'\1', text)
+        # Remove inline code and code blocks
+        text = _re.sub(r'`{1,3}[^`]*`{1,3}', '', text)
+        # Remove heading markers
+        text = _re.sub(r'^#{1,6}\s+', '', text, flags=_re.MULTILINE)
+        # Remove strikethrough
+        text = _re.sub(r'~~(.+?)~~', r'\1', text)
+        # Remove link labels but keep text [text](url)
+        text = _re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+        # Remove image markup ![alt](url)
+        text = _re.sub(r'!\[([^\]]*)\]\([^)]+\)', r'\1', text)
+        # Remove horizontal rules
+        text = _re.sub(r'^---+\s*$', '', text, flags=_re.MULTILINE)
+        # Collapse multiple blank lines
+        text = _re.sub(r'\n{3,}', '\n\n', text)
+        return text.strip()
 
     def _get_video_duration(self, video_path: str) -> float:
         """Get video duration in seconds using FFmpeg."""
@@ -1438,7 +1469,7 @@ Only output corrected code, no explanation."""
     def _generate_narration_only(self, llm, topic: str, subject: str, kb_context: str) -> str:
         """Generate natural Chinese narration (used BEFORE Manim code)."""
         kb_block = f"\n知识点参考：{kb_context[:800]}" if kb_context else ""
-        prompt = f"为知识点写中文旁白稿。像老师正常讲课。引入→概念→推导→例子→总结。自然口语，不要重复。\n课程: {subject}\n节: {topic}{kb_block}\n只输出旁白。"
+        prompt = f"为知识点写中文旁白稿。像老师正常讲课。引入→概念→推导→例子→总结。自然口语，不要重复。\n课程: {subject}\n节: {topic}{kb_block}\n只输出旁白，不要用 Markdown 标记（如 **、*、`、# 等）。"
         try:
             raw = llm.chat(messages=[
                 {"role": "system", "content": "你是数学老师。写中文旁白，自然口语，不要重复。"},

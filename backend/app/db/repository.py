@@ -284,6 +284,98 @@ def get_latest_profile(db: Session, session_id: str) -> ProfileSnapshotModel | N
     )
 
 
+def get_latest_cross_session_profile(
+    db: Session,
+    session_id: str,
+) -> ProfileSnapshotModel | None:
+    """Get the latest profile_snapshot for the same (learner, subject) across sessions.
+
+    Falls back from the current session to sibling sessions belonging to the
+    same learner+subject pair, enabling cross-session profile persistence.
+    Returns None when no profile exists for any related session.
+    """
+    sibling_ids = _sibling_session_ids(db, session_id)
+    if sibling_ids is None:
+        return get_latest_profile(db, session_id)
+    if not sibling_ids:
+        return None
+    return (
+        db.query(ProfileSnapshotModel)
+        .filter(ProfileSnapshotModel.session_id.in_(sibling_ids))
+        .order_by(desc(ProfileSnapshotModel.created_at))
+        .first()
+    )
+
+
+def _sibling_session_ids(
+    db: Session, session_id: str
+) -> list[str] | None:
+    """Collect all session IDs sharing the same (learner, subject) as *session_id*.
+
+    Returns None when the session itself has no learner/subject linkage
+    (fall back to session-only lookup). Returns empty list when no sibling
+    sessions exist.
+    """
+    sess = db.get(SessionModel, session_id)
+    if not sess or not sess.learner_id or not sess.subject_id:
+        return None
+    return [
+        row[0]
+        for row in db.query(SessionModel.id)
+        .filter(
+            SessionModel.learner_id == sess.learner_id,
+            SessionModel.subject_id == sess.subject_id,
+        )
+        .all()
+    ]
+
+
+def get_cross_session_learning_path(
+    db: Session,
+    session_id: str,
+) -> LearningPathModel | None:
+    """Get the latest learning_path for the same (learner, subject) across sessions."""
+    sibling_ids = _sibling_session_ids(db, session_id)
+    if sibling_ids is None:
+        return get_latest_learning_path(db, session_id)
+    if not sibling_ids:
+        return None
+    return (
+        db.query(LearningPathModel)
+        .filter(LearningPathModel.session_id.in_(sibling_ids))
+        .order_by(desc(LearningPathModel.updated_at))
+        .first()
+    )
+
+
+def get_cross_session_resources(
+    db: Session,
+    session_id: str,
+) -> list[ResourceModel]:
+    """Get all resources for the same (learner, subject) across sessions.
+
+    Returns resources from all sibling sessions, ordered by creation time
+    descending. Deduplicates by resource ID.
+    """
+    sibling_ids = _sibling_session_ids(db, session_id)
+    if sibling_ids is None:
+        return get_resources(db, session_id)
+    if not sibling_ids:
+        return []
+    seen: set[str] = set()
+    results: list[ResourceModel] = []
+    for r in (
+        db.query(ResourceModel)
+        .filter(ResourceModel.session_id.in_(sibling_ids))
+        .order_by(desc(ResourceModel.created_at))
+        .all()
+    ):
+        if r.id not in seen:
+            seen.add(r.id)
+            results.append(r)
+    return results
+
+
 # ── Learning Paths ───────────────────────────────────────────────────────
 
 def upsert_learning_path(

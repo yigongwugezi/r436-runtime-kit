@@ -6056,6 +6056,7 @@ def tutor_video(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         # Persist to resource library
         if content:
             try:
+                from app.db.repository import upsert_resource
                 db = SessionLocal()
                 upsert_resource(db, session_id, {
                     "id": f"tutor-video-{section_id}",

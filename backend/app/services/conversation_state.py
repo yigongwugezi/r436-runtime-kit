@@ -11,7 +11,10 @@ from sqlalchemy.orm import Session
 from app.db.engine import SessionLocal
 from app.db.repository import (
     delete_session,
+    get_cross_session_learning_path,
+    get_cross_session_resources,
     get_last_intent,
+    get_latest_cross_session_profile,
     get_messages,
     get_or_create_session,
     save_message,
@@ -196,9 +199,9 @@ class ConversationStore:
                 for m in db_messages
             ]
             state.last_intent = get_last_intent(db, state.session_id)
-            profile = get_latest_profile(db, state.session_id)
-            path = get_latest_learning_path(db, state.session_id)
-            db_resources = repo_get_resources(db, state.session_id)
+            profile = get_latest_cross_session_profile(db, state.session_id)
+            path = get_cross_session_learning_path(db, state.session_id)
+            db_resources = get_cross_session_resources(db, state.session_id)
             if profile or path or db_resources:
                 result: dict[str, Any] = {}
                 if profile:
@@ -241,6 +244,25 @@ class ConversationStore:
             for msg in state.messages:
                 if msg.get("role") == "user":
                     self.extract_facts(state, str(msg.get("content", "")))
+            # Populate missing facts from cross-session profile
+            if profile and profile.dimensions:
+                _dim_to_fact = {
+                    "major_background": "background",
+                    "knowledge_base": "knowledge_base",
+                    "learning_goal": "learning_goal",
+                    "cognitive_style": "preference",
+                    "error_patterns": "weak_points",
+                    "coding_ability": "knowledge_base",
+                    "interest_direction": "target_course",
+                    "learning_rhythm": "time_budget",
+                }
+                for dim in profile.dimensions:
+                    dim_key = dim.get("key", "") if isinstance(dim, dict) else ""
+                    fact_key = _dim_to_fact.get(dim_key, dim_key)
+                    if fact_key in PROFILE_FIELD_DEFS and fact_key not in state.facts:
+                        val = str(dim.get("value", "")).strip() if isinstance(dim, dict) else ""
+                        if val and val not in ("未知", "未提及", "暂无", "无", ""):
+                            state.facts[fact_key] = val
         finally:
             db.close()
 
