@@ -89,9 +89,9 @@ class Settings(BaseSettings):
     search_total_timeout_seconds: int = 12
     search_max_provider_calls: int = 8
     search_primary_grace_seconds: float = 1.5
-    search_provider_hard_timeout_seconds: float = 3.5
-    search_total_timeout_single_seconds: float = 8.0
-    search_total_timeout_all_seconds: float = 10.0
+    search_provider_hard_timeout_seconds: float = 8.0
+    search_total_timeout_single_seconds: float = 12.0
+    search_total_timeout_all_seconds: float = 22.0
     search_max_concurrent_providers: int = 2
     search_min_results_single_type: int = 6
     search_max_results_single_type: int = 8

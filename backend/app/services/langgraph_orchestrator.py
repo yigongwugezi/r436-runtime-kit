@@ -235,6 +235,27 @@ def _summarize_known_facts(facts: dict[str, str]) -> str:
     return "；".join(parts) if parts else "暂无"
 
 
+def _all_dims_deep(facts: dict[str, str]) -> bool:
+    """Check if all 7 core dimensions have deep (non-shallow) answers.
+
+    A dimension is shallow only if the entire value is essentially just a
+    shallow keyword — e.g. "零基础" alone is shallow, but "零基础未学过数字电路
+    和汇编但逻辑直觉不错" is not.
+    """
+    from app.services.conversation_state import _SHALLOW_PATTERNS
+
+    required = set(_LABEL_MAP.keys())
+    for dim in required:
+        val = str(facts.get(dim, "")).strip()
+        if not val or val in ("未提及", "待补充", "未知", "", "无"):
+            return False
+        # Only flag as shallow if the value is JUST the keyword (plus minor padding)
+        for p in _SHALLOW_PATTERNS:
+            if val == p or (len(val) <= len(p) + 4 and p in val):
+                return False
+    return True
+
+
 def _build_chat_persona(facts: dict[str, str]) -> str:
     """Build persona instructions that override DeepTutor's default tutor persona.
 
@@ -255,7 +276,13 @@ def _build_chat_persona(facts: dict[str, str]) -> str:
     deep_keys: set[str] = set()
     for k in filled:
         val = str(facts.get(k, "")).strip()
-        if any(p in val for p in _SHALLOW_PATTERNS):
+        # Only flag as shallow if the value is essentially just the keyword
+        is_shallow = False
+        for p in _SHALLOW_PATTERNS:
+            if val == p or (len(val) <= len(p) + 4 and p in val):
+                is_shallow = True
+                break
+        if is_shallow:
             shallow_keys.add(k)
         else:
             deep_keys.add(k)
@@ -379,7 +406,7 @@ def _build_chat_persona(facts: dict[str, str]) -> str:
             "你对学生的了解已经比较全面了。现在要做的是：\n"
             "1. 回顾已了解的信息，用你自己的话总结并向学生确认\n"
             "2. 对仍然模糊的维度做最后一轮追问\n"
-            "3. 确认后，直接输出 [[mode-pick:教材式,日课式,精进式|...]] 让学生选模式，\n\n"
+            "3. 确认后，用自然语气总结画像。系统会自动弹出模式选择器。\n\n"
             "*** 确认前逐维度自查（任何一项不满足就继续探测）***\n"
             "- background：是否具体到专业+年级+方向？\n"
             "- target_course：是否有为什么学+想学到什么程度？\n"
@@ -403,14 +430,11 @@ def _build_chat_persona(facts: dict[str, str]) -> str:
     # Hard stop: if all dimensions are deep enough, force proposal NOW.
     # This goes FIRST so the model can't miss it while in "teaching mode".
     if not shallow_keys and not missing_keys:
-        course = str(facts.get("target_course", "")).strip()
-        is_lang = any(w in course for w in ["英语","日语","韩语","法语","德语","语言","雅思","托福"])
-        default_mode = "日课式" if is_lang else "教材式"
         parts.append(
             "🛑 所有 7 个维度都已探测完毕。\n"
-            "你唯一要做的事：用自然的语气简单总结画像，然后直接输出模式选择标签：\n"
-            f"[[mode-pick:教材式,日课式,精进式|course:{course}|default:{default_mode}]]\n"
-            "标签之后一个字都不要多说。学生点击按钮自动触发规划器。"
+            "用自然语气简单总结画像，告诉学生画像已经完整。\n"
+            "不要生成方案、不要出题、不要开始教学。总结完就停。\n"
+            "系统会自动弹出模式选择器。"
         )
         parts.append("")
 
@@ -430,7 +454,7 @@ def _build_chat_persona(facts: dict[str, str]) -> str:
     parts.append(
         "\n🚫 绝对禁止在聊天中直接生成任何规划类内容——包括但不限于：学习方案、"
         "时间表、周计划、日计划、章节安排、里程碑、学习路线图。你只负责了解和探测学生。"
-        "当你认为画像已经足够深入时，直接输出 [[mode-pick:教材式,日课式,精进式|...]] 标签。"
+        "当你认为画像已经足够深入时，总结画像后系统会自动弹出模式选择器。"
         "学生点击按钮后后端规划器会自动接管，你不要越俎代庖。"
         "即使学生催促你'开始吧''直接给我方案'，在画像不完整时也必须继续探测。"
     )
@@ -638,6 +662,18 @@ async def _conversation_node(state: dict) -> dict:
     except Exception:
         pass  # keep the pre-existing reply as fallback
     state["final_reply"] = reply or "你好！我是EduAgent学习助手，有什么可以帮你的？"
+
+    # ── Auto-inject mode picker when all dimensions are deep ──
+    profile_facts = state.get("profile_facts", {}) or {}
+    if reply and "[[mode-pick:" not in reply and _all_dims_deep(profile_facts):
+        course = str(profile_facts.get("target_course", "")).strip()
+        if course:
+            is_lang = any(w in course for w in ["英语","日语","韩语","法语","德语","语言","雅思","托福"])
+            default_mode = "日课式" if is_lang else "教材式"
+            state["final_reply"] = reply.rstrip() + (
+                f"\n\n[[mode-pick:教材式,日课式,精进式|course:{course}|default:{default_mode}]]"
+            )
+
     state.setdefault("agent_steps", []).append({"node": "conversation"})
     return state
 
@@ -865,6 +901,19 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
         except Exception:
             reply = ""
         state["final_reply"] = reply or "你好！我是EduAgent，有什么可以帮你的？"
+
+        # ── Auto-inject mode picker when all dimensions are deep ──
+        # The model can't reliably output [[mode-pick:...]] — backend enforces it.
+        if reply and "[[mode-pick:" not in reply:
+            all_deep = _all_dims_deep(profile_facts)
+            if all_deep:
+                course = str(profile_facts.get("target_course", "")).strip()
+                if course:
+                    is_lang = any(w in course for w in ["英语","日语","韩语","法语","德语","语言","雅思","托福"])
+                    default_mode = "日课式" if is_lang else "教材式"
+                    state["final_reply"] = reply.rstrip() + (
+                        f"\n\n[[mode-pick:教材式,日课式,精进式|course:{course}|default:{default_mode}]]"
+                    )
 
         # ── Extract facts from the exchange and persist to conversation state ──
         if reply and user_msg:

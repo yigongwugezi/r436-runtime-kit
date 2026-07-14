@@ -312,11 +312,43 @@ def normalize_search_context(
     }
 
 
+def _split_compound_keyword(keyword: str) -> list[str]:
+    """Split a compound Chinese keyword into individual sub-words for partial matching.
+
+    e.g. "计算机发展简史与分类" → ["计算机发展简史与分类", "计算机发展简史", "分类"]
+    """
+    parts = [keyword]
+    for sep in ("与", "和", "及", "、", "的", "之"):
+        if sep in keyword:
+            parts.extend(p for p in keyword.split(sep) if len(p) >= 2)
+    return list(dict.fromkeys(parts))
+
+
+def _keyword_matches(text: str, context: dict[str, Any]) -> list[str]:
+    """Check which context keywords appear in text, splitting compound keywords."""
+    matched: list[str] = []
+    matched_original: set[str] = set()
+    for term in context["keywords"]:
+        term_lower = term.lower()
+        if term_lower in text:
+            matched.append(term)
+            matched_original.add(term_lower)
+        else:
+            for sub in _split_compound_keyword(term_lower):
+                if sub in text and sub not in matched_original:
+                    matched.append(term)
+                    matched_original.add(term_lower)
+                    break
+    for term in context["english_keywords"]:
+        term_lower = term.lower()
+        if term_lower in text and term not in {m for m in matched}:
+            matched.append(term)
+    return list(dict.fromkeys(matched))
+
+
 def score_relevance(title: str, snippet: str, context: dict[str, Any], resource_type: str, match_level: str, trust_level: str) -> tuple[float, list[str]]:
     text = f"{title} {snippet}".lower()
-    matched = [term for term in context["keywords"] if term.lower() in text]
-    matched += [term for term in context["english_keywords"] if term.lower() in text]
-    matched = list(dict.fromkeys(matched))
+    matched = _keyword_matches(text, context)
     score = 0.26 + min(0.50, len(matched) * 0.10)
     if matched:
         score += 0.1
@@ -359,7 +391,7 @@ class SectionResourceRecommendationService:
     """Adapt real search results for the lecture workspace without persistence."""
 
     def __init__(self, client: Any | None = None) -> None:
-        self._client = client or get_search_client("duckduckgo")
+        self._client = client or get_search_client(settings.search_provider if settings.search_provider != "mock" else "duckduckgo")
         self._use_cache = client is None
 
     _normal_url = staticmethod(normalize_url)
@@ -387,10 +419,10 @@ class SectionResourceRecommendationService:
 
     @staticmethod
     def _query_layers(context: dict[str, Any], resource_type: str, language: str) -> list[tuple[str, str]]:
-        course = context["course_name"] or "数据结构"
+        course = context["course_name"] or ""
         topic = context["primary_topic"]
         keywords = " ".join(context["keywords"][:3]) or topic
-        english = " ".join(context["english_keywords"][:3]) or "recursion call stack"
+        english = " ".join(context["english_keywords"][:3]) or ""
         cn_hints = []
         en_hints = []
         if "example_first" in context["preferences"]:
@@ -400,21 +432,37 @@ class SectionResourceRecommendationService:
         hint = " ".join(cn_hints)
         english_hint = " ".join(en_hints)
         if resource_type == "article":
-            return [(f"{course} {keywords} 教程 {hint}".strip(), "exact_topic"), (f"{topic} 示例 {hint}".strip(), "exact_topic"), (f"{english} tutorial {english_hint}".strip(), "chapter_level"), (f"{course} {topic} 教学", "course_level")]
+            base = [(f"{course} {topic} {hint}".strip(), "exact_topic"),
+                    (f"{keywords} 教程 {hint}".strip(), "exact_topic")]
+            if english:
+                base.append((f"{english} tutorial {english_hint}".strip(), "chapter_level"))
+            if course and course not in {q for q, _ in base}:
+                base.append((f"{course} {topic} 教学".strip(), "course_level"))
+            return [q for q in base if q[0]][:3]
         if resource_type == "video":
-            return [
-                (f"{course} {topic} 视频".strip(), "exact_topic"),
-                (f"{course} {keywords} 教学视频".strip(), "exact_topic"),
-                (f"{topic} 视频教程 bilibili".strip(), "chapter_level"),
-                (f"{course} {topic} 视频教程".strip(), "chapter_level"),
-                (f"{english} calculus video tutorial".strip(), "course_level"),
-            ]
+            base = [(f"{course} {topic} 视频教程".strip(), "exact_topic"),
+                    (f"{topic} 视频教程 bilibili".strip(), "chapter_level"),
+                    (f"{course} {topic} 视频".strip(), "chapter_level")]
+            if english:
+                base.append((f"{english} video tutorial".strip(), "course_level"))
+            return [q for q in base if q[0]][:3]
         if resource_type == "course":
-            return [(f"{course} {topic} {hint}".strip(), "exact_topic"), (f"{course} {topic} 课程".strip(), "chapter_level"), (f"{course} {topic} mooc".strip(), "chapter_level"), (f"{course} 在线课程".strip(), "course_level")]
+            base = [(f"{course} {topic} 课程".strip(), "exact_topic"),
+                    (f"{course} {topic} mooc".strip(), "chapter_level"),
+                    (f"{course} 在线课程".strip(), "course_level")]
+            return [q for q in base if q[0]][:3]
         if resource_type == "document":
-            return [(f"{topic} {hint}".strip(), "exact_topic"), (f"{topic} 课件".strip(), "exact_topic"), (f"{course} {topic} 讲义".strip(), "chapter_level"), (f"{english} lecture notes {english_hint}".strip(), "course_level")]
-        expanded = "tail recursion" if "recursion" in english else english
-        return [(f"{english} paper".strip(), "exact_topic"), (f"{english} research".strip(), "exact_topic"), (f"{expanded} optimization paper".strip(), "expanded_research"), (f"{english} design paper".strip(), "expanded_research")]
+            base = [(f"{topic} {hint}".strip(), "exact_topic"),
+                    (f"{topic} 课件 讲义".strip(), "exact_topic")]
+            if english:
+                base.append((f"{english} lecture notes {english_hint}".strip(), "chapter_level"))
+            return [q for q in base if q[0]][:3]
+        if not english:
+            return [(f"{topic} paper".strip(), "exact_topic"),
+                    (f"{topic} 论文".strip(), "expanded_research")]
+        return [(f"{english} paper".strip(), "exact_topic"),
+                (f"{english} research paper".strip(), "expanded_research"),
+                (f"{topic} paper".strip(), "chapter_level")][:3]
 
     def _rank(
         self,
@@ -468,7 +516,8 @@ class SectionResourceRecommendationService:
                 score -= 0.14
             elif feedback in {"too_hard", "too_easy"}:
                 score -= 0.04
-            if score < 0.25 or (not matched and match_level == "exact_topic"):
+            primary_topic_hit = context["primary_topic"].lower() in text if context.get("primary_topic") else False
+            if score < 0.25 or (not matched and match_level == "exact_topic" and not primary_topic_hit):
                 diagnostics["filtered"]["low_relevance"] += 1
                 continue
             diagnostics["relevant_count"] += 1
@@ -595,7 +644,10 @@ class SectionResourceRecommendationService:
             candidates.extend({"item": item, "resource_type": resource_type, "match_level": match_level} for item in items)
 
         try:
+            # Fire the first two queries in parallel — double coverage without double wall-clock.
             submit(0)
+            if len(layers) > 1:
+                submit(1)
             while pending and time.monotonic() - started < total_budget:
                 if cancel_event and cancel_event.is_set():
                     raise SearchCancelled()
@@ -615,7 +667,8 @@ class SectionResourceRecommendationService:
                         add_response(query, match_level, future.result(timeout=0))
                     except SearchCancelled:
                         raise
-                    except Exception:
+                    except Exception as exc:
+                        logger.warning("Search layer failed for query=%r type=%r: %s", query, resource_type, exc)
                         warnings.append("外部资源搜索暂不可用，请稍后重试。")
                 ranked = self._rank(candidates, context, language, {**diagnostics, "filtered": Counter()}, feedback_by_url)
                 if len([item for item in ranked if item["resource_type"] == resource_type]) >= target_count:
@@ -673,9 +726,12 @@ class SectionResourceRecommendationService:
             self._emit(progress_callback, "primary_search", "running")
 
         try:
-            for resource_type in search_requested:
+            for idx, resource_type in enumerate(search_requested):
                 if cancel_event and cancel_event.is_set():
                     raise SearchCancelled()
+                # Small stagger between types reduces search-engine rate-limiting.
+                if idx > 0 and len(search_requested) > 1:
+                    time.sleep(0.6)
                 self._search_layers(
                     resource_type=resource_type,
                     layers=self._query_layers(context, resource_type, language),

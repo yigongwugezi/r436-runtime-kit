@@ -1429,3 +1429,57 @@ def get_attempt_answers(db: Session, attempt_id: str) -> list[AnswerRecordModel]
     return db.query(AnswerRecordModel).filter(
         AnswerRecordModel.attempt_id == attempt_id
     ).order_by(AnswerRecordModel.created_at).all()
+
+
+# ── Assessment State (closed-loop persistence) ─────────────────────────
+
+from app.db.models import AssessmentStateModel
+
+
+def get_assessment_state(db: Session, session_id: str) -> AssessmentStateModel | None:
+    """Get the persisted assessment tracking state for a session."""
+    return db.get(AssessmentStateModel, session_id)
+
+
+def upsert_assessment_state(
+    db: Session,
+    session_id: str,
+    *,
+    last_diagnosis_at: float | None = None,
+    last_mastery_snapshot: dict | None = None,
+    events_since_last_diagnosis: int | None = None,
+    resource_completions_since_diagnosis: int | None = None,
+) -> AssessmentStateModel:
+    """Create or update the assessment tracking state for a session."""
+    state = db.get(AssessmentStateModel, session_id)
+    if state is None:
+        state = AssessmentStateModel(session_id=session_id)
+        db.add(state)
+    if last_diagnosis_at is not None:
+        state.last_diagnosis_at = last_diagnosis_at
+    if last_mastery_snapshot is not None:
+        state.last_mastery_snapshot = last_mastery_snapshot
+    if events_since_last_diagnosis is not None:
+        state.events_since_last_diagnosis = events_since_last_diagnosis
+    if resource_completions_since_diagnosis is not None:
+        state.resource_completions_since_diagnosis = resource_completions_since_diagnosis
+    db.commit()
+    db.refresh(state)
+    return state
+
+
+def get_stale_assessment_sessions(db: Session, stale_seconds: float) -> list[str]:
+    """Return session_ids whose last diagnosis is older than *stale_seconds*
+    AND that have enough new events to warrant re-assessment."""
+    import time
+    cutoff = time.time() - stale_seconds
+    rows = (
+        db.query(AssessmentStateModel.session_id)
+        .filter(
+            AssessmentStateModel.last_diagnosis_at > 0,
+            AssessmentStateModel.last_diagnosis_at < cutoff,
+            AssessmentStateModel.events_since_last_diagnosis >= 3,
+        )
+        .all()
+    )
+    return [row[0] for row in rows]

@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # ── Thresholds ───────────────────────────────────────────────────────────
 
 REASSESS_INTERVAL_SECONDS = 3 * 24 * 3600   # re-assess every 3 days
-MASTERY_CHANGE_THRESHOLD = 15                # point change to trigger plan adjust
+MASTERY_CHANGE_THRESHOLD = 10                # point change to trigger plan adjust
 MIN_EVENTS_FOR_REASSESS = 3                  # need at least N new events to re-assess
 RESOURCE_COMPLETE_BATCH = 5                  # auto-diagnose after every N resource completions
 
@@ -95,34 +95,96 @@ class SessionAssessmentState:
 
 
 class AssessmentStateTracker:
-    """Tracks per-session assessment metadata to decide when to trigger."""
+    """Tracks per-session assessment metadata to decide when to trigger.
+
+    State is persisted to DB via ``AssessmentStateModel`` so that event
+    counters, mastery snapshots, and diagnosis timestamps survive server
+    restarts.  An in-memory cache avoids repeated DB reads within the same
+    process lifetime.
+    """
 
     def __init__(self) -> None:
-        self._states: dict[str, SessionAssessmentState] = {}
+        self._cache: dict[str, SessionAssessmentState] = {}
         self._lock = threading.Lock()
+
+    # ── DB helpers ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _db_session():
+        from app.db.engine import SessionLocal
+        return SessionLocal()
+
+    def _load_from_db(self, session_id: str) -> SessionAssessmentState | None:
+        try:
+            db = self._db_session()
+            from app.db.repository import get_assessment_state
+            row = get_assessment_state(db, session_id)
+            if row is None:
+                return None
+            return SessionAssessmentState(
+                session_id=row.session_id,
+                last_diagnosis_at=row.last_diagnosis_at,
+                last_mastery_snapshot=dict(row.last_mastery_snapshot or {}),
+                events_since_last_diagnosis=row.events_since_last_diagnosis,
+                resource_completions_since_diagnosis=row.resource_completions_since_diagnosis,
+            )
+        except Exception:
+            return None
+        finally:
+            if db:
+                db.close()
+
+    def _persist(self, state: SessionAssessmentState) -> None:
+        try:
+            db = self._db_session()
+            from app.db.repository import upsert_assessment_state
+            upsert_assessment_state(
+                db, state.session_id,
+                last_diagnosis_at=state.last_diagnosis_at,
+                last_mastery_snapshot=state.last_mastery_snapshot,
+                events_since_last_diagnosis=state.events_since_last_diagnosis,
+                resource_completions_since_diagnosis=state.resource_completions_since_diagnosis,
+            )
+        except Exception:
+            logger.exception("Failed to persist assessment state for %s", state.session_id)
+        finally:
+            if db:
+                db.close()
+
+    # ── Public API ──────────────────────────────────────────────────
 
     def get(self, session_id: str) -> SessionAssessmentState:
         with self._lock:
-            if session_id not in self._states:
-                self._states[session_id] = SessionAssessmentState(session_id=session_id)
-            return self._states[session_id]
+            if session_id in self._cache:
+                return self._cache[session_id]
+        # Try DB, fall back to fresh in-memory
+        db_state = self._load_from_db(session_id)
+        state = db_state if db_state is not None else SessionAssessmentState(session_id=session_id)
+        with self._lock:
+            self._cache[session_id] = state
+        return state
 
     def record_diagnosis(self, session_id: str, mastery: dict[str, float]) -> None:
         with self._lock:
-            state = self._states.get(session_id) or SessionAssessmentState(session_id=session_id)
+            state = self._cache.get(session_id) or SessionAssessmentState(session_id=session_id)
             state.last_diagnosis_at = time.time()
             state.last_mastery_snapshot = dict(mastery)
             state.events_since_last_diagnosis = 0
             state.resource_completions_since_diagnosis = 0
-            self._states[session_id] = state
+            self._cache[session_id] = state
+        self._persist(state)
 
     def record_event(self, session_id: str, event_type: str) -> None:
         with self._lock:
-            state = self._states.get(session_id) or SessionAssessmentState(session_id=session_id)
+            state = self._cache.get(session_id)
+            if state is None:
+                db_state = self._load_from_db(session_id)
+                state = db_state if db_state is not None else SessionAssessmentState(session_id=session_id)
             state.events_since_last_diagnosis += 1
             if event_type == "resource_complete":
                 state.resource_completions_since_diagnosis += 1
-            self._states[session_id] = state
+            self._cache[session_id] = state
+        self._persist(state)
 
     def needs_reassessment(self, session_id: str) -> bool:
         state = self.get(session_id)
@@ -133,10 +195,8 @@ class AssessmentStateTracker:
         return time_since >= REASSESS_INTERVAL_SECONDS and has_enough_events
 
     def needs_post_quiz_diagnosis(self, session_id: str) -> bool:
-        """Should we auto-diagnose after a quiz submission?"""
-        state = self.get(session_id)
-        # Always diagnose after quiz if we have any previous events
-        return state.events_since_last_diagnosis >= 1
+        """Should we auto-diagnose after a quiz submission?  Always true after a quiz."""
+        return True
 
     def needs_post_resource_diagnosis(self, session_id: str) -> bool:
         """Should we auto-diagnose after resource completions?"""
@@ -144,17 +204,17 @@ class AssessmentStateTracker:
         return state.resource_completions_since_diagnosis >= RESOURCE_COMPLETE_BATCH
 
     def get_stale_sessions(self) -> list[str]:
-        """Return sessions that are due for periodic re-assessment."""
-        with self._lock:
-            stale = []
-            now = time.time()
-            for sid, state in self._states.items():
-                if state.last_diagnosis_at == 0:
-                    continue
-                if (now - state.last_diagnosis_at) >= REASSESS_INTERVAL_SECONDS:
-                    if state.events_since_last_diagnosis >= MIN_EVENTS_FOR_REASSESS:
-                        stale.append(sid)
-            return stale
+        """Return sessions that are due for periodic re-assessment (DB-backed)."""
+        try:
+            db = self._db_session()
+            from app.db.repository import get_stale_assessment_sessions
+            return get_stale_assessment_sessions(db, REASSESS_INTERVAL_SECONDS)
+        except Exception:
+            logger.exception("Failed to query stale assessment sessions")
+            return []
+        finally:
+            if db:
+                db.close()
 
 
 assessment_tracker = AssessmentStateTracker()
@@ -255,8 +315,16 @@ def run_post_quiz_assessment(
 
         # ═══════════════════════════════════════════════════════════
         # Step 4: Check if plan adjustment is needed → PlannerAgent
+        #
+        # Trigger adjustment when:
+        #   a) mastery scores changed significantly (≥1 topic, ≥10 pts), OR
+        #   b) the diagnosis revealed actionable weak points that the
+        #      current path may not cover
         # ═══════════════════════════════════════════════════════════
-        should_adjust = _detect_mastery_change(session_id, new_mastery)
+        mastery_changed = _detect_mastery_change(session_id, new_mastery)
+        new_weak_points = new_diagnosis.get("weak_knowledge_points", [])
+        has_actionable_weakness = bool(new_weak_points or weak_points)
+        should_adjust = mastery_changed or has_actionable_weakness
         if should_adjust:
             try:
                 planner_agent = factory.get("planner_agent")
@@ -656,8 +724,8 @@ def _detect_mastery_change(
         if abs(new_score - old_score) >= MASTERY_CHANGE_THRESHOLD:
             significant_changes += 1
 
-    # Trigger if 3+ topics changed significantly
-    return significant_changes >= 3
+    # Trigger if 1+ topics changed significantly (was 3 — too conservative)
+    return significant_changes >= 1
 
 
 def _detect_decay(

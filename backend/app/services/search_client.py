@@ -180,7 +180,7 @@ class MockSearchClient(BaseSearchClient):
 class DuckDuckGoSearchClient(BaseSearchClient):
     """Free real search through ``ddgs`` with bounded backend fallback."""
 
-    _BACKENDS = ("auto", "bing", "brave")
+    _BACKENDS = ("auto", "bing", "yahoo", "yandex", "brave")
     _circuit_lock = Lock()
     _circuits: dict[str, tuple[int, float, bool]] = {}
     _health: dict[str, ProviderHealth] = {}
@@ -211,6 +211,7 @@ class DuckDuckGoSearchClient(BaseSearchClient):
 
         deadline = time.monotonic() + self.total_timeout
         last_error: Exception | None = None
+        empty_backends: list[str] = []
         for backend in self._ordered_backends():
             if not self._allow_backend(backend):
                 continue
@@ -226,11 +227,14 @@ class DuckDuckGoSearchClient(BaseSearchClient):
                 if raw:
                     self._record_success(backend, time.monotonic() - (deadline - self.total_timeout))
                     return self._response(query, raw, backend)
+                empty_backends.append(backend)
             except Exception as exc:
                 last_error = exc
                 self._record_failure(backend)
                 logger.info("DDGS backend %s unavailable (%s)", backend, classify_search_error(exc))
 
+        if empty_backends and not last_error:
+            logger.warning("DDGS all backends returned empty: %s (query=%r)", empty_backends, query[:80])
         raise SearchError(f"DDGS search failed after real backends: {last_error or 'no results'}", cause=last_error)
 
     @classmethod

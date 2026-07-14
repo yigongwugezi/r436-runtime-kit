@@ -814,3 +814,29 @@ class UserPreferencesModel(Base):
     preferences: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+
+# ── Assessment State (closed-loop tracking, survives restarts) ──────────
+
+class AssessmentStateModel(Base):
+    """Persistent per-session assessment tracking state for the closed-loop.
+
+    Replaces the in-memory ``AssessmentStateTracker._states`` dict so that
+    event counters, mastery snapshots, and diagnosis timestamps survive
+    server restarts.
+    """
+
+    __tablename__ = "assessment_states"
+
+    session_id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, index=True
+    )
+    # Timestamp of the last diagnosis run (epoch seconds)
+    last_diagnosis_at: Mapped[float] = mapped_column(default=0.0)
+    # mastery snapshot:  {kp_name: score, ...}
+    last_mastery_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Counters since last diagnosis
+    events_since_last_diagnosis: Mapped[int] = mapped_column(Integer, default=0)
+    resource_completions_since_diagnosis: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)

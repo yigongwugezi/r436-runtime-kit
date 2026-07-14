@@ -1193,13 +1193,18 @@ class ManimVideoProvider:
         for attempt in range(MAX_RETRIES + 1):
             import subprocess
             logger.info("Render attempt %d/%d, code len=%d", attempt + 1, MAX_RETRIES + 1, len(manim_code))
-            result = subprocess.run(
-                ["manim", "-ql", "--format", "mp4", str(script_path), scene_name],
-                capture_output=True, text=True, timeout=300,
-                cwd=str(self.output_dir), env=_manim_env,
-            )
+            try:
+                result = subprocess.run(
+                    ["manim", "-ql", "--format", "mp4", str(script_path), scene_name],
+                    capture_output=True, text=True, timeout=300,
+                    cwd=str(self.output_dir), env=_manim_env,
+                )
+            except subprocess.TimeoutExpired:
+                logger.error("Render attempt %d TIMED OUT after 300s", attempt + 1)
+                # Don't retry on timeout — the animation is too complex
+                break
             if result.returncode == 0:
-                logger.info("Manim render SUCCESS on attempt %d", attempt + 1)
+                logger.info("Manim render SUCCESS on attempt %d (rc=%d)", attempt + 1, result.returncode)
                 video_files = list(self.output_dir.glob(f"**/{scene_name}.mp4"))
                 if not video_files:
                     video_files = list(self.output_dir.rglob("*.mp4"))
@@ -1208,12 +1213,9 @@ class ManimVideoProvider:
                     break
 
             # Failed — log full error, let LLM fix the code
+            logger.error("Manim render attempt %d FAILED. stderr tail: %s", attempt + 1,
+                (result.stderr or "")[-500:] if result.stderr else "(no stderr)")
             if attempt < MAX_RETRIES:
-                # Extract actual LaTeX error from full output
-                full_output = (result.stderr or "") + (result.stdout or "")
-                # Find the meaningful error line
-                errors = [l for l in full_output.splitlines() if l.startswith("!") or "Error:" in l or "error:" in l]
-                logger.warning("Manim render attempt %d failed. LaTeX errors: %s", attempt + 1, errors[:3] if errors else ["unknown"])
                 fixed = self._fix_script(code_llm, manim_code, result.stderr or "", result.stdout or "", topic, subject, kb_context)
                 if fixed and len(fixed) > 30:
                     manim_code = fixed
