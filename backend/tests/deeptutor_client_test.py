@@ -92,15 +92,21 @@ def main() -> None:
         original_get_client = llm_client.get_llm_client
 
         class ConfiguredClient:
-            def chat(self, _messages):
+            def __init__(self):
+                self.kwargs = {}
+
+            def chat(self, _messages, **kwargs):
+                self.kwargs = kwargs
                 return " configured response "
 
         class FailingClient:
-            def chat(self, _messages):
+            def chat(self, _messages, **_kwargs):
                 raise RuntimeError("offline")
 
-        llm_client.get_llm_client = lambda _provider: ConfiguredClient()
+        configured_client = ConfiguredClient()
+        llm_client.get_llm_client = lambda _provider: configured_client
         assert asyncio.run(original_fallback("hello", [], "", "")) == "configured response"
+        assert configured_client.kwargs == {"timeout": 8, "retry_count": 1}
         llm_client.get_llm_client = lambda _provider: FailingClient()
         assert asyncio.run(original_fallback("hello", [], "", "")) == ""
         llm_client.get_llm_client = original_get_client

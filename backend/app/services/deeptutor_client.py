@@ -9,6 +9,7 @@ import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
+_DIRECT_CHAT_TIMEOUT_SECONDS = 8
 
 
 async def _direct_llm_fallback(
@@ -37,7 +38,8 @@ async def _direct_llm_fallback(
     messages.append({"role": "user", "content": message})
     started = time.monotonic()
     try:
-        return str(await asyncio.to_thread(client.chat, messages) or "").strip()
+        timeout = min(_DIRECT_CHAT_TIMEOUT_SECONDS, max(1, int(settings.llm_request_timeout)))
+        return str(await asyncio.to_thread(client.chat, messages, timeout=timeout, retry_count=1) or "").strip()
     except Exception as exc:
         logger.warning(
             "Configured chat provider failed: provider=%s error=%s elapsed_ms=%d",
