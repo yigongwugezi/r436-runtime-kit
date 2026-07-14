@@ -728,6 +728,13 @@ class ConversationStore:
 
         lower = text.lower()
 
+        # A request explicitly scoped to this turn is a presentation constraint,
+        # not a durable learner fact.
+        if any(marker in text for marker in ("这次", "本次", "当前")) and any(
+            marker in text for marker in ("简单", "简要", "概览", "了解一下")
+        ):
+            return
+
         def set_fact(key: str, value: str, *, force: bool = False) -> None:
             self._set_fact(state, key, value, source_text=text, force=force)
 
@@ -871,6 +878,7 @@ class ConversationStore:
         for key, value in extracted_profile_facts.facts.items():
             # Map daily_minutes → time_budget so PlannerAgent gets consistent data
             if key == "daily_minutes":
+                state.facts["daily_minutes"] = str(value)
                 existing = str(state.facts.get("time_budget", "")).strip()
                 if not existing or existing in ("未提及", "待补充", "未知", "", "无"):
                     set_fact("time_budget", f"每天{int(value) // 60}小时" if int(value) >= 60 else f"每天{value}分钟")

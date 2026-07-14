@@ -127,6 +127,59 @@ _LABEL_MAP = {
 }
 
 
+def _chat_fallback_reply(message: str, messages: list[dict[str, Any]] | None = None) -> tuple[str, dict[str, bool]]:
+    """Return a safe, current-turn fallback when chat providers are unavailable."""
+    current_message = str(message or "").strip()
+    user_messages = [m for m in messages or [] if isinstance(m, dict) and m.get("role") == "user"]
+    is_new_conversation = len(user_messages) <= 1
+    current_message_is_empty = not current_message
+    compact = re.sub(r"\s+", "", current_message).lower()
+    current_message_is_greeting = compact in {"你好", "您好", "嗨", "哈喽", "hello", "hi"}
+    meta = {
+        "is_new_conversation": is_new_conversation,
+        "current_message_is_greeting": current_message_is_greeting,
+        "current_message_is_empty": current_message_is_empty,
+    }
+    if current_message_is_empty:
+        return "我没有收到具体内容，可以再说明一下吗？", meta
+    if current_message_is_greeting:
+        return "你好！我是EduAgent，有什么可以帮你的吗？", meta
+
+    background = re.search(r"(?:我是一名|我是|本人是)\s*([^，。,.!?！？]{2,30})", current_message)
+    if background and any(token in background.group(1) for token in ("大一", "大二", "大三", "大四", "研究生", "本科", "专业", "工程", "计算机", "学生")):
+        return f"了解，你目前是{background.group(1).strip()}。我会结合这个学习阶段调整后续建议。", meta
+    if "喜欢" in current_message and any(token in current_message for token in ("视频", "图解", "动画", "文字", "练习", "实操")):
+        return "收到，你偏好通过视频学习；后续讲解我会优先采用这种方式。", meta
+    if any(token in current_message for token in ("这次", "当前", "本次")) and any(token in current_message for token in ("简单", "简要", "概览", "了解一下")):
+        return "明白，这次我会先用简要的方式说明，不把这个临时偏好写成长期设置。", meta
+    if "身份信息" in current_message and any(token in current_message for token in ("复述", "刚才", "告诉")):
+        for item in reversed(user_messages[:-1]):
+            previous = str(item.get("content") or "")
+            match = re.search(r"(?:我是一名|我是|本人是)\s*([^，。,.!?！？]{2,30})", previous)
+            if match:
+                return f"你刚才提到自己是{match.group(1).strip()}。", meta
+    return "我没有完全理解你的意思，可以再具体说明一下吗？", meta
+
+
+def _is_usable_chat_reply(reply: str, message: str) -> bool:
+    """Reject provider default templates when they do not answer this turn."""
+    text = str(reply or "").strip()
+    current = str(message or "").strip()
+    compact = re.sub(r"\s+", "", current).lower()
+    is_greeting = compact in {"你好", "您好", "嗨", "哈喽", "hello", "hi"}
+    is_explicit_fact = bool(re.search(r"(?:我是一名|我是|本人是)\s*[^，。,.!?！？]{2,30}", current))
+    is_preference = "喜欢" in current and any(token in current for token in ("视频", "图解", "动画", "文字", "练习", "实操"))
+    is_temporary = any(token in current for token in ("这次", "当前", "本次")) and any(token in current for token in ("简单", "简要", "概览", "了解一下"))
+    is_recap = "身份信息" in current and any(token in current for token in ("复述", "刚才", "告诉"))
+    if not text:
+        return False
+    if "你好！我是EduAgent" in text and not is_greeting:
+        return False
+    if text.startswith("我没有完全理解") and (is_greeting or is_explicit_fact or is_preference or is_temporary or is_recap):
+        return False
+    return True
+
+
 def _is_likely_chat(msg: str, facts: dict) -> bool:
     """Quick check: is this message almost certainly casual chat?
     Avoids the full ConversationAgent overhead for the common case."""
@@ -535,7 +588,12 @@ async def _conversation_node(state: dict) -> dict:
             reply = dt_reply
     except Exception:
         pass  # keep the pre-existing reply as fallback
-    state["final_reply"] = reply or "你好！我是EduAgent学习助手，有什么可以帮你的？"
+    if not _is_usable_chat_reply(reply, msg):
+        reply, fallback_meta = _chat_fallback_reply(msg, state.get("messages"))
+        state.update(fallback_meta)
+        state["fallback_used"] = True
+        state["reply_source"] = "chat_fallback"
+    state["final_reply"] = reply
     state.setdefault("agent_steps", []).append({"node": "conversation"})
     return state
 
@@ -745,7 +803,12 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
             )
         except Exception:
             reply = ""
-        state["final_reply"] = reply or "你好！我是EduAgent，有什么可以帮你的？"
+        if not _is_usable_chat_reply(reply, user_msg):
+            reply, fallback_meta = _chat_fallback_reply(user_msg, state.get("messages"))
+            state.update(fallback_meta)
+            state["fallback_used"] = True
+            state["reply_source"] = "chat_fallback"
+        state["final_reply"] = reply
 
         # ── Extract facts from the exchange and persist to conversation state ──
         if reply and user_msg:

@@ -525,7 +525,20 @@ action："""
             return "好的，我来帮你规划学习路径。"
         if action == "profile":
             return "收到，已记录你的信息。"
-        return "好的，有什么我可以帮你的？"
+        text = str(message or "").strip()
+        compact = re.sub(r"\s+", "", text).lower()
+        if not text:
+            return "我没有收到具体内容，可以再说明一下吗？"
+        if compact in {"你好", "您好", "嗨", "哈喽", "hello", "hi"}:
+            return "你好！我是EduAgent，有什么可以帮你的吗？"
+        background = re.search(r"(?:我是一名|我是|本人是)\s*([^，。,.!?！？]{2,30})", text)
+        if background and any(token in background.group(1) for token in ("大一", "大二", "大三", "大四", "研究生", "本科", "专业", "工程", "计算机", "学生")):
+            return f"了解，你目前是{background.group(1).strip()}。我会结合这个学习阶段调整后续建议。"
+        if "喜欢" in text and any(token in text for token in ("视频", "图解", "动画", "文字", "练习", "实操")):
+            return "收到，你偏好通过视频学习；后续讲解我会优先采用这种方式。"
+        if any(token in text for token in ("这次", "当前", "本次")) and any(token in text for token in ("简单", "简要", "概览", "了解一下")):
+            return "明白，这次我会先用简要的方式说明，不把这个临时偏好写成长期设置。"
+        return "我没有完全理解你的意思，可以再具体说明一下吗？"
 
     def _build_llm_messages(self, user_message, context):
         msgs = [{"role": "system", "content": self.SYSTEM_PROMPT}]
