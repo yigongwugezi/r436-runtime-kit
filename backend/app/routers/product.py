@@ -1643,8 +1643,10 @@ def _reply_for_intent(
             skip_reason = result.get("skip_reason") or result.get("overall_error") or "pipeline 未执行"
             return f"生成流程这次没有完整执行（{skip_reason}）。你可以稍后重试。", False
 
-        # 调用 ConversationAgent final_reply 模式生成最终回复
-        final_reply = _generate_final_reply(message, session_id, result)
+        # 如果 pipeline 已经生成了最终回复（如模式选择器），直接用，不要再让 CA 重写
+        final_reply = result.get("final_reply", "")
+        if not final_reply:
+            final_reply = _generate_final_reply(message, session_id, result)
 
         # ── 主动推送：grading发现错误 → 建议重规划 + 存储 FeedbackSignal ──
         grading = result.get("grading_result", {}) or {}
@@ -2859,6 +2861,24 @@ def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "") -> 
     )
 
 
+@router.delete("/resources/{resource_id}")
+def delete_resource(resource_id: str, sessionId: str = "") -> dict[str, Any]:
+    """删除单个资源。"""
+    session_id = _resolve_session_id(sessionId, "")
+    try:
+        db = SessionLocal()
+        resource = db.get(ResourceModel, resource_id)
+        if not resource:
+            return _product_response(None, session_id=session_id, status="error", message="资源不存在", source="db")
+        db.delete(resource)
+        db.commit()
+        return _product_response({"deleted": True}, session_id=session_id, source="db")
+    except Exception as e:
+        return _product_response(None, session_id=session_id, status="error", message=f"删除失败: {e}", source="db")
+    finally:
+        db.close()
+
+
 @router.post("/resources/{resource_id}/bookmark")
 def bookmark_resource(resource_id: str, sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
     session_id = _resolve_session_id(sessionId, subjectId)
@@ -3048,18 +3068,36 @@ def generate_resource(payload: dict[str, Any], auth: AuthContext = Depends(rejec
                 "subject_name": topic,
                 "topic": topic,
             })
-            vid = video_result.get("result", {})
+            vid = video_result.get("result") or {}
+            content = vid.get("video_url") or vid.get("script") or ""
+            if video_result.get("status") == "failed":
+                content = video_result.get("warnings", ["生成失败"])[0] if video_result.get("warnings") else "动画生成失败，请重试"
             resource = {
                 "id": f"vid_{session_id}_{hash(topic) % 10000:04d}",
                 "type": "video",
                 "title": f"{topic} - 教学视频",
-                "content": vid.get("script", ""),
+                "content": content,
                 "format": "video",
                 "difficulty": difficulty or "medium",
-                "source": "wan_video",
+                "source": "manim_video",
                 "task_id": vid.get("task_id", ""),
                 "task_status": video_result.get("status", ""),
             }
+            # Persist to DB so it shows in resource library
+            try:
+                db = SessionLocal()
+                from app.db.repository import upsert_resource
+                upsert_resource(db, session_id, {
+                    "id": resource["id"], "type": resource["type"],
+                    "title": resource["title"], "content": resource["content"],
+                    "format": resource["format"], "difficulty": resource["difficulty"],
+                    "source": resource["source"],
+                })
+                db.commit()
+            except Exception:
+                pass
+            finally:
+                db.close()
             return _product_response({"resource": resource}, session_id=session_id, source="agent")
 
     parts = [f"请为「{topic}」"]
@@ -3070,7 +3108,7 @@ def generate_resource(payload: dict[str, Any], auth: AuthContext = Depends(rejec
             "quiz": "生成一套练习题（含答案和解析）",
             "reading": "生成一份拓展阅读材料",
             "case_study": "生成一个实操案例（含代码示例）",
-            "ppt": "生成一份PPT大纲",
+            "ppt": "生成一份PPT演示文稿（每页含标题、要点、图解、总结，共8-12页）",
         }
         parts.append(type_labels.get(resource_type, f"生成{resource_type}类型的资源"))
     else:
@@ -3081,6 +3119,38 @@ def generate_resource(payload: dict[str, Any], auth: AuthContext = Depends(rejec
     if subject_id:
         parts.append(f"所属科目ID为{subject_id}")
     message = "，".join(parts)
+
+    # ── PPT: generate actual .pptx file ──
+    if resource_type == "ppt":
+        from app.services.ppt_generator import generate_pptx
+        try:
+            pptx_path = generate_pptx(topic, difficulty or "medium", session_id)
+            if pptx_path:
+                rel_path = pptx_path.replace(str(settings.project_root), "").lstrip("/").lstrip("\\")
+                resource = {
+                    "id": f"ppt_{session_id}_{hash(topic) % 10000:04d}",
+                    "type": "ppt", "title": f"{topic} - PPT演示",
+                    "content": f"/api/multimodal/file/{rel_path}",
+                    "format": "pptx", "difficulty": difficulty or "medium",
+                    "source": "agent_generated",
+                }
+                try:
+                    db = SessionLocal()
+                    from app.db.repository import upsert_resource
+                    upsert_resource(db, session_id, {
+                        "id": resource["id"], "type": resource["type"],
+                        "title": resource["title"], "content": resource["content"],
+                        "format": resource["format"], "difficulty": resource["difficulty"],
+                        "source": resource["source"],
+                    })
+                    db.commit()
+                except Exception:
+                    pass
+                finally:
+                    db.close()
+                return _product_response({"resource": resource}, session_id=session_id, source="agent")
+        except Exception:
+            pass  # Fall through to LLM text generation
 
     result = _run_agents(message, session_id=session_id)
     resources = [
@@ -5477,7 +5547,10 @@ def _public_tutor_video(result: dict[str, Any]) -> dict[str, Any]:
     inner = result.get("result") if isinstance(result.get("result"), dict) else {}
     script = str(inner.get("script") or result.get("script") or "").strip()
     task_id = str(inner.get("task_id") or result.get("task_id") or "")
-    if raw_status in {"success", "script_ready"}:
+    video_url = str(inner.get("video_url") or result.get("video_url") or "")
+    if raw_status == "success" and video_url:
+        status, message = "completed", "讲解动画已生成！"
+    elif raw_status in {"success", "script_ready"}:
         status, message = "completed", "讲解视频脚本已准备好。"
     elif raw_status == "submitted":
         status, message = "submitted", "视频任务已提交，正在生成中…"
@@ -5488,9 +5561,11 @@ def _public_tutor_video(result: dict[str, Any]) -> dict[str, Any]:
         status, message = "generation_failed", "讲解视频生成失败，请稍后重试。"
     return {
         "status": status,
-        "provider": str(result.get("provider") or "wan_video"),
+        "provider": str(result.get("provider") or "manim_video"),
         "script": script,
         "task_id": task_id,
+        "url": video_url,
+        "audio_url": str(inner.get("audio_url") or ""),
         "userMessage": message,
         "metadata": {"raw_status": raw_status},
     }
@@ -5864,12 +5939,51 @@ def tutor_video(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         if tool is None:
             return _product_response(None, session_id=session_id, status="error",
                 message="没有可用的视频生成服务，请检查多模态配置。", source="agent")
+
+        # Collect knowledge points for richer video context
+        kp_text = ""
+        try:
+            path = conversation_store.get(session_id)
+            if path and path.last_result:
+                stages = path.last_result.get("learning_path") or []
+                for s in stages:
+                    for ch in s.get("chapters", []):
+                        for sec in ch.get("sections", []):
+                            if str(sec.get("id") or sec.get("section_id") or "") == section_id:
+                                kps = sec.get("knowledge_points") or sec.get("knowledgePoints") or []
+                                kp_text = "。".join(
+                                    (kp.get("name") if isinstance(kp, dict) else str(kp))
+                                    for kp in kps[:5]
+                                )
+                                break
+        except Exception:
+            pass
+
         result = tool.run({
             "user_message": f"为「{course_name}——{section_title}」生成微课讲解视频",
             "subject_name": course_name,
             "topic": section_title,
+            "knowledge_points": kp_text,
         })
-        return _product_response({"video": _public_tutor_video(result)}, session_id=session_id, source="agent")
+        video_data = _public_tutor_video(result)
+        content = video_data.get("url") or video_data.get("script") or ""
+        # Persist to resource library
+        if content:
+            try:
+                db = SessionLocal()
+                upsert_resource(db, session_id, {
+                    "id": f"tutor-video-{section_id}",
+                    "type": "video", "title": f"{section_title} - 讲解动画",
+                    "content": content, "format": "video",
+                    "difficulty": "medium", "source": "manim_video",
+                })
+                db.commit()
+                logger.info("Video persisted: id=%s session=%s", f"tutor-video-{section_id}", session_id)
+            except Exception as e:
+                logger.warning("Video persist failed: %s", e)
+            finally:
+                db.close()
+        return _product_response({"video": video_data}, session_id=session_id, source="agent")
     except Exception as e:
         logger.warning("Tutor video failed for section %s: %s", section_id, e)
         return _product_response(None, session_id=session_id, status="error", message=f"视频生成失败: {e}", source="agent")

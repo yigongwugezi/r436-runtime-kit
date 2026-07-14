@@ -70,21 +70,29 @@ export default function LearningPathPage() {
   const { stageLayouts, totalDays, dayToPixelX } = useMemo(() => {
     const fallbackDays = Math.ceil(estimatedDays / Math.max(stages.length, 1));
 
-    let cumDays = 0;
+    // Use path-level estimatedDays as authoritative total — stage-level
+    // estimated_days are internal allocations that may not sum correctly.
+    const totalDays = estimatedDays;
+
+    // First pass: collect weights
+    const weights = stages.map(s => s.estimatedDays || fallbackDays);
+    const totalWeight = weights.reduce((a, b) => a + b, 0) || 1;
+
+    let cursor = 0;
     const stageData = stages.map((s, i) => {
-      const days = s.estimatedDays || fallbackDays;
-      cumDays += days;
+      const stageDays = i === stages.length - 1
+        ? totalDays - cursor  // last stage takes the remainder
+        : Math.max(1, Math.round(totalDays * weights[i] / totalWeight));
+      cursor += stageDays;
       return {
         stage: s,
         index: i,
-        days,
-        endDay: cumDays,
-        startDay: cumDays - days + 1,
+        days: stageDays,
+        endDay: cursor,
+        startDay: cursor - stageDays + 1,
         nodeCount: s.nodes?.length || 1,
       };
     });
-
-    const totalDays = cumDays || estimatedDays;
 
     const layouts = stageData.map((data, i) => {
       const { startDay, endDay, nodeCount } = data;
@@ -218,7 +226,7 @@ export default function LearningPathPage() {
           icon={<Target size={40} className="text-surface-300" />}
           title="尚未生成学习路径"
           description={<span>在聊天中告诉 AI 你的学习目标，例如：<br /><span className="text-primary-600 font-medium">"我想用两周时间入门深度学习"</span></span>}
-          action={<button onClick={() => chat.setOpen(true)} className="mt-4 px-5 py-2.5 bg-primary-600 text-white rounded-xl font-medium hover:bg-primary-700 transition-colors">去对话生成</button>}
+          action={<button onClick={() => nav('/chat', { state: { initialMessage: '帮我规划学习路径' } })} className="mt-4 px-5 py-2.5 bg-primary-600 text-white rounded-xl font-medium hover:bg-primary-700 transition-colors">去对话生成</button>}
         />
       </div>
     );
@@ -285,8 +293,8 @@ export default function LearningPathPage() {
             <span className="text-sm font-medium text-surface-600">进度: {progress}%</span>
           </div>
           {!isParent && (
-          <button onClick={() => chat.setOpen(true)} className="flex items-center gap-2 px-5 py-2.5 bg-primary-600 text-white rounded-xl font-medium hover:bg-primary-700 transition-colors">
-            <Zap size={18} />完善路径
+          <button onClick={() => nav('/chat', { state: { initialMessage: '调整一下我的学习路径' } })} className="flex items-center gap-2 px-5 py-2.5 bg-primary-600 text-white rounded-xl font-medium hover:bg-primary-700 transition-colors">
+            <Zap size={18} />修改路径
           </button>
           )}
         </div>

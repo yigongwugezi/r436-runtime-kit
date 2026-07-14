@@ -907,6 +907,9 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
         Each stage already contains chapters → sections → knowledge_points
         with canonical IDs from _rewrite_chapter_ids.
         """
+        # Normalize stage estimated_days to sum to total_days
+        stages_with_chapters = self._normalize_stage_days(stages_with_chapters, total_days)
+
         total_chapters = sum(len(s.get("chapters", [])) for s in stages_with_chapters)
         total_sections = sum(
             len(c.get("sections", []))
@@ -1068,6 +1071,27 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
         result["consecutive_correct"] = consecutive_correct
         result["consecutive_wrong"] = consecutive_wrong
         return result
+
+    @staticmethod
+    def _normalize_stage_days(stages: list[dict], total_days: int) -> list[dict]:
+        """Ensure stage estimated_days sum to approximately total_days."""
+        if not stages:
+            return stages
+        raw_days = [s.get("estimated_days", s.get("estimatedDays", 0)) for s in stages]
+        raw_sum = sum(raw_days)
+        if raw_sum <= 0 or raw_sum == total_days:
+            return stages
+        ratio = total_days / raw_sum
+        cumulative = 0
+        for i, s in enumerate(stages):
+            if i == len(stages) - 1:
+                d = total_days - cumulative
+            else:
+                d = max(1, round(raw_days[i] * ratio))
+            cumulative += d
+            s["estimated_days"] = d
+            s["estimatedDays"] = d
+        return stages
 
     def _parse_duration_days(self, duration: str) -> int:
         """解析 duration 字符串中的天数。"""
@@ -1275,23 +1299,18 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
 
     def _llm_infer_days(self, time_text: str, profile: dict) -> int | None:
         profile_text = self._compact_profile_text(profile)
-        prompt = f"""从以下信息提取学生的学习时间（天数）：
+        prompt = f"""从以下信息提取学生的有效学习天数：
 
 用户消息和时间信息：{time_text}
 学习画像中的时间信息：{profile_text}
 
-常见时间表达参考：
-- "两个月" = 60天
-- "一个月" = 30天
-- "三周" = 21天
-- "两周" = 14天
-- "半年" = 180天
-- "一个半月" = 45天
-- "这学期" = 90天（默认一学期约3个月）
-- "每天2小时，持续1个月" = 30天（关注总周期而非每日时长）
+关键规则：
+- 如果学生说"周末休息"/"周末不学"，只算工作日(5/7)，例如"一个月，周末休息" ≈ 20天
+- "一个月" = 30天，"两个月" = 60天，"两周" = 14天
+- "每天X小时"是每日强度，不影响总天数
 - 如果没有明确时间 = 14天
 
-只返回一个整数，不要解释。"""
+只返回一个整数（有效学习天数），不要解释。"""
         try:
             raw = self.llm_client.chat(
                 messages=[
@@ -1321,15 +1340,15 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
 
         m = re.search(r"(\d+)\s*个?\s*月", combined)
         if m:
-            return max(1, min(365, int(m.group(1)) * 30))
+            return self._adjust_for_weekends(max(1, min(365, int(m.group(1)) * 30)), combined)
 
         m = re.search(r"(\d+)\s*个?\s*(?:周|星期)", combined)
         if m:
-            return max(1, min(365, int(m.group(1)) * 7))
+            return self._adjust_for_weekends(max(1, min(365, int(m.group(1)) * 7)), combined)
 
         m = re.search(r"(\d+)\s*(?:天|日)", combined)
         if m:
-            return max(1, min(365, int(m.group(1))))
+            return self._adjust_for_weekends(max(1, min(365, int(m.group(1)))), combined)
 
         m = re.search(r"(\d+)\s*个?\s*(?:小时|h)", combined)
         if m and "每天" not in combined:
@@ -1345,22 +1364,32 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
             total = tens + ones
             unit = m.group(3)
             if unit in ("周", "星期"):
-                return max(1, min(365, total * 7))
+                return self._adjust_for_weekends(max(1, min(365, total * 7)), combined)
             if unit == "月":
-                return max(1, min(365, total * 30))
-            return max(1, min(365, total))
+                return self._adjust_for_weekends(max(1, min(365, total * 30)), combined)
+            return self._adjust_for_weekends(max(1, min(365, total)), combined)
 
         m = re.search(r"([一二两三四五六七八九])\s*个?\s*(天|日|周|星期|月)", combined)
         if m:
             total = cn_map.get(m.group(1), 7)
             unit = m.group(2)
             if unit in ("周", "星期"):
-                return max(1, min(365, total * 7))
+                return self._adjust_for_weekends(max(1, min(365, total * 7)), combined)
             if unit == "月":
-                return max(1, min(365, total * 30))
-            return max(1, min(365, total))
+                return self._adjust_for_weekends(max(1, min(365, total * 30)), combined)
+            return self._adjust_for_weekends(max(1, min(365, total)), combined)
 
-        return 14
+        # ── No explicit time unit found ──
+        return self._adjust_for_weekends(14, combined)
+
+    def _adjust_for_weekends(self, raw_days: int, time_text: str) -> int:
+        """If user says weekends off, reduce to effective weekdays (~5/7)."""
+        weekend_off = re.search(r"周末(?:休息|不学|不?学习|放假)", time_text)
+        if weekend_off:
+            effective = max(1, round(raw_days * 5 / 7))
+            logger.info("Weekends off: %d raw -> %d effective days", raw_days, effective)
+            return effective
+        return raw_days
 
     def _normalize_cn_numbers(self, text: str) -> str:
         cn_digits = {"一": "1", "二": "2", "两": "2", "三": "3", "四": "4",
@@ -1759,6 +1788,7 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
         return " ".join(self._compact_profile(profile).values())
 
     def _make_result(self, path, total_days, diag_meta):
+        path = self._normalize_stage_days(path, total_days)
         plan_summary = self._summarize(path, diag_meta, total_days)
         return {
             "learning_path": path,

@@ -226,6 +226,18 @@ class ConversationAgent(BaseAgent):
             dt_capability = rule_result.get("capability", "chat")
             dt = self._try_deeptutor_reply(user_message, self._history, capability=dt_capability)
             if dt and len(dt) > 5:
+                # Extract <proposal> before stripping all tags (otherwise lost)
+                prop_match = re.search(r'<proposal>(.*?)</proposal>', dt, re.DOTALL)
+                if prop_match:
+                    context["_llm_proposal"] = prop_match.group(1).strip()
+                # Extract <execute> before stripping
+                exec_match = re.search(r'<execute>(.*?)</execute>', dt, re.DOTALL)
+                if exec_match:
+                    exec_action_from_dt = exec_match.group(1).strip()
+                    if not self._is_profile_ready_for_plan(context) and exec_action_from_dt == "plan":
+                        context["_llm_proposal"] = "plan"
+                    else:
+                        action = exec_action_from_dt
                 llm_reply = re.sub(r'<[^>]+>', '', dt).strip()
 
         exec_action = ""
@@ -816,11 +828,8 @@ action："""
         text = message.strip().lower()
         compact = re.sub(r"\s+", "", text)
 
-        # ── Trivial / greeting ──────────────────────────────────────
-        if text in EXACT_CASUAL or len(compact) <= 2:
-            return self._fallback_result("none", "short_or_casual_message")
-
         # ── Confirmations (after system asked "要生成...吗？") ──────
+        # MUST come before short-message filter — "可以"/"好"/"行" are only 1-2 chars
         confirm_words = {"可以", "好的", "行", "嗯", "好", "ok", "yes", "对", "是的", "嗯嗯", "没错", "就这样", "按这个来"}
         if any(cw == compact or cw == text for cw in confirm_words):
             last_proposal = context.get("last_proposal")
@@ -835,6 +844,10 @@ action："""
             if self._has_generation_confirmation_context(context):
                 return self._fallback_result("plan,resources,generate_questions", "contextual_generation_confirmation")
             return self._fallback_result("none", "confirmation_without_generation_context", needs_clarification=True)
+
+        # ── Trivial / greeting (after confirmations — "可以"/"好" are 1-2 chars) ──
+        if text in EXACT_CASUAL or len(compact) <= 2:
+            return self._fallback_result("none", "short_or_casual_message")
 
         # ── Mode-specific plan triggers (MUST run before generic _GEN_PLAN) ──
         # Priority: explicit mode keywords > subject-based hints > generic plan
@@ -888,7 +901,7 @@ action："""
         # requests that don't match any specific mode.
         _GEN_PLAN = [
             "帮我规划", "帮我制定学习", "给我规划", "给我制定学习",
-            "生成学习路径", "生成学习计划", "制定学习计划", "制定学习路径",
+            "生成学习路径", "生成学习计划", "生成学习路线", "制定学习计划", "制定学习路径",
             "开始生成学习方案", "帮我生成学习方案", "就按这个生成",
             "生成吧", "开始吧", "按这些信息生成",
         ]

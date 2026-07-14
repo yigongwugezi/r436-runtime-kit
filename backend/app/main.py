@@ -209,6 +209,15 @@ _static_dir = _os.path.join(_os.path.dirname(__file__), "..", "data", "static")
 _os.makedirs(_os.path.join(_static_dir, "images"), exist_ok=True)
 app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
+# ── Serve generated multimodal files (videos, PPTs, images) ──
+_uploads_dir = _os.path.join(_os.path.dirname(__file__), "..", "uploads")
+_os.makedirs(_uploads_dir, exist_ok=True)
+app.mount("/api/multimodal/file/uploads", StaticFiles(directory=_uploads_dir), name="multimodal_uploads")
+
+_outputs_dir = _os.path.join(_os.path.dirname(__file__), "..", "..", "outputs")
+_os.makedirs(_outputs_dir, exist_ok=True)
+app.mount("/api/multimodal/file/outputs", StaticFiles(directory=_outputs_dir), name="multimodal_outputs")
+
 # ── RAG router (guarded by settings.rag_enabled) ─────────────────────
 if settings.rag_enabled:
     try:

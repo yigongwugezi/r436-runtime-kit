@@ -93,6 +93,8 @@ import httpx
 from app.config import settings
 from app.utils.llm_json import parse_safe
 
+logger = logging.getLogger(__name__)
+
 
 UPLOAD_ROOT = settings.project_root / "uploads" / "multimodal"
 ALLOWED_IMAGE_TYPES = {
@@ -1052,6 +1054,575 @@ class WanVideoProvider:
             return _response(status="submitted", provider=self.provider, result={**script, "task_id": task_id, "task_status": "submitted", "request_id": req_id}, trace={"model": model, "endpoint": endpoint})
         except (HttpClientError, httpx.HTTPError, TimeoutError, OSError, json.JSONDecodeError) as exc:
             return _response(status="failed", provider=self.provider, result=script, warnings=[str(exc)], trace={"model": model, "endpoint": endpoint})
+
+
+class ManimVideoProvider:
+    """Generate high-quality educational animations via Manim (code→video).
+
+    Uses LLM to generate a Manim Python script from the section context,
+    then renders it with ``manim`` CLI.  Produces mathematically precise
+    animations with crisp LaTeX formulas — 3Blue1Brown style.
+    """
+    name = "ManimVideoProvider"
+    provider = "manim_video"
+
+    @property
+    def output_dir(self) -> Path:
+        # Write outside backend/ so uvicorn --reload doesn't restart on file creation
+        d = settings.project_root / "outputs" / "manim"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    @staticmethod
+    def is_configured() -> bool:
+        import shutil
+        return shutil.which("manim") is not None
+
+    def run(self, context: dict[str, Any]) -> dict[str, Any]:
+        import shutil
+        if not shutil.which("manim"):
+            return _response(status="provider_not_configured", provider=self.provider,
+                warnings=["Manim is not installed. Run: pip install manim"],
+                trace={"required": ["manim CLI"]})
+
+        topic = _text(context.get("topic") or context.get("user_message"))
+        # Strip request language: "我需要讲解极限的教学视频" → "极限"
+        topic = re.sub(r"^(我需要|我要|帮我|请|给我)(讲解|生成|做一个|出一个)?", "", topic)
+        topic = re.sub(r"(的教学视频|的视频|的微课视频|的视频教程|的动画)$", "", topic).strip() or topic
+        subject = _text(context.get("subject_name") or topic)
+
+        # ── Step 1: RAG retrieval for accurate knowledge content ──
+        kb_context = ""
+        try:
+            from app.rag.query_engine import rag_query_engine
+            if rag_query_engine.is_ready():
+                resp = rag_query_engine.search(topic, top_k=3)
+                if resp.results:
+                    kb_context = "\n\n".join(
+                        f"## {r.title}\n{r.text[:800]}"
+                        for r in resp.results if r.text
+                    )
+        except Exception:
+            pass
+
+        # ── Step 2: Generate Manim code first, then narration matched to video ──
+        try:
+            from app.services.llm_client import get_llm_client
+            llm = get_llm_client()
+        except Exception:
+            return _response(status="failed", provider=self.provider,
+                warnings=["LLM 不可用"], trace={})
+
+        manim_code = ""
+        narration = ""
+        audio_path = ""
+        audio_url = ""
+
+        # Use Qwen for code generation (better at Manim than DeepSeek)
+        code_llm = llm
+        try:
+            qwen_key = _env("DASHSCOPE_API_KEY", "QWEN_API_KEY")
+            if qwen_key:
+                from app.services.llm_client import DeepSeekLLMClient
+                code_llm = DeepSeekLLMClient(
+                    api_key=qwen_key,
+                    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+                    model="qwen-plus",
+                    temperature=0.3,
+                )
+                logger.info("Using Qwen for Manim code generation")
+        except Exception as e:
+            logger.warning("Qwen init failed, using default: %s", e)
+
+        # ── Step 2a: Generate narration FIRST, get its duration ──
+        _tmp_audio = ""
+        narration_text = self._generate_narration_only(code_llm, topic, subject, kb_context)
+        narrative_duration = 0
+        if narration_text and len(narration_text) > 20:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            _tmp_job = uuid.uuid4().hex
+            _tmp_audio = self._generate_narration(narration_text, _tmp_job)
+            if _tmp_audio:
+                narrative_duration = self._get_video_duration(_tmp_audio)
+                if narrative_duration > 0:
+                    logger.info("Narration ready: %.1fs, generating Manim to match", narrative_duration)
+
+        # ── Step 2b: Generate Manim code matched to narration duration ──
+        combined = self._generate_combined(code_llm, topic, subject, kb_context,
+            _text(context.get("knowledge_points") or ""),
+            target_duration=narrative_duration,
+            narration_text=narration_text)
+        if not combined or not combined.get("code"):
+            return _response(status="failed", provider=self.provider,
+                warnings=["LLM 未能生成有效的 Manim 脚本。"],
+                trace={"topic": topic})
+        manim_code = combined.get("code", "")
+
+        # ── Pre-render scrub: fix common mistakes ──
+        manim_code = self._scrub_code(manim_code)
+        logger.info("Scrubbed code len=%d, has EduScene=%s", len(manim_code), "class EduScene" in manim_code)
+
+        # ── Step 3: Render with auto-retry on failure ──
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        job_id = uuid.uuid4().hex
+        scene_name = "EduScene"
+        script_path = self.output_dir / f"{job_id}_scene.py"
+        script_path.write_text(manim_code, encoding="utf-8")
+
+        MAX_RETRIES = 2
+        video_path = ""
+        # Ensure manim can find ffmpeg and latex (winget installs may not be in PATH)
+        import shutil as _shutil_m
+        _manim_env = dict(os.environ)
+        _paths = _manim_env.get("PATH", "").split(os.pathsep)
+        # Search common install locations
+        _extra = [
+            r"C:\Users\hejiaxuan\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin",
+            r"C:\Users\hejiaxuan\AppData\Local\Programs\MiKTeX\miktex\bin\x64",
+        ]
+        for _d in _extra:
+            if os.path.isdir(_d) and _d not in _paths:
+                _paths.insert(0, _d)
+        for _tool in ("ffmpeg", "latex", "pdflatex"):
+            _found = _shutil_m.which(_tool)
+            if _found:
+                _tool_dir = os.path.dirname(_found)
+                if _tool_dir not in _paths:
+                    _paths.insert(0, _tool_dir)
+        _manim_env["PATH"] = os.pathsep.join(_paths)
+        for attempt in range(MAX_RETRIES + 1):
+            import subprocess
+            logger.info("Render attempt %d/%d, code len=%d", attempt + 1, MAX_RETRIES + 1, len(manim_code))
+            result = subprocess.run(
+                ["manim", "-ql", "--format", "mp4", str(script_path), scene_name],
+                capture_output=True, text=True, timeout=300,
+                cwd=str(self.output_dir), env=_manim_env,
+            )
+            if result.returncode == 0:
+                logger.info("Manim render SUCCESS on attempt %d", attempt + 1)
+                video_files = list(self.output_dir.glob(f"**/{scene_name}.mp4"))
+                if not video_files:
+                    video_files = list(self.output_dir.rglob("*.mp4"))
+                if video_files:
+                    video_path = str(video_files[0])
+                    break
+
+            # Failed — log full error, let LLM fix the code
+            if attempt < MAX_RETRIES:
+                # Extract actual LaTeX error from full output
+                full_output = (result.stderr or "") + (result.stdout or "")
+                # Find the meaningful error line
+                errors = [l for l in full_output.splitlines() if l.startswith("!") or "Error:" in l or "error:" in l]
+                logger.warning("Manim render attempt %d failed. LaTeX errors: %s", attempt + 1, errors[:3] if errors else ["unknown"])
+                fixed = self._fix_script(code_llm, manim_code, result.stderr or "", result.stdout or "", topic, subject, kb_context)
+                if fixed and len(fixed) > 30:
+                    manim_code = fixed
+                    script_path.write_text(manim_code, encoding="utf-8")
+                else:
+                    break  # LLM couldn't fix it, give up
+
+        if not video_path:
+            logger.error("All render attempts failed for topic '%s'", topic)
+            return _response(status="failed", provider=self.provider,
+                warnings=[f"manim 渲染失败（已重试 {MAX_RETRIES} 次）"],
+                trace={"script": manim_code})
+
+        # ── Step 4: Merge pre-generated narration with video ──
+        if _tmp_audio and os.path.isfile(_tmp_audio):
+            audio_path = _tmp_audio
+            narration = narration_text
+            rel_a = audio_path.replace("\\", "/")
+            outputs_root_a = str(settings.project_root / "outputs").replace("\\", "/") + "/"
+            if rel_a.startswith(outputs_root_a):
+                rel_a = rel_a[len(outputs_root_a):]
+            audio_url = f"/api/multimodal/file/outputs/{rel_a}"
+            # Merge: video matches audio duration since it was generated to match
+            merged = self._merge_audio_video(video_path, audio_path, job_id)
+            if merged:
+                video_path = merged
+
+        # Move final video out of media dir, clean up only manim intermediates
+        import shutil as _shutil_c
+        final_path = self.output_dir / f"{job_id}_final.mp4"
+        try:
+            _shutil_c.move(str(video_path), str(final_path))
+            video_path = str(final_path)
+        except Exception:
+            pass
+        try:
+            for _p in self.output_dir.glob(f"{job_id}_scene*"):
+                if _p.is_file(): _p.unlink(missing_ok=True)
+            _media = self.output_dir / "media"
+            if _media.exists(): _shutil_c.rmtree(str(_media), ignore_errors=True)
+        except Exception: pass
+
+        # Convert absolute path to static URL.
+        # project_root = D:/EduAgent
+        # video_path = D:/EduAgent/outputs/manim/xxx.mp4
+        # URL = /api/multimodal/file/outputs/manim/xxx.mp4
+        rel = video_path.replace("\\", "/")
+        outputs_root = str(settings.project_root / "outputs").replace("\\", "/") + "/"
+        if rel.startswith(outputs_root):
+            rel = rel[len(outputs_root):]
+        url = f"/api/multimodal/file/outputs/{rel}"
+
+        # ── Step 6: Multimodal QC (best-effort, non-blocking) ──
+        qc_result = self._quality_check(video_path, topic, subject)
+
+        return _response(status="success", provider=self.provider,
+            result={"video_url": url, "local_path": video_path,
+                    "audio_url": audio_url, "narration_text": narration,
+                    "script": manim_code, "qc": qc_result})
+
+    def _generate_narration_only(self, llm, topic: str, subject: str, kb_context: str) -> str:
+        """Generate Chinese narration for template-based animations."""
+        kb_block = f"\n知识点参考：{kb_context[:800]}" if kb_context else ""
+        prompt = f"为以下知识点写一段中文旁白讲解稿。像老师正常讲课，把该讲的讲清楚。引入→原理→例子→总结。逗号句号停顿。\n课程: {subject}\n节: {topic}{kb_block}\n只输出旁白。"
+        try:
+            raw = llm.chat(messages=[
+                {"role": "system", "content": "你是数学老师。写中文旁白，自然口语。"},
+                {"role": "user", "content": prompt},
+            ], temperature=0.3, max_tokens=2000)
+            return raw.strip()
+        except Exception:
+            return ""
+
+    def _fix_script(self, llm, broken_code: str, stderr: str, stdout: str, topic: str, subject: str, kb_context: str) -> str:
+        """Ask LLM to fix a failing Manim script based on the error output."""
+        full = (stderr or "") + (stdout or "")
+        # Extract LaTeX log content if available
+        latex_log = ""
+        try:
+            import glob as _glob, os as _os
+            # Find the most recent LaTeX log
+            for _d in [_os.path.join(_os.path.dirname(str(self.output_dir)), "media", "Tex"),
+                       _os.path.join(_os.environ.get("TEMP", "/tmp"), "media", "Tex")]:
+                logs = _glob.glob(_os.path.join(_d, "*.log")) if _os.path.isdir(_d) else []
+                if logs:
+                    latest = max(logs, key=_os.path.getmtime)
+                    with open(latest, errors='replace') as _f:
+                        latex_log = _f.read()[-2000:]
+                    break
+        except Exception:
+            pass
+
+        error_summary = (latex_log[-1000:] if latex_log else "") or full[-1500:]
+
+        prompt = f"""Fix this broken Manim script. The corrected code must render without errors.
+
+## Error
+{error_summary[:2000]}
+
+## Broken script
+```python
+{broken_code}
+```
+
+Fix ALL bugs then output the COMPLETE corrected code. DeepSeek common mistakes:
+- Never put Chinese chars in MathTex — use Text() for Chinese
+- All Tex() → Text() (Manim CE v0.20)
+- Add `import numpy as np` if using np
+- Scene class must be "EduScene"
+
+Only output corrected code, no explanation."""
+
+        try:
+            raw = llm.chat(messages=[
+                {"role": "system", "content": "You are a Manim CE v0.20 expert. Fix broken Manim code. Output only corrected Python."},
+                {"role": "user", "content": prompt},
+            ], temperature=0.1, max_tokens=3000)
+            code = raw.strip()
+            if code.startswith("```"):
+                code = re.sub(r"^```\w*\n", "", code)
+                code = re.sub(r"\n```$", "", code)
+            return code if "class EduScene" in code else ""
+        except Exception:
+            return ""
+
+    def _generate_combined(self, llm, topic: str, subject: str, kb_context: str, kp_text: str = "", target_duration: float = 0, narration_text: str = "") -> dict | None:
+        kb_block = f"\n\n## 知识点\n{kb_context}" if kb_context else ""
+        if kp_text:
+            kb_block += f"\n## 本节重点\n{kp_text}"
+        if not kb_block:
+            kb_block = f"\n\n请根据「{topic}」这个主题生成内容，不要用通用例子。"
+
+        duration_hint = f"\n\n动画时长需要约 {target_duration:.0f} 秒。" if target_duration > 0 else ""
+        narration_hint = f"\n\n旁白已经写好，动画必须严格对应旁白内容：\n{narration_text}" if narration_text else ""
+
+        prompt = f"""请根据以下旁白稿生成匹配的 Manim 动画。旁白说什么，画面就展示什么。{kb_block}{narration_hint}{duration_hint}
+
+## 教学主题
+课程: {subject}
+节: {topic}
+
+## 输出格式（严格 JSON）
+{{"code": "Manim CE Python 动画代码"}}
+
+## 要求
+- Scene 类名 "EduScene"，深色背景，白/金色文字
+- MathTex 公式，Text 中文
+- 围绕知识点逐步展开：概念→推导→例题→总结
+- 每个重要元素后 self.wait() 停顿
+
+只输出 JSON。"""
+
+        try:
+            raw = llm.chat(messages=[
+                {"role": "system", "content": "你是数学老师。根据知识点内容设计教学动画。杜绝 f(x)=x² 这种通用例子。"},
+                {"role": "user", "content": prompt},
+            ], temperature=0.3, max_tokens=8000)
+            raw = raw.strip()
+            logger.info("LLM response len=%d preview=%s", len(raw), raw[:100])
+            if raw.startswith("```"):
+                raw = re.sub(r"^```\w*\n", "", raw)
+                raw = re.sub(r"\n```$", "", raw)
+            parsed = json.loads(raw)
+            code = parsed.get("code", "")
+            logger.info("Parsed code len=%d", len(code) if code else 0)
+            return parsed
+        except Exception as e:
+            logger.warning("Manim combined generation failed: %s", e)
+            return None
+
+    @staticmethod
+    def _scrub_code(code: str) -> str:
+        """Fix common DeepSeek-generated Manim mistakes before rendering."""
+        import re as _re
+        # 1. Preserve Text() contents, strip non-ASCII everywhere else
+        texts = {}
+        def _save_text(m):
+            key = f"__TEXT_{len(texts)}__"
+            texts[key] = m.group(0)
+            return key
+        code = _re.sub(r'Text\("([^"]*)"\)', _save_text, code)
+        # 2. Strip ALL non-ASCII from everything else
+        code = _re.sub(r'[^\x00-\x7F]+', '', code)
+        # 3. Restore Text() contents
+        for key, value in texts.items():
+            code = code.replace(key, value)
+        # 4. Fix Tex() → Text() (any surviving Tex calls)
+        code = _re.sub(r'(?<!Math)Tex\(', 'Text(', code)
+        # 5. Ensure imports
+        if "from manim import" not in code:
+            code = "from manim import *\n" + code
+        if "import numpy as np" not in code:
+            code = code.replace("from manim import *", "from manim import *\nimport numpy as np")
+        return code
+
+    def _get_video_duration(self, video_path: str) -> float:
+        """Get video duration in seconds using FFmpeg."""
+        import shutil as _s
+        ffmpeg = _s.which("ffmpeg")
+        if not ffmpeg:
+            for candidate in [
+                r"C:\Users\hejiaxuan\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin\ffmpeg.exe",
+            ]:
+                if os.path.isfile(candidate):
+                    ffmpeg = candidate
+                    break
+        if not ffmpeg:
+            return 0
+        try:
+            import subprocess, re as _re
+            result = subprocess.run([str(ffmpeg), "-i", video_path, "-f", "null", "-"],
+                capture_output=True, text=True, timeout=10)
+            m = _re.search(r"Duration: (\d+):(\d+):(\d+\.\d+)", result.stderr)
+            if m:
+                return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+        except Exception:
+            pass
+        return 0
+
+    def _generate_narration_only(self, llm, topic: str, subject: str, kb_context: str) -> str:
+        """Generate natural Chinese narration (used BEFORE Manim code)."""
+        kb_block = f"\n知识点参考：{kb_context[:800]}" if kb_context else ""
+        prompt = f"为知识点写中文旁白稿。像老师正常讲课。引入→概念→推导→例子→总结。自然口语，不要重复。\n课程: {subject}\n节: {topic}{kb_block}\n只输出旁白。"
+        try:
+            raw = llm.chat(messages=[
+                {"role": "system", "content": "你是数学老师。写中文旁白，自然口语，不要重复。"},
+                {"role": "user", "content": prompt},
+            ], temperature=0.3, max_tokens=2000)
+            return raw.strip()
+        except Exception:
+            return ""
+
+    def _generate_narration_for_duration(self, llm, topic: str, subject: str, kb_context: str, duration: float, manim_code: str = "") -> str:
+        """Generate narration that matches both video duration AND screen content."""
+        import re as _re
+        text_elements = _re.findall(r'Text\("([^"]+)"\)', manim_code)
+        mathtex_elements = _re.findall(r'MathTex\(r"([^"]+)"\)', manim_code)
+        scene_summary = " → ".join(text_elements[:8]) if text_elements else topic
+        formulas = "、".join(mathtex_elements[:5]) if mathtex_elements else ""
+
+        kb_block = f"\n知识点参考：{kb_context[:800]}" if kb_context else ""
+        prompt = (
+            f"视频已渲染完成。请对着画面内容写中文旁白稿。\n\n"
+            f"课程: {subject}\n节: {topic}\n"
+            f"画面内容: {scene_summary}\n"
+            + (f"公式: {formulas}\n" if formulas else "") +
+            f"{kb_block}\n\n"
+            f"要求：对着画面写旁白，屏幕上出现什么就讲什么。像老师讲课，自然口语。用短句，不要重复。只输出旁白。"
+        )
+        try:
+            raw = llm.chat(messages=[
+                {"role": "system", "content": "你是数学老师。看着视频画面写旁白——屏幕出现什么就讲什么。"},
+                {"role": "user", "content": prompt},
+            ], temperature=0.3, max_tokens=2000)
+            return raw.strip()
+        except Exception:
+            return ""
+
+    def _generate_narration(self, text: str, job_id: str) -> str:
+        import shutil as _s
+        edge_tts = _s.which("edge-tts")
+        if not edge_tts:
+            for candidate in [
+                r"C:\Users\hejiaxuan\AppData\Local\Programs\Python\Python313\Scripts\edge-tts.EXE",
+                r"C:\Users\hejiaxuan\AppData\Local\Programs\Python\Python313\Scripts\edge-tts.exe",
+            ]:
+                if os.path.isfile(candidate):
+                    edge_tts = candidate
+                    break
+        if not edge_tts:
+            logger.warning("edge-tts not found")
+            return ""
+        try:
+            import subprocess
+            mp3_path = self.output_dir / f"{job_id}_narration.mp3"
+            result = subprocess.run(
+                [edge_tts, "--voice", "zh-CN-XiaoxiaoNeural",
+                 "--text", text, "--write-media", str(mp3_path)],
+                capture_output=True, text=True, timeout=60,
+            )
+            if result.returncode == 0 and mp3_path.exists():
+                return str(mp3_path)
+            logger.warning("edge-tts failed: %s", result.stderr[:200] if result.stderr else "unknown")
+        except Exception as e:
+            logger.warning("edge-tts failed: %s", e)
+        return ""
+
+    def _merge_audio_video(self, video_path: str, audio_path: str, job_id: str) -> str:
+        import shutil as _shutil
+
+        ffmpeg = _shutil.which("ffmpeg")
+        if not ffmpeg:
+            for candidate in [
+                r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+                r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe",
+                r"C:\Users\hejiaxuan\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.2-full_build\bin\ffmpeg.exe",
+            ]:
+                if os.path.isfile(candidate):
+                    ffmpeg = candidate
+                    break
+        if not ffmpeg:
+            logger.warning("FFmpeg not found, skipping audio merge")
+            return ""
+
+        try:
+            import subprocess, json as _json
+            # Get durations
+            probe = subprocess.run(
+                [str(ffmpeg), "-i", video_path, "-f", "null", "-"],
+                capture_output=True, text=True, timeout=10,
+                env={**os.environ, "PATH": os.environ.get("PATH", "")})
+            probe_a = subprocess.run(
+                [str(ffmpeg), "-i", audio_path, "-f", "null", "-"],
+                capture_output=True, text=True, timeout=10,
+                env={**os.environ, "PATH": os.environ.get("PATH", "")})
+
+            # Parse durations from stderr
+            import re as _re
+            v_dur = _re.search(r"Duration: (\d+):(\d+):(\d+\.\d+)", probe.stderr)
+            a_dur = _re.search(r"Duration: (\d+):(\d+):(\d+\.\d+)", probe_a.stderr)
+            v_sec = float(v_dur.group(1))*3600 + float(v_dur.group(2))*60 + float(v_dur.group(3)) if v_dur else 0
+            a_sec = float(a_dur.group(1))*3600 + float(a_dur.group(2))*60 + float(a_dur.group(3)) if a_dur else 0
+
+            merged_path = self.output_dir / f"{job_id}_final.mp4"
+            if v_sec > 0 and a_sec > 0:
+                ratio = v_sec / a_sec if a_sec > 0 else 1.0
+                if ratio < 0.9:
+                    # Video shorter than audio: slow down video to match audio
+                    result = subprocess.run([
+                        str(ffmpeg), "-y",
+                        "-i", video_path, "-i", audio_path,
+                        "-filter_complex", f"[0:v]setpts={a_sec/v_sec}*PTS[v]",
+                        "-map", "[v]", "-map", "1:a",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+                        "-shortest", str(merged_path),
+                    ], capture_output=True, text=True, timeout=120,
+                       env={**os.environ, "PATH": os.environ.get("PATH", "")})
+                elif ratio > 1.1:
+                    # Video longer than audio: loop audio to match video
+                    result = subprocess.run([
+                        str(ffmpeg), "-y",
+                        "-stream_loop", "-1", "-i", audio_path,
+                        "-i", video_path,
+                        "-c:v", "copy", "-c:a", "aac",
+                        "-shortest", str(merged_path),
+                    ], capture_output=True, text=True, timeout=120,
+                       env={**os.environ, "PATH": os.environ.get("PATH", "")})
+                else:
+                    # Close enough: simple merge
+                    result = subprocess.run([
+                        str(ffmpeg), "-y",
+                        "-i", video_path, "-i", audio_path,
+                        "-c:v", "copy", "-c:a", "aac",
+                        "-shortest", str(merged_path),
+                    ], capture_output=True, text=True, timeout=60,
+                       env={**os.environ, "PATH": os.environ.get("PATH", "")})
+
+                if result.returncode == 0 and merged_path.exists():
+                    logger.info("FFmpeg merged (v=%.1fs a=%.1fs ratio=%.2f)", v_sec, a_sec, ratio)
+                    return str(merged_path)
+
+            logger.warning("FFmpeg merge failed: rc=%d stderr=%s", result.returncode, result.stderr[:200] if result.stderr else "")
+        except Exception as e:
+            logger.warning("FFmpeg merge failed: %s", e)
+        return ""
+
+    def _quality_check(self, video_path: str, topic: str, subject: str) -> dict | None:
+        """Best-effort multimodal QC: extract a frame and check with Qwen-VL."""
+        import shutil as _shutil
+        import subprocess
+
+        ffmpeg = _shutil.which("ffmpeg") or _shutil.which("ffprobe")
+        if not ffmpeg:
+            return None
+
+        frame_path = str(Path(video_path).with_suffix(".qc_frame.png"))
+        try:
+            subprocess.run(
+                [str(ffmpeg), "-y", "-i", video_path, "-vframes", "1",
+                 "-q:v", "2", frame_path],
+                capture_output=True, text=True, timeout=20,
+            )
+            if not Path(frame_path).exists():
+                return None
+        except Exception:
+            return None
+
+        # Use Qwen-VL to inspect the frame
+        try:
+            from app.services.multimodal_provider import QwenVisionProvider
+            qwen = QwenVisionProvider()
+            result = qwen.run({
+                "task_type": "image_understanding",
+                "image_url": f"file://{frame_path}",
+                "user_message": (
+                    f"这是一帧数学教学动画截图，主题是「{subject}——{topic}」。"
+                    "请检查：1) 画面元素是否完整（无遮挡、无缺失）"
+                    "2) 数学公式是否清晰可读 3) 整体布局是否合理。"
+                    "用一段简短中文回答，指出发现的问题，没有问题的维度就说没问题。"
+                ),
+            })
+            if result.get("status") in ("success", "needs_manual_review"):
+                payload = result.get("result", {}) if isinstance(result.get("result"), dict) else {}
+                text = str(payload.get("detected_text") or payload.get("summary") or payload.get("display_text") or "")
+                issues = "no" not in (text or "").lower()[:30]
+                return {"passed": not issues, "summary": text[:200] if text else "QC 未获取到有效反馈"}
+        except Exception as e:
+            logger.warning("QC check failed: %s", e)
+        return {"passed": True, "summary": "QC skipped (Qwen-VL unavailable)"}
 
     @staticmethod
     def poll_task(task_id: str) -> dict[str, Any]:

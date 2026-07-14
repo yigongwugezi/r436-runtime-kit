@@ -350,38 +350,11 @@ export default function LecturePage() {
         userMessage: data?.message || '讲解视频生成失败，请稍后重试。',
       };
       setVideoResult(video);
-      // Async video: poll for completion
-      if (video.status === 'submitted' && video.task_id) {
-        const poll = async () => {
-          for (let i = 0; i < 30; i++) {
-            await new Promise(r => setTimeout(r, 10000)); // 10s interval
-            try {
-              const pr = await fetch(`/api/video/task/${encodeURIComponent(video.task_id)}`);
-              const pd = await pr.json();
-              const pollData = pd?.data || pd;
-              if (pollData.status === 'success' && pollData.video_url) {
-                setVideoResult({ ...video, status: 'completed', url: pollData.video_url, userMessage: '视频已生成！' });
-                setVideoGenerating(false);
-                generatePanelRef.current?.updateRecord(cid, { status: 'ready', content: pollData.video_url || '' });
-                return;
-              }
-              if (pollData.status === 'failed') {
-                setVideoResult({ ...video, status: 'generation_failed', userMessage: pollData.message || '视频生成失败' });
-                setVideoGenerating(false);
-                generatePanelRef.current?.updateRecord(cid, { status: 'error' });
-                return;
-              }
-            } catch { /* retry */ }
-          }
-          setVideoResult({ ...video, status: 'generation_failed', userMessage: '视频生成超时，请稍后重试。' });
-          setVideoGenerating(false);
-          generatePanelRef.current?.updateRecord(cid, { status: 'error' });
-        };
-        poll();
-        return; // don't setVideoGenerating(false) yet — poll handles it
+      if (video.status === 'completed' && video.url) {
+        generatePanelRef.current?.updateRecord(cid, { status: 'ready', content: video.url });
+      } else {
+        generatePanelRef.current?.updateRecord(cid, { status: 'error' });
       }
-      const ok = video.status !== 'generation_failed';
-      generatePanelRef.current?.updateRecord(cid, { status: ok ? 'ready' : 'error', content: video.script || video.url || '' });
       setVideoGenerating(false);
     } catch {
       setVideoResult({ status: 'generation_failed', userMessage: '讲解视频生成失败，请稍后重试。' });
@@ -1022,12 +995,12 @@ export default function LecturePage() {
                     </button>
                     <button onClick={() => handleGenerateVideo()} disabled={videoGenerating}
                       className="w-full p-2.5 rounded-lg bg-surface-50 hover:bg-surface-100 transition-colors text-left border border-transparent hover:border-surface-200 disabled:opacity-50">
-                      <span className="text-xs font-medium text-surface-700">讲解视频</span>
+                      <span className="text-xs font-medium text-surface-700">讲解动画</span>
                       <p className="text-[10px] text-surface-400 mt-0.5">
-                        {videoGenerating && videoResult?.status === 'submitted' ? '视频正在生成中…' :
+                        {videoGenerating && videoResult?.status === 'submitted' ? '动画正在生成中…' :
                          videoGenerating ? '提交中…' :
-                         videoResult?.status === 'completed' ? '视频已生成，点击查看' :
-                         videoResult?.script ? '已生成脚本，点击查看' : '微课视频/脚本'}
+                         videoResult?.status === 'completed' ? '动画已生成，点击查看' :
+                         videoResult?.script ? '已生成脚本，点击查看' : 'Manim 数学动画'}
                       </p>
                     </button>
                   </div>
@@ -1115,7 +1088,12 @@ export default function LecturePage() {
                 } else if (c.type === 'practice' && c.content) {
                   store.setLecture(sk, `> 💻 以下为**实操案例**内容。点击上方「返回讲义」回到正文。\n\n${c.content}`);
                 } else if (c.type === 'video' && c.content) {
-                  store.setLecture(sk, `> 🎬 以下为**教学视频**内容。点击上方「返回讲义」回到正文。\n\n${c.content}`);
+                  const isVideoUrl = /\.(mp4|webm)(\?|$)/i.test(c.content) || c.content.startsWith('/api/multimodal/file/');
+                  if (isVideoUrl) {
+                    store.setLecture(sk, `> 🎬 教学视频已生成\n>\n> [▶ 点击播放视频](${c.content})\n>\n> 点击上方「返回讲义」回到正文。`);
+                  } else {
+                    store.setLecture(sk, `> 🎬 以下为**教学视频**内容。点击上方「返回讲义」回到正文。\n\n${c.content}`);
+                  }
                 }
               }}
               onGenerateLecture={(cardId, req) => handleGenerate(cardId, req)}

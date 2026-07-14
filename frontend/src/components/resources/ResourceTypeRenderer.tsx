@@ -383,40 +383,26 @@ function PracticeRenderer({ resource }: Props) {
 }
 
 /* ===================================================================
- * Video — 视频脚本
+ * Video — 教学视频（支持嵌入播放和脚本展示）
  * =================================================================== */
 function VideoRenderer({ resource }: Props) {
+  const content = resource.content || '';
+  const isVideoUrl = /\.(mp4|webm|mov)(\?|$)/i.test(content) || content.startsWith('/api/multimodal/file/');
+  const isDownloadUrl = /\.pptx$/i.test(content);
+
   return (
     <div>
       <div className="mb-4 p-3 bg-red-50/70 border border-red-100 rounded-xl">
         <p className="text-xs text-red-700 font-medium">🎬 教学视频</p>
-        <p className="text-[10px] text-red-500 mt-0.5">视频讲稿或分镜脚本，帮助理解课程内容</p>
+        <p className="text-[10px] text-red-500 mt-0.5">{isVideoUrl ? '点击播放，支持全屏和下载' : '视频讲稿或分镜脚本'}</p>
       </div>
-      {resource.pptOutline && resource.pptOutline.length > 0 ? (
-        <div className="space-y-3">
-          {resource.pptOutline.map((slide, i) => (
-            <div key={i} className="p-4 bg-white border border-gray-100 rounded-xl shadow-sm">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="w-5 h-5 rounded-full bg-red-100 text-red-600 text-[10px] font-bold flex items-center justify-center">
-                  {i + 1}
-                </span>
-                <h4 className="text-sm font-semibold text-gray-800">{slide.title}</h4>
-              </div>
-              {slide.bullets && slide.bullets.length > 0 && (
-                <ul className="space-y-1 ml-7">
-                  {slide.bullets.map((b, bi) => (
-                    <li key={bi} className="text-xs text-gray-600 list-disc">{b}</li>
-                  ))}
-                </ul>
-              )}
-              {slide.notes && (
-                <p className="text-[10px] text-gray-400 mt-2 ml-7 italic">💡 {slide.notes}</p>
-              )}
-            </div>
-          ))}
-        </div>
+      {isVideoUrl ? (
+        <a href={content} target="_blank" rel="noopener"
+          className="inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-red-50 border border-red-200 text-red-700 font-medium hover:bg-red-100 transition-colors">
+          🎬 点击播放视频
+        </a>
       ) : (
-        <Markdown content={resource.content || ''} />
+        <Markdown content={content} />
       )}
     </div>
   );

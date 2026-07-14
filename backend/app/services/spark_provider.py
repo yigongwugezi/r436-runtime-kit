@@ -120,30 +120,6 @@ def generate_image(
         return {"status": "failed", "provider": "spark_image", "error": str(e)}
 
 
-def generate_video(prompt: str) -> dict[str, Any]:
-    """星火视频生成：文本生成短视频。
-
-    当前讯飞视频 API 需要异步提交+轮询，这里返回脚本草案作为第一版实现。
-    后续可接真实的视频生成 API。
-    """
-    if not SPARK_APP_ID or not SPARK_API_KEY:
-        return {"status": "provider_not_configured", "provider": "spark_video"}
-
-    try:
-        # 第一版：返回视频脚本（后续可接真实视频生成 API）
-        return {
-            "status": "script_ready",
-            "provider": "spark_video",
-            "script": f"【视频脚本：{prompt}】\n"
-                      f"1. 开场引入（15秒）：用动画展示本节核心概念\n"
-                      f"2. 核心讲解（90秒）：分步骤讲解关键知识点，配图解\n"
-                      f"3. 总结回顾（15秒）：关键词总结 + 思考题",
-            "duration_estimate": "2分钟",
-        }
-    except Exception as e:
-        return {"status": "failed", "provider": "spark_video", "error": str(e)}
-
-
 # ── 与 multimodal_provider.py 兼容的 Tool 接口 ──
 
 class SparkImageProvider:
@@ -166,21 +142,3 @@ class SparkImageProvider:
         return result
 
 
-class SparkVideoProvider:
-    """兼容 MultimodalAgent 的视频生成工具接口。"""
-
-    @staticmethod
-    def is_configured() -> bool:
-        from app.config import settings
-        return bool(settings.spark_app_id) and bool(settings.spark_api_key)
-
-    def __init__(self) -> None:
-        pass
-
-    def run(self, context: dict[str, Any]) -> dict[str, Any]:
-        prompt = (
-            str(context.get("user_message", ""))
-            or f"为「{context.get('subject_name', '学习内容')}」生成讲解微课视频"
-        )[:500]
-        result = generate_video(prompt)
-        return result
