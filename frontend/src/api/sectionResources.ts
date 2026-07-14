@@ -12,8 +12,10 @@ export async function streamSectionResourceRecommendations(
   payload: Record<string, unknown>,
   onProgress: (event: SearchProgressEvent) => void,
   signal?: AbortSignal,
+  onStarted?: (task: { task_id: string; workflow_type: string; status: string }) => void,
 ): Promise<SectionRecommendationResult> {
   const started = await startWorkflow('resource_search', { ...payload, sectionId });
+  onStarted?.(started);
   try {
     await consumeWorkflowEvents(started.task_id, (event) => {
       if (!event.stage_id || event.event.startsWith('workflow_')) return;

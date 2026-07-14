@@ -22,6 +22,15 @@ import DailyTaskPage from './DailyTaskPage';
 import FocusSprintPage from './FocusSprintPage';
 import WorkflowProgress from '../components/common/WorkflowProgress';
 import { cancelWorkflow, consumeWorkflowEvents, readWorkflow, startWorkflow, type WorkflowState } from '../api/workflows';
+import {
+  clearWorkflowTask,
+  isActiveWorkflowStatus,
+  isTerminalWorkflowStatus,
+  readWorkflowTask,
+  saveWorkflowTask,
+  workflowStateFromEvent,
+  type WorkflowTaskScope,
+} from '../utils/workflowTaskRecovery';
 
 const CONTENT_TYPE_OPTIONS: { value: ContentType; label: string; icon: string }[] = [
   { value: 'lecture', label: '教材', icon: '📖' },
@@ -176,6 +185,7 @@ export default function LecturePage() {
 
   // ── Textbook mode state ──
   const activeSubject = useSubjectStore((s) => s.activeSubject);
+  const workflowSubjectId = useSubjectStore((s) => s.activeSubject?.id ?? s.activeClassSubject?.subject ?? '');
   const isTextbookMode = !!activeSubject?.textbookId;
   const [textbookToc, setTextbookToc] = useState<TextbookTOC | null>(null);
 
@@ -228,6 +238,43 @@ export default function LecturePage() {
   const currentIdx = sections.findIndex((s: Section) => s.id === activeSectionId);
   const prevSection = currentIdx > 0 ? sections[currentIdx - 1] : null;
   const nextSection = currentIdx < sections.length - 1 ? sections[currentIdx + 1] : null;
+  const lectureWorkflowScope: WorkflowTaskScope = {
+    workflowType: 'lecture_generation', sessionId, subjectId: workflowSubjectId,
+    pathId: path?.id || '', stageId: chapterCtx?.stage.id || '', chapterId: chapterCtx?.chapter.id || '', sectionId: activeSectionId,
+  };
+
+  useEffect(() => {
+    if (!sessionId || !activeSectionId) return;
+    const record = readWorkflowTask(lectureWorkflowScope);
+    if (!record) return;
+    const controller = new AbortController();
+    let active = true;
+    const restore = async () => {
+      try {
+        const task = await readWorkflow(record.taskId, sessionId);
+        if (!active) return;
+        if (task.workflow_type !== record.workflowType) { clearWorkflowTask(lectureWorkflowScope); return; }
+        setLectureWorkflow({ taskId: record.taskId, workflowType: task.workflow_type, status: task.status, events: [], preview: '', elapsedMs: task.elapsed_ms || 0 });
+        if (isActiveWorkflowStatus(task.status)) {
+          setGenerating(true);
+          await consumeWorkflowEvents(record.taskId, (event) => {
+            if (active) setLectureWorkflow((current) => current?.taskId === record.taskId ? workflowStateFromEvent(current, event) : current);
+          }, controller.signal);
+        }
+        const latest = await readWorkflow(record.taskId, sessionId);
+        if (!active) return;
+        if (latest.status === 'completed' && latest.result?.data?.lecture?.content) {
+          store.setLecture(`${sessionId}:${activeSectionId}`, latest.result.data.lecture.content);
+          store.markGenerated(activeSectionId);
+        }
+        if (isTerminalWorkflowStatus(latest.status)) clearWorkflowTask(lectureWorkflowScope);
+      } catch {
+        if (active) { clearWorkflowTask(lectureWorkflowScope); setLectureWorkflow(null); }
+      } finally { if (active) setGenerating(false); }
+    };
+    void restore();
+    return () => { active = false; controller.abort(); };
+  }, [sessionId, workflowSubjectId, path?.id, chapterCtx?.stage.id, chapterCtx?.chapter.id, activeSectionId]);
 
   // ── Textbook content for resource generation ──
   useEffect(() => {
@@ -272,6 +319,7 @@ export default function LecturePage() {
 
   const handleGenerate = useCallback(async (cardId?: string, requirements?: string) => {
     if (!currentSection || !sessionId) return;
+    if (generating || (lectureWorkflow && isActiveWorkflowStatus(lectureWorkflow.status))) return;
     setGenerating(true);
     const title = requirements ? `${currentSection.title || '课程教材'}（${requirements.slice(0, 20)}${requirements.length > 20 ? '…' : ''}）` : (currentSection.title || '课程教材');
     const cid = cardId || generatePanelRef.current?.beginRecord('lecture', title, requirements) || '';
@@ -292,10 +340,10 @@ export default function LecturePage() {
           requirements: requirements || '',
       });
       setLectureWorkflow({ taskId: started.task_id, workflowType: started.workflow_type, status: started.status, events: [], preview: '', elapsedMs: 0 });
+      const workflowScope: WorkflowTaskScope = { ...lectureWorkflowScope, workflowType: started.workflow_type };
+      saveWorkflowTask({ ...workflowScope, taskId: started.task_id, createdAt: Date.now() });
       await consumeWorkflowEvents(started.task_id, (event) => setLectureWorkflow((current) => {
-        if (!current || current.taskId !== started.task_id || event.sequence <= (current.events[current.events.length - 1]?.sequence || 0)) return current;
-        const status = event.event === 'workflow_completed' ? 'completed' : event.event === 'workflow_cancelled' ? 'cancelled' : event.event === 'workflow_failed' ? 'failed' : 'running';
-        return { ...current, status, events: [...current.events, event], preview: event.text_delta ?? current.preview, elapsedMs: event.elapsed_ms };
+        return current?.taskId === started.task_id ? workflowStateFromEvent(current, event) : current;
       }), controller.signal);
       const task = await readWorkflow(started.task_id, sessionId);
       const data = task.result;
@@ -304,8 +352,10 @@ export default function LecturePage() {
         store.setLecture(key, data.data.lecture.content);
         store.markGenerated(activeSectionId);
         generatePanelRef.current?.updateRecord(cid, { status: 'ready', content: data.data.lecture.content });
+        clearWorkflowTask(workflowScope);
       } else {
         generatePanelRef.current?.updateRecord(cid, { status: 'error' });
+        if (isTerminalWorkflowStatus(task.status)) clearWorkflowTask(workflowScope);
       }
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return;
@@ -319,6 +369,7 @@ export default function LecturePage() {
     lectureWorkflowAbort.current?.abort();
     setLectureWorkflow((current) => current ? { ...current, status: 'cancelled' } : current);
     setGenerating(false);
+    clearWorkflowTask({ ...lectureWorkflowScope, workflowType: lectureWorkflow.workflowType });
   }, [lectureWorkflow, sessionId]);
 
   const [videoGenerating, setVideoGenerating] = useState(false);

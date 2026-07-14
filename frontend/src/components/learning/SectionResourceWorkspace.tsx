@@ -7,6 +7,15 @@ import MermaidDiagram from '../../utils/mermaid';
 import WorkflowProgress from '../common/WorkflowProgress';
 import { cancelWorkflow, consumeWorkflowEvents, readWorkflow, startWorkflow, type WorkflowEvent, type WorkflowState } from '../../api/workflows';
 import {
+  clearWorkflowTask,
+  isActiveWorkflowStatus,
+  isTerminalWorkflowStatus,
+  readWorkflowTask,
+  saveWorkflowTask,
+  workflowStateFromEvent,
+  type WorkflowTaskScope,
+} from '../../utils/workflowTaskRecovery';
+import {
   generateSectionMindmap,
   generatedResourceLabels,
   getSectionMindmap,
@@ -34,6 +43,7 @@ const resourceGroups: Array<{ label: string; types: GeneratedSectionResourceType
   { label: '学习材料', types: ['summary_card', 'concept_comparison', 'worked_example', 'mistake_checklist', 'review_notes'] },
   { label: '结构化可视化', types: ['knowledge_map', 'process_flow', 'concept_diagram', 'execution_trace', 'code_trace'] },
 ];
+const generatedResourceTypes = new Set<GeneratedSectionResourceType>(resourceGroups.flatMap((group) => group.types));
 const platformLabels: Record<string, string> = { bilibili: 'B站', youtube: 'YouTube', vimeo: 'Vimeo', icourse163: '中国大学MOOC', xuetangx: '学堂在线', smartedu: '智慧教育平台', imooc: '慕课网', youku: '优酷', iqiyi: '爱奇艺', douyin: '抖音', tencent_video: '腾讯视频' };
 const trustLabels: Record<string, string> = { official: '官方来源', educational: '教育来源', general: '普通来源' };
 const matchLevelLabels: Record<string, string> = { exact_topic: '精确匹配', chapter_level: '章节匹配', course_level: '课程拓展', expanded_research: '拓展论文' };
@@ -75,6 +85,8 @@ export default function SectionResourceWorkspace(props: Props) {
   const searchAbort = useRef<AbortController | null>(null);
   const workflowAbort = useRef<AbortController | null>(null);
   const [workflow, setWorkflow] = useState<WorkflowState | null>(null);
+  const pageScope = { sessionId, subjectId: subjectId || '', pathId, stageId, chapterId, sectionId: section?.id || '' };
+  const resourceSearchScope: WorkflowTaskScope = { ...pageScope, workflowType: 'resource_search' };
 
   useEffect(() => () => { searchAbort.current?.abort(); workflowAbort.current?.abort(); }, []);
 
@@ -91,6 +103,96 @@ export default function SectionResourceWorkspace(props: Props) {
     getSectionMindmap(section.id, sessionId).then((item) => active && setMindmap(item)).catch(() => active && setMindmap(null));
     return () => { active = false; };
   }, [sessionId, section?.id]);
+
+  useEffect(() => {
+    if (!sessionId || !section?.id) return;
+    const record = readWorkflowTask(resourceSearchScope);
+    if (!record) return;
+    const controller = new AbortController();
+    let active = true;
+    const restore = async () => {
+      try {
+        const task = await readWorkflow(record.taskId, sessionId);
+        if (!active) return;
+        if (task.workflow_type !== record.workflowType) { clearWorkflowTask(resourceSearchScope); return; }
+        if (!isActiveWorkflowStatus(task.status)) {
+          clearWorkflowTask(resourceSearchScope);
+          if (task.status === 'completed') setRecommendations(task.result?.data?.recommendations ?? null);
+          return;
+        }
+        setSearching(true); setSearchProgress([]); setProgressExpanded(true);
+        await consumeWorkflowEvents(record.taskId, (event) => {
+          if (!active || !event.stage_id || event.event.startsWith('workflow_')) return;
+          const safe = event.safe_metadata || {};
+          setSearchProgress((events) => {
+            const next: SearchProgressEvent = {
+              event: 'search_progress', stage: event.stage_id as SearchProgressEvent['stage'], status: event.status as SearchProgressEvent['status'],
+              fallback_used: event.used_fallback, source_count: Number(safe.source_count || 0), result_count: Number(safe.result_count || 0),
+            };
+            const index = events.findIndex((item) => item.stage === next.stage);
+            if (index < 0) return [...events, next];
+            const updated = [...events]; updated[index] = next; return updated;
+          });
+        }, controller.signal);
+        const latest = await readWorkflow(record.taskId, sessionId);
+        if (!active) return;
+        if (latest.status === 'completed') setRecommendations(latest.result?.data?.recommendations ?? null);
+        if (isTerminalWorkflowStatus(latest.status)) clearWorkflowTask(resourceSearchScope);
+      } catch {
+        if (active) clearWorkflowTask(resourceSearchScope);
+      } finally {
+        if (active) { setSearching(false); setProgressExpanded(false); }
+      }
+    };
+    void restore();
+    return () => { active = false; controller.abort(); };
+  }, [sessionId, subjectId, pathId, stageId, chapterId, section?.id]);
+
+  useEffect(() => {
+    if (!sessionId || !section?.id) return;
+    const scopes: WorkflowTaskScope[] = [
+      { ...pageScope, workflowType: 'generated_resource' },
+      { ...pageScope, workflowType: 'generated_resource_regeneration' },
+    ];
+    const scope = scopes.find((item) => readWorkflowTask(item));
+    if (!scope) return;
+    const record = readWorkflowTask(scope);
+    if (!record || !generatedResourceTypes.has(record.resourceType as GeneratedSectionResourceType)) { clearWorkflowTask(scope); return; }
+    const controller = new AbortController();
+    let active = true;
+    const restore = async () => {
+      try {
+        const task = await readWorkflow(record.taskId, sessionId);
+        if (!active) return;
+        if (task.workflow_type !== record.workflowType) { clearWorkflowTask(scope); return; }
+        setSelectedType(record.resourceType as GeneratedSectionResourceType);
+        setWorkflow({ taskId: record.taskId, workflowType: task.workflow_type, status: task.status, events: [], preview: '', elapsedMs: task.elapsed_ms || 0 });
+        if (isActiveWorkflowStatus(task.status)) {
+          setGenerating(record.resourceType as GeneratedSectionResourceType);
+          await consumeWorkflowEvents(record.taskId, (event: WorkflowEvent) => {
+            if (active) setWorkflow((current) => current?.taskId === record.taskId ? workflowStateFromEvent(current, event) : current);
+          }, controller.signal);
+        }
+        const latest = await readWorkflow(record.taskId, sessionId);
+        if (!active) return;
+        if (latest.status === 'completed') {
+          const resource = latest.result?.data?.resource as GeneratedSectionResource | undefined;
+          if (resource) {
+            setGenerated((items) => [resource, ...items.filter((item) => item.id !== resource.id)]);
+            setPreview(resource);
+          } else {
+            const items = await getGeneratedSectionResources(section.id, sessionId, subjectId);
+            if (active) setGenerated(items);
+          }
+        }
+        if (isTerminalWorkflowStatus(latest.status)) clearWorkflowTask(scope);
+      } catch {
+        if (active) { clearWorkflowTask(scope); setWorkflow(null); }
+      } finally { if (active) setGenerating(null); }
+    };
+    void restore();
+    return () => { active = false; controller.abort(); };
+  }, [sessionId, subjectId, pathId, stageId, chapterId, section?.id]);
 
   const searchResources = async (filter = resourceFilter) => {
     if (!sessionId || !section) return;
@@ -114,10 +216,13 @@ export default function SectionResourceWorkspace(props: Props) {
           if (index < 0) return [...events, event];
           const next = [...events]; next[index] = event; return next;
         });
-      }, controller.signal);
+      }, controller.signal, (started) => {
+        saveWorkflowTask({ ...resourceSearchScope, taskId: started.task_id, createdAt: Date.now() });
+      });
       if (requestId === requestSerial.current) {
         setRecommendations(result);
         setProgressExpanded(false);
+        clearWorkflowTask(resourceSearchScope);
       }
     } catch (error) {
       if (requestId === requestSerial.current && !(error instanceof DOMException && error.name === 'AbortError')) {
@@ -139,6 +244,7 @@ export default function SectionResourceWorkspace(props: Props) {
       const next = [...events]; next[index] = event; return next;
     });
     setProgressExpanded(true);
+    clearWorkflowTask(resourceSearchScope);
   };
   const search = () => searchResources(resourceFilter);
 
@@ -153,6 +259,7 @@ export default function SectionResourceWorkspace(props: Props) {
 
   const generate = async (resourceType: GeneratedSectionResourceType, feedback: GeneratedFeedback | '' = '') => {
     if (!sessionId || !section) return;
+    if (workflow && isActiveWorkflowStatus(workflow.status)) return;
     workflowAbort.current?.abort();
     const controller = new AbortController();
     workflowAbort.current = controller;
@@ -166,18 +273,25 @@ export default function SectionResourceWorkspace(props: Props) {
         regenerate: generated.some((item) => item.resourceType === resourceType),
       });
       setWorkflow({ taskId: started.task_id, workflowType: started.workflow_type, status: started.status, events: [], preview: '', elapsedMs: 0 });
+      const workflowScope: WorkflowTaskScope = { ...pageScope, workflowType: started.workflow_type };
+      saveWorkflowTask({ ...workflowScope, taskId: started.task_id, createdAt: Date.now(), resourceType });
       await consumeWorkflowEvents(started.task_id, (event: WorkflowEvent) => {
         if (requestId !== workflowSerial.current) return;
-        setWorkflow((current) => {
-          if (!current || current.taskId !== started.task_id || event.sequence <= (current.events[current.events.length - 1]?.sequence || 0)) return current;
-          const status = event.event === 'workflow_completed' ? 'completed' : event.event === 'workflow_cancelled' ? 'cancelled' : event.event === 'workflow_failed' ? 'failed' : 'running';
-          return { ...current, status, events: [...current.events, event], preview: event.text_delta ?? current.preview, elapsedMs: event.elapsed_ms };
-        });
+        setWorkflow((current) => current?.taskId === started.task_id ? workflowStateFromEvent(current, event) : current);
       }, controller.signal);
       const task = await readWorkflow(started.task_id, sessionId);
-      if (requestId !== workflowSerial.current || task.status !== 'completed') return;
+      if (requestId !== workflowSerial.current) return;
+      if (task.status !== 'completed') {
+        if (isTerminalWorkflowStatus(task.status)) clearWorkflowTask(workflowScope);
+        return;
+      }
       const result = task.result?.data as { resource: GeneratedSectionResource };
-      if (!result?.resource) throw new Error('missing workflow result');
+      if (!result?.resource) {
+        clearWorkflowTask(workflowScope);
+        const items = await getGeneratedSectionResources(section.id, sessionId, subjectId);
+        setGenerated(items);
+        return;
+      }
       const previous = generated.find((item) => item.resourceType === resourceType);
       const next: GeneratedSectionResource = {
         ...result.resource,
@@ -185,6 +299,7 @@ export default function SectionResourceWorkspace(props: Props) {
       };
       setGenerated((items) => [next, ...items.filter((item) => item.id !== next.id)]);
       setPreview(next);
+      clearWorkflowTask(workflowScope);
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) setNotice('资源生成失败，请稍后重试。');
     } finally { if (requestId === workflowSerial.current) setGenerating(null); }
@@ -196,6 +311,7 @@ export default function SectionResourceWorkspace(props: Props) {
     workflowAbort.current?.abort();
     setWorkflow((current) => current ? { ...current, status: 'cancelled' } : current);
     setGenerating(null);
+    clearWorkflowTask({ ...pageScope, workflowType: workflow.workflowType });
   };
 
   const regenerateFromFeedback = async () => {

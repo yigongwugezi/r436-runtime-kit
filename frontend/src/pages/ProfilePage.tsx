@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Brain, ClipboardCheck, Edit3, RefreshCw, Save, Sparkles, Target } from 'lucide-react';
 import { useChatPanel } from '../components/layout/AppLayout';
 import { useProfile } from '../hooks/useProfile';
@@ -9,6 +9,15 @@ import { assessInterest, updateProfileContext, updateProfileSelfReport, updatePr
 import { PageError, PageLoading } from '../components/common/PageState';
 import WorkflowProgress from '../components/common/WorkflowProgress';
 import { consumeWorkflowEvents, readWorkflow, startWorkflow } from '../api/workflows';
+import {
+  clearWorkflowTask,
+  isActiveWorkflowStatus,
+  isTerminalWorkflowStatus,
+  readWorkflowTask,
+  saveWorkflowTask,
+  workflowStateFromEvent,
+  type WorkflowTaskScope,
+} from '../utils/workflowTaskRecovery';
 
 const confidenceLabel = { low: '低', medium: '中', high: '高' };
 const statusLabel = { unassessed: '未评估', tentative: '待验证', basic: '基础', developing: '发展中', proficient: '熟练', advanced: '高阶', learning: '学习中', partial: '部分掌握', mastered: '已掌握', familiar: '较熟悉', weak: '薄弱', unknown: '未评估', assessed: '已评估' };
@@ -41,6 +50,43 @@ export default function ProfilePage() {
   const [syncError, setSyncError] = useState('');
   const [factBusy, setFactBusy] = useState('');
   const [syncWorkflow, setSyncWorkflow] = useState(null);
+  const syncAbort = useRef<AbortController | null>(null);
+  const syncWorkflowScope: WorkflowTaskScope = { workflowType: 'profile_sync', sessionId, subjectId: subjectId || '' };
+
+  useEffect(() => {
+    if (!sessionId || !subjectId) return;
+    const record = readWorkflowTask(syncWorkflowScope);
+    if (!record) return;
+    const controller = new AbortController();
+    syncAbort.current = controller;
+    let active = true;
+    const restore = async () => {
+      try {
+        const task = await readWorkflow(record.taskId, sessionId);
+        if (!active) return;
+        if (task.workflow_type !== record.workflowType) { clearWorkflowTask(syncWorkflowScope); return; }
+        setSyncWorkflow({ taskId: record.taskId, workflowType: task.workflow_type, status: task.status, events: [], preview: '', elapsedMs: task.elapsed_ms || 0 });
+        if (isActiveWorkflowStatus(task.status)) {
+          setSaving(true);
+          await consumeWorkflowEvents(record.taskId, (event) => {
+            if (active) setSyncWorkflow((current) => current?.taskId === record.taskId ? workflowStateFromEvent(current, event) : current);
+          }, controller.signal);
+        }
+        const latest = await readWorkflow(record.taskId, sessionId);
+        if (!active) return;
+        const result = latest.result?.data;
+        if (latest.status === 'completed') {
+          setSyncPreview(result?.preview);
+          if (record.mode === 'apply') await fetchProfile();
+        }
+        if (isTerminalWorkflowStatus(latest.status)) clearWorkflowTask(syncWorkflowScope);
+      } catch {
+        if (active) { clearWorkflowTask(syncWorkflowScope); setSyncWorkflow(null); }
+      } finally { if (active) setSaving(false); }
+    };
+    void restore();
+    return () => { active = false; controller.abort(); };
+  }, [sessionId, subjectId]);
 
   useEffect(() => {
     if (profileV2?.subject_context) setContext(profileV2.subject_context);
@@ -60,17 +106,18 @@ export default function ProfilePage() {
   const startInterestSelfReport = () => { setInterest(interestState?.self_report ?? 50); setEditingInterest(true); };
   const startAssessment = async () => { const result = await assessInterest(sessionId); setQuestions(result.questions || []); };
   const submitAssessment = async () => { setSaving(true); try { await assessInterest(sessionId, answers); await fetchProfile(); setQuestions([]); } finally { setSaving(false); } };
-  const syncFromConversation = async (preview = true) => { if (!subjectId || !sessionId) return; setSaving(true); setSyncError(''); try {
+  const syncFromConversation = async (preview = true) => { if (!subjectId || !sessionId || saving || (syncWorkflow && isActiveWorkflowStatus(syncWorkflow.status))) return; setSaving(true); setSyncError('');
+    syncAbort.current?.abort(); const controller = new AbortController(); syncAbort.current = controller;
+    try {
     const started = await startWorkflow('profile_sync', { sessionId, subjectId, preview });
     setSyncWorkflow({ taskId: started.task_id, workflowType: started.workflow_type, status: started.status, events: [], preview: '', elapsedMs: 0 });
-    await consumeWorkflowEvents(started.task_id, (event) => setSyncWorkflow((current) => {
-      if (!current || event.sequence <= (current.events.at(-1)?.sequence || 0)) return current;
-      const status = event.event === 'workflow_completed' ? 'completed' : event.event === 'workflow_cancelled' ? 'cancelled' : event.event === 'workflow_failed' ? 'failed' : 'running';
-      return { ...current, status, events: [...current.events, event], elapsedMs: event.elapsed_ms };
-    }));
+    const workflowScope: WorkflowTaskScope = { ...syncWorkflowScope, workflowType: started.workflow_type };
+    saveWorkflowTask({ ...workflowScope, taskId: started.task_id, createdAt: Date.now(), mode: preview ? 'preview' : 'apply' });
+    await consumeWorkflowEvents(started.task_id, (event) => setSyncWorkflow((current) => current?.taskId === started.task_id ? workflowStateFromEvent(current, event) : current), controller.signal);
     const task = await readWorkflow(started.task_id, sessionId);
     const result = task.result?.data;
     setSyncPreview(result?.preview); if (!preview && task.status === 'completed') await fetchProfile();
+    if (isTerminalWorkflowStatus(task.status)) clearWorkflowTask(workflowScope);
   } catch (error) { setSyncError(error instanceof Error ? error.message : '同步失败，请稍后重试。'); } finally { setSaving(false); } };
   const factEvidence = (key) => profileV2?.fact_records?.[key] ? [{ ...profileV2.fact_records[key], detail: profileV2.fact_records[key].evidence_summary }] : [];
   const controlFact = async (key, action) => { if (!sessionId) return; setFactBusy(key); try { await updateProfileFact(sessionId, key, action); await fetchProfile(); } finally { setFactBusy(''); } };
