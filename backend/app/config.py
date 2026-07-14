@@ -132,7 +132,7 @@ class Settings(BaseSettings):
     # ── Textbook Import ──────────────────────────────────────────────
     textbook_storage_path: str = "./data/textbooks"
     textbook_max_upload_size: int = 100 * 1024 * 1024  # 100 MB
-    textbook_max_parse_chars: int = 80000  # max chars sent to LLM for chapter recognition
+    textbook_max_parse_chars: int = 320000  # max chars sent to LLM for chapter recognition
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -272,8 +272,8 @@ export default function LearningPathPage() {
           progress={progress}
           totalNodes={totalNodes}
           masteredNodes={masteredNodes}
-          onNavigateChapter={(chId) => nav(`/lecture/${encodeURIComponent(chId)}`)}
-          onNavigateSection={(secId) => nav(`/lecture/section/${encodeURIComponent(secId)}`)}
+          onNavigateChapter={(chId) => { if (chId) nav(`/lecture/${encodeURIComponent(chId)}`); }}
+          onNavigateSection={(secId) => { if (secId) nav(`/lecture/section/${encodeURIComponent(secId)}`); }}
         />
       </div>
     );
@@ -413,7 +413,7 @@ export default function LearningPathPage() {
                     const totalKps = ch.sections?.reduce((s: number, sec: any) => s + (sec.knowledgePoints?.length ?? 0), 0) ?? 0;
                     return (
                       <div key={ch.id}
-                        onClick={() => nav(`/lecture/${encodeURIComponent(ch.id)}`)}
+                        onClick={() => { if (ch.id) nav(`/lecture/${encodeURIComponent(ch.id)}`); }}
                         className="flex items-center gap-4 p-5 rounded-xl cursor-pointer transition-all border border-surface-200 bg-surface-50 hover:border-primary-300 hover:shadow-elevated group">
                         <div className="w-11 h-11 rounded-xl bg-primary-100 text-primary-600 flex items-center justify-center flex-shrink-0 font-bold text-base">{ci + 1}</div>
                         <div className="flex-1 min-w-0">

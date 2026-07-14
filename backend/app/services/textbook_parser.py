@@ -16,35 +16,117 @@ from app.services.llm_client import LLMClientError
 
 logger = logging.getLogger(__name__)
 
-STRUCTURE_EXTRACTION_PROMPT = """你是一位教材结构分析专家。以下是一本教材的文本内容（Markdown格式，来自PDF转换）。
+STRUCTURE_EXTRACTION_PROMPT = """你是一位教材结构分析专家，专门从OCR识别后的PDF文本中提取章节目录结构。
 
-文本中以 "--- Page N ---" 标记了每一页的起始位置。N 是**物理页码**（从第1页开始计数，封面是第1页）。
+文本中以 "--- Page N ---" 标记了每一页的起始位置。N 是**物理页码**（从第1页开始计数，封面是第1页）。这些页码标记是你判断章节起始/结束位置的**唯一权威依据**。
 
-请仔细分析并提取这本教材的完整章节目录结构，并为每个章、节标注其在文本中对应的物理页码（即 "--- Page N ---" 中的 N 值）。
+## 一、标题编号格式识别
 
-需要提取的信息：
-1. 教材的标题（如果能在文本中找到）
-2. 教材的作者（如果能在文本中找到）
-3. 所有章（chapter）的标题，以及每章的 start_page（起始物理页码）和 end_page（结束物理页码）
-4. 每章包含的所有节（section）的标题，以及每节的 start_page 和 end_page
-5. 每节的简要学习目标（一句话描述本节要掌握的核心内容）
-6. 每节建议的学习时间（estimated_minutes，整数，默认45分钟）
-7. 每节涉及的核心知识点（knowledge_points，字符串列表，3-5个）
+中文教材的章、节标题可能使用多种编号体系。请首先通读文本，识别出**本书实际使用**的编号规律，然后一致地应用它。
 
-要求：
-- 按照书中出现的顺序列出
-- 准确识别章、节标题的编号模式（如"第一章"、"第1章"、"Chapter 1"、"1.1"等）
-- 如果文本中有目录页，优先依据目录页内容来了解全书结构，但 start_page 必须指向正文实际起始页（不是目录页）
-- 如果没有明确的节标题，根据内容段落主题划分出合理的节结构
-- 学习目标要具体、可衡量
-- 知识点应为简短的关键词或短语
-- **不要输出封面、目录、前言、序言、附录、索引、参考文献、习题答案等非正文教学内容**
-- start_page 和 end_page 必须是整数，对应 "--- Page N ---" 中的 N 值
+常见编号格式（非穷举，应以实际文本为准）：
+- 阿拉伯数字：第1章、1.、1.1、1.1.1、1-1、1·1
+- 中文数字：第一章、一、第一节、一）
+- 全角标点：第１章、１．１（全角数字和全角句号）
+- 特殊编号：（一）、一、、§1、§1.1、第一篇、第1部分、Unit 1、Part I
+- 罗马数字：I.、II.、III.
+- 无编号标题：仅有文字标题，无数字前缀（常见于某些教材的引言章）
 
-输出格式为纯JSON（不要用Markdown代码块包裹）：
+**重要**：一本教材内部的标题编号体系是一致的。如果发现多种编号混用，应优先选择出现频率最高、最有规律的模式，并统一使用它来划分结构。
+
+## 二、章节边界与页码标注
+
+### 2.1 基本规则
+- 章的 start_page 是该章正文标题**首次出现**的物理页码（"--- Page N ---" 中的 N 值）
+- 章的 end_page 是下一章标题出现的那一页
+- 节的 start_page 是该节标题**首次出现**的物理页码；end_page 是下一节标题出现的那一页
+- 一个章节的正文内容可能从前一页的末尾就已经开始，也可能在一页的中间结束——**start_page 是标题所在的页号**
+
+### 2.2 顺序约束（极其重要）
+- **同一章内的各小节必须按照页码递增顺序排列**。第1.2节的 start_page 必须 ≥ 第1.1节的 start_page；第1.3节 ≥ 第1.2节；以此类推。
+- **后面小节的起始页码绝对不能小于前面小节的起始页码**。如果你发现1.3节出现在比1.2节更早的页码，说明你判断错了。
+- 一章内不同小节的 start_page 通常是不同的。只有在极少数情况下（如两节标题恰好挤在同一页），相邻两节才共享同一个 start_page。**绝不能让一章的所有小节都从同一页开始**。
+- 如果你无法从文本中确定某个小节的起始页码，请将该 start_page 设为 0，不要编造一个数字。
+
+### 2.3 与目录页的关系
+- 如果文本中有目录页（通常在前几页，密集列出多个章节标题），请参考目录页了解全书结构
+- 但 start_page **必须指向正文实际所在的页码**，不要指向目录页
+- 目录页中标注的页码可能是印刷页码（如"第15页"），它和 "--- Page N ---" 中的 N 值可能不一致。请始终以 "--- Page N ---" 中的物理页码为准
+
+## 三、OCR识别错误处理（重要）
+
+本教材文本可能由OCR（光学字符识别）从影印本/扫描件转换而来。OCR输出**必然存在错误**。请在分析时主动识别并纠正以下常见错误：
+
+### 3.1 形近字混淆
+OCR极易混淆以下字形相近的汉字（仅列举高频错误）：
+- 曰 → 日（"子曰"误识为"子日"）
+- 未 → 末（"未来"误识为"末来"）
+- 已 → 己 / 巳（"已经"误识为"己经"）
+- 人 → 入 / 八（"人工智能"误识为"人工智入能"）
+- 干 → 千（"骨干"误识为"骨千"）
+- 土 → 士（"博士"误识为"博土"）
+- 牛 → 午（"牛顿"误识为"午顿"）
+- 本 → 木（"本章"误识为"木章"）
+- 大 → 太（"大学"误识为"太学"）
+- 天 → 夫（"今天"误识为"今夫"）
+- 元 → 无（"单元"误识为"单无"）
+- 名 → 各（"名词"误识为"各词"）
+
+### 3.2 字符粘连与拆分
+- "好"可能被识别为"女子"
+- "本章"可能被识别为"木 章"（中间多了空格）
+- 连续的汉字可能被错误地插入空格或标点符号
+- 数学符号和公式极易出错：∑→E, ∫→f, ∞→oo, √→V
+
+### 3.3 纠正策略
+1. **语义优先**：当OCR输出在语义上不通顺时，优先根据上下文推断正确的文字
+2. **术语一致**：同一专业术语在全书中的写法应当一致。如果某处出现了不合理的变体，应纠正为正确的术语
+3. **章节标题校对**：章、节的标题是最重要的结构信息。如果标题看起来不合理（如"木章"、单个不完整的字），请根据上下文修正
+4. **页码序列可靠**：页码标记 "--- Page N ---" 由系统生成，是可靠的。如果标题文字与页码序列存在矛盾，优先信任页码序列
+
+## 四、非教学内容过滤
+
+请**不要**将以下内容作为章或节输出：
+- 封面、书名页、版权页
+- 目录页、图表目录
+- 前言、序言、致谢、导读、使用说明
+- 附录、索引、参考文献、习题答案
+- 后记、结语、跋
+
+## 五、核心规则（必须严格遵守）
+
+### 5.1 完整性 — 不得遗漏
+- **必须提取每一章下的全部小节**。如果某章有5个小节，你必须输出5个小节；有10个就必须输出10个。不得合并、不得跳过、不得只输出"代表性"的小节。
+- 仔细扫描全文。即使某些小节的标题在OCR后不太清晰，也请尽力识别并输出。如果一节只有标题和很少的正文内容，它仍是一个独立的小节，不应被合并到相邻小节中。
+- 如果某章没有显式的小节标题，你可以根据段落主题合理划分。但如果有显式的小节标题（无论编号格式如何），必须全部提取。
+
+### 5.2 标题保真 — 使用原文
+- 章、节的标题必须**严格使用教材原文中实际出现的文字**。不要翻译、不要改写、不要总结、不要润色。
+- OCR纠错仅限修正**明显的单一错字**（如"木章"→"本章"），不得修改标题的措辞、顺序或含义。
+- 如果原文是中文标题，输出中文；原文是英文，输出英文。不要做任何语言转换。
+- 如果原文标题包含标点符号、括号、引号等，请原样保留。
+
+### 5.3 学习目标与知识点
+- 每节的 goal 请用一句话概括本节要掌握的核心内容。语言精炼但具体可衡量。
+- knowledge_points 为 3-5 个简短关键词或短语，提取自本节文本的实际内容。
+
+## 六、需要提取的信息
+
+1. 教材标题（仅纠OCR错字，不改写）
+2. 教材作者（仅纠OCR错字）
+3. 所有章——每章包含其下全部小节（complete list, no omissions）
+4. 每章/节的 start_page 和 end_page
+5. 每节 goal（一句话学习目标）
+6. 每节 estimated_minutes（整数，默认45）
+7. 每节 knowledge_points（3-5个短语）
+
+## 七、输出格式
+
+纯JSON（不要用Markdown代码块包裹）。注意 chapters 数组中必须包含该章的全部 sections，不得省略任何一个：
+
 {{
-  "title": "教材名称",
-  "author": "作者",
+  "title": "教材名称（仅纠OCR错字）",
+  "author": "作者名",
   "chapters": [
     {{
       "title": "第1章 绪论",
@@ -59,17 +141,35 @@ STRUCTURE_EXTRACTION_PROMPT = """你是一位教材结构分析专家。以下�
           "start_page": 15,
           "end_page": 23,
           "estimated_minutes": 45,
-          "knowledge_points": ["数据结构定义", "逻辑结构", "物理结构", "抽象数据类型"]
+          "knowledge_points": ["数据结构定义", "逻辑结构", "物理结构"]
+        }},
+        {{
+          "title": "1.2 算法分析",
+          "goal": "掌握时间复杂度和空间复杂度的分析方法",
+          "order": 1,
+          "start_page": 24,
+          "end_page": 35,
+          "estimated_minutes": 50,
+          "knowledge_points": ["时间复杂度", "空间复杂度", "大O记号"]
+        }},
+        {{
+          "title": "1.3 抽象数据类型",
+          "goal": "理解ADT的概念及其在程序设计中的作用",
+          "order": 2,
+          "start_page": 36,
+          "end_page": 42,
+          "estimated_minutes": 40,
+          "knowledge_points": ["抽象数据类型", "封装", "接口与实现分离"]
         }}
       ]
     }}
   ]
 }}
 
-如果教材内容无法识别到任何结构，返回：
+如果无法识别任何结构，返回：
 {{"title": "", "author": "", "chapters": []}}
 
-教材内容：
+教材文本：
 {text}
 """
 
@@ -182,21 +282,20 @@ def build_structure_from_toc(
     for i, ch in enumerate(chapters):
         ch["order"] = i
 
-    # Refine end pages: each section ends at the next section's start - 1
+    # Refine end pages: each section shares its boundary page with the next section.
+    # When a chapter/section boundary falls mid-page, both adjacent sections
+    # include the shared page so the user can always read the full content.
     for ch in chapters:
         for i, sec in enumerate(ch.get("sections", [])):
             if i + 1 < len(ch["sections"]):
-                sec["end_page"] = max(
-                    sec["start_page"],
-                    ch["sections"][i + 1]["start_page"] - 1,
-                )
+                sec["end_page"] = ch["sections"][i + 1]["start_page"]
             else:
                 sec["end_page"] = ch["end_page"]
 
-    # Refine chapter end pages based on next chapter's start
+    # Refine chapter end pages: share boundary pages with next chapter
     for i, ch in enumerate(chapters):
         if i + 1 < len(chapters):
-            ch["end_page"] = max(ch["start_page"], chapters[i + 1]["start_page"] - 1)
+            ch["end_page"] = chapters[i + 1]["start_page"]
         else:
             ch["end_page"] = page_count
 
@@ -472,14 +571,14 @@ def _map_chapters_to_pages(
     # ── Fill missing page numbers with proportional distribution ──
     _fill_missing_page_numbers(chapters, total_pages)
 
-    # Recalculate end pages
+    # Recalculate end pages — share boundary pages with next section
     for ch in chapters:
         ch_start = ch.get("start_page", 1)
         sections = ch.get("sections", [])
         for i, sec in enumerate(sections):
             sec_start = sec.get("start_page", ch_start)
             if i + 1 < len(sections):
-                sec["end_page"] = max(sec_start, sections[i + 1].get("start_page", sec_start) - 1)
+                sec["end_page"] = sections[i + 1].get("start_page", sec_start)
             else:
                 sec["end_page"] = max(sec_start, ch.get("end_page", min(sec_start + 10, total_pages)))
 
@@ -668,16 +767,17 @@ def extract_textbook_structure(
     # ═══════════════════════════════════════════════════════════════════
     if not result.get("chapters"):
         # ── Build a per-page digest so the LLM can see ALL page markers ──
-        # Instead of truncating (which hides later-chapter page numbers),
-        # we include a short snippet from EVERY page.  This ensures the
-        # LLM accurately reports page numbers for the entire book.
+        # Each page contributes its first N chars.  Section/chapter headings
+        # almost always appear near the top of a page, so the leading portion
+        # reliably captures structural information.
         max_chars = settings.textbook_max_parse_chars
-        prompt_overhead = 4000  # reserve for the prompt template itself
+        prompt_overhead = 5000  # reserve for the expanded prompt template
         available = max(1, max_chars - prompt_overhead)
         pages_count = len(page_texts)
 
-        # How many chars per page can we afford?
-        chars_per_page = max(100, available // pages_count)
+        # Per-page budget — never drop below 250 chars so section headings
+        # on later pages remain visible to the LLM.
+        chars_per_page = max(250, available // pages_count)
 
         digest_parts: list[str] = []
         for pt in page_texts:
@@ -689,8 +789,7 @@ def extract_textbook_structure(
         digest_text = "\n\n".join(digest_parts)
 
         # If digest still exceeds budget, use larger snippets for early pages
-        # and progressively smaller for later ones (early pages = TOC + early
-        # chapters, which are structurally the most important).
+        # (where TOC + early chapters live) and smaller for later ones.
         if len(digest_text) > available:
             logger.info(
                 "Digest too long (%d chars) — reducing later-page snippets",
@@ -698,7 +797,8 @@ def extract_textbook_structure(
             )
             early_count = max(1, pages_count // 3)
             remaining_for_late = max(100, available - early_count * chars_per_page)
-            late_chars = max(60, remaining_for_late // max(1, pages_count - early_count))
+            # Late pages still get at least 150 chars — enough for a section heading
+            late_chars = max(150, remaining_for_late // max(1, pages_count - early_count))
 
             digest_parts = []
             for i, pt in enumerate(page_texts):
@@ -710,8 +810,8 @@ def extract_textbook_structure(
             digest_text = "\n\n".join(digest_parts)
 
         logger.info(
-            "LLM digest: %d pages, ~%d chars/page, total %d chars",
-            pages_count, chars_per_page, len(digest_text),
+            "LLM digest: %d pages, ~%d chars/page, total %d chars (budget=%d)",
+            pages_count, chars_per_page, len(digest_text), max_chars,
         )
 
         prompt = STRUCTURE_EXTRACTION_PROMPT.format(text=digest_text)
@@ -753,6 +853,85 @@ def extract_textbook_structure(
             ep = sec.get("end_page", 0)
             if not isinstance(ep, int) or ep < 1 or ep > page_count:
                 sec["end_page"] = 0
+
+    # ── Sanity-check section ordering within each chapter ───────────
+    # The LLM sometimes assigns all sections the same start_page
+    # (the chapter's first page) or puts later sections at earlier pages.
+    # Detect and fix these so _fill_missing_page_numbers can interpolate.
+    for ch in chapters:
+        ch_start = ch.get("start_page", 0)
+        sections = ch.get("sections", [])
+        if len(sections) <= 1:
+            continue
+
+        # Sort sections by their declared order (not by page — the page
+        # values are what we're trying to fix).
+        sorted_secs = sorted(sections, key=lambda s: s.get("order", 0))
+
+        # Detect: all sections share the same start_page (common LLM error)
+        unique_pages = {
+            s.get("start_page", 0)
+            for s in sorted_secs
+            if s.get("start_page", 0) > 0
+        }
+        if len(unique_pages) == 1 and len(sorted_secs) > 1:
+            sole_page = next(iter(unique_pages))
+            logger.warning(
+                "All %d sections in chapter '%s' share start_page=%d — keeping only first",
+                len(sorted_secs), ch.get("title", "?"), sole_page,
+            )
+            # Keep only the first section's page; mark the rest as unknown
+            # so _fill_missing_page_numbers distributes them properly.
+            for i, sec in enumerate(sorted_secs):
+                if i > 0:
+                    sec["start_page"] = 0
+                    sec["end_page"] = 0
+
+        # Detect: any section's start_page is BEFORE the previous section's
+        prev_page = 0
+        for sec in sorted_secs:
+            sp = sec.get("start_page", 0)
+            if sp > 0:
+                if sp < prev_page:
+                    logger.warning(
+                        "Section '%s' start_page=%d < previous=%d — marking as unknown",
+                        sec.get("title", "?"), sp, prev_page,
+                    )
+                    sec["start_page"] = 0
+                    sec["end_page"] = 0
+                else:
+                    prev_page = sp
+
+        # Detect: section start_page outside chapter bounds
+        ch_start_val = ch.get("start_page", 0)
+        if ch_start_val > 0:
+            for sec in sorted_secs:
+                sp = sec.get("start_page", 0)
+                if sp > 0 and sp < ch_start_val:
+                    logger.warning(
+                        "Section '%s' start_page=%d < chapter start=%d — marking as unknown",
+                        sec.get("title", "?"), sp, ch_start_val,
+                    )
+                    sec["start_page"] = 0
+                    sec["end_page"] = 0
+
+    # ── Sanity-check chapter ordering ───────────────────────────────
+    # Later chapters must not start before earlier ones.
+    if len(chapters) > 1:
+        sorted_ch = sorted(chapters, key=lambda c: c.get("order", 0))
+        prev_page = 0
+        for ch in sorted_ch:
+            sp = ch.get("start_page", 0)
+            if sp > 0:
+                if sp < prev_page:
+                    logger.warning(
+                        "Chapter '%s' start_page=%d < previous chapter at %d — marking as unknown",
+                        ch.get("title", "?"), sp, prev_page,
+                    )
+                    ch["start_page"] = 0
+                    ch["end_page"] = 0
+                else:
+                    prev_page = sp
 
     # ── Fill missing chapter page numbers ───────────────────────────
     chapters_with_page = [c for c in chapters if c.get("start_page", 0) > 0]
@@ -803,13 +982,10 @@ def extract_textbook_structure(
         if chapters:
             chapters[-1]["end_page"] = page_count
 
-    # Recalculate chapter end_pages from next chapter's start
+    # Recalculate chapter end_pages — share boundary pages with next chapter
     for i, ch in enumerate(chapters):
         if i + 1 < len(chapters):
-            ch["end_page"] = max(
-                ch.get("start_page", 1),
-                chapters[i + 1].get("start_page", ch.get("start_page", 1) + 10) - 1,
-            )
+            ch["end_page"] = chapters[i + 1].get("start_page", ch.get("start_page", 1) + 10)
         else:
             ch["end_page"] = max(ch.get("start_page", 1), page_count)
 
@@ -868,14 +1044,11 @@ def extract_textbook_structure(
             sp = sec.get("start_page", ch_start)
             sec["start_page"] = max(ch_start, min(sp, ch_end))
 
-        # Recalculate section end pages
+        # Recalculate section end pages — share boundary pages
         sorted_secs = sorted(sections, key=lambda s: s.get("order", 0))
         for i, sec in enumerate(sorted_secs):
             if i + 1 < len(sorted_secs):
-                sec["end_page"] = max(
-                    sec.get("start_page", 1),
-                    sorted_secs[i + 1].get("start_page", sec.get("start_page", 1) + 5) - 1,
-                )
+                sec["end_page"] = sorted_secs[i + 1].get("start_page", sec.get("start_page", 1) + 5)
             else:
                 sec["end_page"] = max(sec.get("start_page", 1), ch_end)
 
@@ -889,16 +1062,13 @@ def extract_textbook_structure(
     # avoiding the false matches that plagued the old global title search.
     _refine_section_pages(chapters, page_texts)
 
-    # Recalculate section end pages after refinement
+    # Recalculate section end pages after refinement — share boundary pages
     for ch in chapters:
         sections = ch.get("sections", [])
         sorted_secs = sorted(sections, key=lambda s: s.get("order", 0))
         for i, sec in enumerate(sorted_secs):
             if i + 1 < len(sorted_secs):
-                sec["end_page"] = max(
-                    sec.get("start_page", 1),
-                    sorted_secs[i + 1].get("start_page", sec.get("start_page", 1) + 5) - 1,
-                )
+                sec["end_page"] = sorted_secs[i + 1].get("start_page", sec.get("start_page", 1) + 5)
             else:
                 sec["end_page"] = max(
                     sec.get("start_page", 1),

@@ -94,7 +94,38 @@ def _textbook_to_response(tb: TextbookModel) -> TextbookResponse:
     )
 
 
-def _resolve_textbook_path(textbook_id: str) -> str:
+def _lookup_section_title(chapters_json: list | None, section_id: str) -> str:
+    """Find a section's title from chapters_json by its section_id."""
+    if not chapters_json or not section_id:
+        return ""
+    for ch in chapters_json:
+        for sec in ch.get("sections", []):
+            if sec.get("section_id") == section_id:
+                return sec.get("title", "")
+    return ""
+
+
+def _lookup_next_section_title(chapters_json: list | None, section_id: str) -> str:
+    """Find the NEXT section's title (the one that starts after the given section_id ends).
+
+    Used to trim the last page's content — everything from the next
+    section's title onward belongs to the next section, not this one.
+    """
+    if not chapters_json or not section_id:
+        return ""
+    all_sections: list[tuple[str, str, int]] = []  # (section_id, title, order)
+    for ch in chapters_json:
+        for sec in ch.get("sections", []):
+            sid = sec.get("section_id", "")
+            title = sec.get("title", "")
+            order = sec.get("order", 0)
+            all_sections.append((sid, title, order))
+
+    # Sort by chapter order then section order within chapter
+    for i, (sid, title, order) in enumerate(all_sections):
+        if sid == section_id and i + 1 < len(all_sections):
+            return all_sections[i + 1][1]
+    return ""
     """Get the absolute path to a textbook PDF file."""
     from app.services.textbook_processor import ensure_textbook_dir
 
@@ -431,6 +462,24 @@ def get_textbook_content(
             .order_by(TextbookPageContentModel.page_number)
             .all()
         )
+
+        # ── Boundary-page trimming ──────────────────────────────────────
+        # When a section starts/ends mid-page, the first and last pages
+        # contain text from adjacent sections.  Trim using section titles
+        # so only this section's content is returned.
+        if pages and section_id:
+            sec_title = _lookup_section_title(tb.chapters_json, section_id)
+            # Trim first page: remove everything before the section title
+            if sec_title and pages[0].content and sec_title in pages[0].content:
+                idx = pages[0].content.index(sec_title)
+                pages[0].content = pages[0].content[idx:]
+
+            # Trim last page: remove everything from the next section's title onward
+            if len(pages) > 1:
+                next_title = _lookup_next_section_title(tb.chapters_json, section_id)
+                if next_title and pages[-1].content and next_title in pages[-1].content:
+                    idx = pages[-1].content.index(next_title)
+                    pages[-1].content = pages[-1].content[:idx]
 
         content = "\n\n".join(
             p.content for p in pages if p.content
