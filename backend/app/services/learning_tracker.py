@@ -191,6 +191,37 @@ class LearningTracker:
                     target=lambda: run_resource_completion_check(sid, resource_id),
                     daemon=True,
                 ).start()
+
+            # ── 主动推送：资源完成后推荐下一步 ──
+            if event_type == "resource_complete":
+                try:
+                    from app.services.assessment_loop import notification_store, AssessmentNotification
+                    from app.db.repository import get_resources
+                    db = self._db_session()
+                    try:
+                        resources = get_resources(db, sid)
+                        pending = [r for r in (resources or []) if r.study_status != "completed" and r.id != event.get("resourceId")]
+                        if pending:
+                            # 按学习路径阶段排序
+                            from app.db.repository import get_latest_learning_path
+                            path = get_latest_learning_path(db, sid)
+                            stage_order = {}
+                            if path and path.stages:
+                                for idx, s in enumerate(path.stages):
+                                    if isinstance(s, dict):
+                                        stage_order[s.get("stage_id", "")] = idx
+                            pending.sort(key=lambda r: stage_order.get(r.related_stage_id or "", 999))
+                            next_res = pending[0]
+                            notification_store.push(sid, AssessmentNotification(
+                                type="recommendations_ready",
+                                title="下一个学习资源",
+                                message=f"已完成「{event.get('resourceTitle', '')}」，建议继续学习「{next_res.title}」",
+                                session_id=sid,
+                            ))
+                    finally:
+                        db.close()
+                except Exception:
+                    pass
         except Exception:
             pass  # Non-critical — assessment loop is best-effort
 

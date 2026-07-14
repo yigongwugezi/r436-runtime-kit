@@ -10,6 +10,7 @@ Provides:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from abc import ABC, abstractmethod
@@ -18,6 +19,7 @@ from urllib import error, request
 
 from app.config import settings
 
+logger = logging.getLogger(__name__)
 
 # ── Exceptions ─────────────────────────────────────────────────────────────
 

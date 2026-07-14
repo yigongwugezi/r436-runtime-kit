@@ -46,6 +46,10 @@ export default function ResourceTypeRenderer({ resource }: Props) {
     case 'quiz':
       return <QuizRenderer resource={resource} />;
     case 'case_study':
+    case 'practice':
+      return <PracticeRenderer resource={resource} />;
+    case 'multimodal':
+      return <MultimodalRenderer resource={resource} />;
       return <PracticeRenderer resource={resource} />;
     case 'video':
       return <VideoRenderer resource={resource} />;
@@ -351,13 +355,22 @@ function QuizRenderer({ resource }: Props) {
  * Case Study / Practice — 实操案例
  * =================================================================== */
 function PracticeRenderer({ resource }: Props) {
+  const content = resource.content || '';
+  const sections = ['需求说明', '参考代码', '测试用例', '运行指导'].filter(
+    s => content.includes('### ' + s) || content.includes('## ' + s)
+  );
   return (
     <div>
       <div className="mb-4 p-3 bg-cyan-50/70 border border-cyan-100 rounded-xl">
         <p className="text-xs text-cyan-700 font-medium">💻 实操案例</p>
         <p className="text-[10px] text-cyan-500 mt-0.5">动手实践，将理论知识转化为实际代码能力</p>
+        {sections.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mt-2">
+            {sections.map(s => <span key={s} className="text-[10px] px-2 py-0.5 rounded-full bg-white/70 border border-cyan-200 text-cyan-600">{s}</span>)}
+          </div>
+        )}
       </div>
-      <Markdown content={resource.content || ''} />
+      <Markdown content={content} />
       {resource.codeBlocks && resource.codeBlocks.length > 0 && (
         <div className="mt-4 space-y-4">
           <p className="text-xs font-semibold text-gray-600">🔧 代码示例</p>
@@ -387,22 +400,60 @@ function PracticeRenderer({ resource }: Props) {
  * =================================================================== */
 function VideoRenderer({ resource }: Props) {
   const content = resource.content || '';
-  const isVideoUrl = /\.(mp4|webm|mov)(\?|$)/i.test(content) || content.startsWith('/api/multimodal/file/');
-  const isDownloadUrl = /\.pptx$/i.test(content);
+  const contentUrl = resource.contentUrl || '';
+  const multimodalStatus = resource.multimodalStatus || '';
+  const videoUrl = contentUrl || content;
+  const isVideoUrl = /\.(mp4|webm|mov)(\?|$)/i.test(videoUrl) || videoUrl.startsWith('/api/multimodal/file/');
 
   return (
     <div>
       <div className="mb-4 p-3 bg-red-50/70 border border-red-100 rounded-xl">
         <p className="text-xs text-red-700 font-medium">🎬 教学视频</p>
-        <p className="text-[10px] text-red-500 mt-0.5">{isVideoUrl ? '点击播放，支持全屏和下载' : '视频讲稿或分镜脚本'}</p>
+        <p className="text-[10px] text-red-500 mt-0.5">
+          {multimodalStatus === 'generated' ? '已生成视频内容，点击播放' :
+           isVideoUrl ? '点击播放，支持全屏和下载' : '视频讲稿或分镜脚本'}
+        </p>
       </div>
       {isVideoUrl ? (
-        <a href={content} target="_blank" rel="noopener"
+        <a href={videoUrl} target="_blank" rel="noopener"
           className="inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-red-50 border border-red-200 text-red-700 font-medium hover:bg-red-100 transition-colors">
           🎬 点击播放视频
         </a>
       ) : (
         <Markdown content={content} />
+      )}
+    </div>
+  );
+}
+
+/* ===================================================================
+ * Multimodal — 多模态资源（图片/视频脚本/结构化内容）
+ * =================================================================== */
+function MultimodalRenderer({ resource }: Props) {
+  const contentUrl = resource.contentUrl || '';
+  const status = resource.multimodalStatus || 'script_only';
+  const isImage = resource.format === 'image' || /\.(png|jpg|jpeg|gif|svg|webp)/i.test(contentUrl);
+  const isVideo = resource.format === 'video' || /\.(mp4|webm|mov)/i.test(contentUrl);
+
+  return (
+    <div>
+      <div className="mb-4 p-3 bg-pink-50/70 border border-pink-100 rounded-xl">
+        <p className="text-xs text-pink-700 font-medium">🎯 多模态资源</p>
+        <p className="text-[10px] text-pink-500 mt-0.5">
+          {status === 'generated' ? '已生成实际内容' :
+           status === 'generation_failed' ? '生成失败，显示文字版' :
+           '文字脚本/大纲'}
+        </p>
+      </div>
+      {isImage && contentUrl ? (
+        <img src={contentUrl} alt={resource.title} className="max-w-full rounded-xl border border-surface-200" />
+      ) : isVideo && contentUrl ? (
+        <a href={contentUrl} target="_blank" rel="noopener"
+          className="inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-pink-50 border border-pink-200 text-pink-700 font-medium hover:bg-pink-100 transition-colors">
+          🎬 点击播放
+        </a>
+      ) : (
+        <Markdown content={resource.content || ''} />
       )}
     </div>
   );

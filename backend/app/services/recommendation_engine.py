@@ -40,6 +40,7 @@ def generate_recommendations(
     resources: list[ResourceModel] | None = None,
     learning_path: LearningPathModel | None = None,
     profile: dict[str, Any] | None = None,
+    assessment: dict[str, Any] | None = None,
     db: Session | None = None,
 ) -> list[dict[str, Any]]:
     """Generate structured recommendations from all available data sources."""
@@ -346,6 +347,38 @@ def _source_profile_based(
 
     return recs
 
+
+def _source_assessment_based(assessment, resources):
+    scores = assessment.get("scores", {})
+    recs = []
+    dim_actions = {
+        "knowledge_mastery": ("知识掌握需加强", "建议从基础概念开始系统学习", 45),
+        "learning_regularity": ("学习规律性不足", "建议固定每天学习时间形成习惯", 40),
+        "learning_efficiency": ("学习效率有提升空间", "建议增加练习占比减少单纯阅读", 40),
+        "weakness_awareness": ("薄弱点认知待提升", "建议完成诊断测试明确知识盲区", 45),
+        "engagement_level": ("学习投入度待提升", "建议设定短期目标增加学习动力", 40),
+    }
+    for dim, (title, reason, threshold) in dim_actions.items():
+        score = scores.get(dim)
+        if score is None or score >= threshold:
+            continue
+        matched = None
+        for res in resources:
+            if res.study_status != "completed":
+                matched = res
+                break
+        recs.append({
+            "recommendation_type": "assessment_driven",
+            "title": title,
+            "reason": reason + f"（当前评分 {score}/100）",
+            "target_resource_id": matched.id if matched else None,
+            "priority": "high" if score < 30 else "medium",
+            "source": "llm_assessment",
+            "confidence": 0.8,
+            "evidence": f"Assessment dimension {dim}: score={score}",
+            "quality_status": "passed",
+        })
+    return recs
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 

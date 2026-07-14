@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     # Learning event deduplication
     event_dedup_view_window_seconds: int = 300  # 5-minute window for resource_view dedup
 
+    # ── 学习评估动态阈值 ──────────────────────────────────────────
+    mastery_threshold_low: int = 5    # 低分段（<30）调整阈值
+    mastery_threshold_mid: int = 8    # 中分段（30-60）
+    mastery_threshold_high: int = 12  # 高分段（60-80）
+    mastery_threshold_top: int = 15   # 优秀段（>=80）
+
     # ── 科大讯飞 星火多模态 ──────────────────────────────────────────
     spark_app_id: str = ""
     spark_api_key: str = ""

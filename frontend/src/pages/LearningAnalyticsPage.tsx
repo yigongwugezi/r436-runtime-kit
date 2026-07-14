@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { TrendingUp, TrendingDown, Zap, Target, BookOpen, Clock, Brain, AlertCircle, Star, RefreshCw, BarChart3, Activity, CheckCircle2 } from 'lucide-react';
 import { PageLoading, PageEmpty, PageError, RefreshOverlay } from '../components/common/PageState';
@@ -25,6 +26,7 @@ export default function LearningAnalyticsPage() {
   const subjectId = useSubjectStore(s => s.activeSubject?.id ?? s.activeClassSubject?.subject);
   const sessionId = useChatStore(s => s.dataSessionId);
   const { analytics, loading, error, refetch } = useLearningAnalytics();
+  const [aiAssessment, setAiAssessment] = useState<any>(null);
   // Poll for closed-loop assessment notifications
   useNotificationPoller(sessionId || '');
   if (!subjectId) return <PageEmpty icon={<TrendingUp className="w-8 h-8" />} title="请先选择科目" description="在左侧边栏选择一个科目后查看学习分析" />;
@@ -291,6 +293,53 @@ export default function LearningAnalyticsPage() {
         </div>
       )}
 
+      {/* ── 综合评估摘要 ── */}
+      {analytics.assessmentSummary && (
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <div className="flex items-center gap-2 mb-4"><Brain size={18} className="text-primary-500" /><h3 className="font-display text-lg font-semibold text-surface-800">综合评估</h3></div>
+          <p className="text-sm text-surface-600 leading-relaxed">{analytics.assessmentSummary}</p>
+        </div>
+      )}
+
+      {/* ── 学习规律评分 ── */}
+      {analytics.regularityScore != null && (
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <div className="flex items-center gap-2 mb-4"><Activity size={18} className="text-accent-500" /><h3 className="font-display text-lg font-semibold text-surface-800">学习规律</h3></div>
+          <div className="flex items-center gap-5">
+            <Ring pct={analytics.regularityScore} />
+            <div className="text-sm text-surface-500">
+              {analytics.regularityScore >= 70 ? '学习规律性强，建议继续保持' :
+               analytics.regularityScore >= 40 ? '学习有一定规律，可以尝试固定时间' :
+               '学习间隔不规律，建议每天固定时间学习'}
+              <p className="text-xs text-surface-400 mt-1">基于学习日期间隔的规律性计算</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── 知识点掌握趋势 ── */}
+      {analytics.topicMasteryTrend && analytics.topicMasteryTrend.length > 0 && (
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <h3 className="font-display text-lg font-semibold text-surface-800 mb-4">知识点掌握趋势</h3>
+          <div className="space-y-4">
+            {analytics.topicMasteryTrend.slice(0, 5).map((item: any, i: number) => (
+              <div key={i}>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm font-medium text-surface-700">{item.topic}</span>
+                  <span className="text-xs text-surface-400">{item.points.length} 次记录</span>
+                </div>
+                <div className="flex items-end gap-0.5 h-12">
+                  {item.points.slice(-10).map((pt: any, pi: number) => {
+                    const h = Math.max((pt.accuracy / 100) * 100, 4);
+                    return <div key={pi} className="flex-1 rounded-t-sm bg-primary-500 transition-all" style={{ height: `${h}%` }} title={`${pt.date}: ${pt.accuracy}%`} />;
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* M6: 目标追踪 */}
       {analytics.goalTracking && (
         <div className="bg-white rounded-2xl p-6 shadow-soft">
@@ -387,6 +436,55 @@ export default function LearningAnalyticsPage() {
           </div>
         </div>
       )}
+
+      {/* ── AI 多维度学习评估 ── */}
+      <div className="bg-white rounded-2xl p-6 shadow-soft">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2"><Brain size={18} className="text-primary-500" /><h3 className="font-display text-lg font-semibold text-surface-800">AI 学习评估</h3></div>
+          <button onClick={async () => {
+            const { generateAssessment } = await import('../api/learningAssessment');
+            const result = await generateAssessment(sessionId || '');
+            if (result?.data) setAiAssessment(result.data);
+          }} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-brand-500 bg-brand-50 hover:bg-brand-100 transition-colors">
+            <Zap size={14} />生成评估
+          </button>
+        </div>
+        {(() => {
+          if (!aiAssessment) return <p className="text-sm text-surface-400 text-center py-6">点击「生成评估」获取 AI 多维度分析报告</p>;
+          if (aiAssessment.status === 'insufficient_data') return <p className="text-sm text-surface-400 text-center py-6">{aiAssessment.summary}</p>;
+          const scores = aiAssessment.scores || {};
+          const dimLabels: Record<string, string> = {
+            knowledge_mastery: '知识掌握', learning_progress: '学习进度', learning_efficiency: '学习效率',
+            learning_regularity: '学习规律', engagement_level: '投入度', weakness_awareness: '薄弱认知', improvement_trend: '进步趋势',
+          };
+          return (
+            <div className="space-y-4">
+              {/* 雷达/环形图：各维度评分 */}
+              <div className="grid grid-cols-4 gap-3">
+                {Object.entries(dimLabels).map(([key, label]) => (
+                  <div key={key} className="text-center">
+                    <Ring pct={scores[key] ?? 50} />
+                    <p className="text-[10px] text-surface-500 mt-1">{label}</p>
+                  </div>
+                ))}
+              </div>
+              {/* 综合分析 */}
+              {aiAssessment.summary && (
+                <div className="p-3 bg-surface-50 rounded-xl">
+                  <p className="text-sm text-surface-600 leading-relaxed">{aiAssessment.summary}</p>
+                </div>
+              )}
+              {/* 推荐行动 */}
+              {aiAssessment.recommended_actions && (
+                <div className="p-3 bg-primary-50/50 rounded-xl">
+                  <p className="text-xs font-semibold text-primary-700 mb-1">💡 推荐行动</p>
+                  <p className="text-sm text-surface-600 whitespace-pre-line">{aiAssessment.recommended_actions}</p>
+                </div>
+              )}
+            </div>
+          );
+        })()}
+      </div>
 
       <div className="text-center text-xs text-surface-400 pt-4 border-t border-surface-200">累计追踪 {analytics.eventCount} 条学习事件 · 数据驱动个性化学习</div>
     </div>

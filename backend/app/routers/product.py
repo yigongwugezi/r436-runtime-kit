@@ -4206,7 +4206,53 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
     )
 
 
-@router.get("/learning-events/timeline")
+import json as _json
+
+
+@router.post("/learning-assessment/generate")
+def generate_learning_assessment(sessionId: str = "") -> dict[str, Any]:
+    """LLM 驱动的多维度学习评估。
+
+    汇总画像、行为、诊断、资源反馈等多源数据，
+    调用大模型生成结构化评估报告。
+    """
+    session_id = _require_session_id(sessionId)
+    try:
+        from app.services.llm_assessment import run_llm_assessment
+        from app.db.engine import SessionLocal
+        from app.db.repository import get_event_analytics, get_latest_profile, get_latest_learning_path
+        from app.services.conversation_state import conversation_store
+
+        db = SessionLocal()
+        try:
+            analytics = get_event_analytics(db, session_id)
+            profile_snapshot = get_latest_profile(db, session_id)
+            profile = {"dimensions": profile_snapshot.dimensions} if profile_snapshot else None
+        finally:
+            db.close()
+
+        # 从 conversation_state 获取诊断
+        cs = conversation_store.get_state_or_none(session_id)
+        diagnosis = None
+        if cs:
+            lr = cs.last_result
+            if lr:
+                diagnosis = lr.get("diagnosis", lr.get("diagnosis_result"))
+
+        result = run_llm_assessment(
+            session_id=session_id,
+            profile=profile,
+            analytics=analytics,
+            diagnosis=diagnosis,
+        )
+        return _product_response(result, session_id=session_id, source="llm_assessment")
+    except Exception as exc:
+        logger.exception("Learning assessment failed")
+        return _product_response(
+            {"status": "failed", "error": str(exc)[:200]},
+            status="error", message="评估生成失败",
+            session_id=session_id, source="llm_assessment",
+        )
 def learning_timeline(
     sessionId: str = "",
     subjectId: str = "",
@@ -6010,6 +6056,7 @@ def tutor_video(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         # Persist to resource library
         if content:
             try:
+                from app.db.repository import upsert_resource
                 db = SessionLocal()
                 upsert_resource(db, session_id, {
                     "id": f"tutor-video-{section_id}",
@@ -6552,4 +6599,44 @@ def ack_notifications(payload: dict[str, Any]) -> dict[str, Any]:
         return _product_response({"acknowledged": True}, session_id=session_id, source="assessment_loop")
     except Exception:
         return _product_response({"acknowledged": False}, session_id=session_id, source="assessment_loop")
+
+
+import json as _json
+import asyncio as _asyncio
+
+
+@router.get("/notifications/stream")
+async def stream_notifications(sessionId: str = ""):
+    """SSE endpoint for real-time notification push.
+
+    Replaces polling-based notification delivery. The frontend connects via
+    EventSource and receives notifications as server-sent events.
+    """
+    session_id = _require_session_id(sessionId)
+    from app.services.assessment_loop import notification_store
+
+    queue = notification_store.subscribe(session_id)
+
+    async def event_generator():
+        try:
+            while True:
+                try:
+                    data = await _asyncio.wait_for(queue.get(), timeout=30.0)
+                    yield f"data: {_json.dumps(data, ensure_ascii=False)}\n\n"
+                except _asyncio.TimeoutError:
+                    yield f": keepalive\n\n"  # SSE comment (keepalive)
+        except _asyncio.CancelledError:
+            pass
+        finally:
+            notification_store.unsubscribe(session_id, queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 

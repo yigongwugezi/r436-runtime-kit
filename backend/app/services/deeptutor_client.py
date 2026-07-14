@@ -114,7 +114,7 @@ async def deeptutor_call_async(
             language="zh",
             memory_context=profile_context or "",
             persona_context=persona_context or "",
-            enabled_tools=["reason","brainstorm","read_memory","write_memory","ask_user"] if capability == "chat" else [],
+            enabled_tools=["reason","brainstorm","ask_user"] if capability == "chat" else [],
             config_overrides=config_overrides or {},
         )
         if capability and capability != "chat":

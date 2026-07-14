@@ -498,7 +498,7 @@ def _resolve_retry_route(state: dict) -> str:
     """
     review = state.get("review", {})
     quality_status = review.get("quality_status", "passed")
-    if quality_status not in ("blocked", "failed"):
+    if quality_status not in ("blocked", "failed", "warning"):
         return "reply"
 
     checks = review.get("checks", [])
@@ -858,6 +858,10 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
     factory = AgentFactory()
     state: dict[str, Any] = dict(**kwargs, _retry_count=0, _factory=factory)
 
+    # ── 确保评估调度器在运行（延迟启动兜底）──
+    from app.services.assessment_loop import ensure_scheduler_running
+    ensure_scheduler_running()
+
     # ── Intent classification (if not already provided) ──
     intent = state.get("intent", "")
     if not intent:
@@ -927,6 +931,36 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
             except Exception:
                 pass
 
+        # ── Rebuild profile dimensions if core facts changed ──
+        # 让"随学随新"真正落地：facts 有核心字段更新时，立即重建画像维度
+        try:
+            cs = conversation_store.get(state.get("session_id", ""))
+            if cs and cs.profile_dirty:
+                # 记录哪些 facts 变了，用于增量更新
+                updated_facts = list(cs.last_updated_fields)
+                existing_profile = state.get("profile", {}) or {}
+                profile_agent = factory.get("profile_agent")
+                if profile_agent:
+                    pr = profile_agent.run({
+                        "session_id": state.get("session_id", ""),
+                        "user_message": user_msg,
+                        "profile_facts": dict(cs.facts),
+                        "course": state.get("course"),
+                        "_profile_dirty": True,
+                        "_existing_profile": existing_profile,
+                        "_updated_facts": updated_facts,
+                    })
+                    if pr and pr.get("profile"):
+                        state["profile"] = pr["profile"]
+                        state["profile_v2"] = pr.get("profile_v2", {})
+                        # 关联到 conversation_state 使其持久化
+                        cs.last_result = dict(cs.last_result or {})
+                        cs.last_result["profile"] = pr["profile"]
+                        cs.last_result["profile_v2"] = pr.get("profile_v2", {})
+                        cs.profile_dirty = False
+        except Exception:
+            pass
+
         state["pipeline_executed"] = True
         state["overall_status"] = "completed"
         return dict(state)
@@ -980,6 +1014,81 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
             if factory.has(full_id):
                 await _run_agent(short_key, state, factory)
 
+        # ── 单 agent 路径的审核闭环 ──
+        # 跑了 resource_agent 后自动追加 review_agent，发现问题就重试修正
+        # 不依赖全量图（图很少被触发），确保所有资源生成都经过审核
+        if "resource_agent" in agent_ids:
+            """ResourceAgent 审核闭环：只关注资源相关的 check，不因 profile/path 等无关项重试。"""
+            resource_check_ids = {"resource_content_quality", "resource_coverage", "resource_type_match", "semantic_quality"}
+            retries = state.get("_retry_count", 0)
+            max_retries = 2
+            while retries <= max_retries:
+                await _run_agent("review", state, factory)
+                review = state.get("review", {})
+                checks = review.get("checks", [])
+                has_resource_issues = any(
+                    c.get("check_id") in resource_check_ids
+                    and c.get("status") in ("warning", "blocked", "failed")
+                    for c in checks
+                )
+                if not has_resource_issues:
+                    break
+                if retries >= max_retries:
+                    break
+                retries += 1
+                state["_retry_count"] = retries
+                logger.info(
+                    "Review flagged resource issues (retry %d/%d), re-running resource_agent",
+                    retries, max_retries,
+                )
+                await _run_agent("resource", state, factory)
+
+        # ── 资源推送：资源审核通过后，自动生成推荐并通知 ──
+        # 让用户知道有新的可用资源，无需手动刷新
+        if "resource_agent" in agent_ids:
+            resources = state.get("resources", []) or []
+            if resources:
+                try:
+                    from app.services.assessment_loop import notification_store
+                    from app.services.assessment_loop import AssessmentNotification
+                    titles = [r.get("title", "") for r in resources[:3] if r.get("title")]
+                    title_str = "、".join(titles)
+                    notification_store.push(state.get("session_id", ""), AssessmentNotification(
+                        type="recommendations_ready",
+                        title="新的学习资源已生成",
+                        message=f"已为你生成 {len(resources)} 个学习资源，包括：{title_str}" + ("等" if len(resources) > 3 else ""),
+                        session_id=state.get("session_id", ""),
+                    ))
+                except Exception:
+                    pass
+
+        # ── question_agent 审核闭环 ──
+        # 题目也经过 review 审核，有问题就重试修正
+        if "question_agent" in agent_ids:
+            """QuestionAgent 审核闭环：只关注题目相关的 check，不因 profile/path/resource 等无关项重试。"""
+            retries = state.get("_retry_count", 0)
+            max_retries = 2
+            while retries <= max_retries:
+                await _run_agent("review", state, factory)
+                review = state.get("review", {})
+                checks = review.get("checks", [])
+                has_question_issues = any(
+                    "question" in str(c.get("check_id", ""))
+                    and c.get("status") in ("warning", "blocked", "failed")
+                    for c in checks
+                )
+                if not has_question_issues:
+                    break
+                if retries >= max_retries:
+                    break
+                retries += 1
+                state["_retry_count"] = retries
+                logger.info(
+                    "Review flagged question issues (retry %d/%d), re-running question_agent",
+                    retries, max_retries,
+                )
+                await _run_agent("question", state, factory)
+
         state["pipeline_executed"] = True
         state["overall_status"] = "completed"
 
@@ -994,11 +1103,51 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
             summary_parts.append(f"配套{len(resources)}个学习资源")
         if questions:
             summary_parts.append(f"生成{len(questions)}道练习题")
-        diag_reply = _diagnosis_reply(state.get("diagnosis")) if "diagnosis" in intent else ""
-        if diag_reply:
-            state["final_reply"] = diag_reply
-        elif summary_parts:
-            state["final_reply"] = "、".join(summary_parts) + "。"
+        # ── Tutor intent: 生成对话式辅导回复，包含诊断分析和资源引用 ──
+        # ── Tutor intent: 先直接回答用户问题，再附上诊断分析和资源推荐 ──
+        if "tutor" in intent:
+            user_msg = str(state.get("user_message", "")).strip()
+            diagnosis = state.get("diagnosis", {})
+            resources = state.get("resources", []) or []
+            try:
+                # 构建带诊断上下文的辅导 prompt
+                profile_facts = state.get("profile_facts", {}) or {}
+                weak = diagnosis.get("weak_knowledge_points", []) or []
+                weak_str = "、".join([w.get("name", "") for w in weak[:3] if w.get("name")])
+                tutor_context = f"学生背景：{profile_facts.get('background','')}"
+                if profile_facts.get("knowledge_base"):
+                    tutor_context += f"，已有基础：{profile_facts['knowledge_base']}"
+                if profile_facts.get("learning_goal"):
+                    tutor_context += f"，学习目标：{profile_facts['learning_goal']}"
+                if weak_str:
+                    tutor_context += f"\n薄弱知识点：{weak_str}"
+                tutor_prompt = f"{user_msg}\n\n教学参考：{tutor_context}"
+                direct_answer = await deeptutor.chat(
+                    tutor_prompt,
+                    state.get("messages", []) or [],
+                )
+            except Exception:
+                direct_answer = ""
+            parts = []
+            if direct_answer and len(direct_answer) > 20:
+                parts.append(direct_answer.strip())
+            weak = diagnosis.get("weak_knowledge_points", []) or []
+            if weak:
+                names = [w.get("name", "") for w in weak[:3] if w.get("name")]
+                parts.append("💡 我注意到你对" + "、".join(names) + "还有一些模糊的地方，下方为你准备了针对性的学习资源。")
+            if resources:
+                titles = [r.get("title", "") for r in resources[:3] if r.get("title")]
+                parts.append("📚 推荐资源：" + "；".join(titles))
+            state["final_reply"] = "\n\n---\n\n".join(parts) if parts else (
+                str(diagnosis.get("diagnosis_summary") or diagnosis.get("summary", ""))
+                or "已经分析了你的问题，并为你准备了对应的学习资源，请查看下方。"
+            )
+        else:
+            diag_reply = _diagnosis_reply(state.get("diagnosis")) if "diagnosis" in intent else ""
+            if diag_reply:
+                state["final_reply"] = diag_reply
+            elif summary_parts:
+                state["final_reply"] = "、".join(summary_parts) + "。"
         fb = _emit_feedback_signal(state)
         if fb:
             state.update(fb)
