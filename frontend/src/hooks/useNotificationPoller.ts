@@ -1,89 +1,101 @@
 import { useEffect, useRef } from 'react';
 import { useToast } from '../components/common/Toast';
-import { getNotifications, type AssessmentNotification } from '../api/notifications';
 
-const POLL_INTERVAL_MS = 30_000; // 30 seconds
-const TYPE_ICONS: Record<AssessmentNotification['type'], string> = {
+const TYPE_ICONS: Record<string, string> = {
   diagnosis_updated: '🧠',
   plan_adjusted: '📋',
   recommendations_ready: '💡',
   review_needed: '⏰',
 };
 
-const TYPE_TOAST_SEVERITY: Record<AssessmentNotification['type'], 'info' | 'warning' | 'success'> = {
+const TYPE_TOAST_SEVERITY: Record<string, 'info' | 'warning' | 'success'> = {
   diagnosis_updated: 'info',
   plan_adjusted: 'warning',
   recommendations_ready: 'success',
   review_needed: 'warning',
 };
 
-function hashNotification(n: AssessmentNotification): string {
-  return `${n.type}::${n.title}::${n.createdAt}`;
-}
+const BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 
 /**
- * Polls the backend for closed-loop assessment notifications every 30 seconds.
+ * Connects to the SSE endpoint for real-time notification push.
  *
- * Displays them as toast messages so the student is aware of:
- * - Updated diagnoses after quizzes
- * - Suggested plan adjustments when mastery changes
- * - New learning recommendations
- * - Knowledge decay / review reminders
- *
- * Usage: call once at the app/page level with a valid sessionId.
- *
- * @param sessionId — current learning session ID.  Polling is paused when empty.
- * @param enabled  — set to false to pause polling (e.g. when streaming).
+ * Falls back to 30s polling when EventSource is unavailable or fails.
+ * Displays notifications as toast messages.
  */
 export function useNotificationPoller(sessionId: string, enabled: boolean = true) {
   const { toast } = useToast();
   const seenRef = useRef<Set<string>>(new Set());
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const esRef = useRef<EventSource | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    // Clear interval on session change or disable
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
-
+    // Cleanup previous connections
+    if (esRef.current) { esRef.current.close(); esRef.current = null; }
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     if (!sessionId || !enabled) return;
 
-    const poll = async () => {
-      try {
-        const { notifications } = await getNotifications(sessionId);
-        if (!notifications?.length) return;
+    // ── SSE path ──
+    try {
+      const url = `${BASE_URL}/api/notifications/stream?sessionId=${encodeURIComponent(sessionId)}`;
+      const es = new EventSource(url);
+      esRef.current = es;
 
-        for (const n of notifications) {
-          const key = hashNotification(n);
-          if (seenRef.current.has(key)) continue;
+      es.onmessage = (event) => {
+        try {
+          if (!event.data || event.data.startsWith(':')) return; // keepalive
+          const n = JSON.parse(event.data);
+          const key = `${n.type}::${n.title}::${n.createdAt}`;
+          if (seenRef.current.has(key)) return;
           seenRef.current.add(key);
-
           const icon = TYPE_ICONS[n.type] || '📌';
           const severity = TYPE_TOAST_SEVERITY[n.type] || 'info';
           toast(severity, `${icon} ${n.message}`);
-        }
+        } catch { /* ignore parse errors */ }
+      };
 
-        // Prune seen set if it grows too large
-        if (seenRef.current.size > 200) {
-          const entries = Array.from(seenRef.current);
-          seenRef.current = new Set(entries.slice(-100));
-        }
-      } catch {
-        // Silently ignore — notifications are best-effort
-      }
-    };
+      es.onerror = () => {
+        // SSE failed — close and fall back to polling
+        es.close();
+        esRef.current = null;
+        startPolling();
+      };
 
-    // Poll immediately on mount / session change
-    poll();
+      return () => { es.close(); };
+    } catch {
+      startPolling();
+    }
 
-    intervalRef.current = setInterval(poll, POLL_INTERVAL_MS);
+    function startPolling() {
+      if (pollRef.current) clearInterval(pollRef.current);
+
+      const poll = async () => {
+        try {
+          const { getNotifications } = await import('../api/notifications');
+          const { notifications } = await getNotifications(sessionId);
+          if (!notifications?.length) return;
+          for (const n of notifications) {
+            const key = `${n.type}::${n.title}::${n.createdAt}`;
+            if (seenRef.current.has(key)) continue;
+            seenRef.current.add(key);
+            const icon = TYPE_ICONS[n.type] || '📌';
+            const severity = TYPE_TOAST_SEVERITY[n.type] || 'info';
+            toast(severity, `${icon} ${n.message}`);
+          }
+          if (seenRef.current.size > 200) {
+            const entries = Array.from(seenRef.current);
+            seenRef.current = new Set(entries.slice(-100));
+          }
+        } catch { /* silent */ }
+      };
+
+      poll();
+      pollRef.current = setInterval(poll, 30_000);
+    }
 
     return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
+      if (esRef.current) esRef.current.close();
+      if (pollRef.current) clearInterval(pollRef.current);
     };
   }, [sessionId, enabled, toast]);
 }

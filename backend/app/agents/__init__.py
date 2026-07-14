@@ -7,11 +7,6 @@ New agents only need to:
 
 The global registry is accessible via:
   from app.agents.base import get_registered_agents, get_agent_class
-
-NOTE: MultimodalAgent (``app.agents.multimodal_agent``) is intentionally NOT listed here.
-It uses a fundamentally different architecture (ToolRegistry-based tool routing) and is
-not a pipeline agent. It is instantiated directly by the chat/product routers as a
-pre-processing step, outside the standard BaseAgent → AgentFactory → IntentRouter flow.
 """
 
 from app.agents.conversation_agent import ConversationAgent      # noqa: F401
@@ -23,6 +18,8 @@ from app.agents.profile_agent import ProfileAgent                # noqa: F401
 from app.agents.question_agent import QuestionAgent              # noqa: F401
 from app.agents.resource_agent import ResourceAgent              # noqa: F401
 from app.agents.review_agent import ReviewAgent                  # noqa: F401
+
+from app.agents.multimodal_agent import MultimodalAgentAdapter  # noqa: F401
 
 from app.agents.base import get_agent_class, get_registered_agents  # noqa: F401, E402
 
@@ -37,6 +34,7 @@ __all__ = [
     "QuestionAgent",
     "ResourceAgent",
     "ReviewAgent",
+    "MultimodalAgentAdapter",
     "get_agent_class",
     "get_registered_agents",
 ]

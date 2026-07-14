@@ -937,6 +937,59 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
         if event_counts.get(mode_evt, 0) > 0:
             mode_metrics[mode_evt] = event_counts[mode_evt]
 
+    # ── 知识点掌握趋势（按知识点分组的 quiz 结果序列）──
+    topic_trend: dict[str, list[dict[str, Any]]] = {}
+    for qr in daily_quiz:
+        t = qr.get("topic", "") or "general"
+        if t not in topic_trend:
+            topic_trend[t] = []
+        topic_trend[t].append({"date": qr["date"], "accuracy": qr["accuracy"]})
+    topic_mastery_trend = [
+        {"topic": t, "points": pts[-10:]}
+        for t, pts in topic_trend.items()
+        if len(pts) >= 2
+    ]
+
+    # ── 学习规律评分（根据每日学习间隔）──
+    import datetime as _dt2
+    active_days: list[_dt2.date] = []
+    for evt in events:
+        if evt.created_at:
+            d = evt.created_at.date()
+            if d not in active_days:
+                active_days.append(d)
+    active_days.sort()
+    regularity_score = 50  # 默认中等
+    if len(active_days) >= 3:
+        gaps = [(active_days[i+1] - active_days[i]).days for i in range(len(active_days)-1)]
+        if gaps:
+            import statistics
+            gap_std = statistics.stdev(gaps) if len(gaps) > 1 else 0
+            # std 越小越规律：std=0 → 100分，std=7 → 50分
+            regularity_score = max(0, min(100, round(100 - gap_std * 7)))
+
+    # ── 综合评估摘要 ──
+    assessment_parts = []
+    if total_minutes > 0:
+        assessment_parts.append(f"累计学习了 {total_minutes} 分钟")
+    if streak > 0:
+        assessment_parts.append(f"连续学习 {streak} 天")
+    if total_minutes > 0 and quiz_accuracy is not None:
+        if quiz_accuracy >= 80:
+            assessment_parts.append("掌握情况良好")
+        elif quiz_accuracy >= 60:
+            assessment_parts.append("掌握情况中等，有提升空间")
+        else:
+            assessment_parts.append("基础较薄弱，建议从核心概念开始复习")
+    if regularity_score >= 70:
+        assessment_parts.append("学习规律性强")
+    elif regularity_score <= 30 and len(active_days) >= 3:
+        assessment_parts.append("学习间隔不规律，建议固定每天的学习时间")
+    if weak_topics:
+        topics_str = "、".join([w["topic"] for w in weak_topics[:3]])
+        assessment_parts.append(f"重点关注：{topics_str}")
+    assessment_summary = "。".join(assessment_parts) + "。" if assessment_parts else "暂无足够数据生成评估。"
+
     return {
         "eventCount": len(events),
         "totalStudyMinutes": total_minutes,
@@ -974,6 +1027,9 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
             }
             for evt in events[:5]
         ],
+        "assessmentSummary": assessment_summary,
+        "regularityScore": regularity_score,
+        "topicMasteryTrend": topic_mastery_trend,
     }
 
 

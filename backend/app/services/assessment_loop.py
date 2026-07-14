@@ -16,6 +16,7 @@ this module only orchestrates *when* to call them.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -29,9 +30,23 @@ logger = logging.getLogger(__name__)
 # ── Thresholds ───────────────────────────────────────────────────────────
 
 REASSESS_INTERVAL_SECONDS = 3 * 24 * 3600   # re-assess every 3 days
-MASTERY_CHANGE_THRESHOLD = 10                # point change to trigger plan adjust
 MIN_EVENTS_FOR_REASSESS = 3                  # need at least N new events to re-assess
 RESOURCE_COMPLETE_BATCH = 5                  # auto-diagnose after every N resource completions
+
+
+def _dynamic_threshold(score: float) -> int:
+    """根据当前分数和配置返回动态阈值。分数越低阈值越小，越容易触发调整。
+
+    阈值通过 settings.mastery_threshold_* 配置，可在 .env 或运行时调整。
+    """
+    from app.config import settings
+    if score < 30:
+        return settings.mastery_threshold_low
+    elif score < 60:
+        return settings.mastery_threshold_mid
+    elif score < 80:
+        return settings.mastery_threshold_high
+    return settings.mastery_threshold_top
 
 
 # ── Notification store ───────────────────────────────────────────────────
@@ -47,18 +62,44 @@ class AssessmentNotification:
 
 
 class NotificationStore:
-    """Thread-safe in-memory notification queue, keyed by session_id."""
+    """Thread-safe in-memory notification queue with SSE subscriber support."""
 
     def __init__(self) -> None:
         self._notifications: dict[str, list[AssessmentNotification]] = {}
+        self._subscribers: dict[str, list[asyncio.Queue]] = {}
         self._lock = threading.Lock()
+
+    def subscribe(self, session_id: str) -> asyncio.Queue:
+        """Register an async subscriber for real-time SSE push."""
+        q: asyncio.Queue = asyncio.Queue(maxsize=100)
+        with self._lock:
+            self._subscribers.setdefault(session_id, []).append(q)
+        return q
+
+    def unsubscribe(self, session_id: str, queue: asyncio.Queue) -> None:
+        """Remove an async subscriber."""
+        with self._lock:
+            subs = self._subscribers.get(session_id, [])
+            if queue in subs:
+                subs.remove(queue)
 
     def push(self, session_id: str, notification: AssessmentNotification) -> None:
         with self._lock:
             self._notifications.setdefault(session_id, []).append(notification)
-            # Keep max 20 per session
             if len(self._notifications[session_id]) > 20:
                 self._notifications[session_id] = self._notifications[session_id][-20:]
+            subs = list(self._subscribers.get(session_id, []))
+        for q in subs:
+            try:
+                q.put_nowait({
+                    "type": notification.type,
+                    "title": notification.title,
+                    "message": notification.message,
+                    "sessionId": notification.session_id,
+                    "createdAt": notification.created_at,
+                })
+            except asyncio.QueueFull:
+                pass
 
     def pop_all(self, session_id: str) -> list[dict[str, Any]]:
         with self._lock:
@@ -228,6 +269,127 @@ def _get_or_create_factory():
     from app.services.agent_factory import AgentFactory
     from app.services.llm_client import get_llm_client
     return AgentFactory(llm_client=get_llm_client())
+
+
+def _trigger_assessment_recommendations(
+    session_id: str, diagnosis: dict | None, assessment: dict
+) -> None:
+    """根据评估结果重新生成推荐。"""
+    try:
+        from app.services.assessment_loop import _generate_recommendations
+        _generate_recommendations(session_id, diagnosis, assessment=assessment)
+    except Exception:
+        pass
+
+
+def _trigger_assessment_path_adjustment(
+    session_id: str, scores: dict, profile: dict | None
+) -> None:
+    """根据评估结果和阈值决定是否调路径。"""
+    try:
+        from app.db.engine import SessionLocal
+        from app.db.repository import get_latest_learning_path
+        from app.agents.planner_agent import PlannerAgent
+        from app.services.agent_factory import AgentFactory
+        db2 = SessionLocal()
+        try:
+            path_model = get_latest_learning_path(db2, session_id)
+            existing = path_model.stages if path_model else []
+        finally:
+            db2.close()
+        if not existing:
+            return
+        old_mastery = assessment_tracker.get(session_id).last_mastery_snapshot
+        needs_adjust = True
+        if old_mastery:
+            significant = 0
+            for k, v in scores.items():
+                if v is None:
+                    continue
+                old = old_mastery.get(k, 50)
+                if abs(v - old) >= _dynamic_threshold(old):
+                    significant += 1
+            needs_adjust = significant >= 1
+        if needs_adjust:
+            assessment_diagnosis = {
+                "mastery_levels": [
+                    {"name": k, "score": v}
+                    for k, v in scores.items() if v is not None
+                ],
+                "diagnosis_summary": "LLM评估驱动调整",
+            }
+            factory = AgentFactory()
+            planner = factory.get("planner_agent")
+            if planner and existing:
+                pr = planner.run({
+                    "mode": "adjust",
+                    "session_id": session_id,
+                    "diagnosis": assessment_diagnosis,
+                    "profile": profile or {},
+                    "existing_path": existing,
+                })
+                if pr.get("learning_path"):
+                    from app.services.conversation_state import conversation_store
+                    cs = conversation_store.get_state_or_none(session_id)
+                    if cs:
+                        cs.last_result = dict(cs.last_result or {})
+                        cs.last_result["learning_path"] = pr["learning_path"]
+                        # 加速再评估
+                        import time as _t
+                        state = assessment_tracker.get(session_id)
+                        state.last_diagnosis_at = _t.time() - 2 * 24 * 3600
+                        assessment_tracker._persist(state)
+        # 无条件保存评估分数
+        state = assessment_tracker.get(session_id)
+        state.last_mastery_snapshot = {k: v for k, v in scores.items() if v is not None}
+        assessment_tracker._persist(state)
+    except Exception:
+        pass
+
+
+
+def _trigger_llm_assessment(session_id: str) -> None:
+    """异步触发 LLM 多维度评估并推送通知。"""
+    try:
+        from app.services.llm_assessment import run_llm_assessment
+        from app.db.engine import SessionLocal
+        from app.db.repository import get_event_analytics, get_latest_profile
+        from app.services.conversation_state import conversation_store
+        db = SessionLocal()
+        try:
+            analytics = get_event_analytics(db, session_id)
+            profile_snapshot = get_latest_profile(db, session_id)
+            profile = {"dimensions": profile_snapshot.dimensions} if profile_snapshot else None
+        finally:
+            db.close()
+        cs = conversation_store.get_state_or_none(session_id)
+        diagnosis = None
+        if cs and cs.last_result:
+            diagnosis = cs.last_result.get("diagnosis")
+        result = run_llm_assessment(
+            session_id=session_id, profile=profile, analytics=analytics, diagnosis=diagnosis
+        )
+        if result.get("status") != "completed" or not result.get("scores"):
+            return
+        # 推通知
+        from app.services.assessment_loop import notification_store, AssessmentNotification
+        scores = result["scores"]
+        avg_score = sum(scores.values()) / len(scores) if scores else 0
+        notification_store.push(
+            session_id,
+            AssessmentNotification(
+                type="diagnosis_updated",
+                title="AI 学习评估完成",
+                message=f"综合评分 {avg_score:.0f}/100。{result['summary'][:80]}",
+                session_id=session_id,
+            ),
+        )
+        # 重新生成推荐
+        _trigger_assessment_recommendations(session_id, diagnosis, result)
+        # 路径调整
+        _trigger_assessment_path_adjustment(session_id, scores, profile)
+    except Exception as exc:
+        logger.debug("LLM assessment trigger skipped: %s", exc)
 
 
 def run_post_quiz_assessment(
@@ -454,6 +616,14 @@ def run_post_quiz_assessment(
             "resources_generated": resources_generated,
         }
 
+        # ── LLM 学习评估（异步触发，不阻塞）──
+        try:
+            import threading as _th
+            _sid = session_id
+            _th.Thread(target=lambda: _trigger_llm_assessment(_sid), daemon=True).start()
+        except Exception:
+            pass
+
     except Exception:
         logger.exception("Post-quiz assessment failed for session=%s", session_id)
         return {"diagnosis_ran": False, "error": "Assessment loop failed"}
@@ -662,6 +832,7 @@ def _build_diagnosis_context(session_id: str) -> dict[str, Any]:
 def _generate_recommendations(
     session_id: str,
     diagnosis: dict[str, Any],
+    assessment: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Generate structured recommendations based on the latest diagnosis."""
     try:
@@ -699,6 +870,7 @@ def _generate_recommendations(
                 weak_topics=normalized_weak_topics,
                 resources=resources,
                 learning_path=path,
+                assessment=assessment,
                 db=db,
             )
         finally:
@@ -721,7 +893,7 @@ def _detect_mastery_change(
     significant_changes = 0
     for kp_name, new_score in new_mastery.items():
         old_score = old_mastery.get(kp_name, 50)  # default to neutral
-        if abs(new_score - old_score) >= MASTERY_CHANGE_THRESHOLD:
+        if abs(new_score - old_score) >= _dynamic_threshold(old_score):
             significant_changes += 1
 
     # Trigger if 1+ topics changed significantly (was 3 — too conservative)
@@ -736,7 +908,7 @@ def _detect_decay(
     decayed = []
     for kp_name, old_score in old_mastery.items():
         new_score = new_mastery.get(kp_name, old_score)
-        if old_score - new_score >= MASTERY_CHANGE_THRESHOLD:
+        if old_score - new_score >= _dynamic_threshold(old_score):
             decayed.append(kp_name)
     return sorted(decayed, key=lambda n: old_mastery.get(n, 0) - new_mastery.get(n, 0), reverse=True)
 

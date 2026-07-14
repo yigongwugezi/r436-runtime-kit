@@ -158,6 +158,15 @@ class ConversationState:
     generating: bool = False
     current_progress: dict[str, Any] | None = None
     updated_at: float = field(default_factory=time.time)
+    # 标记核心 facts 是否有更新，用于触发画像维度增量重建
+    profile_dirty: bool = False
+
+
+# 核心画像事实字段——这些字段更新时会触发画像维度重建
+_PROFILE_CORE_FIELDS = frozenset({
+    "background", "target_course", "knowledge_base",
+    "weak_points", "learning_goal", "time_budget", "preference",
+})
 
 
 class ConversationStore:
@@ -931,6 +940,9 @@ class ConversationStore:
         state.facts[key] = cleaned
         if key not in state.last_updated_fields:
             state.last_updated_fields.append(key)
+        # 核心 facts 变化 → 下次需重建画像维度
+        if key in _PROFILE_CORE_FIELDS:
+            state.profile_dirty = True
 
     def _merge_time_budget(self, old_value: str, new_value: str) -> str:
         if not old_value:

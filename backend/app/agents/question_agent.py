@@ -27,6 +27,11 @@ class QuestionAgent(BaseAgent):
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         """主入口 — LLM 生成试题 + DeepTutor deep_solve 生成逐步解析."""
+        # ── 审核反馈注入：ReviewAgent 发现问题后重试，带反馈修正 ──
+        review_feedback = self._build_review_feedback(context)
+        if review_feedback:
+            context["_review_feedback"] = review_feedback
+
         user_message = str(context.get("user_message", "")).strip()
         course = str(context.get("course_id", "") or user_message[:30])
         diagnosis = context.get("diagnosis", {}) if isinstance(context.get("diagnosis"), dict) else {}
@@ -107,6 +112,26 @@ class QuestionAgent(BaseAgent):
                 "agent_step": {"agent_id": self.agent_id, "agent_name": self.agent_name,
                                "status": "failed", "summary": "QuestionAgent fell back to defaults.",
                                "source": "rule_based_fallback", "quality_status": "fallback"}}
+
+    # ── 审核反馈提取 ──
+
+    def _build_review_feedback(self, context: dict[str, Any]) -> str:
+        """将 ReviewAgent 的审核结果转成 LLM 可理解的修正指令。"""
+        review = context.get("review", {})
+        if not review:
+            return ""
+        checks = review.get("checks", [])
+        parts: list[str] = []
+        for c in checks:
+            if c.get("status") in ("warning", "blocked") and "question" in str(c.get("check_id", "")):
+                parts.append(f"- 【{c.get('name','')}】{c.get('message','')}")
+        if not parts:
+            return ""
+        return (
+            "## 审核反馈（请按此修正）\n"
+            + "\n".join(parts)
+            + "\n\n检查每道题的题干是否完整、选项和答案是否存在。"
+        )
 
     # ── 知识点提取 ──
 
@@ -197,6 +222,11 @@ class QuestionAgent(BaseAgent):
 每道题包含：question_id, type, stem, difficulty, knowledge_points, tags
 对应题型的专属字段。
 只输出JSON：{{"questions": [...]}}"""
+
+        # ── 审核反馈注入 prompt ──
+        feedback = context.get("_review_feedback", "")
+        if feedback:
+            prompt += f"\n\n{feedback}"
 
         try:
             raw = self.llm_client.chat(

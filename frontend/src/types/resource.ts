@@ -2,14 +2,16 @@
 // Resource types
 // ================================================================
 
-/** 资源类型 — 8 种资源 */
+/** 资源类型 — 10 种资源 */
 export type ResourceType =
   | 'lecture'     // 课程讲义
   | 'mindmap'     // 思维导图
   | 'quiz'        // 练习题
   | 'reading'     // 拓展阅读
   | 'case_study'  // 实操案例
+  | 'practice'    // 代码实操案例（与 case_study 同义）
   | 'video'       // 教学视频/动画
+  | 'multimodal'  // 多模态资源（图片/视频脚本等）
   | 'ppt'         // PPT大纲
   | 'textbook';   // 教材
 
@@ -17,7 +19,7 @@ export type ResourceType =
 export type DataSource = 'user_input' | 'agent_generated' | 'system_inferred' | 'fallback';
 
 /** 内容格式 */
-export type ResourceFormat = 'text' | 'diagram' | 'video' | 'code' | 'quiz';
+export type ResourceFormat = 'text' | 'diagram' | 'video' | 'code' | 'quiz' | 'image' | 'markdown';
 
 /** 难度 */
 export type DifficultyLevel = 'easy' | 'medium' | 'hard';
@@ -26,7 +28,7 @@ export type DifficultyLevel = 'easy' | 'medium' | 'hard';
 export type StudyStatus = 'new' | 'in_progress' | 'completed';
 
 /** 质检状态 */
-export type QualityStatus = 'passed' | 'repaired' | 'fallback' | 'failed' | 'needs_review' | 'fallback_passed';
+export type MultimodalStatus = 'script_only' | 'generated' | 'generation_failed' | 'generation_no_url';
 
 /** 审核状态 */
 export type ReviewStatus = 'passed' | 'warning' | 'blocked';
@@ -105,6 +107,11 @@ export interface Resource {
   fallbackReason?: string;
   /** P4 resource generation and quality metadata. */
   resourceMetadata?: Record<string, unknown>;
+
+  /** 多模态资源状态 */
+  multimodalStatus?: MultimodalStatus;
+  /** 多模态实际内容 URL */
+  contentUrl?: string;
 }
 
 export interface CodeBlock {
