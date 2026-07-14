@@ -21,6 +21,9 @@ SUPPORTED_WORKFLOWS = {
     "resource_search", "generated_resource", "generated_resource_regeneration",
     "profile_sync", "profile_rebuild", "learning_path_generation", "lecture_generation",
 }
+CANCELLABLE_WORKFLOWS = {
+    "resource_search", "generated_resource", "generated_resource_regeneration", "lecture_generation",
+}
 
 
 def _session(payload: dict[str, Any], auth: AuthContext) -> tuple[str, str]:
@@ -134,7 +137,7 @@ def start_workflow(workflow_type: str, payload: dict[str, Any], auth: AuthContex
     return {
         "task_id": task.task_id, "workflow_type": task.workflow_type, "status": task.status,
         "events_url": f"{base}/events", "status_url": base, "cancel_url": f"{base}/cancel",
-        "supports_streaming_preview": False, "supports_cancellation": True,
+        "supports_streaming_preview": False, "supports_cancellation": workflow_type in CANCELLABLE_WORKFLOWS,
     }
 
 
@@ -152,6 +155,8 @@ def cancel_workflow(task_id: str, payload: dict[str, Any] | None = None, auth: A
         task = workflow_task_manager.get(task_id, auth.learner_id, str((payload or {}).get("sessionId") or "") or None)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="任务不存在或已过期") from exc
+    if task.workflow_type not in CANCELLABLE_WORKFLOWS:
+        raise HTTPException(status_code=409, detail="该任务当前只能安全展示阶段进度")
     return workflow_task_manager.cancel(task).public()
 
 
