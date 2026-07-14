@@ -35,6 +35,14 @@ export interface LearningStage {
   tasks?: string[];
   resourceTypes?: string[];
   orderingReason?: string;
+  /** 路径结构模式: textbook | daily | project */
+  path_mode?: string;
+  /** 规划模式: textbook | focus | adjust */
+  plan_mode?: string;
+  /** 精进式专属：薄弱点名称 */
+  focus?: string;
+  /** 精进式专属：突破原因 */
+  reason?: string;
 }
 
 export interface Chapter {
@@ -56,6 +64,9 @@ export interface Section {
   lectureIds: string[];
   /** 内容交互形式: lecture | memory_drill | step_through */
   contentType?: string;
+  /** ── 日课式专属字段 ── */
+  /** 每日任务类型: vocabulary | listening | reading | grammar | speaking | writing | review */
+  task_type?: string;
   /** ── Textbook-linked fields ── */
   /** PDF start page for this section */
   textbookPageStart?: number;

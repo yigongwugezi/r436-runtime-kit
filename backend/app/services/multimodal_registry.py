@@ -39,15 +39,17 @@ class ToolRegistry:
             "image_generation": "SparkImageProvider",      # 科大讯飞星火绘画
             "concept_card_generation": "SparkImageProvider",
             "teaching_diagram_generation": "SparkImageProvider",
-            "video_generation": "SparkVideoProvider",        # 科大讯飞星火视频
-            "micro_lesson_video": "SparkVideoProvider",
-            "video_script_generation": "SparkVideoProvider",
+            "video_generation": "WanVideoProvider",        # 通义万相视频生成（主）
+            "micro_lesson_video": "WanVideoProvider",
+            "video_script_generation": "WanVideoProvider",
             # Spark vision as alternative to Qwen VL
             "image_understanding_spark": "SparkVisionProvider",
             "image_to_mindmap_spark": "SparkVisionProvider",
-            # Fallback to Qwen/Wan when Spark not configured
+            # Fallback / direct access entries
             "image_generation_qwen": "QwenImageProvider",
+            "image_generation_spark": "SparkImageProvider",
             "video_generation_wan": "WanVideoProvider",
+            "video_generation_spark": "SparkVideoProvider",
         }
 
     def register_tool(self, name: str, tool: Any) -> None:
@@ -57,17 +59,41 @@ class ToolRegistry:
         return self._tools.get(name)
 
     def select_tool(self, task_type: str) -> tuple[str | None, Any | None]:
+        """Select the best configured tool for a task type.
+
+        Tries the primary mapping first.  If the provider is not configured,
+        falls back through suffixed alternatives checking configuration each time.
+        """
         name = self._task_map.get(task_type)
         tool = self.get_tool(name) if name else None
-        if tool is not None:
+        if tool is not None and self._is_configured(tool):
             return name, tool
-        # Auto-fallback: try suffixed alternatives
-        for suffix in ("_spark", "_qwen", "_wan"):
+
+        # Primary is registered but not configured — try suffixed alternatives
+        for suffix in ("_qwen", "_wan", "_spark"):
             fname = self._task_map.get(task_type + suffix)
             ftool = self.get_tool(fname) if fname else None
-            if ftool is not None:
+            if ftool is not None and self._is_configured(ftool):
                 return fname, ftool
+
+        # Nothing configured — return primary so run() can surface the
+        # "provider_not_configured" status instead of a generic "unsupported".
         return name, tool
+
+    @staticmethod
+    def _is_configured(tool: Any) -> bool:
+        """Check whether a tool reports itself as configured.
+
+        Returns True for tools without an is_configured() method
+        (backward compatibility).
+        """
+        checker = getattr(tool, "is_configured", None)
+        if callable(checker):
+            try:
+                return bool(checker())
+            except Exception:
+                return False
+        return True
 
 
 def default_registry() -> ToolRegistry:

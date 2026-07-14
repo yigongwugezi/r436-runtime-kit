@@ -441,7 +441,7 @@ export default function Home() {
                               <span className="text-surface-700 font-medium truncate">{s.name}{activeSubject?.id===s.id&&<span className="ml-2 px-2 py-0.5 bg-primary-100 text-primary-700 rounded-full text-[10px] font-semibold">当前</span>}</span>
                             </div>
                             {!isParent && (
-                            <button onClick={async e => { e.stopPropagation(); if(confirm(`删除「${s.name}」？`)) { try { await remove(s.id); } catch { /* error already in store */ } } }} className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-md text-surface-300 hover:text-error-500 hover:bg-error-50"><Trash2 size={14} /></button>
+                            <button onClick={async e => { e.stopPropagation(); if(confirm(`删除「${s.name}」？科目下的所有学习记录将被清除。`)) { try { await remove(s.id); } catch (err: any) { alert(`删除失败：${err?.message || '请稍后重试'}`); } } }} className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-md text-surface-300 hover:text-error-500 hover:bg-error-50"><Trash2 size={14} /></button>
                             )}
                           </div>
                           <p className="text-[11px] text-surface-400">我的科目</p>

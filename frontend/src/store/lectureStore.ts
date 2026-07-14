@@ -14,7 +14,7 @@ interface QuizCache {
   weakPoints: any[];
 }
 
-interface LectureStore {
+export interface LectureStore {
   lectureCache: Record<string, string>;
   loadedSectionIds: string[];
   generatedSectionIds: string[];

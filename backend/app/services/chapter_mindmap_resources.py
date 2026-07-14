@@ -38,12 +38,17 @@ class ChapterMindmapResourceService:
         chapter_title: str,
         sections: list[dict[str, Any]],
         session_id: str = "",
+        lecture_content: str = "",
     ) -> dict[str, Any]:
         children = [
             {"title": str(section.get("title") or ""), "children": self._points(section.get("knowledge_points") or section.get("knowledgePoints") or [])}
             for section in sections if str(section.get("title") or "").strip()
         ]
-        result = self._tool.run({"topic": chapter_title, "learning_path": {"stages": [{"title": chapter_title, "tasks": children}]}})
+        # Include lecture/textbook content as context for richer mindmaps
+        context = {"topic": chapter_title, "learning_path": {"stages": [{"title": chapter_title, "tasks": children}]}}
+        if lecture_content:
+            context["lecture_content"] = lecture_content[:2000]
+        result = self._tool.run(context)
         mermaid = str((result.get("result") or {}).get("mermaid") or "").strip() if isinstance(result, dict) else ""
         used_fallback = not bool(mermaid)
         mermaid = sanitize_mermaid(mermaid)

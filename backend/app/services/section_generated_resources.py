@@ -83,6 +83,7 @@ class SectionGeneratedResourcesService:
                     "knowledge_mastery": [{"label": point, "status": "weak"} for point in personalization["relevant_weak_points"]],
                 },
                 "feedback": feedback,
+                "lecture_content": lecture_content[:2000] if lecture_content else "",
             }
             result = MultimodalAgent().run(multimodal_context)
             generated = result.get("result") if isinstance(result.get("result"), dict) else {}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+import logging
 import re
 import time
 from hashlib import sha256
@@ -15,6 +16,8 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from app.config import settings
 from app.services.search_client import SearchError, get_search_client, search_arxiv, search_crossref
+
+logger = logging.getLogger(__name__)
 
 
 RESOURCE_TYPES = ("article", "video", "course", "document", "paper")
@@ -198,8 +201,8 @@ def validate_resource_url(url: str, resource_type: str | None = None, title: str
     if "/search" in path or "/results" in path or "search_query" in parsed.query:
         return ""
     inferred = classify_resource_type(normalized, title, snippet)
-    if resource_type and inferred != resource_type:
-        return ""
+    # Post-filter by resource type.  We don't use site: in queries because
+    # DDGS doesn't support it well; instead we classify after free-form search.
     if resource_type == "video" and not classify_platform(normalized):
         return ""
     if resource_type == "paper" and not _is_paper_source(host):
@@ -252,18 +255,29 @@ def normalize_search_context(
     text = " ".join(str(value or "") for value in (path_title, stage_title, chapter_title, section_title, lecture_title, *(knowledge_points or [])))
     if not course and "数据结构" in text:
         course = "数据结构"
+    # Derive keywords from knowledge points + section title, not a hardcoded list
     lowered = text.lower()
     pairs = [(cn, en) for cn, en in _CONCEPTS if cn in text or en in lowered]
-    if "递归" in text and any(token in text for token in ("调用栈", "栈帧")):
-        primary_topic = "递归调用栈"
-    elif pairs:
+    # Start with concept-matching keywords, then enrich from section title + knowledge points
+    keywords = list(dict.fromkeys(cn for cn, _ in pairs))
+    title_words = re.split(r"[，,。；;\s]+", str(section_title or ""))
+    for word in title_words:
+        cleaned = word.strip()
+        if cleaned and len(cleaned) >= 2 and cleaned not in keywords and cleaned not in ("基本性质", "核心概念", "学习主题"):
+            keywords.append(cleaned)
+    for kp in knowledge_points or []:
+        kp_name = str(kp).strip()
+        if kp_name and len(kp_name) >= 2:
+            keywords.append(kp_name)
+    keywords = list(dict.fromkeys(keywords))
+    # Determine primary topic from concept matches or section title
+    if pairs:
         primary_topic = pairs[0][0]
     else:
         simplified = str(section_title or lecture_title or chapter_title or "学习主题")
         for term in _ACTION_TERMS:
             simplified = simplified.replace(term, "")
         primary_topic = re.sub(r"[，,。；;]+.*$", "", simplified).strip(" ：:，,。；;") or "学习主题"
-    keywords = list(dict.fromkeys(cn for cn, _ in pairs))
     english_keywords = list(dict.fromkeys(en for _, en in pairs))
     for term in ("\u6570\u7ec4", "\u94fe\u8868", "\u6811", "\u6808", "\u961f\u5217", "\u9012\u5f52"):
         if term in text and term not in keywords:
@@ -303,13 +317,19 @@ def score_relevance(title: str, snippet: str, context: dict[str, Any], resource_
     matched = [term for term in context["keywords"] if term.lower() in text]
     matched += [term for term in context["english_keywords"] if term.lower() in text]
     matched = list(dict.fromkeys(matched))
-    score = 0.18 + min(0.36, len(matched) * 0.12)
+    score = 0.26 + min(0.50, len(matched) * 0.10)
     if matched:
         score += 0.1
     if context["primary_topic"].lower() in text:
         score += 0.2
     if context["course_name"] and context["course_name"].lower() in text:
-        score += 0.08
+        score += 0.12
+    # For video results, course name match alone is a strong signal
+    if resource_type == "video" and context["course_name"]:
+        for cn_char in context["course_name"]:
+            if cn_char in text:
+                score += 0.04
+                break
     if match_level == "course_level":
         score += 0.08
     if match_level == "expanded_research":
@@ -382,13 +402,19 @@ class SectionResourceRecommendationService:
         if resource_type == "article":
             return [(f"{course} {keywords} 教程 {hint}".strip(), "exact_topic"), (f"{topic} 示例 {hint}".strip(), "exact_topic"), (f"{english} tutorial {english_hint}".strip(), "chapter_level"), (f"{course} {topic} 教学", "course_level")]
         if resource_type == "video":
-            return [(f"{course} {topic} 视频 {hint} site:bilibili.com/video".strip(), "exact_topic"), (f"{topic} 教学视频 {hint} site:youtube.com/watch".strip(), "exact_topic"), (f"{topic} site:icourse163.org/learn", "chapter_level"), (f"{course} {topic} 教程 site:youku.com/v_show", "course_level")]
+            return [
+                (f"{course} {topic} 视频".strip(), "exact_topic"),
+                (f"{course} {keywords} 教学视频".strip(), "exact_topic"),
+                (f"{topic} 视频教程 bilibili".strip(), "chapter_level"),
+                (f"{course} {topic} 视频教程".strip(), "chapter_level"),
+                (f"{english} calculus video tutorial".strip(), "course_level"),
+            ]
         if resource_type == "course":
-            return [(f"{course} {topic} {hint} site:icourse163.org/learn".strip(), "exact_topic"), (f"{course} {topic} site:xuetangx.com/learn", "chapter_level"), (f"{course} {topic} 课程 site:coursera.org/learn", "chapter_level"), (f"{course} 课程 site:ocw.mit.edu/courses", "course_level")]
+            return [(f"{course} {topic} {hint}".strip(), "exact_topic"), (f"{course} {topic} 课程".strip(), "chapter_level"), (f"{course} {topic} mooc".strip(), "chapter_level"), (f"{course} 在线课程".strip(), "course_level")]
         if resource_type == "document":
-            return [(f"{topic} {hint} filetype:pdf".strip(), "exact_topic"), (f"{topic} 课件 filetype:pdf", "exact_topic"), (f"{course} {topic} 讲义 filetype:pdf", "chapter_level"), (f"{english} lecture notes {english_hint} filetype:pdf".strip(), "course_level")]
+            return [(f"{topic} {hint}".strip(), "exact_topic"), (f"{topic} 课件".strip(), "exact_topic"), (f"{course} {topic} 讲义".strip(), "chapter_level"), (f"{english} lecture notes {english_hint}".strip(), "course_level")]
         expanded = "tail recursion" if "recursion" in english else english
-        return [(f"{english} paper site:arxiv.org", "exact_topic"), (f"{english} research site:semanticscholar.org", "exact_topic"), (f"{expanded} optimization paper site:arxiv.org", "expanded_research"), (f"{english} design paper site:dblp.org", "expanded_research")]
+        return [(f"{english} paper".strip(), "exact_topic"), (f"{english} research".strip(), "exact_topic"), (f"{expanded} optimization paper".strip(), "expanded_research"), (f"{english} design paper".strip(), "expanded_research")]
 
     def _rank(
         self,
@@ -442,7 +468,7 @@ class SectionResourceRecommendationService:
                 score -= 0.14
             elif feedback in {"too_hard", "too_easy"}:
                 score -= 0.04
-            if score < 0.45 or (not matched and match_level == "exact_topic"):
+            if score < 0.25 or (not matched and match_level == "exact_topic"):
                 diagnostics["filtered"]["low_relevance"] += 1
                 continue
             diagnostics["relevant_count"] += 1
@@ -616,6 +642,7 @@ class SectionResourceRecommendationService:
         profile: dict[str, Any] | None = None,
         weak_points: list[Any] | None = None,
         feedback_by_url: dict[str, str] | None = None,
+        course_name: str = "",
         collect_diagnostics: bool = False,
         progress_callback: ProgressCallback | None = None,
         refresh: bool = False,
@@ -625,7 +652,7 @@ class SectionResourceRecommendationService:
         requested = [kind for kind in RESOURCE_TYPES if kind in {str(item).lower() for item in resource_types or RESOURCE_TYPES}]
         points = self._point_names(knowledge_points)
         weak = self._point_names(weak_points)
-        context = normalize_search_context(section_title=section_title, knowledge_points=points, weak_points=weak, learner_profile=profile)
+        context = normalize_search_context(course_name=course_name, section_title=section_title, knowledge_points=points, weak_points=weak, learner_profile=profile)
         candidates: list[dict[str, Any]] = []
         queries: list[str] = []
         warnings: list[str] = []
@@ -712,8 +739,33 @@ class SectionResourceRecommendationService:
         else:
             status = "no_high_relevance"
             warnings.append("暂未找到高相关公开资源。")
+        # Auto-ingest top results into knowledge base (background, best-effort)
+        if resources and not refresh:
+            self._auto_ingest(resources[:3])
+
         result = {"query": queries, "resources": resources, "status": status, "warnings": list(dict.fromkeys(warnings))}
         self._emit(progress_callback, "completed", "completed", candidate_count=diagnostics["raw_count"], result_count=len(resources), source_count=len({item["source"] for item in resources}))
         if collect_diagnostics:
             result["diagnostics"] = {key: value for key, value in {**diagnostics, "filtered": dict(diagnostics["filtered"]), "cache_stats": SearchCascade.stats()}.items() if not key.startswith("_")}
         return result
+
+    @staticmethod
+    def _auto_ingest(resources: list[dict[str, Any]]) -> None:
+        """Silently ingest top search results into the RAG knowledge base."""
+        import threading
+
+        def _ingest() -> None:
+            from app.services.web_ingest import ingest_url_sync
+            for r in resources:
+                url = str(r.get("url", "")).strip()
+                if not url:
+                    continue
+                try:
+                    result = ingest_url_sync(url)
+                    if result.ok:
+                        logger.info("Auto-ingested: %s (%d chunks)", url, result.chunks)
+                except Exception:
+                    pass  # Best-effort, never blocks the user
+
+        t = threading.Thread(target=_ingest, daemon=True, name="rag-auto-ingest")
+        t.start()

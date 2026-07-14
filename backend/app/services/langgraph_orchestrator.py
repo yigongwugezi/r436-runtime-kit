@@ -32,6 +32,87 @@ MAX_RETRIES = 2
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Fact extraction after chat — closes the loop between conversation and profile
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def _extract_facts_after_chat(
+    session_id: str,
+    user_msg: str,
+    assistant_reply: str,
+    existing_facts: dict,
+) -> None:
+    """After a DeepTutor chat turn, extract any new facts about the student
+    and persist them to conversation_store so the profile accumulates over time.
+    """
+    if not session_id or not user_msg or not assistant_reply:
+        return
+
+    # Build a focused fact-extraction prompt with the conversation context
+    label_map = {
+        "background": "专业/年级/身份背景",
+        "target_course": "想学的课程/方向",
+        "knowledge_base": "已有基础（具体学过什么、到什么程度）",
+        "weak_points": "薄弱点/卡点（具体哪个概念或题型）",
+        "learning_goal": "学习目标（考试/项目/入门，具体到什么程度）",
+        "time_budget": "时间安排（每天多久、连续还是碎片）",
+        "preference": "学习偏好（文字/视频/图解/做题）",
+    }
+    known_lines = []
+    unknown_lines = []
+    for key, label in label_map.items():
+        val = str(existing_facts.get(key, "")).strip()
+        if val and val not in ("未提及", "待补充", "未知", "", "无"):
+            known_lines.append(f"  {label}：{val}")
+        else:
+            unknown_lines.append(f"  {label}：未知")
+
+    known_block = "\n".join(known_lines) if known_lines else "（暂无）"
+    unknown_block = "\n".join(unknown_lines) if unknown_lines else "（全部已知）"
+
+    fact_prompt = (
+        "你是一个信息提取器。请从以下学生和AI助教的对话中，提取关于学生的任何新事实。\n\n"
+        "提取维度：专业/年级背景、想学的课程、已有基础、薄弱点、学习目标、时间安排、学习偏好。\n"
+        "规则：\n"
+        "- 只提取学生在当前对话中明确说出的信息，不要编造\n"
+        "- 提取时尽量具体——'软件工程大二' 优于 '大学生'，'链式法则卡住了' 优于 '数学薄弱'\n"
+        "- 如果某个维度在对话中没有新的信息，就空着不填\n\n"
+        f"## 当前已知\n{known_block}\n\n"
+        f"## 尚未了解\n{unknown_block}\n\n"
+        f"## 对话\n学生：{user_msg[:500]}\nAI：{assistant_reply[:600]}\n\n"
+        "请输出JSON，只包含从本次对话中新发现的维度（skip已充分了解的维度）：\n"
+        '{"updates": {"background": "新值", "target_course": "新值", ...}}'
+    )
+
+    try:
+        from app.services.deeptutor_facade import deeptutor
+        raw = await deeptutor.chat(fact_prompt, [], profile_context="", persona_context="")
+        if not raw or len(raw) < 20:
+            return
+
+        import json as _json
+        s, e = raw.find("{"), raw.rfind("}") + 1
+        if s >= 0 and e > s:
+            updates = _json.loads(raw[s:e]).get("updates", {})
+        else:
+            return
+
+        if not isinstance(updates, dict) or not updates:
+            return
+
+        from app.services.conversation_state import conversation_store
+        state = conversation_store.get(session_id)
+        if state is None:
+            return
+        for key, value in updates.items():
+            if key in label_map and value and str(value).strip():
+                val = str(value).strip()
+                if val and val not in ("未提及", "待补充", "未知", "", "无") and len(val) > 1:
+                    conversation_store._set_fact(state, key, val, source_text=user_msg)
+    except Exception:
+        pass  # Fact extraction is best-effort, never blocks the reply
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Profile context helpers — shared between conversation node and ConversationAgent
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -51,7 +132,8 @@ def _is_likely_chat(msg: str, facts: dict) -> bool:
     Avoids the full ConversationAgent overhead for the common case."""
     compact = re.sub(r"\s+", "", msg)
     # Explicit generation triggers → need full classification
-    gen_triggers = ["生成", "出题", "规划", "批改", "诊断", "路径", "资源", "导图"]
+    gen_triggers = ["生成", "出题", "规划", "批改", "诊断", "路径", "资源", "导图",
+                    "系统学", "专攻", "按章节", "每日学", "每日计划", "薄弱点", "强化"]
     if any(t in compact for t in gen_triggers):
         return False
     # Everything else is probably chat
@@ -248,6 +330,10 @@ def _build_chat_persona(facts: dict[str, str]) -> str:
     if other_missing:
         parts.append(f"尚未了解：{'、'.join(_LABEL_MAP.get(k, k) for k in other_missing)}")
     parts.append("\n记住：深入了解每个维度是生成个性化方案的前提。不要急着跳到生成。")
+    parts.append(
+        "\n⚠️ 一次只深入一个维度，问一个问题。绝对禁止用 | 分隔多个问题——"
+        "那是填表式提问，不是自然对话。学生回答后再自然过渡到下一个维度。"
+    )
 
     return "\n".join(parts)
 
@@ -432,20 +518,23 @@ async def _conversation_node(state: dict) -> dict:
         except Exception:
             pass
 
-    if not reply:
-        try:
-            # ── Build profile context for DeepTutor ──
-            profile_facts = state.get("profile_facts", {}) or {}
-            profile_context = _build_profile_context(profile_facts)
-            persona_context = _build_chat_persona(profile_facts)
+    # Always use persona-aware DeepTutor for chat intents so probing
+    # instructions reach the model every turn.  The ConversationAgent's
+    # pre-generated reply is kept as a fallback.
+    try:
+        profile_facts = state.get("profile_facts", {}) or {}
+        profile_context = _build_profile_context(profile_facts)
+        persona_context = _build_chat_persona(profile_facts)
 
-            reply = await deeptutor.chat(
-                msg, state.get("messages", []) or [],
-                profile_context=profile_context,
-                persona_context=persona_context,
-            )
-        except Exception:
-            reply = ""
+        dt_reply = await deeptutor.chat(
+            msg, state.get("messages", []) or [],
+            profile_context=profile_context,
+            persona_context=persona_context,
+        )
+        if dt_reply and len(dt_reply) > 10:
+            reply = dt_reply
+    except Exception:
+        pass  # keep the pre-existing reply as fallback
     state["final_reply"] = reply or "你好！我是EduAgent学习助手，有什么可以帮你的？"
     state.setdefault("agent_steps", []).append({"node": "conversation"})
     return state
@@ -645,10 +734,11 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
         profile_facts = state.get("profile_facts", {}) or {}
         profile_context = _build_profile_context(profile_facts)
         persona_context = _build_chat_persona(profile_facts)
+        user_msg = state.get("user_message", "")
         reply = ""
         try:
             reply = await deeptutor.chat(
-                state.get("user_message", ""),
+                user_msg,
                 state.get("messages", []) or [],
                 profile_context=profile_context,
                 persona_context=persona_context,
@@ -656,6 +746,19 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
         except Exception:
             reply = ""
         state["final_reply"] = reply or "你好！我是EduAgent，有什么可以帮你的？"
+
+        # ── Extract facts from the exchange and persist to conversation state ──
+        if reply and user_msg:
+            try:
+                await _extract_facts_after_chat(
+                    state.get("session_id", ""),
+                    user_msg,
+                    reply,
+                    profile_facts,
+                )
+            except Exception:
+                pass
+
         state["pipeline_executed"] = True
         state["overall_status"] = "completed"
         return dict(state)
@@ -667,35 +770,17 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
     agent_ids = agents_filter if (agents_filter is not None and len(agents_filter) > 0) else get_agent_ids(intent)
     if agent_ids is not None and len(agent_ids) > 0:
         # ── Safety net: planning requested but no mode selected → check readiness first ──
+        # ── Planning requested but no mode selected → show mode picker directly ──
         if "planner_agent" in agent_ids and not state.get("plan_mode") and not state.get("path_mode"):
             profile_facts = state.get("profile_facts", {}) or {}
             course = str(profile_facts.get("target_course", ""))
             if course:
-                # Check if profile is deep enough for planning
-                from app.services.conversation_state import conversation_store
-                store_state = conversation_store.get(state.get("session_id", ""))
-                readiness = conversation_store.readiness(store_state)
-                if readiness.get("readyToPlan"):
-                    is_lang = any(w in course for w in ["英语","日语","韩语","法语","德语","语言","雅思","托福"])
-                    default_mode = "日课式" if is_lang else "教材式"
-                    state["final_reply"] = (
-                        f"好的！在生成学习路径之前，先选一下你想要的规划模式吧～\n\n"
-                        f"[[mode-pick:教材式,日课式,精进式|course:{course}|default:{default_mode}]]"
-                    )
-                else:
-                    # Profile too shallow — keep probing instead of jumping to generation
-                    persona_context = _build_chat_persona(profile_facts)
-                    profile_context = _build_profile_context(profile_facts)
-                    try:
-                        reply = await deeptutor.chat(
-                            state.get("user_message", ""),
-                            state.get("messages", []) or [],
-                            profile_context=profile_context,
-                            persona_context=persona_context,
-                        )
-                        state["final_reply"] = reply or "好的，让我再了解一些你的具体情况，这样规划会更精准。"
-                    except Exception:
-                        state["final_reply"] = "好的，在生成方案之前，我还想再多了解一些你的情况～"
+                is_lang = any(w in course for w in ["英语","日语","韩语","法语","德语","语言","雅思","托福"])
+                default_mode = "日课式" if is_lang else "教材式"
+                state["final_reply"] = (
+                    f"好的！在生成学习路径之前，先选一下你想要的规划模式吧～\n\n"
+                    f"[[mode-pick:教材式,日课式,精进式|course:{course}|default:{default_mode}]]"
+                )
                 state["pipeline_executed"] = True
                 state["overall_status"] = "completed"
                 return dict(state)

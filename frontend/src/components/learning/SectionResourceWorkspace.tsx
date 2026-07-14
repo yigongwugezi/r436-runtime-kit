@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ExternalLink, FilePlus2, Loader2, RefreshCw, Search, Sparkles, FileText } from 'lucide-react';
+import { ExternalLink, Loader2, RefreshCw, Search, Sparkles } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useSubjectStore } from '../../store/subjectStore';
 import Markdown from '../../utils/markdown';
@@ -205,7 +205,7 @@ export default function SectionResourceWorkspace(props: Props) {
     try {
       const result = await generateSectionMindmap(section.id, {
         sessionId, pathId, stageId, sectionTitle: section.title,
-        subjectId, knowledgePoints: section.knowledgePoints,
+        subjectId, knowledgePoints: section.knowledgePoints, lectureContent,
         regenerate: Boolean(mindmap),
       });
       setMindmap(result.mindmap);
@@ -276,49 +276,6 @@ export default function SectionResourceWorkspace(props: Props) {
         ))}
       </div>
     )}
-
-    <div className="border-t border-surface-100 pt-4 space-y-2">
-      <div className="flex items-center gap-2">
-        <Sparkles size={14} className="text-primary-600" />
-        <p className="text-xs font-semibold text-surface-700">生成本节学习资源</p>
-      </div>
-      <p className="text-[10px] text-surface-400">本地模板生成，保存到当前会话的资源库。</p>
-      <div className="flex gap-2">
-        <select value={selectedType} onChange={(event) => setSelectedType(event.target.value as GeneratedSectionResourceType)}
-          className="min-w-0 flex-1 rounded-lg border border-surface-200 bg-white px-2 py-2 text-xs text-surface-600">
-          {resourceGroups.map((group) => <optgroup key={group.label} label={group.label}>
-            {group.types.map((type) => <option key={type} value={type}>{generatedResourceLabels[type]}</option>)}
-          </optgroup>)}
-        </select>
-        <button onClick={() => generate(selectedType)} disabled={Boolean(generating) || !section}
-          className="inline-flex items-center gap-1 rounded-lg bg-primary-600 px-3 py-2 text-xs font-medium text-white hover:bg-primary-700 disabled:opacity-40">
-          {generating === selectedType ? <Loader2 size={13} className="animate-spin" /> : <FilePlus2 size={13} />}
-          生成
-        </button>
-      </div>
-
-      {generated.length > 0 && <div className="space-y-1.5 pt-1">
-        {generated.map((item) => <button key={item.id} onClick={() => { setPreview(item); setGeneratedFeedback(item.feedback?.feedback || 'helpful'); }}
-          className={`w-full rounded-lg border px-2.5 py-2 text-left text-xs transition-colors ${preview?.id === item.id ? 'border-primary-200 bg-primary-50 text-primary-700' : 'border-surface-100 bg-surface-50 text-surface-600 hover:bg-surface-100'}`}>
-          <span className="font-medium">{item.title}</span>
-          {item.quality && <span className="ml-1.5 text-[10px] text-surface-400">质检：{item.quality === 'passed' ? '通过' : item.quality === 'repaired' ? '已修复' : item.quality === 'fallback' ? '本地兜底' : '失败'}</span>}
-        </button>)}
-      </div>}
-
-      {preview && <div className="space-y-2 rounded-xl border border-surface-200 bg-white p-3">
-        <div className="flex items-center justify-between gap-2"><p className="text-xs font-semibold text-surface-700">{preview.title}</p><button onClick={() => openGeneratedDetail(preview)} className="text-[10px] text-primary-600 hover:text-primary-700">打开详情</button></div>
-        {preview.mermaidDef && <div className="rounded-lg border border-surface-100 bg-white p-2"><MermaidDiagram definition={preview.mermaidDef} /></div>}
-        <div className="prose prose-sm max-w-none text-xs"><Markdown content={preview.content} /></div>
-        <div className="flex gap-2 border-t border-surface-100 pt-2">
-          <select value={generatedFeedback} onChange={(event) => setGeneratedFeedback(event.target.value as typeof generatedFeedback)} className="min-w-0 flex-1 rounded-lg border border-surface-200 px-2 py-1.5 text-[10px]">
-            <option value="helpful">有帮助</option><option value="not_relevant">不相关</option><option value="too_hard">太难</option><option value="too_easy">太简单</option><option value="other">其他</option>
-          </select>
-          {generatedFeedback === 'helpful' ? <button onClick={regenerateFromFeedback} className="rounded-lg bg-success-50 px-2 py-1.5 text-[10px] text-success-700">记录有帮助</button> : <button onClick={regenerateFromFeedback} disabled={Boolean(generating)} className="inline-flex items-center gap-1 rounded-lg bg-surface-800 px-2 py-1.5 text-[10px] text-white hover:bg-surface-900 disabled:opacity-40"><RefreshCw size={11} />按反馈重新生成</button>}
-        </div>
-        {generatedFeedback === 'helpful' && <p className="text-[10px] text-success-600">有帮助不需要重新生成；保存后会用于优化后续同类推荐。</p>}
-        {preview.workflowTrace && preview.workflowTrace.length > 0 && <details className="rounded-lg bg-surface-50 p-2 text-[10px] text-surface-500"><summary className="cursor-pointer font-medium text-surface-600">查看协同执行记录</summary><ol className="mt-1 space-y-1 pl-4">{preview.workflowTrace.map((step, index) => <li key={`${step.agent}-${index}`}>{step.agent}：{step.summary}</li>)}</ol></details>}
-      </div>}
-    </div>
 
   </div>;
 }

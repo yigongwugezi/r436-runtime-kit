@@ -858,6 +858,12 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
                 "title": stage.get("title", f"阶段 {stage_index + 1}"),
                 "order": stage_index,
                 "chapters": [],
+                # ── Preserve mode markers from upstream ──
+                "path_mode": stage.get("path_mode", ""),
+                "plan_mode": stage.get("plan_mode", ""),
+                "focus": stage.get("focus", ""),
+                "reason": stage.get("reason", ""),
+                "estimated_days": stage.get("estimated_days", stage.get("estimatedDays", 0)),
             }
             raw_chapters = stage.get("chapters") or [stage]  # support nested or flat
             for ch_index, ch in enumerate(raw_chapters):
@@ -885,6 +891,11 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
                         "content_type": sec.get("content_type", "lecture"),
                         "knowledge_points": kps,
                         "textbook_section_ids": sec.get("textbook_section_ids", []),
+                        # ── Preserve fields from upstream (daily/focus/textbook modes) ──
+                        "task_type": sec.get("task_type", ""),
+                        "textbookPageStart": sec.get("textbookPageStart", sec.get("start_page", 1)),
+                        "textbookPageEnd": sec.get("textbookPageEnd", sec.get("end_page", 1)),
+                        "textbookSectionId": sec.get("textbookSectionId", sec.get("section_id", "")),
                     })
                 rewritten_stage["chapters"].append(rewritten_ch)
             rewritten.append(rewritten_stage)
