@@ -27,6 +27,18 @@ _CONCEPTS = (
     ("局部变量", "local variables"), ("返回地址", "return address"),
     ("阶乘", "factorial"), ("斐波那契", "fibonacci"),
 )
+_TOPIC_FALLBACK = "\u5b66\u4e60\u4e3b\u9898"
+_REQUEST_PREFIX = re.compile(
+    r"^(?:"
+    r"\u8bf7(?:\u5e2e\u6211)?(?:\u627e|\u63a8\u8350)(?:\u4e00\u4e9b)?(?:\u5173\u4e8e)?|"
+    r"(?:\u7ed9\u6211)?\u63a8\u8350(?:\u4e00\u4e9b)?(?:\u9002\u5408(?:\u5165\u95e8|\u521d\u5b66\u8005|\u5927\u4e8c\u5b66\u751f)?\u7684)?|"
+    r"(?:\u6211)?\u60f3(?:\u8981)?(?:\u7b80\u5355)?(?:\u5b66\u4e60|\u4e86\u89e3)(?:\u4e00\u4e0b)?|"
+    r"(?:\u5e2e\u6211)?\u627e(?:\u4e00\u4e9b)?(?:\u5173\u4e8e)?"
+    r")"
+)
+_RESOURCE_SUFFIX = re.compile(
+    r"(?:\u7684)?(?:\u6559\u5b66)?(?:\u89c6\u9891|\u8d44\u6599|\u8d44\u6e90|\u6587\u7ae0|\u8bfe\u7a0b|\u6587\u6863|\u8bba\u6587|\u6559\u7a0b|\u8bb2\u4e49)$"
+)
 _PAPER_HOSTS = ("arxiv.org", "semanticscholar.org", "dl.acm.org", "ieeexplore.ieee.org", "dblp.org", "doi.org", "cnki", "wanfang")
 _COURSE_HOSTS = ("icourse163.org", "xuetangx.com", "smartedu.cn", "imooc.com", "coursera.org", "edx.org", "ocw.mit.edu")
 
@@ -237,6 +249,33 @@ def _profile_mastery(profile: dict[str, Any] | None) -> list[dict[str, Any]]:
     return [item for item in nested if isinstance(item, dict)] if isinstance(nested, list) else []
 
 
+def _normalize_topic(value: Any) -> str:
+    """Remove request wording while retaining the complete knowledge phrase."""
+    topic = re.sub(r"\s+", " ", str(value or "")).strip(" \uff0c,\u3002\uff1b;")
+    if not topic:
+        return _TOPIC_FALLBACK
+
+    requested = _REQUEST_PREFIX.sub("", topic).strip(" \u7684\uff0c,\u3002\uff1b;")
+    if requested != topic:
+        requested = _RESOURCE_SUFFIX.sub("", requested).strip(" \u7684\uff0c,\u3002\uff1b;")
+        return requested or _TOPIC_FALLBACK
+
+    head = re.sub(r"[\uff08(][^()\uff08\uff09]*[\uff09)]", "", topic)
+    head = re.split(r"[\uff0c,\u3002\uff1b;]", head, maxsplit=1)[0]
+    matches = []
+    for concept, _ in _CONCEPTS:
+        position = head.find(concept)
+        if position >= 0:
+            matches.append((position, concept))
+    matches.sort()
+    if matches:
+        return "".join(dict.fromkeys(concept for _, concept in matches))
+
+    for term in _ACTION_TERMS:
+        head = head.replace(term, "")
+    return head.strip(" \u7684\uff0c,\u3002\uff1b;") or _TOPIC_FALLBACK
+
+
 def normalize_search_context(
     *,
     course_name: str = "",
@@ -258,36 +297,22 @@ def normalize_search_context(
     # Derive keywords from knowledge points + section title, not a hardcoded list
     lowered = text.lower()
     pairs = [(cn, en) for cn, en in _CONCEPTS if cn in text or en in lowered]
-    # Start with concept-matching keywords, then enrich from section title + knowledge points
+    # Keep concepts as search terms, but derive the primary topic from the most
+    # specific available title instead of the first vocabulary match.
     keywords = list(dict.fromkeys(cn for cn, _ in pairs))
-    title_words = re.split(r"[，,。；;\s]+", str(section_title or ""))
-    for word in title_words:
-        cleaned = word.strip()
-        if cleaned and len(cleaned) >= 2 and cleaned not in keywords and cleaned not in ("基本性质", "核心概念", "学习主题"):
-            keywords.append(cleaned)
+    topic_source = section_title or lecture_title or chapter_title or (knowledge_points or [""])[0]
+    primary_topic = _normalize_topic(topic_source)
+    if primary_topic != _TOPIC_FALLBACK and primary_topic not in keywords:
+        keywords.append(primary_topic)
     for kp in knowledge_points or []:
         kp_name = str(kp).strip()
         if kp_name and len(kp_name) >= 2:
             keywords.append(kp_name)
     keywords = list(dict.fromkeys(keywords))
-    # Determine primary topic from concept matches or section title
-    if pairs:
-        primary_topic = pairs[0][0]
-    else:
-        simplified = str(section_title or lecture_title or chapter_title or "学习主题")
-        for term in _ACTION_TERMS:
-            simplified = simplified.replace(term, "")
-        primary_topic = re.sub(r"[，,。；;]+.*$", "", simplified).strip(" ：:，,。；;") or "学习主题"
     english_keywords = list(dict.fromkeys(en for _, en in pairs))
     for term in ("\u6570\u7ec4", "\u94fe\u8868", "\u6811", "\u6808", "\u961f\u5217", "\u9012\u5f52"):
         if term in text and term not in keywords:
             keywords.append(term)
-    if primary_topic == "递归调用栈":
-        for cn, en in _CONCEPTS:
-            if cn in text and cn not in keywords:
-                keywords.append(cn)
-            if cn in text and en not in english_keywords:
-                english_keywords.append(en)
     relevant_weak = [point for point in weak_points or [] if str(point).strip() and str(point).strip().lower() in text.lower()]
     for item in _profile_mastery(learner_profile):
         name = str(item.get("label") or item.get("knowledge_id") or "").strip()
