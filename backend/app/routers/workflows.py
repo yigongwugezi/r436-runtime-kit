@@ -114,30 +114,32 @@ def _runner(workflow_type: str, payload: dict[str, Any], auth: AuthContext):
     return run
 
 
-def _start(workflow_type: str, payload: dict[str, Any], auth: AuthContext) -> WorkflowTask:
+def _start(workflow_type: str, payload: dict[str, Any], auth: AuthContext) -> tuple[WorkflowTask, bool]:
     if workflow_type not in SUPPORTED_WORKFLOWS:
         raise HTTPException(status_code=404, detail="unsupported workflow type")
     session_id, subject_id = _session(payload, auth)
     safe_metadata = {"resource_type": str(payload.get("resourceType") or payload.get("type") or "")[:40]}
     try:
-        task = workflow_task_manager.create(
+        task, reused_existing = workflow_task_manager.get_or_create(
             workflow_type, auth.learner_id, session_id, subject_id,
-            metadata=safe_metadata, retry_payload=dict(payload),
+            payload=payload, metadata=safe_metadata, retry_payload=dict(payload),
         )
     except ValueError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
-    workflow_task_manager.start(task, _runner(workflow_type, dict(payload), auth))
-    return task
+    if not reused_existing:
+        workflow_task_manager.start(task, _runner(workflow_type, dict(payload), auth))
+    return task, reused_existing
 
 
 @router.post("/{workflow_type}/start")
 def start_workflow(workflow_type: str, payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
-    task = _start(workflow_type, payload, auth)
+    task, reused_existing = _start(workflow_type, payload, auth)
     base = f"/api/workflows/{task.task_id}"
     return {
         "task_id": task.task_id, "workflow_type": task.workflow_type, "status": task.status,
         "events_url": f"{base}/events", "status_url": base, "cancel_url": f"{base}/cancel",
         "supports_streaming_preview": False, "supports_cancellation": workflow_type in CANCELLABLE_WORKFLOWS,
+        "reused_existing": reused_existing,
     }
 
 
@@ -168,8 +170,8 @@ def retry_workflow(task_id: str, auth: AuthContext = Depends(reject_parent)) -> 
         raise HTTPException(status_code=404, detail="任务不存在或已过期") from exc
     if old.status not in {"failed", "cancelled", "expired"}:
         raise HTTPException(status_code=409, detail="只有失败、取消或过期任务可以重试")
-    task = _start(old.workflow_type, dict(old.retry_payload), auth)
-    return {"task_id": task.task_id, "workflow_type": task.workflow_type, "status": task.status}
+    task, reused_existing = _start(old.workflow_type, dict(old.retry_payload), auth)
+    return {"task_id": task.task_id, "workflow_type": task.workflow_type, "status": task.status, "reused_existing": reused_existing}
 
 
 @router.get("/{task_id}/events")

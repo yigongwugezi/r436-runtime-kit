@@ -31,7 +31,7 @@ export interface WorkflowState {
 
 export async function startWorkflow(workflowType: string, payload: Record<string, unknown>) {
   const { data } = await client.post(`/api/workflows/${encodeURIComponent(workflowType)}/start`, payload);
-  return data as { task_id: string; workflow_type: string; status: WorkflowStatus; events_url: string };
+  return data as { task_id: string; workflow_type: string; status: WorkflowStatus; events_url: string; reused_existing?: boolean };
 }
 
 export async function readWorkflow(taskId: string, sessionId?: string) {
@@ -46,7 +46,7 @@ export async function cancelWorkflow(taskId: string, sessionId: string) {
 
 export async function retryWorkflow(taskId: string) {
   const { data } = await client.post(`/api/workflows/${encodeURIComponent(taskId)}/retry`);
-  return data as { task_id: string; workflow_type: string; status: WorkflowStatus };
+  return data as { task_id: string; workflow_type: string; status: WorkflowStatus; reused_existing?: boolean };
 }
 
 export async function consumeWorkflowEvents(

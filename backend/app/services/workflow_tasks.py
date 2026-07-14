@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 import time
 import uuid
@@ -48,6 +50,7 @@ class WorkflowTask:
     condition: threading.Condition = field(default_factory=threading.Condition, repr=False)
     runner: Callable | None = field(default=None, repr=False)
     retry_payload: dict[str, Any] = field(default_factory=dict, repr=False)
+    active_key: str = field(default="", repr=False)
     started_monotonic: float | None = field(default=None, repr=False)
     finished_elapsed_ms: int | None = field(default=None, repr=False)
 
@@ -91,11 +94,101 @@ class WorkflowCancelled(Exception):
 class WorkflowTaskManager:
     def __init__(self) -> None:
         self._tasks: dict[str, WorkflowTask] = {}
+        # ponytail: process-local dedupe; use a shared lock/store for multi-worker deployments.
+        self._active_task_ids: dict[str, str] = {}
         self._lock = threading.RLock()
 
     def clear(self) -> None:
         with self._lock:
             self._tasks.clear()
+            self._active_task_ids.clear()
+
+    @staticmethod
+    def _value(value: Any) -> str:
+        return str(value or "").strip()
+
+    @classmethod
+    def _normalized(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {str(key): cls._normalized(value[key]) for key in sorted(value, key=str)}
+        if isinstance(value, (list, tuple)):
+            return [cls._normalized(item) for item in value]
+        if isinstance(value, str):
+            return value.strip()
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        return str(value).strip()
+
+    @classmethod
+    def canonical_task_payload(
+        cls,
+        workflow_type: str,
+        user_scope: str,
+        session_scope: str,
+        subject_scope: str,
+        payload: dict[str, Any] | None,
+    ) -> dict[str, str | int]:
+        source = payload or {}
+        operation = cls._value(source.get("operation") or source.get("mode"))
+        if not operation:
+            operation = "preview" if source.get("preview") is True else "apply" if source.get("preview") is False else "regenerate" if source.get("regenerate") else "default"
+        input_fingerprint = hashlib.sha256(
+            json.dumps(cls._normalized(source), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return {
+            "version": 1,
+            "user": hashlib.sha256(cls._value(user_scope).encode("utf-8")).hexdigest(),
+            "workflow": cls._value(workflow_type),
+            "operation": operation,
+            "session": cls._value(session_scope),
+            "subject": cls._value(subject_scope),
+            "path": cls._value(source.get("pathId") or source.get("path_id")),
+            "stage": cls._value(source.get("stageId") or source.get("stage_id")),
+            "chapter": cls._value(source.get("chapterId") or source.get("chapter_id")),
+            "section": cls._value(source.get("sectionId") or source.get("section_id")),
+            "resource": cls._value(source.get("resourceId") or source.get("resource_id")),
+            "resource_type": cls._value(source.get("resourceType") or source.get("resource_type") or source.get("type")),
+            "input_fingerprint": input_fingerprint,
+        }
+
+    @classmethod
+    def canonical_task_key(cls, *args: Any, **kwargs: Any) -> str:
+        payload = cls.canonical_task_payload(*args, **kwargs)
+        return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+    def _release_active(self, task: WorkflowTask) -> None:
+        if not task.active_key:
+            return
+        with self._lock:
+            if self._active_task_ids.get(task.active_key) == task.task_id:
+                self._active_task_ids.pop(task.active_key, None)
+
+    def get_or_create(
+        self,
+        workflow_type: str,
+        user_scope: str,
+        session_scope: str,
+        subject_scope: str = "",
+        *,
+        payload: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        runner: Callable | None = None,
+        retry_payload: dict[str, Any] | None = None,
+    ) -> tuple[WorkflowTask, bool]:
+        active_key = self.canonical_task_key(workflow_type, user_scope, session_scope, subject_scope, payload)
+        with self._lock:
+            self.cleanup()
+            task = self._tasks.get(self._active_task_ids.get(active_key, ""))
+            if task and task.status in {"queued", "running"}:
+                return task, True
+            self._active_task_ids.pop(active_key, None)
+            task = self.create(
+                workflow_type, user_scope, session_scope, subject_scope,
+                metadata=metadata, runner=runner, retry_payload=retry_payload,
+            )
+            task.active_key = active_key
+            self._active_task_ids[active_key] = task.task_id
+            return task, False
 
     def create(
         self,
@@ -212,7 +305,15 @@ class WorkflowTaskManager:
                     task.failed_at = task.updated_at = _now()
                     self.emit_terminal(task, "workflow_failed", "failed", label="任务执行失败", error_code=task.error_code, safe_error_message=task.safe_error_message)
 
-        threading.Thread(target=work, daemon=True, name=f"workflow-{task.task_id[:8]}").start()
+        try:
+            threading.Thread(target=work, daemon=True, name=f"workflow-{task.task_id[:8]}").start()
+        except Exception:
+            task.status = "failed"
+            task.failed_at = task.updated_at = _now()
+            task.error_code = "WORKFLOW_START_FAILED"
+            task.safe_error_message = "浠诲姟鍚姩澶辫触锛岃閲嶈瘯"
+            self.emit_terminal(task, "workflow_failed", "failed", label="浠诲姟鍚姩澶辫触", error_code=task.error_code, safe_error_message=task.safe_error_message)
+            raise
 
     def emit_terminal(self, task: WorkflowTask, event: str, status: str, **data: Any) -> None:
         # Terminal status is already set; append directly so the final event is never suppressed.
@@ -228,6 +329,7 @@ class WorkflowTaskManager:
             item.update({key: data[key] for key in ("error_code", "safe_error_message") if key in data})
             task.events.append(item)
             task.condition.notify_all()
+        self._release_active(task)
 
     def cancel(self, task: WorkflowTask) -> WorkflowTask:
         if task.status in TERMINAL_STATUSES:
@@ -253,6 +355,7 @@ class WorkflowTaskManager:
                 except ValueError:
                     updated = 0
                 if task.status in TERMINAL_STATUSES and updated < cutoff:
+                    self._release_active(task)
                     self._tasks.pop(task_id, None)
 
 
