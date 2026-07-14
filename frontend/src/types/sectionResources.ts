@@ -20,14 +20,14 @@ export interface ExternalSectionResource {
 export interface SectionRecommendationResult {
   query: string[];
   resources: ExternalSectionResource[];
-  status: 'completed' | 'search_unavailable' | 'no_high_relevance' | 'expanded_no_results' | 'failed';
+  status: 'completed' | 'search_unavailable' | 'no_high_relevance' | 'expanded_no_results' | 'failed' | 'cancelled' | 'stale_results' | 'partial_results';
   warnings: string[];
 }
 
 export interface SearchProgressEvent {
   event: 'search_progress';
-  stage: 'topic_analysis' | 'cache' | 'primary_search' | 'fallback_search' | 'quality_filter' | 'personalized_ranking' | 'completed';
-  status: 'running' | 'completed';
+  stage: 'topic_analysis' | 'cache' | 'primary_search' | 'fallback_search' | 'quality_filter' | 'personalized_ranking' | 'completed' | 'cancelled' | 'failed' | 'stale_cache';
+  status: 'pending' | 'running' | 'completed' | 'cancelled' | 'failed';
   fallback_used?: boolean;
   stale?: boolean;
   candidate_count?: number;

@@ -6,13 +6,16 @@ import { useChatPanel } from '../components/layout/AppLayout';
 import { useProfile } from '../hooks/useProfile';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
-import { assessInterest, syncProfileFromConversation, updateProfileContext, updateProfileSelfReport } from '../api/profile';
+import { assessInterest, updateProfileContext, updateProfileSelfReport, updateProfileFact } from '../api/profile';
 import { PageError, PageLoading } from '../components/common/PageState';
+import WorkflowProgress from '../components/common/WorkflowProgress';
+import { consumeWorkflowEvents, readWorkflow, startWorkflow } from '../api/workflows';
 
 const confidenceLabel = { low: '低', medium: '中', high: '高' };
 const statusLabel = { unassessed: '未评估', tentative: '待验证', basic: '基础', developing: '发展中', proficient: '熟练', advanced: '高阶', learning: '学习中', partial: '部分掌握', mastered: '已掌握', familiar: '较熟悉', weak: '薄弱', unknown: '未评估', assessed: '已评估' };
 const preferenceLabel = { example_first: '先看例题', practice_after_explanation: '理解讲解后练习', definition_first: '先讲定义', visual_explanation: '图解', step_by_step: '分步讲解', concise_explanation: '简洁讲解' };
 const sourceLabel = { user_self_report: '用户自评', conversation_explicit: '对话中明确表达', system_observation: '系统观察', assessment: '测评结果', manual_edit: '用户手动确认' };
+const contextLabel = { learning_goal: '学习目标', deadline: '学习周期', daily_minutes: '每日可用时间', background: '专业背景', prior_experience: '已有经验', content_preferences: '内容偏好', resource_preferences: '资源偏好' };
 
 function preferenceText(values = []) {
   return values.map((value) => preferenceLabel[value] || value).join('、');
@@ -38,6 +41,8 @@ export default function ProfilePage() {
   const [saving, setSaving] = useState(false);
   const [syncPreview, setSyncPreview] = useState(null);
   const [syncError, setSyncError] = useState('');
+  const [factBusy, setFactBusy] = useState('');
+  const [syncWorkflow, setSyncWorkflow] = useState(null);
 
   useEffect(() => {
     if (profileV2?.subject_context) setContext(profileV2.subject_context);
@@ -57,14 +62,28 @@ export default function ProfilePage() {
   const startInterestSelfReport = () => { setInterest(interestState?.self_report ?? 50); setEditingInterest(true); };
   const startAssessment = async () => { const result = await assessInterest(sessionId); setQuestions(result.questions || []); };
   const submitAssessment = async () => { setSaving(true); try { await assessInterest(sessionId, answers); await fetchProfile(); setQuestions([]); } finally { setSaving(false); } };
-  const syncFromConversation = async (preview = true) => { if (!subjectId || !sessionId) return; setSaving(true); setSyncError(''); try { const result = await syncProfileFromConversation(subjectId, sessionId, preview); setSyncPreview(result.preview); if (!preview) await fetchProfile(); } catch (error) { setSyncError(error instanceof Error ? error.message : '同步失败，请稍后重试。'); } finally { setSaving(false); } };
+  const syncFromConversation = async (preview = true) => { if (!subjectId || !sessionId) return; setSaving(true); setSyncError(''); try {
+    const started = await startWorkflow('profile_sync', { sessionId, subjectId, preview });
+    setSyncWorkflow({ taskId: started.task_id, workflowType: started.workflow_type, status: started.status, events: [], preview: '', elapsedMs: 0 });
+    await consumeWorkflowEvents(started.task_id, (event) => setSyncWorkflow((current) => {
+      if (!current || event.sequence <= (current.events.at(-1)?.sequence || 0)) return current;
+      const status = event.event === 'workflow_completed' ? 'completed' : event.event === 'workflow_cancelled' ? 'cancelled' : event.event === 'workflow_failed' ? 'failed' : 'running';
+      return { ...current, status, events: [...current.events, event], elapsedMs: event.elapsed_ms };
+    }));
+    const task = await readWorkflow(started.task_id, sessionId);
+    const result = task.result?.data;
+    setSyncPreview(result?.preview); if (!preview && task.status === 'completed') await fetchProfile();
+  } catch (error) { setSyncError(error instanceof Error ? error.message : '同步失败，请稍后重试。'); } finally { setSaving(false); } };
   const factEvidence = (key) => profileV2?.fact_records?.[key] ? [{ ...profileV2.fact_records[key], detail: profileV2.fact_records[key].evidence_summary }] : [];
+  const controlFact = async (key, action) => { if (!sessionId) return; setFactBusy(key); try { await updateProfileFact(sessionId, key, action); await fetchProfile(); } finally { setFactBusy(''); } };
+  const editFact = async (key, current) => { const value = window.prompt('修改画像事实', String(current ?? '')); if (value?.trim()) { setFactBusy(key); try { await updateProfileFact(sessionId, key, 'edit', value.trim()); await fetchProfile(); } finally { setFactBusy(''); } } };
 
   return <div className="space-y-6 pb-8">
     <header className="rounded-2xl bg-gradient-to-r from-blue-600 to-violet-600 p-6 text-white">
       <p className="text-sm text-blue-100">当前学习概览</p><h2 className="mt-1 text-2xl font-bold">{subject.subject_name || '当前课程待确认'}</h2>
       <div className="mt-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-4"><span>目标：{subject.learning_goal || '待补充'}</span><span>每日：{subject.daily_minutes ? `${subject.daily_minutes} 分钟` : '待补充'}</span><span>学习周期：{subject.deadline || '待补充'}</span><span>学习情境完整度：{Math.round((profileV2.profile_completeness || 0) * 100)}%</span></div><div className="mt-3 flex items-center gap-3"><p className="text-xs text-blue-100">该指标表示基础学习信息的完整程度，不代表所有能力与知识点均已完成测评。</p><button onClick={() => nav('/chat', { state: { initialMessage: '我想修改一下我的学习画像信息' } })} className="inline-flex items-center gap-1 rounded-lg bg-white/20 px-3 py-1.5 text-xs font-medium text-white hover:bg-white/30 transition-colors"><MessageCircle size={12} />修改画像</button></div>
     </header>
+    {syncWorkflow && <WorkflowProgress key={`${syncWorkflow.taskId}:${syncWorkflow.status}`} state={syncWorkflow} onRetry={() => syncFromConversation(true)} />}
 
     <section className="rounded-2xl bg-white p-5 shadow-sm"><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-semibold">学习情境与偏好</h3><div className="flex gap-3"><button disabled={saving || !subjectId || !sessionId} onClick={() => syncFromConversation(true)} className="inline-flex items-center gap-1 text-sm text-violet-600"><RefreshCw size={14} />从当前对话同步画像</button><button onClick={() => setEditing(!editing)} className="inline-flex items-center gap-1 text-sm text-blue-600"><Edit3 size={14} />{editing ? '取消' : '编辑'}</button></div></div>
       {syncError && <p className="mb-3 text-sm text-red-600">{syncError}</p>}{syncPreview && <div className="mb-4 rounded-xl border border-violet-100 bg-violet-50 p-4 text-sm"><p className="font-medium">对话同步预览</p>{['added', 'updates', 'conflicts', 'ignored'].map((kind) => <div key={kind} className="mt-2"><p className="text-surface-600">{{ added: '将新增', updates: '将更新', conflicts: '存在冲突', ignored: '将忽略' }[kind]}：{(syncPreview[kind] || []).length ? (syncPreview[kind] || []).map((item) => `${item.field}：${item.value ?? item.candidate ?? item.current}`).join('；') : '无'}</p></div>)}{!syncPreview.has_changes ? <p className="mt-3 text-surface-500">当前对话没有发现新的画像信息。</p> : <button disabled={saving} onClick={() => syncFromConversation(false)} className="mt-3 rounded-lg bg-violet-600 px-3 py-1.5 text-white">确认应用</button>}</div>}
@@ -73,6 +92,8 @@ export default function ProfilePage() {
         <button disabled={saving} onClick={saveContext} className="inline-flex w-fit items-center gap-1 rounded-lg bg-blue-600 px-4 py-2 text-sm text-white"><Save size={14} />保存情境</button>
       </div> : <div className="grid gap-3 text-sm md:grid-cols-3">{[["学习目标", subject.learning_goal, "learning_goal"], ["时间安排", subject.daily_minutes ? `每天${subject.daily_minutes}分钟` : '待补充', "daily_minutes"], ["专业背景", subject.background, "background"], ["已有经验", (subject.prior_experience || []).join('、'), "prior_experience"], ["内容偏好", preferenceText(subject.content_preferences || []), "content_preferences"], ["资源偏好", preferenceText(subject.resource_preferences || []), "resource_preferences"]].map(([label, value, key]) => <div key={label} className="rounded-xl bg-surface-50 p-3"><p className="text-xs text-surface-400">{label}</p><p className="mt-1 text-surface-700">{value || '待补充'}</p><Evidence items={factEvidence(key)} /></div>)}</div>}
     </section>
+
+    {Object.keys(profileV2.fact_records || {}).length > 0 && <section className="rounded-2xl bg-white p-5 shadow-sm"><h3 className="mb-4 font-semibold">可控画像事实</h3><div className="space-y-2">{Object.entries(profileV2.fact_records).filter(([, fact]) => fact.status !== 'deleted').map(([key, fact]) => <div key={key} className="flex flex-wrap items-center gap-2 rounded-xl border border-surface-100 p-3 text-sm"><span className="font-medium text-surface-700">{contextLabel[key] || '学习偏好'}</span><span className="text-surface-500">{fact.fact_type === 'inferred' || fact.source_type === 'system_observation' ? '系统推断' : '我明确说过'}</span><span className="text-surface-400">{fact.is_disabled_for_personalization ? '已停止个性化' : fact.scope === 'session' ? '仅当前会话' : '参与当前学科'}</span><div className="ml-auto flex gap-1"><button disabled={factBusy === key} onClick={() => editFact(key, fact.value)} className="rounded border px-2 py-1 text-xs text-blue-600">修改</button><button disabled={factBusy === key} onClick={() => controlFact(key, fact.is_disabled_for_personalization ? 'enable' : 'disable')} className="rounded border px-2 py-1 text-xs text-violet-600">{fact.is_disabled_for_personalization ? '恢复个性化' : '停用个性化'}</button><button disabled={factBusy === key} onClick={() => controlFact(key, 'delete')} className="rounded border px-2 py-1 text-xs text-red-600">删除</button></div></div>)}</div></section>}
 
     <section className="rounded-2xl bg-white p-5 shadow-sm"><h3 className="mb-4 font-semibold">当前学习状态</h3><div className="grid gap-3 md:grid-cols-2 lg:grid-cols-5">{profileV2.general_states.map((state) => <div key={state.key} className="rounded-xl border border-surface-100 p-3"><p className="font-medium text-surface-700">{state.label}</p><p className="mt-2 text-sm">用户自评：{state.self_report == null ? '未评估' : `${state.self_report}/100`}</p><p className="text-xs text-surface-500">系统观察：{state.system_estimate == null ? '证据不足' : `${state.level} (${state.system_estimate})`}</p><p className="mt-1 text-xs text-surface-400">置信度：{confidenceLabel[state.confidence]}</p><Evidence items={state.evidence} /></div>)}</div>
       <div className="mt-5 rounded-xl bg-blue-50 p-4"><div className="flex flex-wrap items-center gap-3"><span className="text-sm font-medium">当前兴趣自评：{interest == null ? '尚未自评' : interest}</span>{editingInterest && interest != null && <><input type="range" min="0" max="100" value={interest} onChange={(event) => setInterest(Number(event.target.value))} className="w-44" /><button disabled={saving} onClick={saveInterest} className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm text-white">保存自评</button></>} {!editingInterest && <button onClick={startInterestSelfReport} className="rounded-lg border border-blue-200 px-3 py-1.5 text-sm text-blue-700">{interest == null ? '开始自评' : '修改自评'}</button>}<button onClick={startAssessment} className="inline-flex items-center gap-1 text-sm text-blue-700"><Sparkles size={14} />AI 辅助校准</button></div>

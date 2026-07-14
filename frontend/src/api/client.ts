@@ -217,4 +217,21 @@ export async function streamRequest(
   return response.body.getReader();
 }
 
+/** Authenticated SSE GET used by resumable workflow tasks. */
+export async function streamGet(
+  path: string,
+  signal?: AbortSignal,
+  lastEventId = 0,
+): Promise<ReadableStreamDefaultReader<Uint8Array>> {
+  const response = await fetch(`${BASE_URL}${path}`, {
+    headers: {
+      Authorization: `Bearer ${getToken()}`,
+      ...(lastEventId ? { 'Last-Event-ID': String(lastEventId) } : {}),
+    },
+    signal,
+  });
+  if (!response.ok || !response.body) throw new Error(`Stream error: ${response.status}`);
+  return response.body.getReader();
+}
+
 export default client;

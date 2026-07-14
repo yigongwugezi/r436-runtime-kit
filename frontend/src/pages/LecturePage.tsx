@@ -6,6 +6,7 @@ import { useSubjectStore } from '../store/subjectStore';
 import { useLectureStore } from '../store/lectureStore';
 import { ChevronLeft, ChevronRight, Sparkles, MessageCircle, Send, Brain, BookOpen, ArrowLeft, ArrowRight, Target, Lightbulb, Layers, Clock, GraduationCap, Hash, CheckCircle2, Check, X, Loader2, HelpCircle, RefreshCw, FileText } from 'lucide-react';
 import Markdown from '../utils/markdown';
+import MermaidDiagram from '../utils/mermaid';
 import { generateSectionQuiz, submitQuizAttempt } from '../api/assessment';
 import type { Chapter, LearningStage, PathNode, Section, ContentStatus } from '../types/learningPath';
 import type { LinkedQuestion, QuizResult, WeakPoint } from '../types/assessment';
@@ -13,12 +14,14 @@ import SectionResourceWorkspace from '../components/learning/SectionResourceWork
 import SectionContentRouter, { type ContentType, type SectionContent } from '../components/learning/SectionContentRouter';
 import TextbookViewer from '../components/learning/TextbookViewer';
 import TextbookTocPanel from '../components/learning/TextbookTocPanel';
-import { getTextbookTOC } from '../api/textbooks';
+import { getTextbookTOC, getTextbookContent } from '../api/textbooks';
 import type { TextbookTOC } from '../types/textbook';
 import GeneratePanel, { type GeneratePanelHandle } from '../components/learning/GeneratePanel';
 import { logStudyEvent } from '../api/feedback';
 import DailyTaskPage from './DailyTaskPage';
 import FocusSprintPage from './FocusSprintPage';
+import WorkflowProgress from '../components/common/WorkflowProgress';
+import { cancelWorkflow, consumeWorkflowEvents, readWorkflow, startWorkflow, type WorkflowState } from '../api/workflows';
 
 const CONTENT_TYPE_OPTIONS: { value: ContentType; label: string; icon: string }[] = [
   { value: 'lecture', label: '教材', icon: '📖' },
@@ -113,6 +116,8 @@ export default function LecturePage() {
   // ── 本地临时状态 ──
   const [lectureLoaded, setLectureLoaded] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [lectureWorkflow, setLectureWorkflow] = useState<WorkflowState | null>(null);
+  const lectureWorkflowAbort = useRef<AbortController | null>(null);
   const [chatMsg, setChatMsg] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const [rightTab, setRightTab] = useState<'tutor' | 'resources' | 'toc' | 'generate'>('tutor');
@@ -184,6 +189,10 @@ export default function LecturePage() {
       .then((toc) => setTextbookToc(toc))
       .catch(() => setTextbookToc(null));
   }, [isTextbookMode, activeSubject?.id]);
+
+  // ── Textbook content for resource generation ──
+  const [textbookLectureContent, setTextbookLectureContent] = useState('');
+
   const [quizState, setQuizState] = useState<'idle' | 'generating' | 'answering' | 'submitted'>('idle');
   const [quizSuggestion, setQuizSuggestion] = useState('');
   const [quizWeakPoints, setQuizWeakPoints] = useState<WeakPoint[]>([]);
@@ -220,6 +229,24 @@ export default function LecturePage() {
   const prevSection = currentIdx > 0 ? sections[currentIdx - 1] : null;
   const nextSection = currentIdx < sections.length - 1 ? sections[currentIdx + 1] : null;
 
+  // ── Textbook content for resource generation ──
+  useEffect(() => {
+    if (!isTextbookMode || !activeSubject?.id || !currentSection?.textbookSectionId) {
+      setTextbookLectureContent('');
+      return;
+    }
+    let cancelled = false;
+    getTextbookContent(activeSubject.id, {
+      sectionId: currentSection.textbookSectionId,
+    })
+      .then((c) => { if (!cancelled) setTextbookLectureContent(c?.content ?? ''); })
+      .catch(() => { if (!cancelled) setTextbookLectureContent(''); });
+    return () => { cancelled = true; };
+  }, [isTextbookMode, activeSubject?.id, currentSection?.textbookSectionId]);
+
+  // Resolved content: textbook content in textbook mode, generated lecture otherwise
+  const effectiveLectureContent = isTextbookMode ? textbookLectureContent : lecture;
+
   // ── 加载已有讲义（优先读缓存）──
   useEffect(() => {
     if (!activeSectionId || !sessionId) return;
@@ -248,11 +275,13 @@ export default function LecturePage() {
     setGenerating(true);
     const title = requirements ? `${currentSection.title || '课程教材'}（${requirements.slice(0, 20)}${requirements.length > 20 ? '…' : ''}）` : (currentSection.title || '课程教材');
     const cid = cardId || generatePanelRef.current?.beginRecord('lecture', title, requirements) || '';
+    lectureWorkflowAbort.current?.abort();
+    const controller = new AbortController();
+    lectureWorkflowAbort.current = controller;
     try {
-      const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/lecture/generate`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const started = await startWorkflow('lecture_generation', {
           sessionId,
+          sectionId: activeSectionId,
           sectionTitle: currentSection.title,
           sectionGoal: currentSection.goal || '',
           chapterId: chapterCtx?.chapter.id || '',
@@ -261,9 +290,15 @@ export default function LecturePage() {
           courseId: path?.courseName || '',
           knowledgePoints: currentSection.knowledgePoints || [],
           requirements: requirements || '',
-        }),
       });
-      const data = await res.json();
+      setLectureWorkflow({ taskId: started.task_id, workflowType: started.workflow_type, status: started.status, events: [], preview: '', elapsedMs: 0 });
+      await consumeWorkflowEvents(started.task_id, (event) => setLectureWorkflow((current) => {
+        if (!current || current.taskId !== started.task_id || event.sequence <= (current.events[current.events.length - 1]?.sequence || 0)) return current;
+        const status = event.event === 'workflow_completed' ? 'completed' : event.event === 'workflow_cancelled' ? 'cancelled' : event.event === 'workflow_failed' ? 'failed' : 'running';
+        return { ...current, status, events: [...current.events, event], preview: event.text_delta ?? current.preview, elapsedMs: event.elapsed_ms };
+      }), controller.signal);
+      const task = await readWorkflow(started.task_id, sessionId);
+      const data = task.result;
       if (data?.data?.lecture?.content) {
         const key = `${sessionId}:${activeSectionId}`;
         store.setLecture(key, data.data.lecture.content);
@@ -272,10 +307,19 @@ export default function LecturePage() {
       } else {
         generatePanelRef.current?.updateRecord(cid, { status: 'error' });
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
       generatePanelRef.current?.updateRecord(cid, { status: 'error' });
     } finally { setGenerating(false); }
   }, [currentSection, activeSectionId, sessionId, chapterCtx, path]);
+
+  const cancelLectureGeneration = useCallback(async () => {
+    if (!lectureWorkflow || !sessionId) return;
+    await cancelWorkflow(lectureWorkflow.taskId, sessionId).catch(() => undefined);
+    lectureWorkflowAbort.current?.abort();
+    setLectureWorkflow((current) => current ? { ...current, status: 'cancelled' } : current);
+    setGenerating(false);
+  }, [lectureWorkflow, sessionId]);
 
   const [videoGenerating, setVideoGenerating] = useState(false);
   const [videoResult, setVideoResult] = useState<any>(null);
@@ -306,7 +350,6 @@ export default function LecturePage() {
     let lectureExcerpt = lecture.slice(0, 1000);
     if (isTextbookMode && activeSubject?.id && currentSection.textbookSectionId) {
       try {
-        const { getTextbookContent } = await import('../api/textbooks');
         const content = await getTextbookContent(activeSubject.id, {
           sectionId: currentSection.textbookSectionId,
         });
@@ -342,7 +385,7 @@ export default function LecturePage() {
     try {
       const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/tutor/video`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, requirements: requirements || '' }),
+        body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, lectureContent: effectiveLectureContent, requirements: requirements || '' }),
       });
       const data = await res.json();
       const video = data?.data?.video || {
@@ -405,7 +448,6 @@ export default function LecturePage() {
     let lectureSummary = lecture.slice(0, 1500);
     if (isTextbookMode && activeSubject?.id && currentSection.textbookSectionId) {
       try {
-        const { getTextbookContent } = await import('../api/textbooks');
         const content = await getTextbookContent(activeSubject.id, {
           sectionId: currentSection.textbookSectionId,
         });
@@ -545,6 +587,7 @@ export default function LecturePage() {
           )}
         </div>
         <div className="flex-1 overflow-y-auto">
+          {lectureWorkflow && <div className="p-4 pb-0"><WorkflowProgress key={`${lectureWorkflow.taskId}:${lectureWorkflow.status}`} state={lectureWorkflow} onCancel={cancelLectureGeneration} onRetry={() => handleGenerate()} /></div>}
           {sections.map((sec: Section, si: number) => {
             const isActive = sec.id === activeSectionId;
             const st = sectionStatusStyle[(sec.status as ContentStatus) || 'not_started'];
@@ -1044,7 +1087,7 @@ export default function LecturePage() {
                 chapterId={chapterCtx?.chapter.id || ''}
                 chapterTitle={chapterCtx?.chapter.title || ''}
                 section={currentSection}
-                lectureContent={lecture}
+                lectureContent={effectiveLectureContent}
                 sections={sections}
                 legacyMindmapId={chapterCtx?.chapter.mindmapId}
               />
@@ -1104,7 +1147,7 @@ export default function LecturePage() {
                 try {
                   const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/lecture/generate`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal, type: 'reading', knowledgePoints: currentSection.knowledgePoints || [], lectureContent: lecture.slice(0, 3000), requirements: requirements || '' }),
+                    body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal, type: 'reading', knowledgePoints: currentSection.knowledgePoints || [], lectureContent: effectiveLectureContent.slice(0, 3000), requirements: requirements || '' }),
                   });
                   const data = await res.json();
                   const ok = !!data?.data?.lecture?.content;
@@ -1118,7 +1161,7 @@ export default function LecturePage() {
                 try {
                   const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/lecture/generate`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal, type: 'practice', knowledgePoints: currentSection.knowledgePoints || [], lectureContent: lecture.slice(0, 3000), requirements: requirements || '' }),
+                    body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal, type: 'practice', knowledgePoints: currentSection.knowledgePoints || [], lectureContent: effectiveLectureContent.slice(0, 3000), requirements: requirements || '' }),
                   });
                   const data = await res.json();
                   const ok = !!data?.data?.lecture?.content;
@@ -1135,7 +1178,7 @@ export default function LecturePage() {
                     sessionId, pathId: path?.id || '', stageId: chapterCtx?.stage.id || '',
                     sectionTitle: currentSection.title,
                     knowledgePoints: currentSection.knowledgePoints || [],
-                    regenerate: false,
+                    lectureContent: effectiveLectureContent, regenerate: false,
                   });
                   const mm = (r as any)?.mindmap || r;
                   generatePanelRef.current?.updateRecord(cardId, { status: 'ready', content: mm?.mermaidDef || '' });
@@ -1149,7 +1192,7 @@ export default function LecturePage() {
                 try {
                   const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/generate-all`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal || '', chapterId: chapterCtx?.chapter.id || '', stageId: chapterCtx?.stage.id || '', knowledgePoints: currentSection.knowledgePoints || [] }),
+                    body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal || '', chapterId: chapterCtx?.chapter.id || '', stageId: chapterCtx?.stage.id || '', knowledgePoints: currentSection.knowledgePoints || [], lectureContent: effectiveLectureContent }),
                   }).then(r => r.json());
                   const data = res?.data || res;
                   if (data?.lecture_content) store.setLecture(`${sessionId}:${activeSectionId}`, data.lecture_content);
@@ -1192,7 +1235,7 @@ export default function LecturePage() {
               pathId={path?.id || ''}
               stageId={chapterCtx?.stage.id || ''}
               chapterId={chapterCtx?.chapter.id || ''}
-              lectureContent={lecture}
+              lectureContent={effectiveLectureContent}
             />
             </>
           )}

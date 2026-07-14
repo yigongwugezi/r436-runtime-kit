@@ -17,6 +17,8 @@ import time
 import threading
 from datetime import datetime, timezone
 from queue import Queue, Empty
+from threading import Event
+import uuid
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -66,6 +68,7 @@ from app.services.profile_v2 import (
     assess_interest,
     build_profile_v2,
     preview_conversation_sync,
+    update_fact_control,
     update_context as update_profile_v2_context,
     update_self_report,
 )
@@ -2396,6 +2399,31 @@ def update_profile_self_report(payload: dict[str, Any], auth: AuthContext = Depe
     if not isinstance(updates, dict):
         raise HTTPException(status_code=400, detail="selfReport required")
     profile_v2 = update_self_report(_profile_v2(session_id), updates)
+    _save_profile_v2(session_id, profile_v2)
+    return _product_response({"profileV2": profile_v2}, session_id=session_id, source="user_input")
+
+
+@router.patch("/profile/v2/facts/{fact_key}")
+def update_profile_fact(fact_key: str, payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
+    session_id = _payload_session_id(payload)
+    action = str(payload.get("action") or "").strip().lower()
+    try:
+        profile_v2 = update_fact_control(
+            _profile_v2(session_id), fact_key, action, payload.get("value"), str(payload.get("scope") or "") or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _save_profile_v2(session_id, profile_v2)
+    return _product_response({"profileV2": profile_v2}, session_id=session_id, source="user_input")
+
+
+@router.delete("/profile/v2/facts/{fact_key}")
+def delete_profile_fact(fact_key: str, sessionId: str = "", auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
+    session_id = _payload_session_id({"sessionId": sessionId})
+    try:
+        profile_v2 = update_fact_control(_profile_v2(session_id), fact_key, "delete")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     _save_profile_v2(session_id, profile_v2)
     return _product_response({"profileV2": profile_v2}, session_id=session_id, source="user_input")
 
@@ -5298,8 +5326,7 @@ flowchart LR
 直接输出 Markdown。"""
 
 
-@router.post("/sections/{section_id}/lecture/generate")
-def generate_section_lecture(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _generate_section_lecture(section_id: str, payload: dict[str, Any], workflow_task: Any = None) -> dict[str, Any]:
     """Generate a structured lecture for a section using LLM, persist as Resource."""
     session_id = _payload_session_id(payload)
     section_title = str(payload.get("sectionTitle", "")).strip()
@@ -5404,6 +5431,10 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
     req_context = f"\n\n## 学生特殊要求（必须严格遵循，优先级最高）\n{requirements}" if requirements else ""
 
     client = _llm_client()
+    if workflow_task is not None:
+        from app.services.workflow_tasks import workflow_task_manager
+        workflow_task_manager.check_cancelled(workflow_task)
+        workflow_task_manager.emit(workflow_task, "stage_started", "content_generation", "running", label="生成讲义正文")
     try:
         raw = client.chat(
             messages=[{"role": "user", "content": prompt + kb_context + req_context}],
@@ -5434,6 +5465,10 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
             section_goal,
             knowledge_points if isinstance(knowledge_points, list) else [],
         )
+
+    if workflow_task is not None:
+        workflow_task_manager.emit(workflow_task, "preview_updated", "content_validation", "completed", label="讲义内容已生成，正在检查", text_delta=raw)
+        workflow_task_manager.check_cancelled(workflow_task)
 
     # 图文并茂：为每个 ## 主章节生成星火配图
     raw = _inject_spark_images(raw, section_title)
@@ -5471,6 +5506,11 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
         "createdAt": int(time.time() * 1000),
     }
     return _product_response({"lecture": lecture_data}, session_id=session_id, source="agent")
+
+
+@router.post("/sections/{section_id}/lecture/generate")
+def generate_section_lecture(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return _generate_section_lecture(section_id, payload)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -6001,6 +6041,7 @@ def _recommend_section_resources(
     section_id: str,
     payload: dict[str, Any],
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    cancel_event: Event | None = None,
 ) -> dict[str, Any]:
     """Return real external links for a section without archiving them as resources."""
     session_id = _payload_session_id(payload)
@@ -6068,6 +6109,7 @@ def _recommend_section_resources(
         course_name=course_name,
         progress_callback=progress_callback,
         refresh=bool(payload.get("refresh")),
+        cancel_event=cancel_event,
     )
     return result
 
@@ -6084,25 +6126,33 @@ def recommend_section_resources(section_id: str, payload: dict[str, Any]) -> dic
 def stream_section_resource_recommendations(section_id: str, payload: dict[str, Any]) -> StreamingResponse:
     """Stream safe, real ResourceAgent search stages for the lecture workspace."""
     _payload_session_id(payload)
+    search_task_id = uuid.uuid4().hex
+    cancel_event = Event()
 
     def event_stream():
         events: Queue[dict[str, Any] | None] = Queue()
 
         def worker() -> None:
             try:
-                result = _recommend_section_resources(section_id, payload, events.put)
-                events.put({"event": "result", "recommendations": result})
+                def publish(event: dict[str, Any]) -> None:
+                    events.put({**event, "search_task_id": search_task_id})
+
+                result = _recommend_section_resources(section_id, payload, publish, cancel_event)
+                events.put({"event": "result", "search_task_id": search_task_id, "recommendations": result})
             except Exception:
-                events.put({"event": "result", "recommendations": {"query": [], "resources": [], "status": "failed", "warnings": ["\u641c\u7d22\u670d\u52a1\u6682\u65f6\u4e0d\u7a33\u5b9a\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002"]}})
+                events.put({"event": "result", "search_task_id": search_task_id, "recommendations": {"query": [], "resources": [], "status": "failed", "warnings": ["\u641c\u7d22\u670d\u52a1\u6682\u65f6\u4e0d\u7a33\u5b9a\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002"]}})
             finally:
                 events.put(None)
 
-        threading.Thread(target=worker, daemon=True).start()
-        while True:
-            event = events.get()
-            if event is None:
-                break
-            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        threading.Thread(target=worker, daemon=True, name=f"search-{search_task_id[:8]}").start()
+        try:
+            while True:
+                event = events.get()
+                if event is None:
+                    break
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        finally:
+            cancel_event.set()
 
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
@@ -6151,8 +6201,7 @@ def _section_path_context(session_id: str, section_id: str) -> dict[str, Any]:
     return {}
 
 
-@router.post("/sections/{section_id}/resources/generate")
-def generate_section_resource(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _generate_section_resource(section_id: str, payload: dict[str, Any], workflow_task: Any = None) -> dict[str, Any]:
     """Generate one small section resource and archive it in the existing library."""
     from app.services.section_generated_resources import SectionGeneratedResourcesService
 
@@ -6187,6 +6236,10 @@ def generate_section_resource(section_id: str, payload: dict[str, Any]) -> dict[
             profile=_profile_v2(session_id),
             feedback=str(payload.get("feedback") or "").strip(),
         )
+        if workflow_task is not None:
+            from app.services.workflow_tasks import workflow_task_manager
+            workflow_task_manager.emit(workflow_task, "preview_updated", "quality_check", "completed", label="内容已生成，正在检查质量", text_delta=str(resource.get("content") or ""))
+            workflow_task_manager.check_cancelled(workflow_task)
         if existing is not None:
             resource["id"] = existing.id
         saved = service.persist(db, session_id, resource)
@@ -6195,6 +6248,11 @@ def generate_section_resource(section_id: str, payload: dict[str, Any]) -> dict[
         return _product_response(None, session_id=session_id, status="error", message="unsupported resourceType", source="agent")
     finally:
         db.close()
+
+
+@router.post("/sections/{section_id}/resources/generate")
+def generate_section_resource(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return _generate_section_resource(section_id, payload)
 
 
 def _generated_feedback(
@@ -6370,6 +6428,7 @@ def generate_section_mindmap(section_id: str, payload: dict[str, Any]) -> dict[s
         _require_matching_subject(session_id, subject_id)
     section_title = str(payload.get("sectionTitle") or "").strip()
     knowledge_points = payload.get("knowledgePoints") if isinstance(payload.get("knowledgePoints"), list) else []
+    lecture_content = str(payload.get("lectureContent") or "").strip()
     if not section_title:
         return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
     from app.services.chapter_mindmap_resources import ChapterMindmapResourceService
@@ -6383,6 +6442,7 @@ def generate_section_mindmap(section_id: str, payload: dict[str, Any]) -> dict[s
             chapter_title=section_title,
             sections=[{"title": section_title, "knowledgePoints": knowledge_points}],
             session_id=session_id,
+            lecture_content=lecture_content,
         )
         resource["title"] = f"{section_title} · 小节思维导图"
         saved = service.persist(db, session_id, resource)

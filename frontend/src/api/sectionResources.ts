@@ -1,4 +1,5 @@
-import client, { streamRequest } from './client';
+import client from './client';
+import { cancelWorkflow, consumeWorkflowEvents, readWorkflow, startWorkflow } from './workflows';
 import type { ChapterMindmap, GeneratedSectionResource, GeneratedSectionResourceType, SearchProgressEvent, SectionRecommendationResult } from '../types/sectionResources';
 
 export async function recommendSectionResources(sectionId: string, payload: Record<string, unknown>): Promise<SectionRecommendationResult> {
@@ -10,27 +11,24 @@ export async function streamSectionResourceRecommendations(
   sectionId: string,
   payload: Record<string, unknown>,
   onProgress: (event: SearchProgressEvent) => void,
+  signal?: AbortSignal,
 ): Promise<SectionRecommendationResult> {
-  const reader = await streamRequest(`/api/sections/${encodeURIComponent(sectionId)}/resources/recommendations/stream`, payload);
-  const decoder = new TextDecoder();
-  let buffer = '';
+  const started = await startWorkflow('resource_search', { ...payload, sectionId });
   try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const blocks = buffer.split('\n\n');
-      buffer = blocks.pop() || '';
-      for (const block of blocks) {
-        const data = block.split('\n').find((line) => line.startsWith('data: '))?.slice(6);
-        if (!data) continue;
-        const event = JSON.parse(data) as SearchProgressEvent | { event: 'result'; recommendations: SectionRecommendationResult };
-        if (event.event === 'result') return event.recommendations;
-        onProgress(event);
-      }
-    }
-  } finally {
-    reader.releaseLock();
+    await consumeWorkflowEvents(started.task_id, (event) => {
+      if (!event.stage_id || event.event.startsWith('workflow_')) return;
+      const safe = event.safe_metadata || {};
+      onProgress({
+        event: 'search_progress', stage: event.stage_id as SearchProgressEvent['stage'],
+        status: event.status as SearchProgressEvent['status'], fallback_used: event.used_fallback,
+        source_count: Number(safe.source_count || 0), result_count: Number(safe.result_count || 0),
+      });
+    }, signal);
+    const task = await readWorkflow(started.task_id, String(payload.sessionId || ''));
+    if (task.status === 'completed') return task.result?.data?.recommendations;
+  } catch (error) {
+    if (signal?.aborted) await cancelWorkflow(started.task_id, String(payload.sessionId || '')).catch(() => undefined);
+    throw error;
   }
   throw new Error('Search stream ended without a result');
 }

@@ -12,6 +12,7 @@ from app.config import settings
 from app.db import init_db
 from app.routers import admin, assessment, auth, class_subjects, courses, health, history, learner, product, questions, subjects
 from app.routers.chat_router import router as chat_router
+from app.routers.workflows import router as workflows_router
 from app.routers.textbooks import router as textbooks_router
 from app.services.conversation_state import conversation_store
 from app.services.learning_tracker import learning_tracker
@@ -202,6 +203,7 @@ app.include_router(assessment.router, prefix="/api")
 app.include_router(class_subjects.router, prefix="/api")
 app.include_router(subjects.router, prefix="/api")
 app.include_router(textbooks_router, prefix="/api")
+app.include_router(workflows_router, prefix="/api")
 
 # ── Static files for generated images ──
 import os as _os

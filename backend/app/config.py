@@ -88,6 +88,11 @@ class Settings(BaseSettings):
     search_provider_timeout_seconds: int = 5
     search_total_timeout_seconds: int = 12
     search_max_provider_calls: int = 8
+    search_primary_grace_seconds: float = 1.5
+    search_provider_hard_timeout_seconds: float = 3.5
+    search_total_timeout_single_seconds: float = 8.0
+    search_total_timeout_all_seconds: float = 10.0
+    search_max_concurrent_providers: int = 2
     search_min_results_single_type: int = 6
     search_max_results_single_type: int = 8
     search_min_results_all: int = 8
@@ -99,6 +104,17 @@ class Settings(BaseSettings):
     search_cache_max_entries: int = 500
     search_circuit_failure_threshold: int = 3
     search_circuit_open_seconds: int = 60
+    search_dynamic_provider_order_enabled: bool = True
+    search_reset_client_on_network_error: bool = True
+
+    # In-process long-running workflow progress (temporary state only)
+    workflow_task_ttl_seconds: int = 1800
+    workflow_task_max_entries: int = 500
+    workflow_event_buffer_max: int = 200
+    workflow_preview_max_chars: int = 12000
+    workflow_progress_event_throttle_ms: int = 100
+    workflow_max_concurrent_tasks_per_user: int = 3
+    workflow_heartbeat_seconds: int = 15
 
     # ── RAG / Vector Search ───────────────────────────────────────────
     rag_enabled: bool = True

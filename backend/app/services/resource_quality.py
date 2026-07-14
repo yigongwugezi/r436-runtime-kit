@@ -94,4 +94,12 @@ class ResourceQualityReviewer:
             return len(labels) >= 8 and all(word in content for word in ("终止条件", "栈帧", "返回"))
         if resource_type in {"execution_trace", "code_trace"} and is_recursion:
             return "factorial(" in content and all(word in content for word in ("返回后继续执行", "O(n)"))
+        if resource_type == "knowledge_map":
+            return len(set(labels)) >= 6
+        if resource_type == "process_flow":
+            return len(labels) >= 6 and rows >= 0
+        if resource_type == "concept_diagram":
+            return rows >= 5
+        if resource_type in {"execution_trace", "code_trace"}:
+            return all(word in content for word in ("输入", "状态", "输出", "复杂度"))
         return len(content) >= 80
