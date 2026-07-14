@@ -4,6 +4,7 @@ import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
 import type { LearningPath, PathNodeStatus, ContentStatus, Chapter, Section, KnowledgePoint } from '../types/learningPath';
 import { contentStatusToProgress, legacyStatusToContent } from '../types/learningPath';
+import { consumeWorkflowEvents, readWorkflow, startWorkflow, type WorkflowState } from '../api/workflows';
 
 function computeOverallProgress(path: LearningPath): number {
   // 优先从章节层级计算
@@ -61,6 +62,7 @@ export function useLearningPath() {
   const [path, setPath] = useState<LearningPath | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [generationWorkflow, setGenerationWorkflow] = useState<WorkflowState | null>(null);
   const lastVersionRef = useRef<number>(0);
   const hasDataRef = useRef(false);
   const initialLoadRef = useRef(true);
@@ -86,9 +88,17 @@ export function useLearningPath() {
   const generatePath = useCallback(async (params: { subjectId?: string; targetTopics?: string[] }) => {
     setLoading(true); setError(null);
     try {
-      const res = await learningPathApi.generateLearningPath({ ...params, sessionId, subjectId: params.subjectId || subjectId });
-      setPath(res.path);
-      return res.path;
+      const started = await startWorkflow('learning_path_generation', { ...params, sessionId, subjectId: params.subjectId || subjectId });
+      setGenerationWorkflow({ taskId: started.task_id, workflowType: started.workflow_type, status: started.status, events: [], preview: '', elapsedMs: 0 });
+      await consumeWorkflowEvents(started.task_id, (event) => setGenerationWorkflow((current) => {
+        if (!current || event.sequence <= (current.events[current.events.length - 1]?.sequence || 0)) return current;
+        const status = event.event === 'workflow_completed' ? 'completed' : event.event === 'workflow_cancelled' ? 'cancelled' : event.event === 'workflow_failed' ? 'failed' : 'running';
+        return { ...current, status, events: [...current.events, event], elapsedMs: event.elapsed_ms };
+      }));
+      const task = await readWorkflow(started.task_id, sessionId);
+      const next = task.result?.data?.path ?? null;
+      setPath(next);
+      return next;
     } catch (e) { setError(e instanceof Error ? e.message : '路径生成失败'); return null; }
     finally { setLoading(false); }
   }, [sessionId, subjectId]);
@@ -177,5 +187,5 @@ export function useLearningPath() {
   useEffect(() => { fetchPath(true); }, [sessionId, subjectId]);
   useEffect(() => { if (dataVersion <= 0 || dataVersion === lastVersionRef.current) return; lastVersionRef.current = dataVersion; fetchPath(true); }, [dataVersion, fetchPath]);
 
-  return { path, loading, error, fetchPath, generatePath, updateNode, updateNodeStatus, updateKnowledgePoint, updateChapterStatus, updateSectionStatus };
+  return { path, loading, error, generationWorkflow, fetchPath, generatePath, updateNode, updateNodeStatus, updateKnowledgePoint, updateChapterStatus, updateSectionStatus };
 }

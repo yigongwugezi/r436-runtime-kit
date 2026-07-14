@@ -20,6 +20,8 @@ import GeneratePanel, { type GeneratePanelHandle } from '../components/learning/
 import { logStudyEvent } from '../api/feedback';
 import DailyTaskPage from './DailyTaskPage';
 import FocusSprintPage from './FocusSprintPage';
+import WorkflowProgress from '../components/common/WorkflowProgress';
+import { cancelWorkflow, consumeWorkflowEvents, readWorkflow, startWorkflow, type WorkflowState } from '../api/workflows';
 
 const CONTENT_TYPE_OPTIONS: { value: ContentType; label: string; icon: string }[] = [
   { value: 'lecture', label: '教材', icon: '📖' },
@@ -114,6 +116,8 @@ export default function LecturePage() {
   // ── 本地临时状态 ──
   const [lectureLoaded, setLectureLoaded] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [lectureWorkflow, setLectureWorkflow] = useState<WorkflowState | null>(null);
+  const lectureWorkflowAbort = useRef<AbortController | null>(null);
   const [chatMsg, setChatMsg] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const [rightTab, setRightTab] = useState<'tutor' | 'resources' | 'toc' | 'generate'>('tutor');
@@ -271,11 +275,13 @@ export default function LecturePage() {
     setGenerating(true);
     const title = requirements ? `${currentSection.title || '课程教材'}（${requirements.slice(0, 20)}${requirements.length > 20 ? '…' : ''}）` : (currentSection.title || '课程教材');
     const cid = cardId || generatePanelRef.current?.beginRecord('lecture', title, requirements) || '';
+    lectureWorkflowAbort.current?.abort();
+    const controller = new AbortController();
+    lectureWorkflowAbort.current = controller;
     try {
-      const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/lecture/generate`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const started = await startWorkflow('lecture_generation', {
           sessionId,
+          sectionId: activeSectionId,
           sectionTitle: currentSection.title,
           sectionGoal: currentSection.goal || '',
           chapterId: chapterCtx?.chapter.id || '',
@@ -284,9 +290,15 @@ export default function LecturePage() {
           courseId: path?.courseName || '',
           knowledgePoints: currentSection.knowledgePoints || [],
           requirements: requirements || '',
-        }),
       });
-      const data = await res.json();
+      setLectureWorkflow({ taskId: started.task_id, workflowType: started.workflow_type, status: started.status, events: [], preview: '', elapsedMs: 0 });
+      await consumeWorkflowEvents(started.task_id, (event) => setLectureWorkflow((current) => {
+        if (!current || current.taskId !== started.task_id || event.sequence <= (current.events[current.events.length - 1]?.sequence || 0)) return current;
+        const status = event.event === 'workflow_completed' ? 'completed' : event.event === 'workflow_cancelled' ? 'cancelled' : event.event === 'workflow_failed' ? 'failed' : 'running';
+        return { ...current, status, events: [...current.events, event], preview: event.text_delta ?? current.preview, elapsedMs: event.elapsed_ms };
+      }), controller.signal);
+      const task = await readWorkflow(started.task_id, sessionId);
+      const data = task.result;
       if (data?.data?.lecture?.content) {
         const key = `${sessionId}:${activeSectionId}`;
         store.setLecture(key, data.data.lecture.content);
@@ -295,10 +307,19 @@ export default function LecturePage() {
       } else {
         generatePanelRef.current?.updateRecord(cid, { status: 'error' });
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
       generatePanelRef.current?.updateRecord(cid, { status: 'error' });
     } finally { setGenerating(false); }
   }, [currentSection, activeSectionId, sessionId, chapterCtx, path]);
+
+  const cancelLectureGeneration = useCallback(async () => {
+    if (!lectureWorkflow || !sessionId) return;
+    await cancelWorkflow(lectureWorkflow.taskId, sessionId).catch(() => undefined);
+    lectureWorkflowAbort.current?.abort();
+    setLectureWorkflow((current) => current ? { ...current, status: 'cancelled' } : current);
+    setGenerating(false);
+  }, [lectureWorkflow, sessionId]);
 
   const [videoGenerating, setVideoGenerating] = useState(false);
   const [videoResult, setVideoResult] = useState<any>(null);
@@ -593,6 +614,7 @@ export default function LecturePage() {
           )}
         </div>
         <div className="flex-1 overflow-y-auto">
+          {lectureWorkflow && <div className="p-4 pb-0"><WorkflowProgress key={`${lectureWorkflow.taskId}:${lectureWorkflow.status}`} state={lectureWorkflow} onCancel={cancelLectureGeneration} onRetry={() => handleGenerate()} /></div>}
           {sections.map((sec: Section, si: number) => {
             const isActive = sec.id === activeSectionId;
             const st = sectionStatusStyle[(sec.status as ContentStatus) || 'not_started'];

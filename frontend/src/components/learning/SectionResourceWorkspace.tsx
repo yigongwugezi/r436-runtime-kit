@@ -4,9 +4,10 @@ import { useNavigate } from 'react-router-dom';
 import { useSubjectStore } from '../../store/subjectStore';
 import Markdown from '../../utils/markdown';
 import MermaidDiagram from '../../utils/mermaid';
+import WorkflowProgress from '../common/WorkflowProgress';
+import { cancelWorkflow, consumeWorkflowEvents, readWorkflow, startWorkflow, type WorkflowEvent, type WorkflowState } from '../../api/workflows';
 import {
   generateSectionMindmap,
-  generateSectionResource,
   generatedResourceLabels,
   getSectionMindmap,
   getGeneratedSectionResources,
@@ -70,9 +71,12 @@ export default function SectionResourceWorkspace(props: Props) {
   const [mindmapLoading, setMindmapLoading] = useState(false);
   const [notice, setNotice] = useState('');
   const requestSerial = useRef(0);
+  const workflowSerial = useRef(0);
   const searchAbort = useRef<AbortController | null>(null);
+  const workflowAbort = useRef<AbortController | null>(null);
+  const [workflow, setWorkflow] = useState<WorkflowState | null>(null);
 
-  useEffect(() => () => searchAbort.current?.abort(), []);
+  useEffect(() => () => { searchAbort.current?.abort(); workflowAbort.current?.abort(); }, []);
 
   useEffect(() => {
     let active = true;
@@ -149,14 +153,31 @@ export default function SectionResourceWorkspace(props: Props) {
 
   const generate = async (resourceType: GeneratedSectionResourceType, feedback: GeneratedFeedback | '' = '') => {
     if (!sessionId || !section) return;
+    workflowAbort.current?.abort();
+    const controller = new AbortController();
+    workflowAbort.current = controller;
+    const requestId = ++workflowSerial.current;
     setGenerating(resourceType);
     setNotice('');
     try {
-      const result = await generateSectionResource(section.id, {
+      const started = await startWorkflow(feedback ? 'generated_resource_regeneration' : 'generated_resource', {
         sessionId, resourceType, pathId, stageId, chapterId, sectionTitle: section.title,
         subjectId, knowledgePoints: section.knowledgePoints, lectureContent, feedback,
         regenerate: generated.some((item) => item.resourceType === resourceType),
       });
+      setWorkflow({ taskId: started.task_id, workflowType: started.workflow_type, status: started.status, events: [], preview: '', elapsedMs: 0 });
+      await consumeWorkflowEvents(started.task_id, (event: WorkflowEvent) => {
+        if (requestId !== workflowSerial.current) return;
+        setWorkflow((current) => {
+          if (!current || current.taskId !== started.task_id || event.sequence <= (current.events[current.events.length - 1]?.sequence || 0)) return current;
+          const status = event.event === 'workflow_completed' ? 'completed' : event.event === 'workflow_cancelled' ? 'cancelled' : event.event === 'workflow_failed' ? 'failed' : 'running';
+          return { ...current, status, events: [...current.events, event], preview: event.text_delta ?? current.preview, elapsedMs: event.elapsed_ms };
+        });
+      }, controller.signal);
+      const task = await readWorkflow(started.task_id, sessionId);
+      if (requestId !== workflowSerial.current || task.status !== 'completed') return;
+      const result = task.result?.data as { resource: GeneratedSectionResource };
+      if (!result?.resource) throw new Error('missing workflow result');
       const previous = generated.find((item) => item.resourceType === resourceType);
       const next: GeneratedSectionResource = {
         ...result.resource,
@@ -164,7 +185,17 @@ export default function SectionResourceWorkspace(props: Props) {
       };
       setGenerated((items) => [next, ...items.filter((item) => item.id !== next.id)]);
       setPreview(next);
-    } catch { setNotice('资源生成失败，请稍后重试。'); } finally { setGenerating(null); }
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) setNotice('资源生成失败，请稍后重试。');
+    } finally { if (requestId === workflowSerial.current) setGenerating(null); }
+  };
+
+  const cancelGeneration = async () => {
+    if (!workflow || !sessionId) return;
+    await cancelWorkflow(workflow.taskId, sessionId).catch(() => undefined);
+    workflowAbort.current?.abort();
+    setWorkflow((current) => current ? { ...current, status: 'cancelled' } : current);
+    setGenerating(null);
   };
 
   const regenerateFromFeedback = async () => {
@@ -214,6 +245,7 @@ export default function SectionResourceWorkspace(props: Props) {
 
   return <div className="p-4 space-y-4">
     {notice && <p className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">{notice}</p>}
+    {workflow && <WorkflowProgress key={`${workflow.taskId}:${workflow.status}`} state={workflow} onCancel={cancelGeneration} onRetry={() => generating ? undefined : generate(selectedType)} />}
 
     {/* ── 一键推送 ── */}
     <button onClick={() => searching ? cancelSearch() : search()} disabled={!section}

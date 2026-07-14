@@ -5,8 +5,10 @@ import { useChatPanel } from '../components/layout/AppLayout';
 import { useProfile } from '../hooks/useProfile';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
-import { assessInterest, syncProfileFromConversation, updateProfileContext, updateProfileSelfReport, updateProfileFact } from '../api/profile';
+import { assessInterest, updateProfileContext, updateProfileSelfReport, updateProfileFact } from '../api/profile';
 import { PageError, PageLoading } from '../components/common/PageState';
+import WorkflowProgress from '../components/common/WorkflowProgress';
+import { cancelWorkflow, consumeWorkflowEvents, readWorkflow, startWorkflow } from '../api/workflows';
 
 const confidenceLabel = { low: '低', medium: '中', high: '高' };
 const statusLabel = { unassessed: '未评估', tentative: '待验证', basic: '基础', developing: '发展中', proficient: '熟练', advanced: '高阶', learning: '学习中', partial: '部分掌握', mastered: '已掌握', familiar: '较熟悉', weak: '薄弱', unknown: '未评估', assessed: '已评估' };
@@ -38,6 +40,7 @@ export default function ProfilePage() {
   const [syncPreview, setSyncPreview] = useState(null);
   const [syncError, setSyncError] = useState('');
   const [factBusy, setFactBusy] = useState('');
+  const [syncWorkflow, setSyncWorkflow] = useState(null);
 
   useEffect(() => {
     if (profileV2?.subject_context) setContext(profileV2.subject_context);
@@ -57,7 +60,19 @@ export default function ProfilePage() {
   const startInterestSelfReport = () => { setInterest(interestState?.self_report ?? 50); setEditingInterest(true); };
   const startAssessment = async () => { const result = await assessInterest(sessionId); setQuestions(result.questions || []); };
   const submitAssessment = async () => { setSaving(true); try { await assessInterest(sessionId, answers); await fetchProfile(); setQuestions([]); } finally { setSaving(false); } };
-  const syncFromConversation = async (preview = true) => { if (!subjectId || !sessionId) return; setSaving(true); setSyncError(''); try { const result = await syncProfileFromConversation(subjectId, sessionId, preview); setSyncPreview(result.preview); if (!preview) await fetchProfile(); } catch (error) { setSyncError(error instanceof Error ? error.message : '同步失败，请稍后重试。'); } finally { setSaving(false); } };
+  const syncFromConversation = async (preview = true) => { if (!subjectId || !sessionId) return; setSaving(true); setSyncError(''); try {
+    const started = await startWorkflow('profile_sync', { sessionId, subjectId, preview });
+    setSyncWorkflow({ taskId: started.task_id, workflowType: started.workflow_type, status: started.status, events: [], preview: '', elapsedMs: 0 });
+    await consumeWorkflowEvents(started.task_id, (event) => setSyncWorkflow((current) => {
+      if (!current || event.sequence <= (current.events.at(-1)?.sequence || 0)) return current;
+      const status = event.event === 'workflow_completed' ? 'completed' : event.event === 'workflow_cancelled' ? 'cancelled' : event.event === 'workflow_failed' ? 'failed' : 'running';
+      return { ...current, status, events: [...current.events, event], elapsedMs: event.elapsed_ms };
+    }));
+    const task = await readWorkflow(started.task_id, sessionId);
+    const result = task.result?.data;
+    setSyncPreview(result?.preview); if (!preview && task.status === 'completed') await fetchProfile();
+  } catch (error) { setSyncError(error instanceof Error ? error.message : '同步失败，请稍后重试。'); } finally { setSaving(false); } };
+  const cancelProfileSync = async () => { if (!syncWorkflow) return; await cancelWorkflow(syncWorkflow.taskId, sessionId); setSyncWorkflow({ ...syncWorkflow, status: 'cancelled' }); setSaving(false); };
   const factEvidence = (key) => profileV2?.fact_records?.[key] ? [{ ...profileV2.fact_records[key], detail: profileV2.fact_records[key].evidence_summary }] : [];
   const controlFact = async (key, action) => { if (!sessionId) return; setFactBusy(key); try { await updateProfileFact(sessionId, key, action); await fetchProfile(); } finally { setFactBusy(''); } };
   const editFact = async (key, current) => { const value = window.prompt('修改画像事实', String(current ?? '')); if (value?.trim()) { setFactBusy(key); try { await updateProfileFact(sessionId, key, 'edit', value.trim()); await fetchProfile(); } finally { setFactBusy(''); } } };
@@ -67,6 +82,7 @@ export default function ProfilePage() {
       <p className="text-sm text-blue-100">当前学习概览</p><h2 className="mt-1 text-2xl font-bold">{subject.subject_name || '当前课程待确认'}</h2>
       <div className="mt-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-4"><span>目标：{subject.learning_goal || '待补充'}</span><span>每日：{subject.daily_minutes ? `${subject.daily_minutes} 分钟` : '待补充'}</span><span>学习周期：{subject.deadline || '待补充'}</span><span>学习情境完整度：{Math.round((profileV2.profile_completeness || 0) * 100)}%</span></div><p className="mt-3 text-xs text-blue-100">该指标表示基础学习信息的完整程度，不代表所有能力与知识点均已完成测评。</p>
     </header>
+    {syncWorkflow && <WorkflowProgress key={`${syncWorkflow.taskId}:${syncWorkflow.status}`} state={syncWorkflow} onCancel={cancelProfileSync} onRetry={() => syncFromConversation(true)} />}
 
     <section className="rounded-2xl bg-white p-5 shadow-sm"><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h3 className="font-semibold">学习情境与偏好</h3><div className="flex gap-3"><button disabled={saving || !subjectId || !sessionId} onClick={() => syncFromConversation(true)} className="inline-flex items-center gap-1 text-sm text-violet-600"><RefreshCw size={14} />从当前对话同步画像</button><button onClick={() => setEditing(!editing)} className="inline-flex items-center gap-1 text-sm text-blue-600"><Edit3 size={14} />{editing ? '取消' : '编辑'}</button></div></div>
       {syncError && <p className="mb-3 text-sm text-red-600">{syncError}</p>}{syncPreview && <div className="mb-4 rounded-xl border border-violet-100 bg-violet-50 p-4 text-sm"><p className="font-medium">对话同步预览</p>{['added', 'updates', 'conflicts', 'ignored'].map((kind) => <div key={kind} className="mt-2"><p className="text-surface-600">{{ added: '将新增', updates: '将更新', conflicts: '存在冲突', ignored: '将忽略' }[kind]}：{(syncPreview[kind] || []).length ? (syncPreview[kind] || []).map((item) => `${item.field}：${item.value ?? item.candidate ?? item.current}`).join('；') : '无'}</p></div>)}{!syncPreview.has_changes ? <p className="mt-3 text-surface-500">当前对话没有发现新的画像信息。</p> : <button disabled={saving} onClick={() => syncFromConversation(false)} className="mt-3 rounded-lg bg-violet-600 px-3 py-1.5 text-white">确认应用</button>}</div>}
