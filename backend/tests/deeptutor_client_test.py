@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import ssl
 import sys
 import types
+from urllib import error
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -116,6 +118,29 @@ def main() -> None:
                 os.environ.pop("LLM_API_KEY", None)
             else:
                 os.environ["LLM_API_KEY"] = old_key
+
+        tls_calls: list[int] = []
+        tls_client = llm_client.DeepSeekLLMClient("unit-test-key", "https://example.invalid", "test", 0)
+        def tls_failure(*_args, **_kwargs):
+            tls_calls.append(1)
+            raise error.URLError(ssl.SSLEOFError("unexpected eof"))
+        tls_client._send_request = tls_failure
+        try:
+            tls_client.chat([{"role": "user", "content": "ping"}], retry_count=9)
+        except LLMClientError:
+            pass
+        assert len(tls_calls) == 1
+
+        timeout_calls: list[int] = []
+        def timeout_failure(*_args, **_kwargs):
+            timeout_calls.append(1)
+            raise TimeoutError("timeout")
+        tls_client._send_request = timeout_failure
+        try:
+            tls_client.chat([{"role": "user", "content": "ping"}], retry_count=9)
+        except LLMClientError:
+            pass
+        assert len(timeout_calls) == 2
     finally:
         deeptutor_client._setup_config = original_setup
         deeptutor_client._direct_llm_fallback = original_fallback

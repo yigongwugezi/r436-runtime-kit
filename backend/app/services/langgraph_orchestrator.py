@@ -233,17 +233,21 @@ def _profile_query_reply(message: str, profile_v2: dict[str, Any] | None, profil
     return "我目前还没有记录到相关的学习画像信息。"
 
 
-async def _chat_provider_reply(message: str, messages: list[dict[str, Any]], profile_context: str, persona_context: str) -> str:
+async def _chat_provider_reply(message: str, messages: list[dict[str, Any]], profile_context: str, persona_context: str) -> tuple[str, str]:
     """Use DeepTutor first, then retry the configured provider only for a rejected template."""
     reply = await deeptutor.chat(message, messages, profile_context=profile_context, persona_context=persona_context)
     if _is_usable_chat_reply(reply, message):
-        return reply
+        logger.info("Chat provider deeptutor returned a usable reply")
+        return reply, "deeptutor"
     try:
         from app.services.deeptutor_client import _direct_llm_fallback
         direct_reply = await _direct_llm_fallback(message, messages, profile_context, persona_context)
-        return direct_reply if _is_usable_chat_reply(direct_reply, message) else ""
+        if _is_usable_chat_reply(direct_reply, message):
+            logger.info("Chat provider deepseek returned a usable reply")
+            return direct_reply, "deepseek"
     except Exception:
-        return ""
+        logger.warning("Chat provider deepseek failed safely")
+    return "", ""
 
 
 def _is_likely_chat(msg: str, facts: dict) -> bool:
@@ -645,11 +649,12 @@ async def _conversation_node(state: dict) -> dict:
         profile_context = _build_profile_context(profile_facts)
         persona_context = _build_chat_persona(profile_facts)
 
-        dt_reply = await _chat_provider_reply(
+        dt_reply, reply_source = await _chat_provider_reply(
             msg, state.get("messages", []) or [], profile_context, persona_context,
         )
         if dt_reply:
             reply = dt_reply
+            state["reply_source"] = reply_source
     except Exception:
         pass  # keep the pre-existing reply as fallback
     if not _is_usable_chat_reply(reply, msg):
@@ -863,9 +868,11 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
         user_msg = state.get("user_message", "")
         reply = ""
         try:
-            reply = await _chat_provider_reply(
+            reply, reply_source = await _chat_provider_reply(
                 user_msg, state.get("messages", []) or [], profile_context, persona_context,
             )
+            if reply:
+                state["reply_source"] = reply_source
         except Exception:
             reply = ""
         if not _is_usable_chat_reply(reply, user_msg):

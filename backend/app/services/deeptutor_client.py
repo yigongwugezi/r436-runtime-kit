@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -34,10 +35,14 @@ async def _direct_llm_fallback(
         if isinstance(item, dict) and item.get("content")
     )
     messages.append({"role": "user", "content": message})
+    started = time.monotonic()
     try:
         return str(await asyncio.to_thread(client.chat, messages) or "").strip()
     except Exception as exc:
-        logger.warning("Direct LLM fallback failed: %s", exc)
+        logger.warning(
+            "Configured chat provider failed: provider=%s error=%s elapsed_ms=%d",
+            settings.llm_provider, type(exc).__name__, (time.monotonic() - started) * 1000,
+        )
         return ""
 
 

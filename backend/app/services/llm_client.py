@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 import time
 from abc import ABC, abstractmethod
 from typing import Any
@@ -184,7 +185,7 @@ class DeepSeekLLMClient(BaseLLMClient):
             raise LLMClientError("DEEPSEEK_API_KEY is not configured.")
 
         timeout = kwargs.pop("timeout", settings.llm_request_timeout)
-        max_retries = kwargs.get("retry_count", settings.llm_retry_count)
+        max_retries = min(1, int(kwargs.get("retry_count", settings.llm_retry_count)))
         retry_delay = kwargs.get("retry_delay", settings.llm_retry_delay)
 
         last_error: Exception | None = None
@@ -204,7 +205,11 @@ class DeepSeekLLMClient(BaseLLMClient):
                     time.sleep(retry_delay * (attempt + 1))
             except (error.URLError, TimeoutError, OSError) as exc:
                 last_error = exc
-                if attempt < max_retries:
+                cause = exc.reason if isinstance(exc, error.URLError) else exc
+                is_tls_error = isinstance(cause, ssl.SSLError) or "SSL" in type(cause).__name__.upper()
+                if is_tls_error:
+                    raise LLMClientError("DeepSeek TLS handshake failed.", cause=exc) from exc
+                if attempt < max_retries and not is_tls_error:
                     time.sleep(retry_delay * (attempt + 1))
             except json.JSONDecodeError as exc:
                 last_error = exc
