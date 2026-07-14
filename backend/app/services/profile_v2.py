@@ -175,6 +175,9 @@ def _context(facts: dict[str, Any], legacy: dict[str, dict[str, Any]], course: d
     course_name = str((course or {}).get("course_name") or facts.get("target_course") or legacy.get("interest_direction", {}).get("value") or "").strip()
     time_text = str(facts.get("time_budget") or legacy.get("learning_rhythm", {}).get("value") or "")
     preference = facts.get("content_preferences") or facts.get("preference") or legacy.get("cognitive_style", {}).get("value")
+    resource_preferences = _clean_list(facts.get("resource_preferences"))
+    if any(token in str(preference or "") for token in ("视频", "动画")) and "视频" not in resource_preferences:
+        resource_preferences.append("视频")
     category = _category(course_name, course)
     return {
         "session_id": session_id, "subject_id": str((course or {}).get("course_id") or ""), "subject_name": course_name, "subject_category": category,
@@ -182,7 +185,7 @@ def _context(facts: dict[str, Any], legacy: dict[str, dict[str, Any]], course: d
         "deadline": _deadline(facts.get("deadline") or time_text), "daily_minutes": _minutes(facts.get("daily_minutes") or time_text),
         "prior_experience": _prior_experience(facts.get("prior_experience") or facts.get("knowledge_base"), category),
         "background": "" if _missing(facts.get("background")) else str(facts.get("background")).strip(), "language": "zh-CN",
-        "content_preferences": _preferences(preference), "resource_preferences": _clean_list(facts.get("resource_preferences")),
+        "content_preferences": _preferences(preference), "resource_preferences": resource_preferences,
     }
 
 

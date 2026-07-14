@@ -158,6 +158,11 @@ def _chat_fallback_reply(message: str, messages: list[dict[str, Any]] | None = N
             match = re.search(r"(?:我是一名|我是|本人是)\s*([^，。,.!?！？]{2,30})", previous)
             if match:
                 return f"你刚才提到自己是{match.group(1).strip()}。", meta
+    learning = re.search(r"(?:想学|学习|了解)\s*(?:一下)?\s*([^，。,.!?！？]{2,30})", current_message)
+    if learning:
+        topic = learning.group(1).strip(" 的")
+        if topic:
+            return f"可以。你想先从{topic}的基础概念开始，还是针对其中的具体主题继续了解？", meta
     return "我没有完全理解你的意思，可以再具体说明一下吗？", meta
 
 
@@ -175,9 +180,70 @@ def _is_usable_chat_reply(reply: str, message: str) -> bool:
         return False
     if "你好！我是EduAgent" in text and not is_greeting:
         return False
-    if text.startswith("我没有完全理解") and (is_greeting or is_explicit_fact or is_preference or is_temporary or is_recap):
+    clarification_template = text.startswith(("我没有完全理解", "我不太理解", "可以再具体说明"))
+    if clarification_template and current:
         return False
     return True
+
+
+def _profile_query_reply(message: str, profile_v2: dict[str, Any] | None, profile_facts: dict[str, Any]) -> str:
+    """Answer a small, explicit self-profile query without exposing profile internals."""
+    text = str(message or "")
+    asks_preference = any(token in text for token in ("学习偏好", "喜欢通过什么方式", "喜欢怎么学习", "偏好"))
+    asks_background = any(token in text for token in ("年级", "身份", "记住"))
+    if not (asks_preference or asks_background):
+        return ""
+
+    profile = profile_v2 if isinstance(profile_v2, dict) else {}
+    if not profile:
+        return ""
+    records = profile.get("fact_records") if isinstance(profile.get("fact_records"), dict) else {}
+    context = profile.get("subject_context") if isinstance(profile.get("subject_context"), dict) else {}
+
+    def value_for(keys: tuple[str, ...], fallback_key: str) -> str:
+        candidates = []
+        for key in keys:
+            record = records.get(key)
+            if isinstance(record, dict) and record.get("is_disabled_for_personalization"):
+                return ""
+            if not isinstance(record, dict) or record.get("status", "active") != "active":
+                continue
+            if record.get("scope", "global") not in {"global", "subject", "course", "path", "session"}:
+                continue
+            value = record.get("value")
+            if value not in (None, "", [], {}):
+                candidates.append((0 if record.get("fact_type") == "explicit" else 1, value))
+        if candidates:
+            value = sorted(candidates, key=lambda item: item[0])[0][1]
+        else:
+            value = context.get(keys[0]) or profile_facts.get(fallback_key)
+        if isinstance(value, list):
+            return "、".join(str(item) for item in value if str(item).strip())
+        return str(value or "").strip()
+
+    background = value_for(("background",), "background") if asks_background else ""
+    preference = value_for(("resource_preferences", "content_preferences", "preference"), "preference") if asks_preference else ""
+    parts = []
+    if background:
+        parts.append(f"你目前是{background}")
+    if preference:
+        parts.append(f"你偏好通过{preference}学习")
+    if parts:
+        return "；".join(parts) + "。"
+    return "我目前还没有记录到相关的学习画像信息。"
+
+
+async def _chat_provider_reply(message: str, messages: list[dict[str, Any]], profile_context: str, persona_context: str) -> str:
+    """Use DeepTutor first, then retry the configured provider only for a rejected template."""
+    reply = await deeptutor.chat(message, messages, profile_context=profile_context, persona_context=persona_context)
+    if _is_usable_chat_reply(reply, message):
+        return reply
+    try:
+        from app.services.deeptutor_client import _direct_llm_fallback
+        direct_reply = await _direct_llm_fallback(message, messages, profile_context, persona_context)
+        return direct_reply if _is_usable_chat_reply(direct_reply, message) else ""
+    except Exception:
+        return ""
 
 
 def _is_likely_chat(msg: str, facts: dict) -> bool:
@@ -579,20 +645,22 @@ async def _conversation_node(state: dict) -> dict:
         profile_context = _build_profile_context(profile_facts)
         persona_context = _build_chat_persona(profile_facts)
 
-        dt_reply = await deeptutor.chat(
-            msg, state.get("messages", []) or [],
-            profile_context=profile_context,
-            persona_context=persona_context,
+        dt_reply = await _chat_provider_reply(
+            msg, state.get("messages", []) or [], profile_context, persona_context,
         )
-        if dt_reply and len(dt_reply) > 10:
+        if dt_reply:
             reply = dt_reply
     except Exception:
         pass  # keep the pre-existing reply as fallback
     if not _is_usable_chat_reply(reply, msg):
-        reply, fallback_meta = _chat_fallback_reply(msg, state.get("messages"))
-        state.update(fallback_meta)
-        state["fallback_used"] = True
-        state["reply_source"] = "chat_fallback"
+        reply = _profile_query_reply(msg, state.get("profile_v2"), state.get("profile_facts", {}))
+        if reply:
+            state["reply_source"] = "profile_query"
+        else:
+            reply, fallback_meta = _chat_fallback_reply(msg, state.get("messages"))
+            state.update(fallback_meta)
+            state["fallback_used"] = True
+            state["reply_source"] = "chat_fallback"
     state["final_reply"] = reply
     state.setdefault("agent_steps", []).append({"node": "conversation"})
     return state
@@ -795,19 +863,20 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
         user_msg = state.get("user_message", "")
         reply = ""
         try:
-            reply = await deeptutor.chat(
-                user_msg,
-                state.get("messages", []) or [],
-                profile_context=profile_context,
-                persona_context=persona_context,
+            reply = await _chat_provider_reply(
+                user_msg, state.get("messages", []) or [], profile_context, persona_context,
             )
         except Exception:
             reply = ""
         if not _is_usable_chat_reply(reply, user_msg):
-            reply, fallback_meta = _chat_fallback_reply(user_msg, state.get("messages"))
-            state.update(fallback_meta)
-            state["fallback_used"] = True
-            state["reply_source"] = "chat_fallback"
+            reply = _profile_query_reply(user_msg, state.get("profile_v2"), profile_facts)
+            if reply:
+                state["reply_source"] = "profile_query"
+            else:
+                reply, fallback_meta = _chat_fallback_reply(user_msg, state.get("messages"))
+                state.update(fallback_meta)
+                state["fallback_used"] = True
+                state["reply_source"] = "chat_fallback"
         state["final_reply"] = reply
 
         # ── Extract facts from the exchange and persist to conversation state ──

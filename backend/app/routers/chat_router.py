@@ -161,6 +161,11 @@ async def _run_chat(message: str, session_id: str) -> tuple[str, dict[str, Any]]
         "profile_facts": dict(state_obj.facts),
         "feedback_signal": state_obj.feedback_signal,
     }
+    try:
+        from app.routers.product import _profile_v2
+        state["profile_v2"] = _profile_v2(session_id)
+    except Exception:
+        state["profile_v2"] = {}
 
     result = await run_pipeline(**state)
     reply = result.get("final_reply", "") or result.get("_conversation_reply", "") or "处理完成"
