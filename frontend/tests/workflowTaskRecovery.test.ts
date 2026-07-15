@@ -32,6 +32,15 @@ assert.equal(readWorkflowTask(scope, storage as unknown as Storage, now + 30 * 6
 saveWorkflowTask({ ...scope, taskId: 'task-b', createdAt: now }, storage as unknown as Storage);
 clearWorkflowTask(scope, storage as unknown as Storage);
 assert.equal(readWorkflowTask(scope, storage as unknown as Storage, now), null, 'terminal tasks can clear their marker');
+
+const generalScope: WorkflowTaskScope = {
+  workflowType: 'general_resource_generation', sessionId: 'session-a', subjectId: 'subject-a',
+  resourceType: 'quiz', operation: 'generate', topicFingerprint: 'f00d', recoveryKey: 'quiz:f00d',
+};
+saveWorkflowTask({ ...generalScope, taskId: 'task-general', createdAt: now, resourceType: 'quiz' }, storage as unknown as Storage);
+assert.equal(readWorkflowTask({ ...generalScope, resourceType: 'lecture', recoveryKey: 'lecture:f00d' }, storage as unknown as Storage, now), null, 'different type/topic recovery markers must not collide');
+assert.equal(readWorkflowTask(generalScope, storage as unknown as Storage, now)?.taskId, 'task-general');
+clearWorkflowTask(generalScope, storage as unknown as Storage);
 assert.equal(isActiveWorkflowStatus('queued'), true);
 assert.equal(isActiveWorkflowStatus('completed'), false);
 assert.equal(isTerminalWorkflowStatus('failed'), true);

@@ -225,6 +225,6 @@ test('real Edge reaches the isolated application through the test backend', { ti
     await stop(edge);
     await stop(frontend);
     await stop(backend);
-    await rm(tempDir, { recursive: true, force: true });
+    await rm(tempDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
   }
 });

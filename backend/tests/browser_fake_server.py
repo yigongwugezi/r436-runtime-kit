@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 import uuid
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from pptx import Presentation  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.services import ppt_generator  # noqa: E402
 from app.routers import chat_router  # noqa: E402
+from app.routers import product  # noqa: E402
 
 
 def _fake_generate_pptx(topic: str, difficulty: str = "medium", session_id: str = "") -> str:
@@ -51,6 +53,18 @@ async def _fake_chat_pipeline(**state: object) -> dict[str, object]:
 
 
 chat_router.run_pipeline = _fake_chat_pipeline
+
+_real_general_resource_generation = product._generate_general_resource
+
+
+def _delayed_general_resource_generation(*args: object, **kwargs: object) -> dict[str, object]:
+    delay_ms = int(os.getenv("EDUAGENT_GENERAL_RESOURCE_DELAY_MS", "0") or 0)
+    if delay_ms:
+        time.sleep(delay_ms / 1000)
+    return _real_general_resource_generation(*args, **kwargs)
+
+
+product._generate_general_resource = _delayed_general_resource_generation
 
 from app.main import app  # noqa: E402
 

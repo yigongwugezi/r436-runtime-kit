@@ -1,316 +1,212 @@
-// @ts-nocheck
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import {
-  Sparkles,
-  FileText,
-  Video,
-  BrainCircuit,
-  Code2,
-  FileQuestion,
-  Presentation,
-  BookOpen,
-  Loader2,
-  CheckCircle2,
-  Clock,
-  Users,
-  ChevronRight,
-  Zap,
-} from 'lucide-react';
-import { generateResource } from '../api/resources';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { BrainCircuit, CheckCircle2, ChevronRight, Clock, FileQuestion, FileText, Loader2, Presentation, Sparkles, XCircle } from 'lucide-react';
+import { startGeneralResourceGeneration, type GeneralResourceType } from '../api/resources';
+import { cancelWorkflow, consumeWorkflowEvents, readWorkflow, retryWorkflow, type WorkflowState } from '../api/workflows';
+import { getCurrentLearner } from '../store/authStore';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
-import { getCurrentLearner } from '../store/authStore';
 import { useLearningPath } from '../hooks/useLearningPath';
-import { useSearchParams } from 'react-router-dom';
-import type { Chapter, Section } from '../types/learningPath';
+import {
+  clearWorkflowTask,
+  isActiveWorkflowStatus,
+  isTerminalWorkflowStatus,
+  readWorkflowTask,
+  saveWorkflowTask,
+  workflowStateFromEvent,
+  type WorkflowTaskScope,
+} from '../utils/workflowTaskRecovery';
 
-const resourceTypes = [
-  { id: 'lecture', label: '课程讲义', icon: FileText, color: 'from-blue-500 to-cyan-400', description: '专业知识点讲解' },
-  { id: 'video', label: '教学视频', icon: Video, color: 'from-rose-500 to-pink-400', description: '可视化教学讲解' },
-  { id: 'mindmap', label: '思维导图', icon: BrainCircuit, color: 'from-violet-500 to-purple-400', description: '知识结构梳理' },
-  { id: 'case_study', label: '实操案例', icon: Code2, color: 'from-amber-500 to-orange-400', description: '实践代码示例' },
-  { id: 'quiz', label: '练习题库', icon: FileQuestion, color: 'from-emerald-500 to-teal-400', description: '测试评估练习' },
-  { id: 'ppt', label: 'PPT演示', icon: Presentation, color: 'from-cyan-500 to-blue-400', description: '课程幻灯片' },
+type TaskEntry = WorkflowState & { resourceType: GeneralResourceType; reusedExisting?: boolean };
+
+const resourceTypes: Array<{ id: GeneralResourceType; label: string; icon: typeof FileText; description: string }> = [
+  { id: 'lecture', label: '课程讲义', icon: FileText, description: '结构化的知识讲解' },
+  { id: 'mindmap', label: '思维导图', icon: BrainCircuit, description: '可渲染的知识结构图' },
+  { id: 'quiz', label: '练习题库', icon: FileQuestion, description: '含答案与解析的自测题' },
+  { id: 'ppt', label: 'PPT 演示', icon: Presentation, description: '可下载的本地演示文稿' },
 ];
 
-export default function ResourceGenerationPage() {
-  const nav = useNavigate();
-  const isParent = getCurrentLearner()?.role === 'parent';
+const labels = Object.fromEntries(resourceTypes.map((item) => [item.id, item.label])) as Record<GeneralResourceType, string>;
 
-  if (isParent) {
-    return (
-      <div className="space-y-6 animate-fade-in">
-        <div className="h-[calc(100vh-300px)] flex items-center justify-center">
-          <div className="text-center max-w-md">
-            <div className="w-16 h-16 rounded-2xl bg-surface-100 dark:bg-surface-700 flex items-center justify-center mx-auto mb-4">
-              <Sparkles className="w-8 h-8 text-surface-400" />
-            </div>
-            <h3 className="font-display text-lg font-semibold text-surface-800 dark:text-gray-100 mb-2">只读模式</h3>
-            <p className="text-surface-500 dark:text-gray-400 text-sm">家长账户无法生成资源。<br/>请前往资源库查看已生成的资源。</p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-  const sessionId = useChatStore(s => s.currentSessionId);
-  const subjectId = useSubjectStore(s => s.activeSubject?.id);
+function normalizeTypes(value: string | null): GeneralResourceType[] {
+  const aliases: Record<string, GeneralResourceType> = { 'mind-map': 'mindmap', mind_map: 'mindmap', case_study: 'practice' };
+  const known = new Set<GeneralResourceType>(['lecture', 'mindmap', 'quiz', 'ppt', 'video', 'animation', 'manim', 'reading', 'practice']);
+  const values = (value || '').split(',').map((item) => aliases[item] || item).filter((item): item is GeneralResourceType => known.has(item as GeneralResourceType));
+  return [...new Set(values)].slice(0, 3);
+}
+
+function fingerprint(topic: string): string {
+  let value = 2166136261;
+  for (const char of topic.trim()) value = Math.imul(value ^ char.charCodeAt(0), 16777619);
+  return (value >>> 0).toString(16);
+}
+
+function elapsed(milliseconds = 0): string {
+  return `${Math.max(0, Math.floor(milliseconds / 1000))}s`;
+}
+
+export default function ResourceGenerationPage() {
+  const navigate = useNavigate();
+  const isParent = getCurrentLearner()?.role === 'parent';
+  const sessionId = useChatStore((state) => state.currentSessionId);
+  const bumpDataVersion = useChatStore((state) => state.bumpDataVersion);
+  const subjectId = useSubjectStore((state) => state.activeSubject?.id || '');
+  const { path } = useLearningPath();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [selectedTypes, setSelectedTypes] = useState<string[]>(() => {
-    const fromUrl = searchParams.get('types');
-    return fromUrl ? fromUrl.split(',') : ['lecture', 'mindmap', 'quiz'];
+  const [selectedTypes, setSelectedTypes] = useState<GeneralResourceType[]>(() => {
+    const parsed = normalizeTypes(searchParams.get('types'));
+    return parsed.length ? parsed : ['lecture', 'mindmap', 'quiz'];
   });
   const [prompt, setPrompt] = useState(() => searchParams.get('q') || '');
-
-  // 持久化选中类型到 URL
-  const updateTypes = (types: string[]) => {
-    setSelectedTypes(types);
-    const p = new URLSearchParams(searchParams);
-    if (types.length > 0) p.set('types', types.join(','));
-    if (prompt) p.set('q', prompt);
-    setSearchParams(p, { replace: true });
-  };
-  const [isGenerating, setIsGenerating] = useState(false);
+  const [workflows, setWorkflows] = useState<Record<string, TaskEntry>>({});
   const [genError, setGenError] = useState('');
-  const [activeAgent, setActiveAgent] = useState<string | null>(null);
-  const { path } = useLearningPath();
+  const [progressExpanded, setProgressExpanded] = useState(true);
+  const controllers = useRef(new Map<string, AbortController>());
+  const restoring = useRef(new Set<string>());
+  const topicFingerprint = useMemo(() => fingerprint(prompt), [prompt]);
 
-  const toggleType = (id: string) => {
-    updateTypes(selectedTypes.includes(id) ? selectedTypes.filter(t => t !== id) : [...selectedTypes, id]);
-  };
+  const updateUrl = useCallback((nextPrompt: string, nextTypes: GeneralResourceType[]) => {
+    const next = new URLSearchParams();
+    if (nextPrompt) next.set('q', nextPrompt);
+    if (nextTypes.length) next.set('types', nextTypes.join(','));
+    setSearchParams(next, { replace: true });
+  }, [setSearchParams]);
 
-  const updatePrompt = (val: string) => {
-    setPrompt(val);
-    const p = new URLSearchParams(searchParams);
-    if (val) p.set('q', val); else p.delete('q');
-    if (selectedTypes.length > 0) p.set('types', selectedTypes.join(','));
-    setSearchParams(p, { replace: true });
+  const scopeFor = useCallback((resourceType: GeneralResourceType): WorkflowTaskScope => ({
+    workflowType: 'general_resource_generation', sessionId, subjectId, pathId: path?.id || '',
+    resourceType, operation: 'generate', topicFingerprint, recoveryKey: `${resourceType}:${topicFingerprint}`,
+  }), [path?.id, sessionId, subjectId, topicFingerprint]);
+
+  const putTask = useCallback((resourceType: GeneralResourceType, state: WorkflowState, reusedExisting = false) => {
+    setWorkflows((current) => ({ ...current, [resourceType]: { ...state, resourceType, reusedExisting } }));
+  }, []);
+
+  const monitor = useCallback(async (resourceType: GeneralResourceType, taskId: string, reusedExisting = false, initial?: WorkflowState) => {
+    const scope = scopeFor(resourceType);
+    const controller = new AbortController();
+    controllers.current.get(resourceType)?.abort();
+    controllers.current.set(resourceType, controller);
+    try {
+      const base = initial || { taskId, workflowType: scope.workflowType, status: 'queued' as const, events: [], preview: '', elapsedMs: 0 };
+      putTask(resourceType, base, reusedExisting);
+      await consumeWorkflowEvents(taskId, (event) => {
+        setWorkflows((current) => {
+          const existing = current[resourceType];
+          return existing?.taskId === taskId
+            ? { ...current, [resourceType]: { ...workflowStateFromEvent(existing, event), resourceType, reusedExisting } }
+            : current;
+        });
+      }, controller.signal);
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) setGenError('资源任务连接失败，请重试该类型。');
+    } finally {
+      const latest = await readWorkflow(taskId, sessionId).catch(() => null);
+      if (latest) {
+        putTask(resourceType, {
+          taskId, workflowType: latest.workflow_type, status: latest.status, events: [], preview: '', elapsedMs: latest.elapsed_ms || 0, result: latest.result,
+        }, reusedExisting);
+        if (latest.status === 'completed') bumpDataVersion();
+        if (isTerminalWorkflowStatus(latest.status)) clearWorkflowTask(scope);
+      } else {
+        clearWorkflowTask(scope);
+      }
+      controllers.current.delete(resourceType);
+    }
+  }, [bumpDataVersion, putTask, scopeFor, sessionId]);
+
+  useEffect(() => {
+    if (!sessionId || !prompt.trim()) return undefined;
+    let active = true;
+    for (const resourceType of selectedTypes) {
+      const scope = scopeFor(resourceType);
+      const record = readWorkflowTask(scope);
+      if (!record || restoring.current.has(record.taskId)) continue;
+      restoring.current.add(record.taskId);
+      void (async () => {
+        try {
+          const task = await readWorkflow(record.taskId, sessionId);
+          if (!active || task.workflow_type !== scope.workflowType) { clearWorkflowTask(scope); return; }
+          const restored: WorkflowState = { taskId: record.taskId, workflowType: task.workflow_type, status: task.status, events: [], preview: '', elapsedMs: task.elapsed_ms || 0, result: task.result };
+          putTask(resourceType, restored);
+          if (isActiveWorkflowStatus(task.status)) await monitor(resourceType, record.taskId, false, restored);
+          else {
+            if (task.status === 'completed') bumpDataVersion();
+            if (isTerminalWorkflowStatus(task.status)) clearWorkflowTask(scope);
+          }
+        } catch {
+          if (active) clearWorkflowTask(scope);
+        } finally { restoring.current.delete(record.taskId); }
+      })();
+    }
+    return () => { active = false; };
+  }, [bumpDataVersion, monitor, prompt, putTask, scopeFor, selectedTypes, sessionId]);
+
+  useEffect(() => () => controllers.current.forEach((controller) => controller.abort()), []);
+
+  if (isParent) return <div className="h-[calc(100vh-300px)] flex items-center justify-center text-surface-500">家长账户只能查看已生成资源。</div>;
+
+  const activeTasks = Object.values(workflows).filter((task) => isActiveWorkflowStatus(task.status));
+  const updatePrompt = (value: string) => { setPrompt(value); updateUrl(value, selectedTypes); };
+  const toggleType = (resourceType: GeneralResourceType) => {
+    const next = selectedTypes.includes(resourceType)
+      ? selectedTypes.filter((item) => item !== resourceType)
+      : selectedTypes.length < 3 ? [...selectedTypes, resourceType] : selectedTypes;
+    setSelectedTypes(next); updateUrl(prompt, next);
   };
 
   const handleGenerate = async () => {
-    if (selectedTypes.length === 0 || !prompt.trim()) return;
-    setIsGenerating(true); setGenError('');
-    const agents = ['profile', 'knowledge', 'diagnosis', 'planner', 'resource', 'review'];
-    let idx = 0;
-    const timer = setInterval(() => { if (idx < agents.length) { setActiveAgent(agents[idx]); idx++; } else clearInterval(timer); }, 600);
+    if (!sessionId || !prompt.trim() || !selectedTypes.length || activeTasks.length) return;
+    setGenError(''); setProgressExpanded(true);
     try {
-      for (const type of selectedTypes) {
-        await generateResource({ sessionId, subjectId, type, topic: prompt.trim(), difficulty: 'medium' });
+      const started = await startGeneralResourceGeneration({
+        sessionId, learnerId: getCurrentLearner()?.id, subjectId, pathId: path?.id || '', stageId: '', chapterId: '', sectionId: '', topic: prompt.trim(), resourceTypes: selectedTypes,
+        difficulty: 'medium', operation: 'generate', mode: 'general_resource_generation', profileSnapshotVersion: '', generationOptions: {},
+      });
+      if (started.tasks.length !== selectedTypes.length) throw new Error('任务未完整创建');
+      for (const task of started.tasks) {
+        const scope = scopeFor(task.resource_type);
+        const initial: WorkflowState = { taskId: task.task_id, workflowType: task.workflow_type, status: task.status as WorkflowState['status'], events: [], preview: '', elapsedMs: 0 };
+        saveWorkflowTask({ ...scope, taskId: task.task_id, createdAt: Date.now(), resourceType: task.resource_type, mode: 'general_resource_generation' });
+        putTask(task.resource_type, initial, Boolean(task.reused_existing));
+        void monitor(task.resource_type, task.task_id, Boolean(task.reused_existing), initial);
       }
-      clearInterval(timer); setActiveAgent('review');
-      setTimeout(() => nav('/resources'), 1000);
-    } catch (e: any) { clearInterval(timer); setGenError(e?.message || '生成失败，请重试'); }
-    finally { setIsGenerating(false); setActiveAgent(null); }
+    } catch (error: any) { setGenError(error?.message || '无法创建资源任务，请检查输入后重试。'); }
+  };
+
+  const cancel = async (task: TaskEntry) => {
+    if (!sessionId) return;
+    await cancelWorkflow(task.taskId, sessionId).catch(() => undefined);
+    controllers.current.get(task.resourceType)?.abort();
+    clearWorkflowTask(scopeFor(task.resourceType));
+    putTask(task.resourceType, { ...task, status: 'cancelled' });
+  };
+
+  const retry = async (task: TaskEntry) => {
+    setGenError('');
+    try {
+      const started = await retryWorkflow(task.taskId);
+      const scope = scopeFor(task.resourceType);
+      const initial: WorkflowState = { taskId: started.task_id, workflowType: started.workflow_type, status: started.status, events: [], preview: '', elapsedMs: 0 };
+      saveWorkflowTask({ ...scope, taskId: started.task_id, createdAt: Date.now(), resourceType: task.resourceType, mode: 'general_resource_generation' });
+      putTask(task.resourceType, initial, Boolean(started.reused_existing));
+      void monitor(task.resourceType, started.task_id, Boolean(started.reused_existing), initial);
+    } catch { setGenError('重试任务创建失败，请稍后再试。'); }
   };
 
   return (
     <div className="space-y-6 animate-fade-in">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="font-display text-2xl font-bold text-surface-800">智能资源生成</h2>
-          <p className="text-surface-500 mt-1">多智能体协同为你生成个性化学习资源</p>
-        </div>
-        <div className="flex items-center gap-2 px-4 py-2 bg-accent-50 rounded-xl">
-          <Users size={18} className="text-accent-600" />
-          <span className="text-sm font-medium text-accent-700">多智能体协同</span>
-        </div>
-      </div>
-
-      {/* Agent Status Bar */}
-      <div className="bg-white rounded-2xl p-5 shadow-soft">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="font-semibold text-surface-700">智能体团队</h3>
-          <span className="text-xs text-surface-400">{isGenerating ? '生成中...' : '就绪'}</span>
-        </div>
-        <div className="flex items-center gap-4 overflow-x-auto pb-2">
-          {([
-            { id: 'profile', name: '画像分析', emoji: '🧠', color: '#6366f1' },
-            { id: 'knowledge', name: '知识检索', emoji: '📚', color: '#14b8a6' },
-            { id: 'diagnosis', name: '诊断分析', emoji: '🔍', color: '#f59e0b' },
-            { id: 'planner', name: '路径规划', emoji: '🗺️', color: '#ec4899' },
-            { id: 'resource', name: '资源生成', emoji: '✨', color: '#8b5cf6' },
-            { id: 'review', name: '质量审核', emoji: '✅', color: '#22c55e' },
-          ]).map((a, i) => {
-            const agents = ['profile', 'knowledge', 'diagnosis', 'planner', 'resource', 'review'];
-            const doneIdx = activeAgent ? agents.indexOf(activeAgent) : -1;
-            const isActive = activeAgent === a.id;
-            const isDone = doneIdx > agents.indexOf(a.id);
-            return (
-            <div key={a.name} className={`flex-shrink-0 flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${isActive ? 'bg-violet-50 scale-105 shadow-sm' : isDone ? 'bg-emerald-50' : isGenerating ? 'bg-surface-50 opacity-40' : 'bg-surface-50'}`}>
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center text-lg" style={{ backgroundColor: a.color + '20' }}>{a.emoji}</div>
-              <div className="min-w-0">
-                <p className={`text-sm font-medium ${isActive ? 'text-violet-700' : isDone ? 'text-emerald-700' : 'text-surface-800'}`}>{a.name}</p>
-                <p className={`text-xs ${isActive ? 'text-violet-500' : isDone ? 'text-emerald-500' : 'text-surface-400'}`}>{isActive ? '执行中…' : isDone ? '完成' : isGenerating ? '等待' : '就绪'}</p>
-              </div>
-              {isDone && <CheckCircle2 size={16} className="text-emerald-400" />}
-              {isActive && <div className="w-4 h-4 border-2 border-violet-400 border-t-transparent rounded-full animate-spin" />}
-              {!isGenerating && <CheckCircle2 size={16} className="text-success-500" />}
-            </div>
-          )})}
-        </div>
-      </div>
-
-      {/* Main Content */}
+      <div className="flex items-center justify-between"><div><h2 className="font-display text-2xl font-bold text-surface-800">智能资源生成</h2><p className="text-surface-500 mt-1">每种资源都有独立任务、真实进度和可恢复状态</p></div></div>
       <div className="grid grid-cols-3 gap-6">
-        {/* Left - Generation Form */}
         <div className="col-span-2 space-y-6">
-          {/* Prompt Input */}
-          <div className="bg-white rounded-2xl p-6 shadow-soft">
-            <label className="block text-sm font-medium text-surface-700 mb-3">
-              描述你的学习需求
-            </label>
-            <textarea
-              value={prompt}
-              onChange={(e) => updatePrompt(e.target.value)}
-              placeholder="例如：我需要学习CNN卷积神经网络的核心原理，包括卷积层、池化层的工作机制..."
-              className="w-full h-32 px-4 py-3 bg-surface-50 border border-surface-200 rounded-xl text-surface-800 placeholder:text-surface-400 focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 resize-none transition-all"
-            />
-            <div className="flex items-center justify-between mt-3">
-              <span className="text-xs text-surface-400">支持Markdown格式输入</span>
-              <span className="text-xs text-surface-400">{prompt.length}/500</span>
-            </div>
-          </div>
-
-          {/* Resource Type Selection */}
-          <div className="bg-white rounded-2xl p-6 shadow-soft">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="font-semibold text-surface-700">选择资源类型</h3>
-              <span className="text-xs text-primary-600">已选择 {selectedTypes.length}/5 种</span>
-            </div>
-            <div className="grid grid-cols-3 gap-3">
-              {resourceTypes.map((type) => {
-                const isSelected = selectedTypes.includes(type.id);
-                const Icon = type.icon;
-                return (
-                  <button
-                    key={type.id}
-                    onClick={() => toggleType(type.id)}
-                    disabled={!isSelected && selectedTypes.length >= 5}
-                    className={`relative p-4 rounded-xl border-2 transition-all text-left ${
-                      isSelected
-                        ? 'border-primary-500 bg-primary-50'
-                        : 'border-surface-200 bg-surface-50 hover:border-surface-300'
-                    } ${!isSelected && selectedTypes.length >= 5 ? 'opacity-50 cursor-not-allowed' : ''}`}
-                  >
-                    <div className={`w-10 h-10 rounded-lg bg-gradient-to-br ${type.color} flex items-center justify-center mb-3`}>
-                      <Icon size={20} className="text-white" />
-                    </div>
-                    <p className="text-sm font-medium text-surface-800">{type.label}</p>
-                    <p className="text-xs text-surface-500 mt-1">{type.description}</p>
-                    {isSelected && (
-                      <div className="absolute top-2 right-2">
-                        <CheckCircle2 size={18} className="text-primary-500" />
-                      </div>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Generate Button */}
-          <button
-            onClick={handleGenerate}
-            disabled={selectedTypes.length === 0 || !prompt.trim() || isGenerating}
-            className={`w-full flex items-center justify-center gap-3 px-6 py-4 rounded-xl font-semibold text-lg transition-all ${
-              selectedTypes.length > 0 && prompt.trim() && !isGenerating
-                ? 'bg-gradient-to-r from-primary-600 to-accent-600 text-white hover:shadow-lg'
-                : 'bg-surface-100 text-surface-400 cursor-not-allowed'
-            }`}
-          >
-            {isGenerating ? (
-              <>
-                <Loader2 size={22} className="animate-spin" />
-                生成中...
-              </>
-            ) : (
-              <>
-                <Sparkles size={22} />
-                开始生成 {selectedTypes.length > 0 && `(${selectedTypes.length}种资源)`}
-              </>
-            )}
-          </button>
+          <div className="bg-white rounded-2xl p-6 shadow-soft"><label className="block text-sm font-medium text-surface-700 mb-3">描述你的学习需求</label><textarea value={prompt} onChange={(event) => updatePrompt(event.target.value)} maxLength={500} className="w-full h-32 px-4 py-3 bg-surface-50 border border-surface-200 rounded-xl" /><div className="flex justify-between mt-3 text-xs text-surface-400"><span>支持 Markdown 输入</span><span>{prompt.length}/500</span></div></div>
+          <div className="bg-white rounded-2xl p-6 shadow-soft"><div className="flex justify-between mb-4"><h3 className="font-semibold text-surface-700">选择资源类型</h3><span className="text-xs text-primary-600">已选择 {selectedTypes.length}/3 种</span></div><div className="grid grid-cols-2 gap-3">{resourceTypes.map((type) => { const Icon = type.icon; const selected = selectedTypes.includes(type.id); return <button key={type.id} onClick={() => toggleType(type.id)} disabled={!selected && selectedTypes.length >= 3} className={`p-4 rounded-xl border-2 text-left ${selected ? 'border-primary-500 bg-primary-50' : 'border-surface-200 bg-surface-50'} disabled:opacity-50`}><Icon size={20} className="mb-2 text-primary-600" /><p className="text-sm font-medium">{type.label}</p><p className="text-xs text-surface-500 mt-1">{type.description}</p></button>; })}</div></div>
+          <button onClick={handleGenerate} disabled={!prompt.trim() || !selectedTypes.length || activeTasks.length > 0} className="w-full flex items-center justify-center gap-3 px-6 py-4 rounded-xl font-semibold text-lg bg-gradient-to-r from-primary-600 to-accent-600 text-white disabled:bg-surface-100 disabled:text-surface-400 disabled:cursor-not-allowed"><Sparkles size={22} />{activeTasks.length ? '任务进行中…' : `开始生成（${selectedTypes.length} 种资源）`}</button>
         </div>
-
-        {/* Right - Generation Queue */}
-        <div className="space-y-6">
-          {/* Progress */}
-          {isGenerating && (
-            <div className="bg-primary-50 rounded-2xl p-6 border border-primary-100">
-              <div className="flex items-center gap-2 mb-4">
-                <Zap size={18} className="text-primary-600" />
-                <span className="font-semibold text-primary-800">生成进度</span>
-              </div>
-              <div className="space-y-3">
-                {selectedTypes.map(typeId => {
-                  const type = resourceTypes.find(t => t.id === typeId);
-                  if (!type) return null;
-                  return (
-                    <div key={typeId} className="flex items-center gap-3">
-                      <div className={`w-8 h-8 rounded-lg bg-gradient-to-br ${type.color} flex items-center justify-center`}>
-                        <type.icon size={16} className="text-white" />
-                      </div>
-                      <div className="flex-1">
-                        <p className="text-sm font-medium text-surface-700">{type.label}</p>
-                        <div className="mt-1 h-1.5 bg-primary-100 rounded-full overflow-hidden">
-                          <div className="h-full bg-primary-500 rounded-full animate-pulse" style={{ width: '60%' }} />
-                        </div>
-                      </div>
-                      <Loader2 size={16} className="text-primary-500 animate-spin" />
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* 生成状态 */}
-          {isGenerating && (
-            <div className="bg-primary-50 rounded-2xl p-6 border border-primary-100">
-              <div className="flex items-center gap-2 mb-3">
-                <Loader2 size={18} className="text-primary-500 animate-spin" />
-                <span className="font-semibold text-primary-700">正在生成...</span>
-              </div>
-              <div className="space-y-2">
-                {selectedTypes.map(type => {
-                  const t = resourceTypes.find(rt => rt.id === type);
-                  return (
-                    <div key={type} className="flex items-center gap-2 text-sm text-primary-600">
-                      <Loader2 size={12} className="animate-spin" />
-                      <span>{t?.label || type}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {genError && (
-            <div className="bg-error-50 rounded-2xl p-4 border border-error-200">
-              <p className="text-sm text-error-600">{genError}</p>
-            </div>
-          )}
-
-          {/* Quick Templates */}
-          <div className="bg-surface-50 rounded-2xl p-5">
-            <h4 className="text-sm font-medium text-surface-700 mb-3">快捷模板</h4>
-            <div className="space-y-2">
-              {['CNN原理学习', 'Transformer架构', 'Python项目实战'].map((template, idx) => (
-                <button
-                  key={idx}
-                  onClick={() => updatePrompt(template + '相关知识点和代码示例')}
-                  className="w-full flex items-center justify-between px-4 py-2.5 bg-white rounded-lg text-sm text-surface-600 hover:bg-primary-50 hover:text-primary-600 transition-colors"
-                >
-                  <div className="flex items-center gap-2">
-                    <BookOpen size={14} />
-                    {template}
-                  </div>
-                  <ChevronRight size={14} />
-                </button>
-              ))}
-            </div>
-          </div>
+        <div className="space-y-4">
+          <div className="bg-white rounded-2xl p-5 shadow-soft"><div className="flex justify-between items-center"><h3 className="font-semibold text-surface-700">生成任务</h3>{Object.keys(workflows).length > 0 && <button className="text-xs text-primary-600" onClick={() => setProgressExpanded((value) => !value)}>{progressExpanded ? '收起' : '展开'}</button>}</div>{!Object.keys(workflows).length ? <p className="text-sm text-surface-400 mt-3">提交后显示后端工作流状态。</p> : progressExpanded && <div className="space-y-3 mt-4">{Object.values(workflows).map((task) => <div key={task.resourceType} className="rounded-xl border border-surface-200 p-3"><div className="flex items-center justify-between"><span className="text-sm font-medium">{labels[task.resourceType]}</span><span className="text-xs text-surface-500">{elapsed(task.elapsedMs)}</span></div><div className="mt-2 flex items-center gap-2 text-xs">{isActiveWorkflowStatus(task.status) ? <Loader2 size={14} className="animate-spin text-primary-500" /> : task.status === 'completed' ? <CheckCircle2 size={14} className="text-success-500" /> : <XCircle size={14} className="text-error-500" />}<span>{task.status === 'completed' ? '已完成' : task.status === 'failed' ? '失败' : task.status === 'cancelled' ? '已取消' : task.status === 'queued' ? '排队中' : '生成中'}</span>{task.reusedExisting && <span className="text-surface-400">复用进行中的任务</span>}</div>{isActiveWorkflowStatus(task.status) && <button onClick={() => cancel(task)} className="mt-2 text-xs text-error-600">取消</button>}{['failed', 'cancelled', 'expired'].includes(task.status) && <button onClick={() => retry(task)} className="mt-2 text-xs text-primary-600">重试</button>}</div>)}</div>}</div>
+          <div className="bg-surface-50 rounded-2xl p-5"><h4 className="text-sm font-medium text-surface-700 mb-3">快捷模板</h4>{['CNN 原理学习', 'Transformer 架构', 'Python 项目实战'].map((template) => <button key={template} onClick={() => updatePrompt(`${template}相关知识点和代码示例`)} className="w-full flex justify-between px-3 py-2 bg-white rounded-lg text-sm text-surface-600 mb-2">{template}<ChevronRight size={14} /></button>)}</div>
+          {Object.values(workflows).some((task) => task.status === 'completed') && <button onClick={() => navigate('/resources')} className="w-full px-4 py-3 rounded-xl bg-success-50 text-success-700 text-sm font-medium">查看已生成资源</button>}
+          {genError && <p className="p-3 rounded-xl bg-error-50 text-error-600 text-sm">{genError}</p>}
         </div>
       </div>
     </div>

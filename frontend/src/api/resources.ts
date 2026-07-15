@@ -42,6 +42,38 @@ export async function generateResource(params: {
   return data;
 }
 
+export type GeneralResourceType = 'lecture' | 'mindmap' | 'quiz' | 'ppt' | 'video' | 'animation' | 'manim' | 'reading' | 'practice';
+
+export interface GeneralResourceGenerationRequest {
+  sessionId: string;
+  learnerId?: string;
+  subjectId?: string;
+  pathId?: string;
+  stageId?: string;
+  chapterId?: string;
+  sectionId?: string;
+  topic: string;
+  resourceTypes: GeneralResourceType[];
+  difficulty: 'easy' | 'medium' | 'hard';
+  operation: string;
+  mode: string;
+  profileSnapshotVersion?: string;
+  generationOptions?: Record<string, unknown>;
+}
+
+export interface GeneralResourceWorkflowStart {
+  task_id: string;
+  workflow_type: string;
+  resource_type: GeneralResourceType;
+  status: string;
+  reused_existing?: boolean;
+}
+
+export async function startGeneralResourceGeneration(params: GeneralResourceGenerationRequest): Promise<{ tasks: GeneralResourceWorkflowStart[] }> {
+  const { data } = await client.post('/api/workflows/general_resource_generation/batch/start', params);
+  return data;
+}
+
 export async function deleteResource(resourceId: string, sessionId: string): Promise<void> {
   await client.delete(`/api/resources/${resourceId}`, { params: { sessionId } });
 }

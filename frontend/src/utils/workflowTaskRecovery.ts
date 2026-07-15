@@ -11,17 +11,21 @@ export interface WorkflowTaskScope {
   stageId?: string;
   chapterId?: string;
   sectionId?: string;
+  resourceType?: string;
+  operation?: string;
+  topicFingerprint?: string;
+  recoveryKey?: string;
 }
 
 export interface WorkflowTaskRecoveryRecord extends WorkflowTaskScope {
   taskId: string;
   createdAt: number;
-  resourceType?: string;
   mode?: string;
 }
 
 const scopeFields: Array<keyof Omit<WorkflowTaskScope, 'workflowType'>> = [
   'sessionId', 'subjectId', 'pathId', 'stageId', 'chapterId', 'sectionId',
+  'operation', 'topicFingerprint', 'recoveryKey',
 ];
 
 function storage(): Storage | null {

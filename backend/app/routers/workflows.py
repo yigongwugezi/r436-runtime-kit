@@ -19,10 +19,10 @@ router = APIRouter(prefix="/workflows", tags=["workflows"])
 
 SUPPORTED_WORKFLOWS = {
     "resource_search", "generated_resource", "generated_resource_regeneration",
-    "profile_sync", "profile_rebuild", "learning_path_generation", "lecture_generation",
+    "profile_sync", "profile_rebuild", "learning_path_generation", "lecture_generation", "general_resource_generation",
 }
 CANCELLABLE_WORKFLOWS = {
-    "resource_search", "generated_resource", "generated_resource_regeneration", "lecture_generation",
+    "resource_search", "generated_resource", "generated_resource_regeneration", "lecture_generation", "general_resource_generation",
 }
 
 
@@ -85,9 +85,12 @@ def _runner(workflow_type: str, payload: dict[str, Any], auth: AuthContext):
             "profile_rebuild": "重建学习画像",
             "learning_path_generation": "规划学习路径",
             "lecture_generation": "生成讲义内容",
+            "general_resource_generation": "生成指定类型的学习资源",
         }[workflow_type])
 
-        if workflow_type in {"generated_resource", "generated_resource_regeneration"}:
+        if workflow_type == "general_resource_generation":
+            result = product._generate_general_resource(payload, task)
+        elif workflow_type in {"generated_resource", "generated_resource_regeneration"}:
             result = product._generate_section_resource(str(payload.get("sectionId") or ""), payload, task)
         elif workflow_type == "profile_sync":
             result = product.sync_profile_from_conversation(str(payload.get("subjectId") or ""), payload, auth)
@@ -102,7 +105,7 @@ def _runner(workflow_type: str, payload: dict[str, Any], auth: AuthContext):
         if isinstance(result, dict) and result.get("status") == "error":
             raise RuntimeError("workflow returned error")
         preview = ""
-        if workflow_type in {"generated_resource", "generated_resource_regeneration"}:
+        if workflow_type in {"generated_resource", "generated_resource_regeneration", "general_resource_generation"}:
             preview = str(((result.get("data") or {}).get("resource") or {}).get("content") or "")
         elif workflow_type == "lecture_generation":
             preview = str(((result.get("data") or {}).get("lecture") or {}).get("content") or "")
@@ -117,6 +120,10 @@ def _runner(workflow_type: str, payload: dict[str, Any], auth: AuthContext):
 def _start(workflow_type: str, payload: dict[str, Any], auth: AuthContext) -> tuple[WorkflowTask, bool]:
     if workflow_type not in SUPPORTED_WORKFLOWS:
         raise HTTPException(status_code=404, detail="unsupported workflow type")
+    if workflow_type == "general_resource_generation":
+        # Validate before a runner or task is created; resource type is a contract field, not prompt text.
+        from app.routers import product
+        payload = product.normalize_general_resource_request(payload)
     session_id, subject_id = _session(payload, auth)
     safe_metadata = {"resource_type": str(payload.get("resourceType") or payload.get("type") or "")[:40]}
     try:
@@ -141,6 +148,37 @@ def start_workflow(workflow_type: str, payload: dict[str, Any], auth: AuthContex
         "supports_streaming_preview": False, "supports_cancellation": workflow_type in CANCELLABLE_WORKFLOWS,
         "reused_existing": reused_existing,
     }
+
+
+@router.post("/general_resource_generation/batch/start")
+def start_general_resource_batch(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
+    """Start one independent, deduplicated child task per requested resource type."""
+    raw_types = payload.get("resourceTypes")
+    if not isinstance(raw_types, list) or not raw_types:
+        raise HTTPException(status_code=422, detail={"code": "RESOURCE_TYPES_REQUIRED", "message": "resourceTypes is required"})
+    if len(raw_types) > settings.workflow_max_concurrent_tasks_per_user:
+        raise HTTPException(status_code=422, detail={"code": "TOO_MANY_RESOURCE_TYPES", "message": "too many resource types in one batch"})
+    from app.routers import product
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw_type in raw_types:
+        request = product.normalize_general_resource_request({**payload, "resourceType": raw_type})
+        if request["resourceType"] in seen:
+            continue
+        seen.add(request["resourceType"])
+        normalized.append(request)
+    if not normalized:
+        raise HTTPException(status_code=422, detail={"code": "RESOURCE_TYPES_REQUIRED", "message": "resourceTypes is required"})
+    tasks: list[dict[str, Any]] = []
+    for request in normalized:
+        task, reused_existing = _start("general_resource_generation", request, auth)
+        base = f"/api/workflows/{task.task_id}"
+        tasks.append({
+            "task_id": task.task_id, "workflow_type": task.workflow_type, "resource_type": request["resourceType"],
+            "status": task.status, "events_url": f"{base}/events", "status_url": base,
+            "cancel_url": f"{base}/cancel", "reused_existing": reused_existing,
+        })
+    return {"tasks": tasks}
 
 
 @router.get("/{task_id}")
