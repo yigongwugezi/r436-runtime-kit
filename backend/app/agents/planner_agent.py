@@ -74,7 +74,7 @@ class PlannerAgent(BaseAgent):
         else:
             textbook_chapters = None
 
-        # ── Mode B: Generate path with appropriate structure ──
+        # ── Mode B: Generate path with LLM pipeline ──
         chapters = None
         try:
             chapters = self._generate_chapters(
@@ -92,13 +92,7 @@ class PlannerAgent(BaseAgent):
             chapters = self._llm_pipeline_fallback(context, profile, planning_points, total_days, diag_meta)
 
         if not chapters:
-            # If textbook is available, use it as the fallback instead of generic rule-based path
-            if textbook_chapters:
-                chapters = self._build_path_from_textbook(
-                    textbook_chapters, profile, total_days, diag_meta,
-                )
-            if not chapters:
-                return self._fallback_path(context, planning_points, total_days, profile, diag_meta)
+            return self._fallback_path(context, planning_points, total_days, profile, diag_meta)
 
         # ── Step 4: Personalize with DeepTutor ──
         personalized = self._personalize_with_deeptutor(
@@ -211,18 +205,29 @@ class PlannerAgent(BaseAgent):
 
     @staticmethod
     def _build_textbook_context_prompt(textbook_chapters: list[dict]) -> str:
-        """Build a concise textbook structure summary for LLM prompt injection.
+        """Build a textbook structure summary for LLM prompt injection.
 
         Includes section_id and page ranges for each section so the LLM
         can output explicit textbook_section_ids in its response.
         """
-        lines = ["【教材参考】"]
+        lines = [
+            "【教材参考 — 你必须按照以下结构规划学习路径】",
+            "",
+            "你正在为一位使用指定教材的学生规划学习路径。以下是该教材的完整章节目录。",
+            "你的任务是：",
+            "1. 整体上严格遵循教材的章节顺序，不得跳过核心教学内容",
+            "2. 可以将多个简短的教材小节合并为一个学习小节（在 textbook_section_ids 中列出所有合并的ID）",
+            "3. 可以根据学生基础调整节奏（章间插入复习日、调整小节顺序等），但不能遗漏教材的核心知识点",
+            "4. 每个学习小节的输出中必须包含 textbook_section_ids 字段（字符串数组），填入对应的教材小节ID",
+            "5. 如果某个学习小节没有对应的教材小节（如复习日），textbook_section_ids 填 []",
+            "",
+        ]
         for ch in textbook_chapters:
             ch_title = ch.get("title", "")
             ch_start = ch.get("start_page", 0)
             ch_end = ch.get("end_page", 0)
-            page_info = f"({ch_start}-{ch_end}页)" if ch_start > 0 else ""
-            lines.append(f"\n- {ch_title} {page_info}")
+            page_info = f"（第{ch_start}-{ch_end}页）" if ch_start > 0 else ""
+            lines.append(f"## {ch_title} {page_info}")
             for sec in ch.get("sections", []):
                 sec_id = sec.get("section_id", "")
                 sec_title = sec.get("title", "")
@@ -230,16 +235,11 @@ class PlannerAgent(BaseAgent):
                 sec_end = sec.get("end_page", 0)
                 if sec_title:
                     lines.append(
-                        f"    [{sec_id}] {sec_title} (第{sec_start}-{sec_end}页)"
+                        f"  - [{sec_id}] {sec_title}（第{sec_start}-{sec_end}页）"
                     )
+            lines.append("")
         lines.append(
-            "\n请参考以上教材结构来规划学习路径。你可以：\n"
-            "- 只选择与学生目标相关的章节\n"
-            "- 调整章节学习顺序\n"
-            "- 跳过不相关的内容\n\n"
-            "重要：请在输出的每个 section 中指定 textbook_section_ids 字段（字符串数组），\n"
-            "填入该学习小节对应的教材小节ID（即上面方括号中的ID，如 sec_01_01）。\n"
-            "一个学习小节可以对应一个或多个教材小节。"
+            "以上方括号中的ID（如 sec_01_01）就是你要填入 textbook_section_ids 的值。"
         )
         return "\n".join(lines)
 

@@ -43,6 +43,13 @@ interface SectionLike {
   status?: string;
 }
 
+/** Resolve a chapter or section ID from either `id` or the legacy `*_id` field.
+ *  Returns null when both are empty — caller should skip navigation. */
+function resolveId(obj: { id?: string; chapter_id?: string; section_id?: string }): string | null {
+  const resolved = obj.id || obj.chapter_id || obj.section_id || '';
+  return resolved || null;
+}
+
 interface Props {
   stages: StageLike[];
   path?: any;
@@ -258,7 +265,7 @@ function DailyPathView({ stages, onNavigateSection, path, progress, totalNodes, 
                     const Icon = ctCfg?.icon || BookOpen;
                     return (
                       <div key={sec.id || sec.section_id || si}
-                        onClick={() => onNavigateSection(sec.id || sec.section_id || '')}
+                        onClick={() => { const sid = resolveId(sec); if (sid) onNavigateSection(sid); }}
                         className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all
                           ${isDone
                             ? 'bg-emerald-50/50 border-emerald-200 hover:border-emerald-300'
@@ -408,7 +415,7 @@ function FocusPathView({ stages, onNavigateSection, path, progress, totalNodes, 
                     const isDone = sec.status === 'mastered' || sec.status === 'completed';
                     return (
                       <div key={sec.id || sec.section_id || si}
-                        onClick={() => onNavigateSection(sec.id || sec.section_id || '')}
+                        onClick={() => { const sid = resolveId(sec); if (sid) onNavigateSection(sid); }}
                         className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all
                           ${isDone
                             ? 'bg-emerald-50/50 border-emerald-200'
@@ -519,7 +526,7 @@ function TextbookPathView({ stages, onNavigateChapter, onNavigateSection, path, 
                       <div key={ch.id || ch.chapter_id || ci}
                         className="flex items-center gap-4 p-3.5 rounded-xl border border-surface-200 bg-surface-50
                           hover:border-blue-300 hover:shadow-sm transition-all cursor-pointer group"
-                        onClick={() => onNavigateChapter(ch.id || ch.chapter_id || '')}>
+                        onClick={() => { const cid = resolveId(ch); if (cid) onNavigateChapter(cid); }}>
                         <div className="w-8 h-8 rounded-lg bg-primary-100 text-primary-600 flex items-center justify-center flex-shrink-0 font-bold text-xs">
                           {ci + 1}
                         </div>
