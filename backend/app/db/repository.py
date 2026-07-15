@@ -11,7 +11,7 @@ from typing import Any
 import uuid
 
 from sqlalchemy import desc, func
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db.models import (
@@ -44,22 +44,38 @@ def get_or_create_session(
     session_id: str,
     learner_id: str | None = None,
     subject_id: str | None = None,
+    require_learner: bool = False,
 ) -> SessionModel:
     sess = db.get(SessionModel, session_id)
     if sess is None:
-        learner = get_or_create_learner(db, learner_id)
         sess = SessionModel(
             id=session_id,
-            learner_id=learner.id,
+            learner_id=get_or_create_learner(db, learner_id).id if learner_id else None,
             subject_id=subject_id or None,
         )
         db.add(sess)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            sess = db.get(SessionModel, session_id)
+            if sess is None:
+                raise
+            return get_or_create_session(db, session_id, learner_id=learner_id, subject_id=subject_id, require_learner=require_learner)
         db.refresh(sess)
-    elif subject_id and not sess.subject_id:
-        # Backfill subject_id on existing session
-        sess.subject_id = subject_id
-        db.commit()
+    else:
+        if require_learner and sess.learner_id and not learner_id:
+            raise PermissionError("session requires a learner identity")
+        if learner_id:
+            if sess.learner_id and sess.learner_id != learner_id:
+                raise PermissionError("session belongs to another learner")
+            if not sess.learner_id:
+                sess.learner_id = get_or_create_learner(db, learner_id).id
+        if subject_id and not sess.subject_id:
+            # Backfill subject_id on existing session
+            sess.subject_id = subject_id
+        if db.is_modified(sess):
+            db.commit()
     return sess
 
 
@@ -107,7 +123,13 @@ def get_or_create_learner(db: Session, learner_id: str | None = None) -> Learner
         nickname="学习者",
     )
     db.add(learner)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        learner = db.get(LearnerModel, learner_id) if learner_id else None
+        if learner is None:
+            raise
     db.refresh(learner)
     return learner
 
@@ -171,6 +193,28 @@ def get_learner_aggregated_profile(db: Session, learner_id: str) -> dict[str, An
         "readiness_score": snapshots[0].readiness_score or 0.0,
         "session_count": len(sessions),
     }
+
+
+def get_latest_profile_v2_for_subject(db: Session, learner_id: str, subject_id: str) -> dict[str, Any] | None:
+    """Return the latest V2 snapshot for one learner and one subject only."""
+    if not learner_id or not subject_id:
+        return None
+    session_ids = [item.id for item in get_learner_sessions(db, learner_id)]
+    if not session_ids:
+        return None
+    snapshots = (
+        db.query(ProfileSnapshotModel)
+        .filter(ProfileSnapshotModel.session_id.in_(session_ids))
+        .order_by(desc(ProfileSnapshotModel.created_at))
+        .all()
+    )
+    for snapshot in snapshots:
+        prefs = snapshot.preferences if isinstance(snapshot.preferences, dict) else {}
+        profile = prefs.get("profile_v2") if isinstance(prefs.get("profile_v2"), dict) else None
+        context = profile.get("subject_context") if isinstance(profile, dict) else {}
+        if isinstance(context, dict) and str(context.get("subject_id") or "") == subject_id:
+            return profile
+    return None
 
 
 # ── User Preferences ─────────────────────────────────────────────────────

@@ -8,11 +8,14 @@ import re
 import time
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.services.conversation_state import conversation_store
 from app.services.langgraph_orchestrator import run_pipeline
+from app.db.engine import SessionLocal
+from app.db.repository import get_or_create_session
+from app.middleware.auth import AuthContext, get_auth
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["chat"])
@@ -105,8 +108,6 @@ def _try_section_resource_chat(message: str, session_id: str, payload: dict[str,
 
 def _auto_save_profile(state_obj: Any) -> None:
     """Persist current facts as a profile snapshot after every message."""
-    from app.db.engine import SessionLocal
-    from app.db.repository import save_profile_snapshot
     facts = getattr(state_obj, "facts", {}) or {}
     if not facts:
         return
@@ -127,19 +128,26 @@ def _auto_save_profile(state_obj: Any) -> None:
     if not dims:
         return
     try:
-        db = SessionLocal()
-        save_profile_snapshot(db, state_obj.session_id, dimensions=dims)
+        from app.routers.product import _profile_v2, _save_profile_v2
+
+        profile_v2 = _profile_v2(state_obj.session_id)
+        _save_profile_v2(state_obj.session_id, profile_v2, {"dimensions": dims})
     except Exception:
         pass
-    finally:
-        db.close()
 
 
-def _ensure_session(session_id: str) -> None:
+def _ensure_session(session_id: str, learner_id: str = "", subject_id: str = "") -> None:
     if not session_id or not session_id.strip():
         from app.utils.errors import MissingSessionIdError
 
         raise MissingSessionIdError()
+    db = SessionLocal()
+    try:
+        get_or_create_session(db, session_id, learner_id=learner_id or None, subject_id=subject_id or None, require_learner=True)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="session belongs to another learner") from exc
+    finally:
+        db.close()
 
 
 async def _run_chat(message: str, session_id: str) -> tuple[str, dict[str, Any]]:
@@ -220,6 +228,15 @@ def _subject_id(payload: dict[str, Any]) -> str:
     return str(payload.get("subjectId") or payload.get("subject_id") or "").strip()
 
 
+def _learner_id(payload: dict[str, Any], auth: AuthContext) -> str:
+    requested = str(payload.get("learnerId") or payload.get("learner_id") or "").strip()
+    if auth.is_authenticated:
+        if requested and requested != auth.learner_id:
+            raise HTTPException(status_code=403, detail="learnerId does not match the authenticated user")
+        return auth.learner_id
+    return requested
+
+
 def _try_multimodal_chat(message: str, session_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
     from app.routers.product import _classify_intent, _is_multimodal_request, _multimodal_chat_payload
 
@@ -255,7 +272,7 @@ def _multimodal_done_event(session_id: str, multimodal_payload: dict[str, Any]) 
 
 
 @router.post("/api/chat/stream")
-async def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
+async def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_auth)) -> StreamingResponse:
     message = str(payload.get("message", "")).strip()
     session_id = str(payload.get("sessionId", payload.get("session_id", f"sess_{int(time.time() * 1000)}"))).strip()
 
@@ -265,7 +282,7 @@ async def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
             media_type="text/event-stream",
         )
 
-    _ensure_session(session_id)
+    _ensure_session(session_id, _learner_id(payload, auth), _subject_id(payload))
 
     async def event_stream():
         try:
@@ -304,13 +321,13 @@ async def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
 
 
 @router.post("/api/chat/send")
-async def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
+async def send_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_auth)) -> dict[str, Any]:
     message = str(payload.get("message", "")).strip()
     session_id = str(payload.get("sessionId", payload.get("session_id", f"sess_{int(time.time() * 1000)}"))).strip()
     if not message:
         return {"sessionId": session_id, "reply": None, "error": "empty message"}
 
-    _ensure_session(session_id)
+    _ensure_session(session_id, _learner_id(payload, auth), _subject_id(payload))
     try:
         multimodal_payload = _try_multimodal_chat(message, session_id, payload)
         if multimodal_payload:

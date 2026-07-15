@@ -1,6 +1,7 @@
 import { useCallback, useRef } from 'react';
 import { imageAttachmentKey, useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
+import { getStableLearnerId } from '../store/authStore';
 import { streamRequest } from '../api/client';
 import { sendMessage } from '../api/chat';
 import type { ChatAttachment, ChatMessage } from '../types/chat';
@@ -95,6 +96,7 @@ export function useStreamChat() {
           message: text,
           sessionId: useChatStore.getState().currentSessionId,
           subjectId: useSubjectStore.getState().activeSubject?.id,
+          learnerId: getStableLearnerId(),
           attachments: requestAttachments,
           ignore_image_context: ignoreImageContext,
         }, controller.signal);
@@ -202,6 +204,7 @@ export function useStreamChat() {
             message: text,
             sessionId: useChatStore.getState().currentSessionId,
             subjectId: useSubjectStore.getState().activeSubject?.id,
+            learnerId: getStableLearnerId(),
             attachments: requestAttachments,
             ignore_image_context: ignoreImageContext,
           });

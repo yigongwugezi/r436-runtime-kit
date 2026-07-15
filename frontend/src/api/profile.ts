@@ -1,5 +1,6 @@
 import client from './client';
 import type { LearnerProfileV2, StudentProfile } from '../types/profile';
+import { getStableLearnerId } from '../store/authStore';
 
 export interface BuildProfileParams {
   message: string;
@@ -13,7 +14,7 @@ export async function buildProfile(params: BuildProfileParams): Promise<{ profil
 }
 
 export async function getProfile(params: { sessionId: string; subjectId?: string }): Promise<{ profile: StudentProfile }> {
-  const { data } = await client.get('/api/profile', { params });
+  const { data } = await client.get('/api/profile', { params: { ...params, learnerId: getStableLearnerId() } });
   return { ...data, profile: { ...data.profile, profileV2: data.profileV2 } };
 }
 

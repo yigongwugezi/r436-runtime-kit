@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { getCurrentLearner } from './authStore';
+import { getCurrentLearner, getStableLearnerId } from './authStore';
 import { readStorageJson, writeStorageJson, runtimeStorageKeys } from '../utils/storageKeys';
 import * as subjectsApi from '../api/subjects';
 import type { Subject } from '../types/subject';
@@ -9,18 +9,15 @@ import type { ClassSubject } from '../types/classSubject';
  * 科目存储管理 — localStorage 辅助函数（本地缓存层）
  * =================================================================== */
 const subjectsKey = () => {
-  const learner = getCurrentLearner();
-  return runtimeStorageKeys.subjects(learner?.id || 'anonymous');
+  return runtimeStorageKeys.subjects(getStableLearnerId());
 };
 
 const activeSubjectKey = () => {
-  const learner = getCurrentLearner();
-  return runtimeStorageKeys.activeSubject(learner?.id || 'anonymous');
+  return runtimeStorageKeys.activeSubject(getStableLearnerId());
 };
 
 const activeClassSubjectKey = () => {
-  const learner = getCurrentLearner();
-  return runtimeStorageKeys.activeClassSubject(learner?.id || 'anonymous');
+  return runtimeStorageKeys.activeClassSubject(getStableLearnerId());
 };
 
 const createSubjectId = () => `subject_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -172,8 +169,7 @@ export const useSubjectStore = create<SubjectStore>((set, get) => ({
 
       // Clear chat session data from localStorage for the deleted subject
       // so stale data doesn't leak if the subject is re-created.
-      const learner = getCurrentLearner();
-      const learnerId = learner?.id || 'anonymous';
+      const learnerId = getStableLearnerId();
       try {
         const sessionKey = runtimeStorageKeys.chatSession(`${learnerId}_${id}`);
         const sessionsKey = runtimeStorageKeys.chatSessions(`${learnerId}_${id}`);

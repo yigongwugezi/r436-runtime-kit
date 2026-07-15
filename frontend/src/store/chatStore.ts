@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { ChatMessage, ChatSession, QuickCommand, GenerationProgress, ChatAttachment } from '../types/chat';
-import { getCurrentLearner } from './authStore';
+import { getCurrentLearner, getStableLearnerId } from './authStore';
 import { useSubjectStore } from './subjectStore';
 import { readStorageItem, readStorageJson, writeStorageItem, writeStorageJson, runtimeStorageKeys } from '../utils/storageKeys';
 import { getSubjectSession } from '../api/subjects';
@@ -11,9 +11,8 @@ const log = createLogger('ChatStore');
 
 /** 基于 learnerId + subjectId 生成 storage key，实现科目隔离 */
 export const suffix = () => {
-  const learner = getCurrentLearner();
   const subject = useSubjectStore.getState().activeSubject;
-  const learnerId = learner?.id || 'anonymous';
+  const learnerId = getStableLearnerId();
   const subjectId = subject?.id || 'default';
   return `${learnerId}_${subjectId}`;
 };
@@ -269,7 +268,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     persistSessions(sessions);
     writeStorageItem(runtimeStorageKeys.pendingGeneration, '');
     set({ currentSessionId: id, dataSessionId: id, sessions, messages: [], isStreaming: false, progressPipelineSteps: [], agentProgress: null, lastDebugInfo: null, lastImageAttachment: null, imageAttachmentHistory: [], selectedImageAttachmentId: null });
-    void createChatSession({ sessionId: id, subjectId }).catch((error) => log.warn('Failed to create chat session', error));
+    void createChatSession({ sessionId: id, subjectId, learnerId: getStableLearnerId() }).catch((error) => log.warn('Failed to create chat session', error));
     // dataSessionId 不变，保持科目级数据查询稳定
   },
   removeLastMessage: () =>

@@ -54,6 +54,10 @@ export const runtimeStorageKeys = {
     primary: 'r436_runtime_active_learner',
     legacy: ['eduagent_active_learner'],
   },
+  anonymousLearner: {
+    primary: 'r436_runtime_anonymous_learner',
+    legacy: [],
+  },
   learningPrefs: {
     primary: 'r436_runtime_learning_preferences',
     legacy: ['eduagent_learning_preferences'],

@@ -17,6 +17,7 @@ from pptx import Presentation  # noqa: E402
 
 from app.config import settings  # noqa: E402
 from app.services import ppt_generator  # noqa: E402
+from app.routers import chat_router  # noqa: E402
 
 
 def _fake_generate_pptx(topic: str, difficulty: str = "medium", session_id: str = "") -> str:
@@ -32,6 +33,24 @@ def _fake_generate_pptx(topic: str, difficulty: str = "medium", session_id: str 
 
 
 ppt_generator.generate_pptx = _fake_generate_pptx
+
+
+async def _fake_chat_pipeline(**state: object) -> dict[str, object]:
+    """Deterministic local-only replies for browser profile-boundary checks."""
+    message = str(state.get("user_message") or "")
+    profile = state.get("profile_v2") if isinstance(state.get("profile_v2"), dict) else {}
+    context = profile.get("subject_context") if isinstance(profile.get("subject_context"), dict) else {}
+    if "年级" in message:
+        reply = f"你目前是{context.get('background') or '未记录'}。"
+    elif "偏好" in message:
+        preferences = "、".join(context.get("resource_preferences") or [])
+        reply = f"你偏好通过{preferences or '未记录'}学习。"
+    else:
+        reply = "已记录当前对话中的明确学习信息。"
+    return {"final_reply": reply, "agents_run": ["fake_conversation"], "pipeline_executed": True}
+
+
+chat_router.run_pipeline = _fake_chat_pipeline
 
 from app.main import app  # noqa: E402
 

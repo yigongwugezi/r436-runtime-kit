@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.middleware.auth import AuthContext, reject_parent
+from app.middleware.auth import AuthContext, get_auth, reject_parent
 
 from app.agents.conversation_agent import ConversationAgent
 from app.agents.diagnosis_agent import DiagnosisAgent
@@ -42,10 +42,13 @@ from app.db.repository import (
     get_learner,
     get_learner_aggregated_profile,
     get_learner_sessions,
+    get_latest_profile_v2_for_subject,
     get_messages as repo_get_messages,
     get_or_create_session,
+    get_user_preferences,
     list_sessions as repo_list_sessions,
     save_profile_snapshot,
+    save_user_preferences,
     toggle_bookmark,
     update_task_completion as repo_update_task_completion,
     delete_session as repo_delete_session,
@@ -67,7 +70,9 @@ from app.services.profile_v2 import (
     apply_conversation_sync,
     assess_interest,
     build_profile_v2,
+    merge_profile_scopes,
     preview_conversation_sync,
+    split_profile_scopes,
     update_fact_control,
     update_context as update_profile_v2_context,
     update_self_report,
@@ -1796,15 +1801,27 @@ GEN_STAGES = [
 
 
 
+def _request_learner_id(auth: AuthContext, supplied_learner_id: str = "") -> str | None:
+    supplied = str(supplied_learner_id or "").strip()
+    if auth.is_authenticated:
+        if supplied and supplied != auth.learner_id:
+            raise HTTPException(status_code=403, detail="learnerId does not match the authenticated user")
+        return auth.learner_id
+    return supplied or None
+
+
 @router.post("/chat/sessions")
-def create_chat_session(payload: dict[str, Any]) -> dict[str, Any]:
+def create_chat_session(payload: dict[str, Any], auth: AuthContext = Depends(get_auth)) -> dict[str, Any]:
     """Persist an empty chat session before its first message is sent."""
     session_id = _payload_session_id(payload)
     subject_id = _payload_subject_id(payload)
-    learner_id = str(payload.get("learnerId", "")).strip() or None
+    learner_id = _request_learner_id(auth, str(payload.get("learnerId", "")))
     try:
         db = SessionLocal()
-        session = get_or_create_session(db, session_id, learner_id=learner_id, subject_id=subject_id)
+        try:
+            session = get_or_create_session(db, session_id, learner_id=learner_id, subject_id=subject_id, require_learner=True)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail="session belongs to another learner") from exc
         conversation_store.get(session.id)
         return _product_response(
             {
@@ -1821,7 +1838,7 @@ def create_chat_session(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.get("/chat/sessions")
-def list_sessions(subjectId: str = "", learnerId: str = "") -> dict[str, Any]:
+def list_sessions(subjectId: str = "", learnerId: str = "", auth: AuthContext = Depends(get_auth)) -> dict[str, Any]:
     """List sessions, optionally filtered by subject and/or learner.
 
     Without filters, returns sessions for the default learner to avoid
@@ -1830,13 +1847,10 @@ def list_sessions(subjectId: str = "", learnerId: str = "") -> dict[str, Any]:
     try:
         db = SessionLocal()
         # Resolve learner — default to the most recent learner if none specified
-        resolved_learner_id: str | None = str(learnerId).strip() or None
+        resolved_learner_id = _request_learner_id(auth, learnerId)
         resolved_subject_id: str | None = str(subjectId).strip() or None
-        if not resolved_learner_id and not resolved_subject_id:
-            # No filters at all — scope to the single (most recent) learner
-            from app.db.repository import get_or_create_learner
-            default_learner = get_or_create_learner(db)
-            resolved_learner_id = default_learner.id
+        if not resolved_learner_id:
+            return _product_response({"sessions": []}, source="db")
 
         sessions = repo_list_sessions(
             db,
@@ -1862,9 +1876,13 @@ def list_sessions(subjectId: str = "", learnerId: str = "") -> dict[str, Any]:
 
 
 @router.get("/chat/sessions/{session_id}")
-def get_chat_session(session_id: str) -> dict[str, Any]:
+def get_chat_session(session_id: str, learnerId: str = "", auth: AuthContext = Depends(get_auth)) -> dict[str, Any]:
     try:
         db = SessionLocal()
+        session = db.get(SessionModel, session_id)
+        learner_id = _request_learner_id(auth, learnerId)
+        if session and session.learner_id and (not learner_id or session.learner_id != learner_id):
+            raise HTTPException(status_code=403, detail="session belongs to another learner")
         messages = repo_get_messages(db, session_id)
         return _product_response(
             {
@@ -1929,10 +1947,14 @@ def reset_session(session_id: str) -> dict[str, Any]:
 
 
 @router.delete("/chat/sessions/{session_id}")
-def delete_chat_session(session_id: str) -> dict[str, Any]:
+def delete_chat_session(session_id: str, learnerId: str = "", auth: AuthContext = Depends(get_auth)) -> dict[str, Any]:
     """Delete a chat session and its associated data."""
     try:
         db = SessionLocal()
+        session = db.get(SessionModel, session_id)
+        learner_id = _request_learner_id(auth, learnerId)
+        if session and session.learner_id and (not learner_id or session.learner_id != learner_id):
+            raise HTTPException(status_code=403, detail="session belongs to another learner")
         ok = repo_delete_session(db, session_id)
         if not ok:
             return _product_response(
@@ -2057,6 +2079,10 @@ def _profile_v2(session_id: str, legacy: dict[str, Any] | None = None) -> dict[s
     try:
         session = db.get(SessionModel, session_id)
         subject_id = str((session.subject_id if session else "") or "")
+        learner_id = str((session.learner_id if session else "") or "")
+        learner_prefs = get_user_preferences(db, learner_id) if learner_id else {}
+        global_profile = learner_prefs.get("profile_v2_global") if isinstance(learner_prefs.get("profile_v2_global"), dict) else {}
+        subject_profile = get_latest_profile_v2_for_subject(db, learner_id, subject_id) if learner_id and subject_id else None
     finally:
         db.close()
     course = course_catalog.match_course(str(state.facts.get("target_course") or ""))
@@ -2066,7 +2092,8 @@ def _profile_v2(session_id: str, legacy: dict[str, Any] | None = None) -> dict[s
     existing_subject = str(((existing or {}).get("subject_context") or {}).get("subject_id") or "") if isinstance(existing, dict) else ""
     if subject_id and existing_subject and existing_subject != subject_id:
         existing = None
-    return build_profile_v2(
+    existing = merge_profile_scopes(global_profile, existing or subject_profile)
+    profile = build_profile_v2(
         dimensions=legacy.get("dimensions") if isinstance(legacy.get("dimensions"), list) else [],
         facts=state.facts,
         course=course,
@@ -2074,14 +2101,23 @@ def _profile_v2(session_id: str, legacy: dict[str, Any] | None = None) -> dict[s
         existing=existing,
         session_id=session_id,
     )
+    return merge_profile_scopes(global_profile, profile)
 
 
-def _save_profile_v2(session_id: str, profile_v2: dict[str, Any]) -> None:
-    legacy = ag_get_profile(session_id) or {}
+def _save_profile_v2(session_id: str, profile_v2: dict[str, Any], legacy: dict[str, Any] | None = None) -> None:
+    legacy = legacy or ag_get_profile(session_id) or {}
     prefs = dict(legacy.get("preferences") or {})
     prefs["profile_v2"] = profile_v2
     db = SessionLocal()
     try:
+        session = db.get(SessionModel, session_id)
+        learner_id = str((session.learner_id if session else "") or "")
+        global_profile, local_profile = split_profile_scopes(profile_v2)
+        if learner_id and global_profile.get("fact_records"):
+            learner_prefs = get_user_preferences(db, learner_id)
+            previous = learner_prefs.get("profile_v2_global") if isinstance(learner_prefs.get("profile_v2_global"), dict) else {}
+            save_user_preferences(db, learner_id, {**learner_prefs, "profile_v2_global": merge_profile_scopes(previous, global_profile)})
+        prefs["profile_v2"] = local_profile
         save_profile_snapshot(
             db,
             session_id,
@@ -2138,6 +2174,8 @@ def _ensure_session_linked(
 
         if sess is not None:
             changed = False
+            if learner_id and sess.learner_id and sess.learner_id != learner_id:
+                raise PermissionError("session belongs to another learner")
             if learner_id and not sess.learner_id:
                 sess.learner_id = learner_id
                 changed = True
@@ -2150,10 +2188,10 @@ def _ensure_session_linked(
 
         # Session doesn't exist yet — try to create it
         from app.db.repository import get_or_create_learner
-        learner = get_or_create_learner(db, learner_id)
+        learner = get_or_create_learner(db, learner_id) if learner_id else None
         sess = SessionModel(
             id=session_id,
-            learner_id=learner.id,
+            learner_id=learner.id if learner else None,
             subject_id=subject_id or None,
         )
         db.add(sess)
@@ -2165,6 +2203,8 @@ def _ensure_session_linked(
             sess = db.get(SessionModel, session_id)
             if sess is not None:
                 changed = False
+                if learner_id and sess.learner_id and sess.learner_id != learner_id:
+                    raise PermissionError("session belongs to another learner")
                 if learner_id and not sess.learner_id:
                     sess.learner_id = learner_id
                     changed = True
@@ -2173,6 +2213,8 @@ def _ensure_session_linked(
                     changed = True
                 if changed:
                     db.commit()
+    except PermissionError:
+        raise
     except Exception:
         logger.warning("Failed to link session %s to subject/learner", session_id, exc_info=True)
     finally:
@@ -2255,11 +2297,14 @@ def _upsert_external_feedback(
 
 
 @router.get("/profile")
-def get_profile(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
+def get_profile(sessionId: str = "", subjectId: str = "", learnerId: str = "", auth: AuthContext = Depends(get_auth)) -> dict[str, Any]:
     """Read the latest profile from the database. Never triggers agents."""
     session_id = _resolve_session_id(sessionId, subjectId)
     subject_id = str(subjectId).strip()
-    _ensure_session_linked(session_id, subject_id=subject_id)
+    try:
+        _ensure_session_linked(session_id, subject_id=subject_id, learner_id=_request_learner_id(auth, learnerId))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="session belongs to another learner") from exc
 
     # Default preferences (safe for frontend)
     _default_prefs = {"preferredFormats": ["text"], "paceMinutes": 45, "difficulty": "beginner", "explainStyle": "text"}
@@ -2325,7 +2370,7 @@ def get_profile(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
         readiness = conversation_store.readiness(state)
         profile["source"] = "agent_generated"
         profile["readiness"] = readiness
-        return _product_response({"profile": profile, "profileV2": state.last_result.get("profile_v2") or _profile_v2(session_id, profile)}, session_id=session_id, subject_id=subjectId, source="agent")
+        return _product_response({"profile": profile, "profileV2": _profile_v2(session_id, profile)}, session_id=session_id, subject_id=subjectId, source="agent")
 
     # No data at all — return empty structure
     empty = _empty_profile(session_id)
@@ -2337,7 +2382,7 @@ def build_profile(payload: dict[str, Any], auth: AuthContext = Depends(reject_pa
     """Trigger agent pipeline and build/refresh the student profile."""
     session_id = _payload_session_id(payload)
     subject_id = _payload_subject_id(payload)
-    _ensure_session_linked(session_id, subject_id=subject_id)
+    _ensure_session_linked(session_id, subject_id=subject_id, learner_id=auth.learner_id)
     message = str(payload.get("message", "我想学习人工智能导论"))
 
     conversation_store.append_message(session_id, "user", message)
@@ -2358,6 +2403,7 @@ def update_profile_context(payload: dict[str, Any], auth: AuthContext = Depends(
     updates = payload.get("context")
     if not isinstance(updates, dict):
         raise HTTPException(status_code=400, detail="context required")
+    _ensure_session_linked(session_id, learner_id=auth.learner_id)
     profile_v2 = update_profile_v2_context(_profile_v2(session_id), updates)
     _save_profile_v2(session_id, profile_v2)
     return _product_response({"profileV2": profile_v2}, session_id=session_id, source="user_input")
@@ -2373,6 +2419,7 @@ def sync_profile_from_conversation(
     session_id = _payload_session_id(payload)
     subject_id = str(subject_id).strip()
     _require_matching_subject(session_id, subject_id)
+    _ensure_session_linked(session_id, subject_id=subject_id, learner_id=auth.learner_id)
     db = SessionLocal()
     try:
         messages = repo_get_messages(db, session_id)
@@ -2396,6 +2443,7 @@ def update_profile_self_report(payload: dict[str, Any], auth: AuthContext = Depe
     updates = payload.get("selfReport")
     if not isinstance(updates, dict):
         raise HTTPException(status_code=400, detail="selfReport required")
+    _ensure_session_linked(session_id, learner_id=auth.learner_id)
     profile_v2 = update_self_report(_profile_v2(session_id), updates)
     _save_profile_v2(session_id, profile_v2)
     return _product_response({"profileV2": profile_v2}, session_id=session_id, source="user_input")
@@ -2406,6 +2454,7 @@ def update_profile_fact(fact_key: str, payload: dict[str, Any], auth: AuthContex
     session_id = _payload_session_id(payload)
     action = str(payload.get("action") or "").strip().lower()
     try:
+        _ensure_session_linked(session_id, learner_id=auth.learner_id)
         profile_v2 = update_fact_control(
             _profile_v2(session_id), fact_key, action, payload.get("value"), str(payload.get("scope") or "") or None,
         )
@@ -2419,6 +2468,7 @@ def update_profile_fact(fact_key: str, payload: dict[str, Any], auth: AuthContex
 def delete_profile_fact(fact_key: str, sessionId: str = "", auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     session_id = _payload_session_id({"sessionId": sessionId})
     try:
+        _ensure_session_linked(session_id, learner_id=auth.learner_id)
         profile_v2 = update_fact_control(_profile_v2(session_id), fact_key, "delete")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

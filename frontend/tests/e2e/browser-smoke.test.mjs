@@ -13,6 +13,14 @@ const frontendPort = 5175;
 const edgePath = process.env.EDGE_PATH || 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function browserApi(cdp, url, token, method = 'GET', body) {
+  return cdp.evaluate(`fetch(${JSON.stringify(url)}, {
+    method: ${JSON.stringify(method)},
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + ${JSON.stringify(token)} },
+    ${body === undefined ? '' : `body: ${JSON.stringify(JSON.stringify(body))},`}
+  }).then(async (response) => ({ ok: response.ok, status: response.status, body: await response.json() }))`);
+}
+
 async function waitFor(url, label) {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
@@ -136,6 +144,46 @@ test('real Edge reaches the isolated application through the test backend', { ti
     await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.includes('CNN')).click()");
     assert.ok((await cdp.evaluate("document.querySelector('textarea').value")).includes('CNN'));
     assert.ok((await cdp.evaluate('location.search')).includes('q='), 'quick templates must persist the prompt in the URL');
+
+    const apiBase = `http://127.0.0.1:${backendPort}/api`;
+    const create = async (sessionId) => {
+      const response = await browserApi(cdp, `${apiBase}/chat/sessions`, accessToken, 'POST', { sessionId });
+      assert.equal(response.ok, true);
+    };
+    const send = async (sessionId, message, token = accessToken) => {
+      const response = await browserApi(cdp, `${apiBase}/chat/send`, token, 'POST', { sessionId, message });
+      assert.equal(response.ok, true);
+      return response.body;
+    };
+    await cdp.evaluate("location.assign('/chat')");
+    await waitForBrowser(cdp, "Boolean(document.querySelector('textarea'))", 'chat page');
+    await create('browser-session-a');
+    await send('browser-session-a', '我是大二学生');
+    await send('browser-session-a', '我喜欢视频学习');
+    await send('browser-session-a', '这一次不要生成路径');
+    await create('browser-session-b');
+    const grade = await send('browser-session-b', '我现在是什么年级');
+    const preference = await send('browser-session-b', '我偏好什么学习方式');
+    assert.match(grade.reply.content, /大二/);
+    assert.match(preference.reply.content, /视频/);
+    const profile = await browserApi(cdp, `${apiBase}/profile?sessionId=browser-session-b`, accessToken);
+    assert.equal(profile.ok, true);
+    assert.equal(profile.body.data.profileV2.subject_context.background, '大二学生');
+    assert.deepEqual(profile.body.data.profileV2.subject_context.resource_preferences, ['视频']);
+    await cdp.evaluate('location.reload()');
+    await waitForBrowser(cdp, "Boolean(document.querySelector('textarea'))", 'reloaded chat page');
+    assert.match((await send('browser-session-b', '我现在是什么年级')).reply.content, /大二/);
+
+    const otherAuth = await fetch(`http://127.0.0.1:${backendPort}/api/auth/register`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: '13900000002', password: 'e2e-only', nickname: 'E2E2', role: 'student' }),
+    });
+    assert.equal(otherAuth.ok, true);
+    const { access_token: otherToken } = await otherAuth.json();
+    await browserApi(cdp, `${apiBase}/chat/sessions`, otherToken, 'POST', { sessionId: 'browser-session-other' });
+    const otherProfile = await browserApi(cdp, `${apiBase}/profile?sessionId=browser-session-other`, otherToken);
+    assert.equal(otherProfile.ok, true);
+    assert.notEqual(otherProfile.body.data.profileV2.subject_context.background, '大二学生');
     socket.close();
   } finally {
     await stop(edge);

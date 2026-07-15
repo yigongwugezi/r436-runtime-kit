@@ -147,6 +147,18 @@ export function getCurrentLearner(): Learner | null {
   return useAuthStore.getState().learner;
 }
 
+/** Stable, opaque browser identity for the no-login compatibility path. */
+export function getStableLearnerId(): string {
+  const learner = getCurrentLearner();
+  if (learner?.id) return learner.id;
+  const stored = readStorageItem(runtimeStorageKeys.anonymousLearner);
+  if (stored) return stored;
+  const random = globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
+  const id = `anon_${random}`;
+  writeStorageItem(runtimeStorageKeys.anonymousLearner, id);
+  return id;
+}
+
 /** Get legacy learner (for migration prompts) */
 export function getLegacyLearner(): LegacyLearner | null {
   try {

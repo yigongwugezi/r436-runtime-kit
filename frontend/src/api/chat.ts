@@ -1,9 +1,11 @@
 import client from './client';
 import type { ChatAttachment, ChatMessage, ChatSession, GenerationProgress } from '../types/chat';
+import { getStableLearnerId } from '../store/authStore';
 
 export interface SendMessageParams {
   sessionId?: string;
   subjectId?: string;
+  learnerId?: string;
   message: string;
   attachments?: ChatAttachment[];
   image_url?: string;
@@ -36,13 +38,13 @@ export interface SessionListResponse {
 }
 
 export async function createChatSession(params: { sessionId: string; subjectId?: string; learnerId?: string }): Promise<{ sessionId: string }> {
-  const { data } = await client.post('/api/chat/sessions', params);
+  const { data } = await client.post('/api/chat/sessions', { ...params, learnerId: params.learnerId || getStableLearnerId() });
   return data;
 }
 
 /** 发送消息（非流式） */
 export async function sendMessage(params: SendMessageParams): Promise<ChatResponse> {
-  const { data } = await client.post('/api/chat/send', params);
+  const { data } = await client.post('/api/chat/send', { ...params, learnerId: params.learnerId || getStableLearnerId() });
   return data;
 }
 
@@ -75,7 +77,7 @@ export async function prepareKnowledgeCandidates(params: {
 
 /** 获取会话列表，可按科目过滤 */
 export async function getSessions(subjectId?: string): Promise<SessionListResponse> {
-  const params: Record<string, string> = {};
+  const params: Record<string, string> = { learnerId: getStableLearnerId() };
   if (subjectId) params.subjectId = subjectId;
   const { data } = await client.get('/api/chat/sessions', { params });
   return data;
@@ -83,13 +85,13 @@ export async function getSessions(subjectId?: string): Promise<SessionListRespon
 
 /** 获取会话消息 */
 export async function getSessionMessages(sessionId: string): Promise<{ messages: ChatMessage[] }> {
-  const { data } = await client.get(`/api/chat/sessions/${sessionId}`);
+  const { data } = await client.get(`/api/chat/sessions/${sessionId}`, { params: { learnerId: getStableLearnerId() } });
   return data;
 }
 
 /** 删除会话 */
 export async function deleteSession(sessionId: string): Promise<void> {
-  await client.delete(`/api/chat/sessions/${sessionId}`);
+  await client.delete(`/api/chat/sessions/${sessionId}`, { params: { learnerId: getStableLearnerId() } });
 }
 
 /** 获取快捷指令 */

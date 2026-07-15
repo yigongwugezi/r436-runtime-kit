@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
 import re
 from typing import Any, Iterable
@@ -49,6 +50,64 @@ _CONTEXT_FACTS = {
     "resource_preferences": "resource_preferences",
 }
 FACT_SCOPES = {"global", "subject", "course", "path", "session"}
+_GLOBAL_FACT_KEYS = {"background", "content_preferences", "resource_preferences"}
+
+
+def profile_fact_scope(fact_key: str, subject_id: str = "") -> str:
+    """Keep durable learner facts out of a course/session snapshot."""
+    if fact_key in _GLOBAL_FACT_KEYS:
+        return "global"
+    return "subject" if subject_id else "session"
+
+
+def split_profile_scopes(profile: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return the learner-global and current-session parts of a V2 profile."""
+    profile = deepcopy(profile or {})
+    records = profile.get("fact_records") if isinstance(profile.get("fact_records"), dict) else {}
+    global_records = {key: value for key, value in records.items() if isinstance(value, dict) and value.get("scope") == "global"}
+    local_records = {key: value for key, value in records.items() if key not in global_records}
+    context = profile.get("subject_context") if isinstance(profile.get("subject_context"), dict) else {}
+
+    global_profile = {
+        "profile_version": 2,
+        "subject_context": {key: context.get(key) for key in global_records if key in context},
+        "fact_records": global_records,
+        "general_states": profile.get("general_states") or [],
+    }
+    profile["fact_records"] = local_records
+    profile["subject_context"] = {key: value for key, value in context.items() if key not in global_records}
+    return global_profile, profile
+
+
+def merge_profile_scopes(global_profile: dict[str, Any] | None, local_profile: dict[str, Any] | None) -> dict[str, Any]:
+    """Overlay learner-global facts without letting inferred local data replace them."""
+    result = deepcopy(local_profile or global_profile or {"profile_version": 2})
+    result.setdefault("profile_version", 2)
+    context = result.setdefault("subject_context", {})
+    records = result.setdefault("fact_records", {})
+    global_context = (global_profile or {}).get("subject_context") if isinstance((global_profile or {}).get("subject_context"), dict) else {}
+    global_records = (global_profile or {}).get("fact_records") if isinstance((global_profile or {}).get("fact_records"), dict) else {}
+
+    def rank(record: dict[str, Any]) -> int:
+        return 2 if record.get("fact_type") == "explicit" else 1
+
+    for key, record in global_records.items():
+        if not isinstance(record, dict):
+            continue
+        current = records.get(key)
+        replace = not isinstance(current, dict) or rank(record) > rank(current)
+        if replace:
+            records[key] = deepcopy(record)
+            selected = records[key]
+        else:
+            selected = current
+        if replace or key not in context:
+            value = selected.get("value", global_context.get(key))
+            if selected.get("status") == "deleted":
+                context.pop(key, None)
+            elif value is not None:
+                context[key] = value
+    return result
 
 
 def _now() -> str:
@@ -293,13 +352,31 @@ def build_profile_v2(*, dimensions: list[dict[str, Any]] | None = None, facts: d
         if key not in context or _missing(context.get(key)):
             context[key] = value
     for key, record in records.items():
-        if isinstance(record, dict) and record.get("source_type") == "manual_edit" and key in context and not _missing(record.get("value")):
+        if isinstance(record, dict) and record.get("status") == "deleted":
+            context.pop(key, None)
+            continue
+        if isinstance(record, dict) and (record.get("source_type") == "manual_edit" or record.get("is_user_locked")) and key in context and not _missing(record.get("value")):
             context[key] = record["value"]
     profile["subject_context"] = context
     profile["fact_records"] = records
     for fact_key, context_key in _CONTEXT_FACTS.items():
-        if fact_key in facts and not _missing(facts[fact_key]) and context_key not in records:
-            profile["fact_records"][context_key] = _fact_record(context.get(context_key), "conversation_explicit", f"\u7528\u6237\u5728\u5bf9\u8bdd\u4e2d\u660e\u786e\u8868\u8fbe\u4e86{context_key}\u3002", fact_key=context_key, subject_id=str(context.get("subject_id") or ""))
+        if fact_key not in facts or _missing(facts[fact_key]):
+            continue
+        current = records.get(context_key)
+        if isinstance(current, dict) and (current.get("is_user_locked") or current.get("is_disabled_for_personalization") or current.get("status") == "deleted"):
+            continue
+        if not isinstance(current, dict) or context.get(context_key) != current.get("value"):
+            scope = profile_fact_scope(context_key, str(context.get("subject_id") or ""))
+            scope = str(current.get("scope") or scope) if isinstance(current, dict) else scope
+            updated = _fact_record(context.get(context_key), "conversation_explicit", f"\u7528\u6237\u5728\u5bf9\u8bdd\u4e2d\u660e\u786e\u8868\u8fbe\u4e86{context_key}\u3002", fact_key=context_key, subject_id="" if scope == "global" else str(context.get("subject_id") or ""), scope=scope)
+            if isinstance(current, dict):
+                updated["supersedes"] = current.get("value")
+            profile["fact_records"][context_key] = updated
+    if context.get("resource_preferences") and "resource_preferences" not in profile["fact_records"]:
+        profile["fact_records"]["resource_preferences"] = _fact_record(
+            context["resource_preferences"], "conversation_explicit", "\u7528\u6237\u5728\u5bf9\u8bdd\u4e2d\u660e\u786e\u8868\u8fbe\u4e86\u8d44\u6e90\u5f62\u5f0f\u504f\u597d\u3002",
+            fact_key="resource_preferences", scope="global",
+        )
     return _refresh_profile(profile, facts, weaknesses)
 
 
