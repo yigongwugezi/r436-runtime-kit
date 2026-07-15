@@ -156,6 +156,10 @@ def main() -> None:
     agent._try_deeptutor_reply = lambda *_args, **_kwargs: ""
     agent._call_llm = lambda _messages: (_ for _ in ()).throw(LLMClientError("offline"))
     assert agent.run({"user_message": "hello", "session_id": "test", "profile_facts": {}}).get("reply")
+    no_context_confirmation = agent._rule_fallback("可以", {"conversation_history": []})
+    assert no_context_confirmation["action"] == "none"
+    explicit_confirmation = agent._rule_fallback("可以", {"last_proposal": "plan"})
+    assert explicit_confirmation["action"] == "plan"
 
     print("deeptutor client fallback: PASS")
 

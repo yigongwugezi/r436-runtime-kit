@@ -828,14 +828,16 @@ action："""
         """
         text = message.strip().lower()
         compact = re.sub(r"\s+", "", text)
+        is_confirmation = compact in {
+            "\u53ef\u4ee5", "\u597d\u7684", "\u884c", "\u55ef", "\u597d", "ok", "yes", "\u5bf9", "\u662f\u7684", "\u55ef\u55ef", "\u6ca1\u9519", "\u5c31\u8fd9\u6837", "\u6309\u8fd9\u4e2a\u6765",
+        }
 
         # ── Trivial / greeting ──────────────────────────────────────
-        if text in EXACT_CASUAL or len(compact) <= 2:
+        if (text in EXACT_CASUAL or len(compact) <= 2) and not is_confirmation:
             return self._fallback_result("none", "short_or_casual_message")
 
         # ── Confirmations (after system asked "要生成...吗？") ──────
-        confirm_words = {"可以", "好的", "行", "嗯", "好", "ok", "yes", "对", "是的", "嗯嗯", "没错", "就这样", "按这个来"}
-        if any(cw == compact or cw == text for cw in confirm_words):
+        if is_confirmation:
             last_proposal = context.get("last_proposal")
             if last_proposal == "plan":
                 return self._fallback_result("plan", "contextual_plan_confirmation")
