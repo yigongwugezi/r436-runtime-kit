@@ -819,7 +819,7 @@ export default function ChatPage() {
 
         <div className="w-72 space-y-4 overflow-y-auto hidden xl:block ml-5">
           <div className="bg-white rounded-2xl p-5 shadow-soft">
-            <div className="flex items-center gap-2 mb-4"><Bot size={18} className="text-primary-600" /><h3 className="font-semibold text-surface-800">协同智能体</h3></div>
+            <div className="flex items-center gap-2 mb-4"><Bot size={18} className="text-primary-600" /><h3 className="font-semibold text-surface-800">可用协作能力</h3></div>
             <div className="space-y-3">
               {(agents.length > 0 ? agents : [
                 { id: 'profile_agent', name: '画像分析', icon: '🧠', description: '分析学习背景，构建多维学习画像', stage: 'profiling' },
@@ -832,7 +832,7 @@ export default function ChatPage() {
                 <div key={agent.id} className="flex items-center gap-3 p-2 rounded-xl hover:bg-surface-50 transition-colors">
                   <div className="w-9 h-9 rounded-xl bg-primary-50 flex items-center justify-center text-sm">{agent.icon}</div>
                   <div className="flex-1 min-w-0"><p className="text-sm font-medium text-surface-800">{agent.name}</p><p className="text-xs text-surface-400 truncate">{agent.description}</p></div>
-                  <span className="w-2 h-2 rounded-full bg-success-500" />
+                  <span aria-label="可用能力，不表示运行状态" className="w-2 h-2 rounded-full bg-surface-300" />
                 </div>
               ))}
             </div>

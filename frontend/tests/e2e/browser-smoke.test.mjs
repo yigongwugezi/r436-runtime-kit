@@ -159,6 +159,8 @@ test('real Edge reaches the isolated application through the test backend', { ti
     };
     await cdp.evaluate("location.assign('/chat')");
     await waitForBrowser(cdp, "Boolean(document.querySelector('textarea'))", 'chat page');
+    assert.equal(await cdp.evaluate("document.body.textContent.includes('可用协作能力')"), true, 'agent list must be labelled as available capability');
+    assert.equal(await cdp.evaluate("document.body.textContent.includes('在线待命')"), false, 'static agent list must not claim live status');
     await create('browser-session-a');
     await send('browser-session-a', '我是大二学生');
     await send('browser-session-a', '我喜欢视频学习');

@@ -83,9 +83,9 @@ export default function ConsoleSidebar() {
       </nav>
 
       <div className="p-4 mx-3 mb-4 bg-surface-50 dark:bg-surface-700 rounded-xl">
-        <div className="flex items-center gap-2 mb-3"><Bot size={16} className="text-primary-500 dark:text-primary-400" /><span className="text-sm font-medium text-surface-700 dark:text-gray-300">智能体状态</span></div>
+        <div className="flex items-center gap-2 mb-3"><Bot size={16} className="text-primary-500 dark:text-primary-400" /><span className="text-sm font-medium text-surface-700 dark:text-gray-300">可用智能能力</span></div>
         <div className="flex gap-2">{['🧠', '🎬', '🗂️', '💻', '📝'].map((icon, idx) => <div key={idx} className={`w-8 h-8 rounded-lg bg-white dark:bg-surface-600 flex items-center justify-center text-sm shadow-card ${idx === 0 ? 'ring-2 ring-primary-300' : ''}`}>{icon}</div>)}</div>
-        <p className="text-xs text-surface-400 dark:text-gray-500 mt-2">5个智能体在线待命</p>
+        <p className="text-xs text-surface-400 dark:text-gray-500 mt-2">任务开始后会显示实际进度</p>
       </div>
     </div>
   );
