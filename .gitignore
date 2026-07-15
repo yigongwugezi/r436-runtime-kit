@@ -34,6 +34,8 @@ yarn-error.log*
 work/
 
 # Database files (local SQLite)
+*.db
+*.sqlite
 backend/data/*.db
 backend/data/*.db-shm
 backend/data/*.db-wal
@@ -43,3 +45,12 @@ backend/data/textbooks/
 # RAG / Vector DB (FAISS index + HuggingFace cache)
 backend/data/faiss/
 backend/data/huggingface_cache/
+
+# Per-user and generated runtime data (created at startup when needed)
+backend/data/memory/
+backend/data/user/
+backend/data/static/images/
+outputs/
+playwright-report/
+test-results/
+screenshots/

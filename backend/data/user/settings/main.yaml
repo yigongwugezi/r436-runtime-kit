@@ -1,4 +1,0 @@
-llm:
-  provider: openai_compatible
-  model: spark-x
-# Runtime configuration
