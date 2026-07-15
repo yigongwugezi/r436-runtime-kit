@@ -104,6 +104,13 @@ export default function LecturePage() {
   const [searchParams] = useSearchParams();
   const { path, updateKnowledgePoint } = useLearningPath();
   const sessionId = useChatStore((s) => s.dataSessionId);
+  const returnPathMode = ['textbook', 'daily', 'project', 'focus'].includes(searchParams.get('pathMode') || '')
+    ? searchParams.get('pathMode')
+    : '';
+  const returnViewStage = searchParams.get('viewStage');
+  const returnToPath = returnPathMode
+    ? `/path?mode=${encodeURIComponent(returnPathMode)}${returnViewStage ? `&viewStage=${encodeURIComponent(returnViewStage)}` : ''}`
+    : '/path';
 
   // ── 路径模式检测 ──
   const pathMode = useMemo(() => {
@@ -623,7 +630,7 @@ export default function LecturePage() {
       <DailyTaskPage
         chapterId={chapterId}
         sectionId={activeSectionId}
-        onBack={() => nav('/path')}
+        onBack={() => nav(returnToPath)}
       />
     );
   }
@@ -631,7 +638,7 @@ export default function LecturePage() {
     return (
       <FocusSprintPage
         sectionId={activeSectionId}
-        onBack={() => nav('/path')}
+        onBack={() => nav(returnToPath)}
       />
     );
   }
