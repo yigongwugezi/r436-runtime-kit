@@ -85,5 +85,12 @@ export function workflowStateFromEvent(current: WorkflowState, event: WorkflowEv
   const status: WorkflowStatus = event.event === 'workflow_completed' ? 'completed'
     : event.event === 'workflow_cancelled' ? 'cancelled'
       : event.event === 'workflow_failed' ? 'failed' : 'running';
-  return { ...current, status, events: [...current.events, event], preview: event.text_delta ?? current.preview, elapsedMs: event.elapsed_ms };
+  return {
+    ...current,
+    status,
+    events: [...current.events, event],
+    preview: event.text_delta ?? current.preview,
+    elapsedMs: event.elapsed_ms,
+    errorMessage: event.safe_error_message || current.errorMessage,
+  };
 }

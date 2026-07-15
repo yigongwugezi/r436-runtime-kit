@@ -27,6 +27,7 @@ export interface WorkflowState {
   preview: string;
   elapsedMs: number;
   result?: any;
+  errorMessage?: string;
 }
 
 export async function startWorkflow(workflowType: string, payload: Record<string, unknown>) {

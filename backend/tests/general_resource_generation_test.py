@@ -57,12 +57,52 @@ def main() -> None:
     finally:
         db.close()
 
+    # A deleted persisted resource must not be revived from the current
+    # conversation's last_result cache on a later resource-list read.
+    from app.services.conversation_state import conversation_store
+    state = conversation_store.get(payload["sessionId"])
+    state.last_result = {"course_id": "course-test", "resources": [generated["lecture"]]}
+    deleted = product.delete_resource(generated["lecture"]["id"], payload["sessionId"])
+    assert deleted["data"]["deleted"] is True
+    assert state.last_result["resources"] == []
+    listed = product.get_resources(sessionId=payload["sessionId"])
+    assert generated["lecture"]["id"] not in {item["id"] for item in listed["data"]["resources"]}
+
+    # Deletion is always constrained to the session supplied by the caller.
+    other_payload = {**payload, "sessionId": "other-general-resource-test"}
+    other_resource = product._generate_general_resource({**other_payload, "resourceType": "lecture"})["data"]["resource"]
+    denied = product.delete_resource(other_resource["id"], payload["sessionId"])
+    assert denied["data"]["deleted"] is False
+    db = SessionLocal()
+    try:
+        assert db.query(ResourceModel).filter(ResourceModel.id == other_resource["id"], ResourceModel.session_id == other_payload["sessionId"]).first()
+    finally:
+        db.close()
+
     with patch("app.services.multimodal_registry.default_registry", return_value=SimpleNamespace(select_tool=lambda _: (None, None))):
         try:
             product._generate_general_resource({**payload, "resourceType": "video"})
             raise AssertionError("unavailable provider returned a fake resource")
         except RuntimeError as exc:
             assert str(exc) == "provider_not_configured"
+
+    # The workflow surfaces an actionable, safe failure instead of claiming that
+    # a Manim animation was generated when the local renderer is unavailable.
+    workflow_task_manager.clear()
+    auth = SimpleNamespace(learner_id="learner-test")
+    with patch("app.services.multimodal_registry.default_registry", return_value=SimpleNamespace(select_tool=lambda _: (None, None))):
+        unavailable, reused = workflows._start(
+            "general_resource_generation", {**payload, "resourceType": "manim"}, auth,
+        )
+        assert not reused
+        for _ in range(100):
+            if unavailable.status in {"failed", "completed", "cancelled"}:
+                break
+            time.sleep(0.01)
+        assert unavailable.status == "failed"
+        assert unavailable.error_code == "PROVIDER_NOT_CONFIGURED"
+        assert "未生成伪造资源" in unavailable.safe_error_message
+    workflow_task_manager.clear()
 
     manager = WorkflowTaskManager()
     blocker = threading.Event()
@@ -83,7 +123,6 @@ def main() -> None:
     original_start = workflow_task_manager.start
     try:
         workflow_task_manager.start = lambda task, runner: setattr(task, "runner", runner)  # type: ignore[method-assign]
-        auth = SimpleNamespace(learner_id="learner-test")
         batch = workflows.start_general_resource_batch({**payload, "resourceTypes": ["lecture", "mindmap", "quiz"]}, auth)
         assert len(batch["tasks"]) == 3
         assert {item["resource_type"] for item in batch["tasks"]} == {"lecture", "mindmap", "quiz"}

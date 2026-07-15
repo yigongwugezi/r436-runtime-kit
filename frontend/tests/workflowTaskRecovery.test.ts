@@ -53,4 +53,10 @@ const updated = workflowStateFromEvent(
 assert.equal(updated.events.length, 1);
 assert.equal(updated.preview, 'preview');
 assert.equal(workflowStateFromEvent(updated, updated.events[0]).events.length, 1, 'replayed events must not duplicate');
+const failed = workflowStateFromEvent(
+  updated,
+  { event: 'workflow_failed', task_id: 'task-a', workflow_type: 'generated_resource', stage_id: 'generate', status: 'failed', label: 'failed', elapsed_ms: 60, sequence: 2, safe_error_message: 'provider unavailable' },
+);
+assert.equal(failed.status, 'failed');
+assert.equal(failed.errorMessage, 'provider unavailable');
 console.log('workflow task recovery tests: ok');

@@ -294,14 +294,18 @@ class WorkflowTaskManager:
                 self.emit_terminal(task, "workflow_completed", "completed", label="任务已完成")
             except WorkflowCancelled:
                 self._mark_cancelled(task)
-            except Exception:
+            except Exception as exc:
                 if task.cancel_event.is_set():
                     self._mark_cancelled(task)
                 else:
                     task.status = "failed"
                     task.finished_elapsed_ms = task.elapsed_ms
-                    task.error_code = "WORKFLOW_FAILED"
-                    task.safe_error_message = "任务执行失败，请重试"
+                    task.error_code = str(getattr(exc, "error_code", "") or task.error_code or "WORKFLOW_FAILED")
+                    task.safe_error_message = str(
+                        getattr(exc, "safe_error_message", "")
+                        or task.safe_error_message
+                        or "任务执行失败，请重试"
+                    )
                     task.failed_at = task.updated_at = _now()
                     self.emit_terminal(task, "workflow_failed", "failed", label="任务执行失败", error_code=task.error_code, safe_error_message=task.safe_error_message)
 

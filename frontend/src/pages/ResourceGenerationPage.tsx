@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { BrainCircuit, CheckCircle2, ChevronRight, Clock, FileQuestion, FileText, Loader2, Presentation, Sparkles, XCircle } from 'lucide-react';
+import { BrainCircuit, CheckCircle2, ChevronRight, Clapperboard, Clock, FileQuestion, FileText, Loader2, Presentation, Sparkles, XCircle } from 'lucide-react';
 import { startGeneralResourceGeneration, type GeneralResourceType } from '../api/resources';
 import { cancelWorkflow, consumeWorkflowEvents, readWorkflow, retryWorkflow, type WorkflowState } from '../api/workflows';
 import { getCurrentLearner } from '../store/authStore';
@@ -24,6 +24,7 @@ const resourceTypes: Array<{ id: GeneralResourceType; label: string; icon: typeo
   { id: 'mindmap', label: '思维导图', icon: BrainCircuit, description: '可渲染的知识结构图' },
   { id: 'quiz', label: '练习题库', icon: FileQuestion, description: '含答案与解析的自测题' },
   { id: 'ppt', label: 'PPT 演示', icon: Presentation, description: '可下载的本地演示文稿' },
+  { id: 'manim', label: 'Manim 动画', icon: Clapperboard, description: '需要本地 Manim 渲染环境' },
 ];
 
 const labels = Object.fromEntries(resourceTypes.map((item) => [item.id, item.label])) as Record<GeneralResourceType, string>;
@@ -90,6 +91,7 @@ export default function ResourceGenerationPage() {
       const base = initial || { taskId, workflowType: scope.workflowType, status: 'queued' as const, events: [], preview: '', elapsedMs: 0 };
       putTask(resourceType, base, reusedExisting);
       await consumeWorkflowEvents(taskId, (event) => {
+        if (event.safe_error_message) setGenError(event.safe_error_message);
         setWorkflows((current) => {
           const existing = current[resourceType];
           return existing?.taskId === taskId
@@ -104,6 +106,7 @@ export default function ResourceGenerationPage() {
       if (latest) {
         putTask(resourceType, {
           taskId, workflowType: latest.workflow_type, status: latest.status, events: [], preview: '', elapsedMs: latest.elapsed_ms || 0, result: latest.result,
+          errorMessage: latest.safe_error_message || '',
         }, reusedExisting);
         if (latest.status === 'completed') bumpDataVersion();
         if (isTerminalWorkflowStatus(latest.status)) clearWorkflowTask(scope);
@@ -126,7 +129,11 @@ export default function ResourceGenerationPage() {
         try {
           const task = await readWorkflow(record.taskId, sessionId);
           if (!active || task.workflow_type !== scope.workflowType) { clearWorkflowTask(scope); return; }
-          const restored: WorkflowState = { taskId: record.taskId, workflowType: task.workflow_type, status: task.status, events: [], preview: '', elapsedMs: task.elapsed_ms || 0, result: task.result };
+          const restored: WorkflowState = {
+            taskId: record.taskId, workflowType: task.workflow_type, status: task.status,
+            events: [], preview: '', elapsedMs: task.elapsed_ms || 0, result: task.result,
+            errorMessage: task.safe_error_message || '',
+          };
           putTask(resourceType, restored);
           if (isActiveWorkflowStatus(task.status)) await monitor(resourceType, record.taskId, false, restored);
           else {
@@ -203,7 +210,7 @@ export default function ResourceGenerationPage() {
           <button onClick={handleGenerate} disabled={!prompt.trim() || !selectedTypes.length || activeTasks.length > 0} className="w-full flex items-center justify-center gap-3 px-6 py-4 rounded-xl font-semibold text-lg bg-gradient-to-r from-primary-600 to-accent-600 text-white disabled:bg-surface-100 disabled:text-surface-400 disabled:cursor-not-allowed"><Sparkles size={22} />{activeTasks.length ? '任务进行中…' : `开始生成（${selectedTypes.length} 种资源）`}</button>
         </div>
         <div className="space-y-4">
-          <div className="bg-white rounded-2xl p-5 shadow-soft"><div className="flex justify-between items-center"><h3 className="font-semibold text-surface-700">生成任务</h3>{Object.keys(workflows).length > 0 && <button className="text-xs text-primary-600" onClick={() => setProgressExpanded((value) => !value)}>{progressExpanded ? '收起' : '展开'}</button>}</div>{!Object.keys(workflows).length ? <p className="text-sm text-surface-400 mt-3">提交后显示后端工作流状态。</p> : progressExpanded && <div className="space-y-3 mt-4">{Object.values(workflows).map((task) => <div key={task.resourceType} className="rounded-xl border border-surface-200 p-3"><div className="flex items-center justify-between"><span className="text-sm font-medium">{labels[task.resourceType]}</span><span className="text-xs text-surface-500">{elapsed(task.elapsedMs)}</span></div><div className="mt-2 flex items-center gap-2 text-xs">{isActiveWorkflowStatus(task.status) ? <Loader2 size={14} className="animate-spin text-primary-500" /> : task.status === 'completed' ? <CheckCircle2 size={14} className="text-success-500" /> : <XCircle size={14} className="text-error-500" />}<span>{task.status === 'completed' ? '已完成' : task.status === 'failed' ? '失败' : task.status === 'cancelled' ? '已取消' : task.status === 'queued' ? '排队中' : '生成中'}</span>{task.reusedExisting && <span className="text-surface-400">复用进行中的任务</span>}</div>{isActiveWorkflowStatus(task.status) && <button onClick={() => cancel(task)} className="mt-2 text-xs text-error-600">取消</button>}{['failed', 'cancelled', 'expired'].includes(task.status) && <button onClick={() => retry(task)} className="mt-2 text-xs text-primary-600">重试</button>}</div>)}</div>}</div>
+          <div className="bg-white rounded-2xl p-5 shadow-soft"><div className="flex justify-between items-center"><h3 className="font-semibold text-surface-700">生成任务</h3>{Object.keys(workflows).length > 0 && <button className="text-xs text-primary-600" onClick={() => setProgressExpanded((value) => !value)}>{progressExpanded ? '收起' : '展开'}</button>}</div>{!Object.keys(workflows).length ? <p className="text-sm text-surface-400 mt-3">提交后显示后端工作流状态。</p> : progressExpanded && <div className="space-y-3 mt-4">{Object.values(workflows).map((task) => <div key={task.resourceType} className="rounded-xl border border-surface-200 p-3"><div className="flex items-center justify-between"><span className="text-sm font-medium">{labels[task.resourceType]}</span><span className="text-xs text-surface-500">{elapsed(task.elapsedMs)}</span></div><div className="mt-2 flex items-center gap-2 text-xs">{isActiveWorkflowStatus(task.status) ? <Loader2 size={14} className="animate-spin text-primary-500" /> : task.status === 'completed' ? <CheckCircle2 size={14} className="text-success-500" /> : <XCircle size={14} className="text-error-500" />}<span>{task.status === 'completed' ? '已完成' : task.status === 'failed' ? '失败' : task.status === 'cancelled' ? '已取消' : task.status === 'queued' ? '排队中' : '生成中'}</span>{task.reusedExisting && <span className="text-surface-400">复用进行中的任务</span>}</div>{task.errorMessage && <p className="mt-2 text-xs text-error-600">{task.errorMessage}</p>}{isActiveWorkflowStatus(task.status) && <button onClick={() => cancel(task)} className="mt-2 text-xs text-error-600">取消</button>}{['failed', 'cancelled', 'expired'].includes(task.status) && <button onClick={() => retry(task)} className="mt-2 text-xs text-primary-600">重试</button>}</div>)}</div>}</div>
           <div className="bg-surface-50 rounded-2xl p-5"><h4 className="text-sm font-medium text-surface-700 mb-3">快捷模板</h4>{['CNN 原理学习', 'Transformer 架构', 'Python 项目实战'].map((template) => <button key={template} onClick={() => updatePrompt(`${template}相关知识点和代码示例`)} className="w-full flex justify-between px-3 py-2 bg-white rounded-lg text-sm text-surface-600 mb-2">{template}<ChevronRight size={14} /></button>)}</div>
           {Object.values(workflows).some((task) => task.status === 'completed') && <button onClick={() => navigate('/resources')} className="w-full px-4 py-3 rounded-xl bg-success-50 text-success-700 text-sm font-medium">查看已生成资源</button>}
           {genError && <p className="p-3 rounded-xl bg-error-50 text-error-600 text-sm">{genError}</p>}
