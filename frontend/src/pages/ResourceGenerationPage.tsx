@@ -31,7 +31,7 @@ const resourceTypes = [
   { id: 'mindmap', label: '思维导图', icon: BrainCircuit, color: 'from-violet-500 to-purple-400', description: '知识结构梳理' },
   { id: 'case_study', label: '实操案例', icon: Code2, color: 'from-amber-500 to-orange-400', description: '实践代码示例' },
   { id: 'quiz', label: '练习题库', icon: FileQuestion, color: 'from-emerald-500 to-teal-400', description: '测试评估练习' },
-  { id: 'ppt', label: 'PPT大纲', icon: Presentation, color: 'from-cyan-500 to-blue-400', description: '幻灯片结构' },
+  { id: 'ppt', label: 'PPT演示', icon: Presentation, color: 'from-cyan-500 to-blue-400', description: '课程幻灯片' },
 ];
 
 export default function ResourceGenerationPage() {

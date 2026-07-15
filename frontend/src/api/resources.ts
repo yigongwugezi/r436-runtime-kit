@@ -42,6 +42,10 @@ export async function generateResource(params: {
   return data;
 }
 
+export async function deleteResource(resourceId: string, sessionId: string): Promise<void> {
+  await client.delete(`/api/resources/${resourceId}`, { params: { sessionId } });
+}
+
 export async function getResourceKnowledgeGraph(
   resourceId: string,
   params: { sessionId: string; subjectId?: string },
