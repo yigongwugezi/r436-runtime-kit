@@ -6,9 +6,12 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
+_skip_env_file = os.getenv("EDUAGENT_SKIP_ENV_FILE") == "1"
 
 
 def load_backend_env(env_path: Path | None = None) -> bool:
+    if _skip_env_file:
+        return False
     path = env_path or (Path(__file__).resolve().parents[1] / ".env")
     if not path.exists():
         logger.info("Backend env file missing: %s", path)
@@ -135,7 +138,7 @@ class Settings(BaseSettings):
     textbook_max_parse_chars: int = 80000  # max chars sent to LLM for chapter recognition
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=None if _skip_env_file else ".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
