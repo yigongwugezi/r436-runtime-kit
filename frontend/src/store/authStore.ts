@@ -153,7 +153,10 @@ export function getStableLearnerId(): string {
   if (learner?.id) return learner.id;
   const stored = readStorageItem(runtimeStorageKeys.anonymousLearner);
   if (stored) return stored;
-  const random = globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
+  const random = globalThis.crypto?.randomUUID?.() ?? 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, token => {
+    const value = Math.floor(Math.random() * 16);
+    return (token === 'x' ? value : (value & 0x3) | 0x8).toString(16);
+  });
   const id = `anon_${random}`;
   writeStorageItem(runtimeStorageKeys.anonymousLearner, id);
   return id;

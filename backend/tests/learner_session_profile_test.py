@@ -61,6 +61,12 @@ def main() -> None:
     product.SessionLocal, product.ag_get_profile = factory, lambda _session_id: {}
     try:
         learner_a = AuthContext(learner_id="learner-a")
+        assert product._request_learner_id(AuthContext(), "anon_00000000-0000-0000-0000-000000000000")
+        try:
+            product._request_learner_id(AuthContext(), "legacy-learner")
+            raise AssertionError("untrusted anonymous learner id accepted")
+        except HTTPException as exc:
+            assert exc.status_code == 400
         product.create_chat_session({"sessionId": "session-a"}, learner_a)
         product.create_chat_session({"sessionId": "session-b"}, learner_a)
         product.create_chat_session({"sessionId": "subject-a", "subjectId": "subject-a"}, learner_a)
@@ -130,8 +136,8 @@ def main() -> None:
             finally:
                 db.close()
 
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            assert set(pool.map(lambda _item: create_concurrently(), range(2))) == {"learner-concurrent"}
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            assert set(pool.map(lambda _item: create_concurrently(), range(32))) == {"learner-concurrent"}
         db = factory()
         try:
             assert db.query(LearnerModel).filter(LearnerModel.id == "learner-concurrent").count() == 1

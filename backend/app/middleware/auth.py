@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
 from fastapi import Depends, Request
@@ -15,6 +16,7 @@ from app.utils.auth import verify_token
 logger = logging.getLogger(__name__)
 
 security = HTTPBearer(auto_error=False)
+_ANONYMOUS_LEARNER_ID = re.compile(r"^anon_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
 class AuthContext:
@@ -45,6 +47,15 @@ class AuthContext:
     @property
     def is_parent(self) -> bool:
         return self.role == "parent"
+
+
+def validate_anonymous_learner_id(value: str) -> str:
+    """Accept only the opaque browser identifier used by the no-login client."""
+    learner_id = str(value or "").strip()
+    if learner_id and not _ANONYMOUS_LEARNER_ID.fullmatch(learner_id):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="invalid anonymous learnerId")
+    return learner_id
 
 
 async def get_auth(

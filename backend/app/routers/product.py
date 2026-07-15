@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.middleware.auth import AuthContext, get_auth, reject_parent
+from app.middleware.auth import AuthContext, get_auth, reject_parent, validate_anonymous_learner_id
 
 from app.agents.conversation_agent import ConversationAgent
 from app.agents.diagnosis_agent import DiagnosisAgent
@@ -1807,7 +1807,7 @@ def _request_learner_id(auth: AuthContext, supplied_learner_id: str = "") -> str
         if supplied and supplied != auth.learner_id:
             raise HTTPException(status_code=403, detail="learnerId does not match the authenticated user")
         return auth.learner_id
-    return supplied or None
+    return validate_anonymous_learner_id(supplied) or None
 
 
 @router.post("/chat/sessions")

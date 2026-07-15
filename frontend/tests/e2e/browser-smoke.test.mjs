@@ -94,6 +94,8 @@ test('real Edge reaches the isolated application through the test backend', { ti
   let backend;
   let frontend;
   let edge;
+  let otherEdge;
+  let otherSocket;
   try {
     const database = join(tempDir, 'browser.db');
     backend = start('python', ['backend/tests/browser_fake_server.py'], {
@@ -174,18 +176,52 @@ test('real Edge reaches the isolated application through the test backend', { ti
     await waitForBrowser(cdp, "Boolean(document.querySelector('textarea'))", 'reloaded chat page');
     assert.match((await send('browser-session-b', '我现在是什么年级')).reply.content, /大二/);
 
+    for (const name of ['\u6570\u636e\u7ed3\u6784', '\u6570\u636e\u7ed3\u6784\u3001', ' \u6570\u636e\u7ed3\u6784 ', '\u6570\u636e\u7ed3\u6784\uff0c']) {
+      const response = await browserApi(cdp, `${apiBase}/subjects`, accessToken, 'POST', { name });
+      assert.equal(response.ok, true);
+    }
+    const subjectList = await browserApi(cdp, `${apiBase}/subjects`, accessToken);
+    assert.equal(subjectList.ok, true);
+    assert.equal(subjectList.body.data.subjects.filter((subject) => subject.name === '\u6570\u636e\u7ed3\u6784').length, 1);
+    await cdp.evaluate("location.assign('/')");
+    await waitForBrowser(cdp, "document.body.innerText.includes('数据结构')", 'deduplicated subject card');
+    assert.equal(await cdp.evaluate("document.body.innerText.split('数据结构').length - 1"), 1);
+
     const otherAuth = await fetch(`http://127.0.0.1:${backendPort}/api/auth/register`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phone: '13900000002', password: 'e2e-only', nickname: 'E2E2', role: 'student' }),
     });
     assert.equal(otherAuth.ok, true);
     const { access_token: otherToken } = await otherAuth.json();
-    await browserApi(cdp, `${apiBase}/chat/sessions`, otherToken, 'POST', { sessionId: 'browser-session-other' });
-    const otherProfile = await browserApi(cdp, `${apiBase}/profile?sessionId=browser-session-other`, otherToken);
+    const otherDebugPort = 9223;
+    otherEdge = start(edgePath, [
+      '--headless=new', `--remote-debugging-port=${otherDebugPort}`, '--remote-allow-origins=*',
+      `--user-data-dir=${join(tempDir, 'edge-profile-other')}`, '--no-first-run', `http://127.0.0.1:${frontendPort}/login`,
+    ], { cwd: repoDir, env: process.env });
+    await waitFor(`http://127.0.0.1:${otherDebugPort}/json/list`, 'second Edge CDP');
+    const otherPages = await (await fetch(`http://127.0.0.1:${otherDebugPort}/json/list`)).json();
+    const otherPage = otherPages.find((entry) => entry.type === 'page' && entry.url.includes(`:${frontendPort}/`));
+    assert.ok(otherPage, 'second Edge must use the isolated frontend');
+    otherSocket = new WebSocket(otherPage.webSocketDebuggerUrl);
+    await new Promise((resolve, reject) => {
+      otherSocket.addEventListener('open', resolve, { once: true });
+      otherSocket.addEventListener('error', reject, { once: true });
+    });
+    const otherCdp = new Cdp(otherSocket);
+    await otherCdp.call('Runtime.enable');
+    await waitForBrowser(otherCdp, "Boolean(document.querySelector('form'))", 'second profile login form');
+    await otherCdp.evaluate(`localStorage.setItem('edu_token', ${JSON.stringify(otherToken)}); location.assign('/chat')`);
+    await waitForBrowser(otherCdp, "Boolean(document.querySelector('textarea'))", 'second profile chat page');
+    await browserApi(otherCdp, `${apiBase}/chat/sessions`, otherToken, 'POST', { sessionId: 'browser-session-other' });
+    const otherProfile = await browserApi(otherCdp, `${apiBase}/profile?sessionId=browser-session-other`, otherToken);
     assert.equal(otherProfile.ok, true);
     assert.notEqual(otherProfile.body.data.profileV2.subject_context.background, '大二学生');
+    otherSocket.close();
+    otherSocket = undefined;
     socket.close();
   } finally {
+    if (otherSocket) otherSocket.close();
+    await stop(otherEdge);
     await stop(edge);
     await stop(frontend);
     await stop(backend);

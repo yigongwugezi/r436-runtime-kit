@@ -7,7 +7,6 @@ parent accounts.  Differs from class_subjects.py (teacher-managed classrooms).
 from __future__ import annotations
 
 import logging
-import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -22,6 +21,7 @@ from app.db.models import (
     SessionModel,
 )
 from app.middleware.auth import AuthContext, reject_parent, require_auth
+from app.services.subject_identity import canonical_subject_name, get_or_create_personal_subject
 
 logger = logging.getLogger(__name__)
 
@@ -120,21 +120,13 @@ def create_subject(
     auth: AuthContext = Depends(reject_parent),
 ) -> dict:
     """Create a new personal subject. Parents are blocked (403)."""
-    name = body.name.strip()
+    name = canonical_subject_name(body.name)
     if not name:
         raise HTTPException(status_code=400, detail="科目名称不能为空")
 
     db = SessionLocal()
     try:
-        ps = PersonalSubjectModel(
-            id=f"ps_{uuid.uuid4().hex[:12]}",
-            learner_id=auth.learner_id,
-            name=name,
-            description=body.description,
-        )
-        db.add(ps)
-        db.commit()
-        db.refresh(ps)
+        ps, _created = get_or_create_personal_subject(db, auth.learner_id, name, body.description)
         return {"status": "success", "data": {"subject": _subject_dict(ps)}}
     finally:
         db.close()
@@ -174,31 +166,13 @@ def migrate_subjects(
 
     db = SessionLocal()
     try:
-        # Collect existing names for this learner
-        existing = (
-            db.query(PersonalSubjectModel)
-            .filter(PersonalSubjectModel.learner_id == auth.learner_id)
-            .all()
-        )
-        existing_names = {ps.name for ps in existing}
-
         created_count = 0
         for sub in body.subjects:
-            name = (sub.get("name") or "").strip()
-            if not name or name in existing_names:
+            name = canonical_subject_name(sub.get("name") or "")
+            if not name:
                 continue
-            ps = PersonalSubjectModel(
-                id=f"ps_{uuid.uuid4().hex[:12]}",
-                learner_id=auth.learner_id,
-                name=name,
-                description=sub.get("description"),
-            )
-            db.add(ps)
-            existing_names.add(name)
-            created_count += 1
-
-        if created_count > 0:
-            db.commit()
+            _subject, created = get_or_create_personal_subject(db, auth.learner_id, name, sub.get("description"))
+            created_count += int(created)
 
         # Return the complete merged list
         rows = (

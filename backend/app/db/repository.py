@@ -48,6 +48,8 @@ def get_or_create_session(
 ) -> SessionModel:
     sess = db.get(SessionModel, session_id)
     if sess is None:
+        if not learner_id:
+            logger.info("legacy_session_without_learner_identity")
         sess = SessionModel(
             id=session_id,
             learner_id=get_or_create_learner(db, learner_id).id if learner_id else None,

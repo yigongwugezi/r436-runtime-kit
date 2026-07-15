@@ -17,6 +17,8 @@ def main() -> None:
     assert "coding_ability" not in by_key(math["subject_dimensions"])
     assert all(item["score"] is None for item in math["subject_dimensions"])
 
+    assert extract_profile_facts("\u6211\u662f\u5927\u4e09\u5b66\u751f").facts["background"] == "\u5927\u4e09\u5b66\u751f"
+
     cs_facts = extract_profile_facts("我学过C语言，但数据结构基础不太好，希望一周内复习完，每天能学一小时。")
     cs = build_profile_v2(facts=cs_facts.facts, course={"course_name": "数据结构"})
     assert cs["subject_context"]["subject_category"] == "computing"

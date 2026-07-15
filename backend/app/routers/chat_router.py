@@ -15,7 +15,7 @@ from app.services.conversation_state import conversation_store
 from app.services.langgraph_orchestrator import run_pipeline
 from app.db.engine import SessionLocal
 from app.db.repository import get_or_create_session
-from app.middleware.auth import AuthContext, get_auth
+from app.middleware.auth import AuthContext, get_auth, validate_anonymous_learner_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["chat"])
@@ -234,7 +234,7 @@ def _learner_id(payload: dict[str, Any], auth: AuthContext) -> str:
         if requested and requested != auth.learner_id:
             raise HTTPException(status_code=403, detail="learnerId does not match the authenticated user")
         return auth.learner_id
-    return requested
+    return validate_anonymous_learner_id(requested)
 
 
 def _try_multimodal_chat(message: str, session_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:

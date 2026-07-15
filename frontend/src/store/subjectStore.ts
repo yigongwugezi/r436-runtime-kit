@@ -148,7 +148,7 @@ export const useSubjectStore = create<SubjectStore>((set, get) => ({
     try {
       const serverSubject = await subjectsApi.createPersonalSubject({ name });
       // Merge with current cache to avoid races
-      const updated = [...loadSubjects(), serverSubject];
+      const updated = [serverSubject, ...loadSubjects().filter(subject => subject.id !== serverSubject.id)];
       persistSubjects(updated);
       persistActiveSubject(serverSubject);
       set({ subjects: updated, activeSubject: serverSubject });

@@ -720,6 +720,10 @@ class PersonalSubjectModel(Base):
     learner: Mapped["LearnerModel"] = relationship("LearnerModel")
     textbook: Mapped[Optional["TextbookModel"]] = relationship("TextbookModel", foreign_keys=[textbook_id])
 
+    __table_args__ = (
+        UniqueConstraint("learner_id", "name", name="uq_personal_subject_learner_name"),
+    )
+
 
 # ── Textbook ──────────────────────────────────────────────────────────────
 
