@@ -977,8 +977,34 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
                 continue
 
             stage_title = str(stage.get("title", ""))
+
+            # ── Format-agnostic task/duration extraction ──
+            # Flat format: tasks + duration at stage level
+            # Chapter format: chapters → sections → knowledge_points
             stage_tasks = list(stage.get("tasks", []))
             duration_str = str(stage.get("duration", ""))
+            chapters = stage.get("chapters", [])
+
+            # If chapter-structured, derive tasks and days from chapter data
+            if (not stage_tasks or not duration_str) and chapters:
+                if not stage_tasks:
+                    stage_tasks = []
+                    for ch in chapters:
+                        if isinstance(ch, dict):
+                            ch_title = str(ch.get("title", ""))
+                            sections = ch.get("sections", [])
+                            if isinstance(sections, list):
+                                for sec in sections:
+                                    if isinstance(sec, dict):
+                                        sec_title = str(sec.get("title", ""))
+                                        if sec_title:
+                                            stage_tasks.append(f"{ch_title} - {sec_title}")
+                if not duration_str:
+                    ch_count = len(chapters)
+                    sec_count = sum(len(ch.get("sections", [])) for ch in chapters if isinstance(ch, dict))
+                    est_days = max(1, sec_count) if sec_count > 0 else max(1, ch_count)
+                    duration_str = f"第{est_days}天"
+
             days = self._parse_duration_days(duration_str)
 
             # 匹配掌握度

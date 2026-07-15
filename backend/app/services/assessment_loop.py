@@ -334,6 +334,8 @@ def _trigger_assessment_path_adjustment(
                     if cs:
                         cs.last_result = dict(cs.last_result or {})
                         cs.last_result["learning_path"] = pr["learning_path"]
+                        # Persist to DB so path page reflects adjustment
+                        conversation_store.set_result(session_id, cs.last_result)
                         # 加速再评估
                         import time as _t
                         state = assessment_tracker.get(session_id)
@@ -498,7 +500,7 @@ def run_post_quiz_assessment(
                         "diagnosis": new_diagnosis,
                         "profile": diagnosis_context.get("profile", {}),
                         "profile_facts": diagnosis_context.get("profile_facts", {}),
-                        "learning_path": diagnosis_context.get("learning_path", []),
+                        "existing_path": diagnosis_context.get("learning_path", []),
                     }
                     planner_result = planner_agent.run(planner_context)
                     adjusted_path = planner_result.get("learning_path", [])
@@ -702,7 +704,7 @@ def run_periodic_reassessment(session_id: str) -> dict[str, Any]:
                         "diagnosis": new_diagnosis,
                         "profile": diagnosis_context.get("profile", {}),
                         "profile_facts": diagnosis_context.get("profile_facts", {}),
-                        "learning_path": diagnosis_context.get("learning_path", []),
+                        "existing_path": diagnosis_context.get("learning_path", []),
                     })
                     adjusted_path = planner_result.get("learning_path", [])
                     if adjusted_path:
