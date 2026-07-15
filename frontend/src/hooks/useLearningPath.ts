@@ -5,6 +5,7 @@ import { useSubjectStore } from '../store/subjectStore';
 import type { LearningPath, PathNodeStatus, ContentStatus, Chapter, Section, KnowledgePoint } from '../types/learningPath';
 import { contentStatusToProgress, legacyStatusToContent } from '../types/learningPath';
 import { consumeWorkflowEvents, readWorkflow, startWorkflow, type WorkflowState } from '../api/workflows';
+import { normalizeLearningPathForClient } from '../utils/learningPathViewModel';
 
 function computeOverallProgress(path: LearningPath): number {
   // 优先从章节层级计算
@@ -73,7 +74,7 @@ export function useLearningPath() {
     if (force || !hasDataRef.current) { setLoading(true); setError(null); }
     try {
       const res = await learningPathApi.getLearningPath({ sessionId, subjectId });
-      const p = res?.path ?? null;
+      const p = normalizeLearningPathForClient(res?.path ?? null);
       setPath(p);
       hasDataRef.current = !!p;
       if (!p && !hasDataRef.current) setError('学习路径数据为空');
@@ -96,7 +97,7 @@ export function useLearningPath() {
         return { ...current, status, events: [...current.events, event], elapsedMs: event.elapsed_ms };
       }));
       const task = await readWorkflow(started.task_id, sessionId);
-      const next = task.result?.data?.path ?? null;
+      const next = normalizeLearningPathForClient(task.result?.data?.path ?? null);
       setPath(next);
       return next;
     } catch (e) { setError(e instanceof Error ? e.message : '路径生成失败'); return null; }
