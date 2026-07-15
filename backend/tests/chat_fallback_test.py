@@ -44,6 +44,8 @@ def main() -> None:
         assert "你好！我是EduAgent" not in temporary["final_reply"]
         learning = asyncio.run(_run("我想学数据结构", [{"role": "user", "content": "我想学数据结构"}]))
         assert "数据结构" in learning["final_reply"] and learning["intent"] == "none"
+        comparison = asyncio.run(_run("比较数组和链表的优缺点，不要生成学习路径，只回答这个问题", [{"role": "user", "content": "比较数组和链表的优缺点，不要生成学习路径，只回答这个问题"}]))
+        assert "路径的基础概念" not in comparison["final_reply"]
         recap = asyncio.run(_run("请复述我刚才告诉你的身份信息，不要打招呼", [{"role": "user", "content": "你好"}, {"role": "assistant", "content": "你好！"}, {"role": "user", "content": "我是大二学生"}, {"role": "assistant", "content": "已记录。"}, {"role": "user", "content": "请复述我刚才告诉你的身份信息，不要打招呼"}]))
         assert "大二学生" in recap["final_reply"] and "你好！我是EduAgent" not in recap["final_reply"]
         empty_reply, empty_meta = orchestrator._chat_fallback_reply("", [])

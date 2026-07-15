@@ -158,7 +158,7 @@ def _chat_fallback_reply(message: str, messages: list[dict[str, Any]] | None = N
             match = re.search(r"(?:我是一名|我是|本人是)\s*([^，。,.!?！？]{2,30})", previous)
             if match:
                 return f"你刚才提到自己是{match.group(1).strip()}。", meta
-    learning = re.search(r"(?:想学|学习|了解)\s*(?:一下)?\s*([^，。,.!?！？]{2,30})", current_message)
+    learning = re.search(r"(?:我想(?:学习|学|了解)|我想要(?:学习|学|了解))\s*(?:一下)?\s*([^，。,.!?！？]{2,30})", current_message)
     if learning:
         topic = learning.group(1).strip(" 的")
         if topic:
