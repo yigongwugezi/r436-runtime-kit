@@ -53,8 +53,6 @@ def _runner(workflow_type: str, payload: dict[str, Any], auth: AuthContext):
 
         if workflow_type == "resource_search":
             section_id = str(payload.get("sectionId") or "").strip()
-            if not section_id:
-                raise ValueError("sectionId required")
             labels = {
                 "topic_analysis": "分析搜索主题", "cache": "检查已有结果",
                 "primary_search": "搜索首选来源", "fallback_search": "搜索备用来源",
@@ -88,18 +86,24 @@ def _runner(workflow_type: str, payload: dict[str, Any], auth: AuthContext):
             "general_resource_generation": "生成指定类型的学习资源",
         }[workflow_type])
 
-        if workflow_type == "general_resource_generation":
-            result = product._generate_general_resource(payload, task)
-        elif workflow_type in {"generated_resource", "generated_resource_regeneration"}:
-            result = product._generate_section_resource(str(payload.get("sectionId") or ""), payload, task)
-        elif workflow_type == "profile_sync":
-            result = product.sync_profile_from_conversation(str(payload.get("subjectId") or ""), payload, auth)
-        elif workflow_type == "profile_rebuild":
-            result = product.build_profile(payload, auth)
-        elif workflow_type == "learning_path_generation":
-            result = product.generate_learning_path(payload, auth)
-        else:
-            result = product._generate_section_lecture(str(payload.get("sectionId") or ""), payload, task)
+        try:
+            if workflow_type == "general_resource_generation":
+                result = product._generate_general_resource(payload, task)
+            elif workflow_type in {"generated_resource", "generated_resource_regeneration"}:
+                result = product._generate_section_resource(str(payload.get("sectionId") or ""), payload, task)
+            elif workflow_type == "profile_sync":
+                result = product.sync_profile_from_conversation(str(payload.get("subjectId") or ""), payload, auth)
+            elif workflow_type == "profile_rebuild":
+                result = product.build_profile(payload, auth)
+            elif workflow_type == "learning_path_generation":
+                result = product.generate_learning_path(payload, auth)
+            else:
+                result = product._generate_section_lecture(str(payload.get("sectionId") or ""), payload, task)
+        except RuntimeError as exc:
+            if str(exc) == "provider_not_configured":
+                task.error_code = "PROVIDER_NOT_CONFIGURED"
+                task.safe_error_message = "所选的多媒体生成能力尚未配置，未生成伪造资源。"
+            raise
 
         workflow_task_manager.check_cancelled(task)
         if isinstance(result, dict) and result.get("status") == "error":
@@ -124,6 +128,12 @@ def _start(workflow_type: str, payload: dict[str, Any], auth: AuthContext) -> tu
         # Validate before a runner or task is created; resource type is a contract field, not prompt text.
         from app.routers import product
         payload = product.normalize_general_resource_request(payload)
+    elif workflow_type == "resource_search":
+        from app.routers import product
+        try:
+            payload = product.normalize_resource_search_request(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     session_id, subject_id = _session(payload, auth)
     safe_metadata = {"resource_type": str(payload.get("resourceType") or payload.get("type") or "")[:40]}
     try:

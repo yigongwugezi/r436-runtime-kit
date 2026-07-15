@@ -2867,6 +2867,90 @@ def get_resources(
     )
 
 
+@router.post("/resources/search/recommendations")
+def recommend_general_resources(payload: dict[str, Any]) -> dict[str, Any]:
+    """Run the shared public-resource recommender without inventing a section."""
+    session_id = _payload_session_id(payload)
+    try:
+        request = normalize_resource_search_request(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    result = _recommend_section_resources("", request)
+    return _product_response({"recommendations": result}, session_id=session_id, source="search")
+
+
+_ONLINE_SEARCH_RESOURCE_TYPES = {"article", "video", "course", "document", "paper"}
+
+
+@router.post("/resources/search-results/save")
+def save_online_search_result(payload: dict[str, Any]) -> dict[str, Any]:
+    """Save one already-ranked external result; this never starts a generator."""
+    session_id = _payload_session_id(payload)
+    item = payload.get("resource") if isinstance(payload.get("resource"), dict) else {}
+    resource_type = str(item.get("resource_type") or item.get("resourceType") or "").lower().strip()
+    if resource_type not in _ONLINE_SEARCH_RESOURCE_TYPES:
+        raise HTTPException(status_code=422, detail="unsupported external resource type")
+    original_url = str(item.get("url") or "").strip()
+    from app.services.section_resource_recommendations import normalize_search_topic, normalize_url, validate_resource_url
+    canonical_url = validate_resource_url(original_url, resource_type, str(item.get("title") or ""), str(item.get("snippet") or ""))
+    if not canonical_url:
+        raise HTTPException(status_code=422, detail="invalid external resource URL")
+    canonical_topic = normalize_search_topic(payload.get("query") or payload.get("canonicalQuery") or "")
+    if not canonical_topic or canonical_topic == "学习主题":
+        raise HTTPException(status_code=422, detail="query required")
+    subject_id = str(payload.get("subjectId") or "").strip()
+    db = SessionLocal()
+    try:
+        session = db.get(SessionModel, session_id)
+        resolved_subject = subject_id or str((session.subject_id if session else "") or "")
+        if session and session.subject_id and resolved_subject and session.subject_id != resolved_subject:
+            raise HTTPException(status_code=409, detail="session subject mismatch")
+        _ensure_session_linked(session_id, subject_id=resolved_subject)
+        for existing in db.query(ResourceModel).filter(ResourceModel.session_id == session_id).all():
+            metadata = existing.resource_metadata if isinstance(existing.resource_metadata, dict) else {}
+            if normalize_url(str(metadata.get("canonical_url") or "")) == canonical_url:
+                return _product_response(
+                    {"resourceId": existing.id, "reused": True},
+                    session_id=session_id, subject_id=resolved_subject, source="db",
+                )
+        from app.db.repository import upsert_resource
+        resource_id = f"online-{hashlib.sha256(f'{session_id}|{canonical_url}'.encode('utf-8')).hexdigest()[:24]}"
+        saved = upsert_resource(db, session_id, {
+            "id": resource_id,
+            "type": resource_type,
+            "title": str(item.get("title") or canonical_topic)[:256],
+            "description": str(item.get("snippet") or item.get("reason") or "")[:1000],
+            "content": original_url,
+            "knowledge_points": [canonical_topic],
+            "tags": ["online_search", resource_type],
+            "difficulty": "medium",
+            "estimated_minutes": 20,
+            "format": "video" if resource_type == "video" else "text",
+            "source": "system_inferred",
+            "related_stage_id": str(payload.get("stageId") or ""),
+            "related_chapter_id": str(payload.get("chapterId") or ""),
+            "related_section_id": str(payload.get("sectionId") or ""),
+            "task_id": str(payload.get("taskId") or ""),
+            "metadata": {
+                "online_search": True,
+                "original_url": original_url,
+                "canonical_url": canonical_url,
+                "search_topic": canonical_topic,
+                "resource_type": resource_type,
+                "source": str(item.get("source") or ""),
+                "reason": str(item.get("reason") or "")[:500],
+                "quality_status": str(item.get("quality_status") or "passed"),
+                "subject_id": resolved_subject,
+            },
+        })
+        return _product_response(
+            {"resourceId": saved.id, "reused": False},
+            session_id=session_id, subject_id=resolved_subject, source="db",
+        )
+    finally:
+        db.close()
+
+
 @router.get("/resources/{resource_id}")
 def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
     """Get a single resource by ID — tries DB first, then in-memory fallback."""
@@ -6209,6 +6293,21 @@ def poll_video_task(task_id: str) -> dict[str, Any]:
     return {"status": "success", "data": result}
 
 
+def normalize_resource_search_request(payload: dict[str, Any]) -> dict[str, Any]:
+    """Canonicalise a public resource-search topic before task deduplication."""
+    request = dict(payload or {})
+    raw_topic = str(request.get("query") or request.get("topic") or request.get("sectionTitle") or "").strip()
+    if not raw_topic and not str(request.get("sectionId") or "").strip():
+        raise ValueError("query required")
+    if raw_topic:
+        from app.services.section_resource_recommendations import normalize_search_topic
+        canonical = normalize_search_topic(raw_topic)
+        request["canonicalQuery"] = canonical
+        if not str(request.get("sectionId") or "").strip():
+            request["query"] = canonical
+    return request
+
+
 def _recommend_section_resources(
     section_id: str,
     payload: dict[str, Any],
@@ -6217,7 +6316,7 @@ def _recommend_section_resources(
 ) -> dict[str, Any]:
     """Return real external links for a section without archiving them as resources."""
     session_id = _payload_session_id(payload)
-    section_title = str(payload.get("sectionTitle") or "").strip()
+    section_title = str(payload.get("sectionTitle") or payload.get("query") or payload.get("topic") or "").strip()
     knowledge_points = payload.get("knowledgePoints") or []
     if not section_title:
         try:
@@ -6233,6 +6332,9 @@ def _recommend_section_resources(
             pass
     if not section_title:
         return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
+
+    from app.services.section_resource_recommendations import normalize_search_topic
+    canonical_query = normalize_search_topic(section_title)
 
     profile: dict[str, Any] | None = None
     weak_points: list[Any] = []
@@ -6271,7 +6373,7 @@ def _recommend_section_resources(
     result = SectionResourceRecommendationService().recommend(
         session_id=session_id,
         section_id=section_id,
-        section_title=section_title,
+        section_title=canonical_query,
         knowledge_points=knowledge_points if isinstance(knowledge_points, list) else [],
         language=str(payload.get("language") or "zh-CN"),
         resource_types=payload.get("resourceTypes") if isinstance(payload.get("resourceTypes"), list) else [],
@@ -6283,6 +6385,7 @@ def _recommend_section_resources(
         refresh=bool(payload.get("refresh")),
         cancel_event=cancel_event,
     )
+    result["canonical_query"] = canonical_query
     return result
 
 

@@ -14,11 +14,14 @@ export interface ExternalSectionResource {
   language: string;
   trust_level: 'official' | 'educational' | 'general';
   match_level?: 'exact_topic' | 'chapter_level' | 'course_level' | 'expanded_research';
+  quality_status?: string;
   feedback?: 'helpful' | 'not_relevant' | 'too_hard' | 'too_easy' | null;
 }
 
 export interface SectionRecommendationResult {
   query: string[];
+  canonical_query?: string;
+  context?: { topic?: string; course_name?: string };
   resources: ExternalSectionResource[];
   status: 'completed' | 'search_unavailable' | 'no_high_relevance' | 'expanded_no_results' | 'failed' | 'cancelled' | 'stale_results' | 'partial_results';
   warnings: string[];

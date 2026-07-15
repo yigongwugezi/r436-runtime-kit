@@ -11,7 +11,11 @@ export type ResourceType =
   | 'case_study'  // 实操案例
   | 'video'       // 教学视频/动画
   | 'ppt'         // PPT大纲
-  | 'textbook';   // 教材
+  | 'textbook'    // 教材
+  | 'article'
+  | 'course'
+  | 'document'
+  | 'paper';
 
 /** 数据来源类型 */
 export type DataSource = 'user_input' | 'agent_generated' | 'system_inferred' | 'fallback';

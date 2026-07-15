@@ -27,7 +27,7 @@ export default function Header({ title, subtitle }: HeaderProps) {
   const todayMin = analytics?.todayStudyMinutes || 0;
   const todayStr = todayMin >= 60 ? `${(todayMin / 60).toFixed(1)}h` : `${todayMin}min`;
 
-  const handleSearch = (e: React.KeyboardEvent) => { if (e.key === 'Enter' && q.trim()) { nav(`/resources?search=${encodeURIComponent(q.trim())}`); } };
+  const handleSearch = (e: React.KeyboardEvent) => { if (e.key === 'Enter' && q.trim()) { nav(`/resources?mode=online&query=${encodeURIComponent(q.trim())}`); } };
   return (
     <div className="bg-white dark:bg-surface-800 border-b border-surface-200 dark:border-surface-700 px-6 py-4">
       <div className="flex items-center justify-between">

@@ -249,19 +249,19 @@ def _profile_mastery(profile: dict[str, Any] | None) -> list[dict[str, Any]]:
     return [item for item in nested if isinstance(item, dict)] if isinstance(nested, list) else []
 
 
-def _normalize_topic(value: Any) -> str:
+def normalize_search_topic(value: Any) -> str:
     """Remove request wording while retaining the complete knowledge phrase."""
-    topic = re.sub(r"\s+", " ", str(value or "")).strip(" \uff0c,\u3002\uff1b;")
+    topic = re.sub(r"\s+", " ", str(value or "")).strip(" \uff0c,\u3001\u3002\uff1b;")
     if not topic:
         return _TOPIC_FALLBACK
 
-    requested = _REQUEST_PREFIX.sub("", topic).strip(" \u7684\uff0c,\u3002\uff1b;")
+    requested = _REQUEST_PREFIX.sub("", topic).strip(" \u7684\uff0c,\u3001\u3002\uff1b;")
     if requested != topic:
-        requested = _RESOURCE_SUFFIX.sub("", requested).strip(" \u7684\uff0c,\u3002\uff1b;")
+        requested = _RESOURCE_SUFFIX.sub("", requested).strip(" \u7684\uff0c,\u3001\u3002\uff1b;")
         return requested or _TOPIC_FALLBACK
 
     head = re.sub(r"[\uff08(][^()\uff08\uff09]*[\uff09)]", "", topic)
-    head = re.split(r"[\uff0c,\u3002\uff1b;]", head, maxsplit=1)[0]
+    head = re.split(r"[\uff0c,\u3001\u3002\uff1b;]", head, maxsplit=1)[0]
     matches = []
     for concept, _ in _CONCEPTS:
         position = head.find(concept)
@@ -273,7 +273,7 @@ def _normalize_topic(value: Any) -> str:
 
     for term in _ACTION_TERMS:
         head = head.replace(term, "")
-    return head.strip(" \u7684\uff0c,\u3002\uff1b;") or _TOPIC_FALLBACK
+    return head.strip(" \u7684\uff0c,\u3001\u3002\uff1b;") or _TOPIC_FALLBACK
 
 
 def normalize_search_context(
@@ -301,7 +301,7 @@ def normalize_search_context(
     # specific available title instead of the first vocabulary match.
     keywords = list(dict.fromkeys(cn for cn, _ in pairs))
     topic_source = section_title or lecture_title or chapter_title or (knowledge_points or [""])[0]
-    primary_topic = _normalize_topic(topic_source)
+    primary_topic = normalize_search_topic(topic_source)
     if primary_topic != _TOPIC_FALLBACK and primary_topic not in keywords:
         keywords.append(primary_topic)
     for kp in knowledge_points or []:
@@ -515,7 +515,7 @@ class SectionResourceRecommendationService:
                 "title": title, "url": url, "source": source, "resource_type": expected,
                 "platform": platform, "snippet": snippet, "reason": reason + "。",
                 "relevance_score": round(score, 2), "language": language or "zh-CN",
-                "trust_level": trust, "match_level": match_level,
+                "trust_level": trust, "match_level": match_level, "quality_status": "passed",
                 "feedback": feedback,
             })
         return diversify_results(resources)
@@ -768,7 +768,14 @@ class SectionResourceRecommendationService:
         if resources and not refresh:
             self._auto_ingest(resources[:3])
 
-        result = {"query": queries, "resources": resources, "status": status, "warnings": list(dict.fromkeys(warnings))}
+        result = {
+            "query": queries,
+            "canonical_query": context["primary_topic"],
+            "context": {"topic": context["primary_topic"], "course_name": context["course_name"]},
+            "resources": resources,
+            "status": status,
+            "warnings": list(dict.fromkeys(warnings)),
+        }
         self._emit(progress_callback, "completed", "completed", candidate_count=diagnostics["raw_count"], result_count=len(resources), source_count=len({item["source"] for item in resources}))
         if collect_diagnostics:
             result["diagnostics"] = {key: value for key, value in {**diagnostics, "filtered": dict(diagnostics["filtered"]), "cache_stats": SearchCascade.stats()}.items() if not key.startswith("_")}

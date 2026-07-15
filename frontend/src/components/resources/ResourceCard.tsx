@@ -21,6 +21,10 @@ const iconMap: Record<ResourceType, React.ReactNode> = {
   video:      <Play className="w-5 h-5 text-red-500" />,
   ppt:        <Presentation className="w-5 h-5 text-orange-500" />,
   textbook:   <BookOpen className="w-5 h-5 text-blue-500" />,
+  article:    <FileText className="w-5 h-5 text-green-500" />,
+  course:     <BookOpen className="w-5 h-5 text-blue-500" />,
+  document:   <FileText className="w-5 h-5 text-slate-500" />,
+  paper:      <FileText className="w-5 h-5 text-purple-500" />,
 };
 
 const difficultyBadge: Record<string, string> = {

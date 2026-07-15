@@ -18,11 +18,14 @@ import { PageLoading, PageEmpty, PageError } from '../components/common/PageStat
 import SourceBadge from '../components/common/SourceBadge';
 import Markdown from '../utils/markdown';
 import MermaidDiagram from '../utils/mermaid';
+import OnlineResourceSearch from '../components/resources/OnlineResourceSearch';
 
 const icons: Record<string, React.ReactNode> = {
   lecture: <BookOpen className="w-5 h-5 text-blue-500" />, mindmap: <Brain className="w-5 h-5 text-purple-500" />,
   quiz: <FileText className="w-5 h-5 text-amber-500" />, reading: <Lightbulb className="w-5 h-5 text-green-500" />,
   case_study: <Code className="w-5 h-5 text-cyan-500" />, video: <Play className="w-5 h-5 text-red-500" />, ppt: <Presentation className="w-5 h-5 text-orange-500" />,
+  article: <FileText className="w-5 h-5 text-green-500" />, course: <BookOpen className="w-5 h-5 text-blue-500" />,
+  document: <FileText className="w-5 h-5 text-slate-500" />, paper: <FileText className="w-5 h-5 text-purple-500" />,
   summary_card: <FileText className="w-5 h-5 text-green-500" />, concept_comparison: <Lightbulb className="w-5 h-5 text-green-500" />,
   worked_example: <Code className="w-5 h-5 text-cyan-500" />, mistake_checklist: <CheckCircle2 className="w-5 h-5 text-green-500" />,
   review_notes: <BookOpen className="w-5 h-5 text-green-500" />,
@@ -33,13 +36,15 @@ const icons: Record<string, React.ReactNode> = {
 const colorMap: Record<string, { bg: string; text: string }> = {
   lecture: { bg: 'bg-blue-50', text: 'text-blue-600' }, mindmap: { bg: 'bg-purple-50', text: 'text-purple-600' },
   quiz: { bg: 'bg-amber-50', text: 'text-amber-600' }, reading: { bg: 'bg-emerald-50', text: 'text-emerald-600' },
-  case_study: { bg: 'bg-cyan-50', text: 'text-cyan-600' }, video: { bg: 'bg-red-50', text: 'text-red-600' }, ppt: { bg: 'bg-orange-50', text: 'text-orange-600' }
+  case_study: { bg: 'bg-cyan-50', text: 'text-cyan-600' }, video: { bg: 'bg-red-50', text: 'text-red-600' }, ppt: { bg: 'bg-orange-50', text: 'text-orange-600' },
+  article: { bg: 'bg-emerald-50', text: 'text-emerald-600' }, course: { bg: 'bg-blue-50', text: 'text-blue-600' },
+  document: { bg: 'bg-slate-100', text: 'text-slate-600' }, paper: { bg: 'bg-purple-50', text: 'text-purple-600' }
 };
 const diffBadge: Record<string, string> = { easy: 'bg-success-100 text-success-700', medium: 'bg-warning-100 text-warning-700', hard: 'bg-error-100 text-error-700' };
 const diffLabel: Record<string, string> = { easy: '基础', medium: '进阶', hard: '挑战' };
 const qualityLabel: Record<string, string> = { passed: '质检通过', repaired: '已修复', fallback: '本地兜底', failed: '需复核', needs_review: '需复核', fallback_passed: '兜底通过' };
 const qualityBadge: Record<string, string> = { passed: 'bg-success-50 text-success-700', repaired: 'bg-blue-50 text-blue-700', fallback: 'bg-warning-50 text-warning-700', failed: 'bg-error-50 text-error-700', needs_review: 'bg-error-50 text-error-700', fallback_passed: 'bg-warning-50 text-warning-700' };
-const TYPES = ['', 'lecture', 'mindmap', 'quiz', 'reading', 'case_study', 'video', 'ppt', 'textbook'];
+const TYPES = ['', 'lecture', 'mindmap', 'quiz', 'reading', 'case_study', 'video', 'ppt', 'textbook', 'article', 'course', 'document', 'paper'];
 const SORTS = [{ v: 'default', l: '推荐' }, { v: 'newest', l: '最新' }, { v: 'easiest', l: '最简单' }, { v: 'hardest', l: '最困难' }];
 const resourceLabel = (resource: Resource) => RESOURCE_TYPE_LABELS[resource.taskId || ''] || RESOURCE_TYPE_LABELS[resource.type] || resource.type;
 const resourceIcon = (resource: Resource) => icons[resource.taskId || ''] || icons[resource.type];
@@ -536,7 +541,7 @@ function ResourceListView({
 export default function ResourceLibrary() {
   const nav = useNavigate();
   const params = useParams<{ id: string }>();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   // 从 URL 参数读取初始过滤条件
   const initialFilter = useMemo(() => {
@@ -553,6 +558,21 @@ export default function ResourceLibrary() {
   const { resources, total, loading, error, applyFilter, toggleBookmark, refetch, sessionId } = useResources(initialFilter);
   const isParent = getCurrentLearner()?.role === 'parent';
   const activeSubject = useSubjectStore((s) => s.activeSubject);
+  const onlineMode = searchParams.get('mode') === 'online';
+  const onlineQuery = searchParams.get('query') || '';
+
+  const setResourceMode = (mode: 'mine' | 'online') => {
+    const next = new URLSearchParams(searchParams);
+    if (mode === 'online') next.set('mode', 'online');
+    else { next.delete('mode'); next.delete('query'); }
+    setSearchParams(next, { replace: true });
+  };
+  const setOnlineQuery = (query: string) => {
+    const next = new URLSearchParams(searchParams);
+    next.set('mode', 'online');
+    if (query) next.set('query', query); else next.delete('query');
+    setSearchParams(next, { replace: true });
+  };
 
   // ── Textbook ──
   const [textbook, setTextbook] = useState<Textbook | null>(null);
@@ -677,6 +697,11 @@ export default function ResourceLibrary() {
   // 列表视图
   return (
     <div>
+      <div className="mb-5 flex flex-wrap gap-2 rounded-xl bg-surface-100 p-1.5">
+        <button onClick={() => setResourceMode('mine')} className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${!onlineMode ? 'bg-white text-surface-800 shadow-soft' : 'text-surface-500 hover:text-surface-700'}`}>搜索我的资源</button>
+        <button onClick={() => setResourceMode('online')} className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${onlineMode ? 'bg-primary-600 text-white shadow-soft' : 'text-surface-500 hover:text-surface-700'}`}>联网搜索学习资源</button>
+      </div>
+      {onlineMode ? <OnlineResourceSearch sessionId={sessionId} subjectId={activeSubject?.id} query={onlineQuery} onQueryChange={setOnlineQuery} /> : <>
       {/* Textbook card (shown when textbook exists for active subject) */}
       {textbook && textbook.status === 'ready' && (
         <div className="mb-4">
@@ -714,6 +739,7 @@ export default function ResourceLibrary() {
         activeStageId={searchParams.get('relatedStageId') || undefined}
         isReadOnly={isParent}
       />
+      </>}
     </div>
   );
 }

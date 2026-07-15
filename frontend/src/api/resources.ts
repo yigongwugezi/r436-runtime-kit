@@ -78,6 +78,27 @@ export async function deleteResource(resourceId: string, sessionId: string): Pro
   await client.delete(`/api/resources/${resourceId}`, { params: { sessionId } });
 }
 
+export interface OnlineSearchResultToSave {
+  title: string;
+  url: string;
+  resource_type: 'article' | 'video' | 'course' | 'document' | 'paper';
+  source?: string;
+  snippet?: string;
+  reason?: string;
+  quality_status?: string;
+}
+
+export async function saveOnlineSearchResult(params: {
+  sessionId: string;
+  subjectId?: string;
+  query: string;
+  taskId?: string;
+  resource: OnlineSearchResultToSave;
+}): Promise<{ resourceId: string; reused: boolean }> {
+  const { data } = await client.post('/api/resources/search-results/save', params);
+  return data.data || data;
+}
+
 export async function getResourceKnowledgeGraph(
   resourceId: string,
   params: { sessionId: string; subjectId?: string },

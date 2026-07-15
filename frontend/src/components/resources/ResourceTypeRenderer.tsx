@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { ExternalLink } from 'lucide-react';
 import Markdown from '../../utils/markdown';
 import { renderMermaid } from '../../utils/mermaid';
 import type { Resource, CodeBlock, QuizQuestion, PptSlide } from '../../types/resource';
@@ -51,9 +52,24 @@ export default function ResourceTypeRenderer({ resource }: Props) {
       return <VideoRenderer resource={resource} />;
     case 'ppt':
       return <PptRenderer resource={resource} />;
+    case 'article':
+    case 'course':
+    case 'document':
+    case 'paper':
+      return <ExternalResourceRenderer resource={resource} />;
     default:
       return <Markdown content={resource.content || ''} />;
   }
+}
+
+function ExternalResourceRenderer({ resource }: Props) {
+  const url = resource.content || String(resource.resourceMetadata?.original_url || '');
+  let valid = false;
+  try { valid = ['http:', 'https:'].includes(new URL(url).protocol); } catch { /* shown as unavailable */ }
+  return <div className="rounded-xl border border-surface-200 bg-surface-50 p-5">
+    <p className="text-sm text-surface-600">{resource.description || '已保存的公开学习资源。'}</p>
+    {valid ? <a href={url} target="_blank" rel="noopener noreferrer" className="mt-4 inline-flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700">打开原始资源 <ExternalLink size={15} /></a> : <p className="mt-3 text-sm text-amber-700">原始链接已不可用。</p>}
+  </div>;
 }
 
 /* ===================================================================
