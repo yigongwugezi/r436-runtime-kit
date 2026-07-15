@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.db.engine import SessionLocal
-from app.db.models import AnswerRecordModel, PracticeQuestionModel
+from app.db.models import AnswerRecordModel, AttemptModel, ExamSetModel, PracticeQuestionModel, QuizModel
 from app.db.repository import (
     create_attempt,
     get_attempt,
@@ -1332,6 +1332,19 @@ def submit_exam_set(
             if pq is None:
                 continue
 
+            # Build question dict for grading agent
+            q_dict = {
+                "question_id": pq.question_id,
+                "type": pq.type,
+                "stem": pq.stem,
+                "options": pq.options,
+                "correct": pq.correct,
+                "explanation": pq.explanation,
+                "reference_answer": pq.reference_answer,
+                "scoring_rubric": pq.scoring_rubric,
+                "knowledge_points": pq.knowledge_points,
+            }
+
             if pq.type in ("choice", "truefalse"):
                 correct = str(pq.correct or "").strip().upper()
                 student = student_answer.strip().upper()
@@ -1349,6 +1362,11 @@ def submit_exam_set(
                 else:
                     correct_ans = str(pq.correct or "")
                     feedback = f"回答错误。正确答案：{correct_ans}。" + (f"\n解析：{expl}" if expl else "")
+                grade_result = None
+                error_label = None if is_correct else ("概念错误" if pq.type == "choice" else "审题不清")
+                error_expl = "" if is_correct else (expl or f"正确答案是 {correct_ans}")
+                suggestions = [] if is_correct else ["建议复习相关知识点"]
+                strengths = ["回答正确"] if is_correct else []
             else:
                 # Shortanswer/fill — try GradingAgent LLM
                 grade_result = None

@@ -18,9 +18,10 @@ from typing import Any
 from app.agents.base import BaseAgent, register_agent
 from app.services.llm_client import LLMClientError
 
+from app.services.content_safety import safety_engine
+
 logger = logging.getLogger(__name__)
 
-HIGH_RISK_KEYWORDS = {"作弊", "代考", "代写", "破解", "攻击", "违法", "绕过检测"}
 EXACT_CASUAL = {
     "你好", "您好", "hi", "hello", "在吗", "谢谢", "感谢",
     "好的", "好", "明白了", "知道了", "你是谁", "介绍一下",
@@ -36,10 +37,11 @@ class ConversationAgent(BaseAgent):
 
 ## 核心原则
 1. **自然口语化**：像朋友聊天一样说话。严禁"收到指令""已处理""请选择方向""画像完整度""当前画像信息如下""已记录你的信息"等机器话术。
-2. **深入了解优先于快速生成**：学生说"我想学XXX"只是表达意向。你的首要任务是深入了解学生——背景、基础、目标、卡点、时间、偏好。每个维度不仅要知道"是什么"，还要知道"为什么"和"到什么程度"。个性化方案的精度取决于你了解的深度。
+2. **深入了解优先于快速生成**：学生说"我想学XXX"只是表达意向。你的首要任务是深入了解学生——背景、历史、基础、目标、卡点、时间、偏好。每个维度不仅要知道"是什么"，还要知道"为什么"和"到什么程度"。个性化方案的精度取决于你了解的深度。
 3. **多问、深问、巧问**：按以下维度逐个深入了解，每次聚焦 1 个维度深入挖掘，不要像填表一样罗列问题。
    不要只满足于学生的第一句话——"学过一点"追问具体内容，"基础一般"追问哪个部分一般，"要考试"追问什么考试什么时候。
    - 身份/专业背景（什么专业、年级、方向）
+   - 学习历史（之前学过哪些相关课程、成绩如何、有没有特别擅长或特别吃力的科目。注意：不是问"当前基础"，而是问过往的教育经历——比如"高中学过物理吗？大学上过线性代数吗？"。这些过往经历能帮助判断学生的知识结构和学习能力）
    - 目标课程/方向（想学什么、为什么想学、想学到什么程度）
    - 已有基础（用间接方式探测——让学生解释概念、出简单判断题、追问具体学过什么内容。根据科目适配：微积分问数学基础、编程课问编程基础、英语问当前水平）
    - 薄弱点/卡点（不要直接问"你哪里薄弱"——从学生的提问、卡顿、描述中推断。可以问"之前学的时候哪个部分印象最深？""有没有哪类题经常做错？"）
@@ -57,6 +59,7 @@ class ConversationAgent(BaseAgent):
 ## 什么时候才提议生成？
 以下条件全部满足时，才可以自然地说"我对你的学习情况了解得比较清楚了，要开始生成个性化的学习路径吗？"：
 - ✅ 知道了学生的专业/背景
+- ✅ 知道了学生过往的学习经历（至少了解有哪些相关前置课程、成绩水平或学习经验）
 - ✅ 知道了要学什么课程、想学到什么程度
 - ✅ 对学生的已有基础有具体了解（不是"学过一点"这种模糊回答——要么追问出了具体内容，要么通过诊断问题验证了水平）
 - ✅ 知道了学习目标以及目标的具体程度
@@ -79,7 +82,10 @@ class ConversationAgent(BaseAgent):
 回复："导数确实是微积分的第一个坎。你说的'晕'具体是卡在哪里——是求导公式记不住、复合函数求导搞不清、还是导数的几何意义不太理解？"
 
 学生："复合函数求导，什么链式法则的，看到一大坨套来套去就不知道怎么下手了"
-回复："明白了，链式法则是复合函数求导的核心。对了，你是学什么专业的？知道专业背景我可以帮你找更贴切的例子。"
+回复："明白了，链式法则是复合函数求导的核心。对了，你高中和大学之前上过哪些数学课？比如高中学的是理科还是文科数学？大学有没有上过线性代数？"
+
+学生："高中理科数学还可以，大学上过一学期线性代数，但学得一般"
+回复："有理科数学底子就好办，说明你的数学思维和计算能力是过关的。那你是学什么专业的？知道专业背景我可以帮你找更贴切的例子。"
 
 学生："软件工程大二"
 回复："软工的话微积分对后面的算法课和机器学习都有用。你每天大概能投入多长时间来学？是每天都能抽出时间还是主要靠周末？"
@@ -88,7 +94,7 @@ class ConversationAgent(BaseAgent):
 回复："好的，那时间上还是比较充裕的。对了，学习的时候你是更喜欢看文字讲义一步步推、还是喜欢看视频讲解、还是直接做题练手？"
 
 学生："我喜欢先看视频理解概念，然后做题巩固"
-回复："视频+练习的组合效率很高。好了，我对你的学习情况了解得比较清楚了——软工大二、一个月冲刺微积分期末、函数极限有基础但链式法则卡住了、每晚一两小时加周末、偏好视频+练习。要开始生成个性化的学习路径吗？<proposal>plan</proposal>"
+回复："视频+练习的组合效率很高。好了，我对你的学习情况了解得比较清楚了——软工大二、有理科数学底子但线代基础一般、一个月冲刺微积分期末、函数极限有基础但链式法则卡住了、每晚一两小时加周末、偏好视频+练习。要开始生成个性化的学习路径吗？<proposal>plan</proposal>"
 
 ## 禁止事项
 - "请选择方向""画像完整度 X/7""当前画像信息如下""已记录你的信息"
@@ -359,6 +365,13 @@ class ConversationAgent(BaseAgent):
             except Exception:
                 reply = self._minimal_fact_reply(pipeline_result)
 
+        # ── 输出安全检测：确保AI回复不含违规内容 ──
+        if reply and len(reply) > 10:
+            safety_result = safety_engine.check_output(reply)
+            if safety_result.blocked:
+                logger.warning("Output safety blocked reply: %s", safety_result.summary)
+                reply = "抱歉，生成的内容需要进一步审核。请换个方式提问，我会尽力为你提供安全、准确的学习帮助。"
+
         self._save_history(user_message, reply, context)
 
         result = self._make_result(reply=reply, action="none", facts=facts or {})
@@ -426,7 +439,9 @@ class ConversationAgent(BaseAgent):
         return list(self._history)
 
     def _safety_check(self, message):
-        if any(kw in message for kw in HIGH_RISK_KEYWORDS):
+        result = safety_engine.check_input(message)
+        if result.blocked:
+            logger.warning("Content safety blocked user input: %s", result.summary)
             return self._make_result(
                 reply="抱歉，我不能协助这类请求。如果你有学习相关的问题，我很乐意帮忙。",
                 action="unsafe", facts={}

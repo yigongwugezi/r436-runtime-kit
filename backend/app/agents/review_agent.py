@@ -1,8 +1,12 @@
+import logging
 import re
 from typing import Any
 
 from app.agents.base import BaseAgent, register_agent
+from app.services.content_safety import safety_engine
 from app.services.course_catalog import course_catalog
+
+logger = logging.getLogger(__name__)
 
 
 @register_agent
@@ -11,15 +15,6 @@ class ReviewAgent(BaseAgent):
     agent_name = "质量审核智能体"
 
     required_resource_types = {"lecture", "mindmap", "quiz", "reading", "practice"}
-    blocked_terms = {
-        "代写作业",
-        "考试作弊",
-        "泄题",
-        "绕过监考",
-        "违法",
-        "攻击系统",
-        "窃取",
-    }
     trusted_resource_sources = {"llm_generated", "rule_based_fallback"}
     trusted_source_types = {"course_knowledge_base", "agent_generated"}
     resource_quality_statuses = {"passed", "warning", "fallback", "insufficient_context", "fallback_passed"}
@@ -449,6 +444,7 @@ class ReviewAgent(BaseAgent):
         )
 
     def _check_content_safety(self, context: dict[str, Any]) -> dict[str, Any]:
+        """Delegates to the centralized 4-layer ContentSafetyEngine."""
         text = " ".join(
             [
                 str(context.get("diagnosis", {}).get("summary", "")),
@@ -459,19 +455,27 @@ class ReviewAgent(BaseAgent):
                 ),
             ]
         )
-        hits = sorted(term for term in self.blocked_terms if term in text)
-        if hits:
+        result = safety_engine.check_output(text)
+        if result.blocked:
+            logger.warning("ReviewAgent content safety blocked: %s", result.summary)
             return self._check(
                 "content_safety",
                 "内容安全检查",
                 "blocked",
-                f"发现不适合教育场景的内容：{', '.join(hits)}。",
+                f"内容安全引擎检测到违规：{result.summary}",
+            )
+        if result.violations:
+            return self._check(
+                "content_safety",
+                "内容安全检查",
+                "warning",
+                f"内容安全引擎发现低危问题：{result.summary}",
             )
         return self._check(
             "content_safety",
             "内容安全检查",
             "passed",
-            "未发现明显违规或不适合教育场景的内容。",
+            "4层安全引擎检测通过。",
         )
 
     def _course_chapters(self, context: dict[str, Any]) -> list[dict[str, str]]:

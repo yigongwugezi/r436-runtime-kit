@@ -1,0 +1,16 @@
+[
+  {
+    "fingerprint": "task",
+    "summary": "---",
+    "first_seen_iteration": 1,
+    "last_seen_iteration": 1,
+    "count": 1
+  },
+  {
+    "fingerprint": "5-ts-qualitystatuspopover-tsx-resourcecard-tsx-usestream-0fb10f3f",
+    "summary": "全部5个 TS 错误都在我**没改过的文件**里（`QualityStatusPopover.tsx`、`ResourceCard.tsx`、`useStreamChat.ts`、`types/resource.ts`）——是\ufffd",
+    "first_seen_iteration": 2,
+    "last_seen_iteration": 2,
+    "count": 1
+  }
+]

@@ -42,6 +42,10 @@ PROFILE_FIELD_DEFS: dict[str, dict[str, Any]] = {
         "label": "身份/专业背景",
         "question": "你现在的年级、专业或身份是什么？",
     },
+    "learning_history": {
+        "label": "学习历史",
+        "question": "你之前学过哪些相关的课程或内容？成绩怎么样？有什么印象深刻的学习经历？",
+    },
     "target_course": {
         "label": "目标课程/知识方向",
         "question": "你这次最想学习哪门课或哪个知识方向？",
@@ -98,6 +102,7 @@ _SHALLOW_MIN_LENGTH = 8  # 短于这个长度的回答几乎一定是浅层的
 # 当某个维度已有浅层回答时，用追问来获取更深入的信息
 _SHALLOW_FOLLOWUPS: dict[str, str] = {
     "background": "你具体是哪个学校、什么专业的？方便的话也可以说说年级～",
+    "learning_history": "你之前学过的这些课程里，有没有哪门学得特别好或者特别吃力的？能举个例子吗？",
     "target_course": "你想学这门课是为了应对什么？考试、考研、还是做项目？想学到什么程度？",
     "knowledge_base": "你刚才说基础比较泛，能具体说说学过哪些内容、哪个部分觉得比较熟？",
     "weak_points": "能举个例子说说具体哪个题型或知识点觉得比较难吗？",

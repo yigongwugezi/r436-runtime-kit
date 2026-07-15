@@ -28,6 +28,7 @@ class ProfileAgent(BaseAgent):
     # fact 字段名 → profile dimension key 映射（用于增量更新）
     _FACT_TO_DIMENSION: dict[str, str] = {
         "background": "major_background",
+        "learning_history": "learning_history",
         "knowledge_base": "knowledge_base",
         "learning_goal": "learning_goal",
         "preference": "cognitive_style",

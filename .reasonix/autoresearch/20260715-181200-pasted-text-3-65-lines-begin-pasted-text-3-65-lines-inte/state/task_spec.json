@@ -1,0 +1,27 @@
+{
+  "task_id": "20260715-181200-pasted-text-3-65-lines-begin-pasted-text-3-65-lines-inte",
+  "goal": "[Pasted text #3 · 65 lines]\n\n--- Begin [Pasted text #3 · 65 lines] ---\n我这边已经把本地改动、之前远端有价值的功能以及前面发现的主要问题，整合到候选分支并完成自动验收了。\r\r候选分支：\rintegrate/maf-refactor-31613f2\r\r当前 HEAD：\r16a1f48\r\r目前验收结果：\r- 后端自动测试 22/22 通过\r- 真实 Edge E2E 连续运行 3 轮，每轮 5/5 通过\r- 前端恢复和学习路径兼容测试通过\r- npm run build 通过\r- 用户问题关闭矩阵：30 CLOSED / 5 PARTIAL / 0 OPEN\r- 当前没有发现阻塞单机运行和比赛演示的问题\r\r这次主要完成了：\r\r1. 修复 learner 和 Profile V2 跨对话问题\r   - 新对话复用同一 learner\r   - 年级、学习方式等长期 explicit 画像可以跨会话读取\r   - 不同 learner、subject 之间保持隔离\r\r2. 修复重复学科\r   - 统一处理“数据结构”“数据结构、”“ 数据结构 ”等写法\r   - 同一 learner 下复用同一 subject\r   - 增加并发创建保护\r   - 历史重复数据只做 dry-run，不自动修改真实数据库\r\r3. 修复通用资源生成\r   - lecture、mindmap、quiz 按正确类型生成和持久化\r   - 不再出现三种资源全部变成讲义\r   - 接入真实工作流任务、SSE、刷新恢复、取消、重试和任务防重\r   - 删除静态计时器伪造的智能体运行状态\r\r4. 增加通用联网资源搜索\r   - 资源库支持联网搜索入口\r   - 保留“递归调用栈”等完整主题\r   - 支持搜索任务、取消、重试、刷新恢复和结果保存\r   - 搜索不可用时明确降级，不伪造链接\r\r5. 修复学习路径兼容问题\r   - 兼容旧路径和新的 stage.nodes\r   - 不再误显示 0/0、0h\r   - 教材、日课、项目模式支持 URL 和刷新恢复\r   - 章节、小节路由上下文已修复\r   - 长目标和描述改为摘要及展开\r\r6. 整合 PPT、Manim 和媒体资源能力\r   - 增加 PPTX 生成、持久化和下载\r   - 资源支持播放、下载和按 session 删除\r   - 修复删除后资源重新出现的问题\r   - Manim 未安装时明确提示，不影响其他功能\r\r7. 补充测试和仓库卫生\r   - 建立真实 Edge 浏览器 E2E\r   - 增加隔离 SQLite 和 fake Provider 测试环境\r   - 移除当前候选树中的运行时数据、数据库、生成媒体和 tsbuildinfo\r   - 已生成发布候选审计报告和用户问题关闭报告\r\r目前代码已经推送到候选分支，但还没有合入正式 MAF-Refactor。\r\r正式远端目前还有 9 个独有提交，主要涉及 Planner、评估闭环、Agent 调度和跨 learner 授权等重叠改动，其中还有运行时数据路径，所以不建议直接 pull 或自动合并，需要大家后续一起确认哪些改动保留。\r\r目前剩余 PARTIAL 主要是生产和外部环境边界，例如真实 LLM/搜索网络稳定性、多进程任务锁和完整 Manim 系统环境，不属于当前单机演示的阻塞问题。\n--- End [Pasted text #3 · 65 lines] --- 你修复的跟这些有重叠吗",
+  "scope": null,
+  "non_goals": null,
+  "allowed_operations": {
+    "write": true,
+    "network": false,
+    "publish": false
+  },
+  "success_criteria": [
+    {
+      "id": "objective_evidence",
+      "description": "The goal outcome is supported by direct evidence, such as inspected code, reproduced behavior, source material, or concrete findings.",
+      "required": true,
+      "evidence_ids": [
+        "f1"
+      ]
+    },
+    {
+      "id": "verification",
+      "description": "The result has relevant verification evidence, such as tests, commands, benchmarks, manual checks, or a documented reason why verification is not applicable.",
+      "required": true,
+      "evidence_ids": null
+    }
+  ]
+}

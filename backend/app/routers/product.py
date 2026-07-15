@@ -3654,15 +3654,17 @@ def log_study_event(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             from app.db.repository import get_resource as _get_res
             db = SessionLocal()
-            res = _get_res(db, session_id, payload["resourceId"])
-            if (
-                res
-                and res.session_id == session_id
-                and res.estimated_minutes
-                and not payload.get("duration")
-            ):
-                payload["duration"] = res.estimated_minutes
-            db.close()
+            try:
+                res = _get_res(db, session_id, payload["resourceId"])
+                if (
+                    res
+                    and res.session_id == session_id
+                    and res.estimated_minutes
+                    and not payload.get("duration")
+                ):
+                    payload["duration"] = res.estimated_minutes
+            finally:
+                db.close()
         except Exception:
             logger.warning("Failed to auto-fill duration for resource %s in session %s",
                            payload.get("resourceId", "?"), session_id)
@@ -4254,6 +4256,8 @@ def generate_learning_assessment(sessionId: str = "") -> dict[str, Any]:
             status="error", message="评估生成失败",
             session_id=session_id, source="llm_assessment",
         )
+
+@router.get("/learning-events/timeline")
 def learning_timeline(
     sessionId: str = "",
     subjectId: str = "",
@@ -6729,3 +6733,59 @@ async def stream_notifications(sessionId: str = ""):
         },
     )
 
+
+
+# =============================================================================
+# Multimodal save & knowledge endpoints (ChatPage save/import buttons)
+# =============================================================================
+
+@router.post("/multimodal/save-resource")
+def multimodal_save_resource(payload: dict[str, Any]) -> dict[str, Any]:
+    """Save a multimodal generation result as a learning resource."""
+    session_id = str(payload.get("sessionId", "")).strip()
+    result = payload.get("result", {}) if isinstance(payload.get("result"), dict) else {}
+    task_type = str(payload.get("task_type", "")).strip()
+    try:
+        db = SessionLocal()
+        from app.db.models import ResourceModel
+        resource = ResourceModel(
+            id=f"res_{uuid.uuid4().hex[:12]}",
+            session_id=session_id or "unknown",
+            type="multimodal",
+            title=result.get("title", f"{task_type} 资源") if isinstance(result, dict) else f"{task_type} 资源",
+            content=result.get("content", "") if isinstance(result, dict) else "",
+            content_url=result.get("content_url", "") if isinstance(result, dict) else "",
+            source="multimodal_agent",
+            quality_status="passed",
+        )
+        db.add(resource)
+        db.commit()
+        return _product_response({"resourceId": resource.id, "ok": True}, session_id=session_id, source="multimodal")
+    except Exception as e:
+        logger.exception("Failed to save multimodal resource")
+        return _product_response({"ok": False, "error": str(e)[:200]}, session_id=session_id, source="multimodal", status="error")
+    finally:
+        db.close()
+
+
+@router.post("/multimodal/knowledge-candidates")
+def multimodal_knowledge_candidates(payload: dict[str, Any]) -> dict[str, Any]:
+    """Extract knowledge point candidates from a multimodal result for linking."""
+    result = payload.get("result", {}) if isinstance(payload.get("result"), dict) else {}
+    existing = payload.get("knowledge_candidates") if isinstance(payload.get("knowledge_candidates"), list) else []
+    candidates = list(existing) if existing else []
+    # Extract knowledge points from result text
+    text = ""
+    if isinstance(result, dict):
+        for key in ("display_text", "teaching_text", "answer_text", "content"):
+            text = str(result.get(key, "")).strip()
+            if len(text) > 50:
+                break
+    # Simple keyword extraction from text
+    import re as _re
+    kp_pattern = _re.findall(r'[一-鿿]{2,8}(?:定理|定律|法则|原理|公式|概念|方法|算法|结构)', text)
+    if kp_pattern:
+        for kp in kp_pattern[:10]:
+            if kp not in candidates:
+                candidates.append(kp)
+    return _product_response({"candidates": candidates}, source="multimodal")

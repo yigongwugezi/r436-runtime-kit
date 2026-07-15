@@ -34,8 +34,9 @@ export default function LearningAnalyticsPage() {
   if (error && !analytics) return <PageError title="加载分析数据失败" description={error} onRetry={refetch} />;
   if (!analytics) return <PageEmpty icon={<TrendingUp className="w-8 h-8" />} title="暂无学习数据" description="开始学习后这里会显示学习分析报告" />;
 
-  const rv = analytics.resourceViewCount ?? analytics.eventBreakdown['resource_view'] ?? 0;
-  const rc = analytics.resourceCompleteCount ?? analytics.eventBreakdown['resource_complete'] ?? 0;
+  const eb = analytics.eventBreakdown ?? {};
+  const rv = analytics.resourceViewCount ?? eb['resource_view'] ?? 0;
+  const rc = analytics.resourceCompleteCount ?? eb['resource_complete'] ?? 0;
 
   return (
     <div className="space-y-6 animate-fade-in relative">
@@ -61,7 +62,7 @@ export default function LearningAnalyticsPage() {
       <div className="grid grid-cols-2 gap-6">
         <div className="bg-white rounded-2xl p-6 shadow-soft">
           <div className="flex items-center justify-between mb-5"><h3 className="font-display text-lg font-semibold text-surface-800">练习正确率</h3></div>
-          <div className="flex items-center gap-5"><Ring pct={analytics.quizAccuracy ?? 0} /><div className="text-sm text-surface-500">{analytics.quizAccuracy == null ? '完成练习后统计' : analytics.quizAccuracy >= 80 ? '优秀，继续保持' : analytics.quizAccuracy >= 60 ? '不错，有进步空间' : '需要更多练习'}<p className="text-surface-400 mt-1 text-xs">基于 {analytics.eventBreakdown['quiz_result'] || 0} 次练习</p></div></div>
+          <div className="flex items-center gap-5"><Ring pct={analytics.quizAccuracy ?? 0} /><div className="text-sm text-surface-500">{analytics.quizAccuracy == null ? '完成练习后统计' : analytics.quizAccuracy >= 80 ? '优秀，继续保持' : analytics.quizAccuracy >= 60 ? '不错，有进步空间' : '需要更多练习'}<p className="text-surface-400 mt-1 text-xs">基于 {eb['quiz_result'] || 0} 次练习</p></div></div>
         </div>
 
         <div className="bg-white rounded-2xl p-6 shadow-soft">
@@ -102,7 +103,7 @@ export default function LearningAnalyticsPage() {
         </div>
       )}
 
-      {analytics.weakTopics.length > 0 && (
+      {(analytics.weakTopics ?? []).length > 0 && (
         <div className="bg-white rounded-2xl p-6 shadow-soft">
           <h3 className="font-display text-lg font-semibold text-surface-800 mb-4">薄弱知识点</h3>
           <div className="space-y-3">
@@ -442,9 +443,13 @@ export default function LearningAnalyticsPage() {
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2"><Brain size={18} className="text-primary-500" /><h3 className="font-display text-lg font-semibold text-surface-800">AI 学习评估</h3></div>
           <button onClick={async () => {
-            const { generateAssessment } = await import('../api/learningAssessment');
-            const result = await generateAssessment(sessionId || '');
-            if (result?.data) setAiAssessment(result.data);
+            try {
+              const { generateAssessment } = await import('../api/learningAssessment');
+              const result = await generateAssessment(sessionId || '');
+              if (result?.data) setAiAssessment(result.data);
+            } catch (e: any) {
+              setAiAssessment({ status: 'error', summary: e?.message || '评估生成失败，请稍后重试' });
+            }
           }} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-brand-500 bg-brand-50 hover:bg-brand-100 transition-colors">
             <Zap size={14} />生成评估
           </button>

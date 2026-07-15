@@ -6,6 +6,7 @@ Agent pipeline:
 Adapted from: showlab/Code2Video (ICML 2026)
 """
 import json
+import os
 import time
 import subprocess
 import logging
