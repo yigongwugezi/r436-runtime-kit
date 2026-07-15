@@ -1204,6 +1204,7 @@ def _multimodal_chat_payload(
         "knowledge_context": (state.last_result or {}).get("knowledge_context", {}) if isinstance(state.last_result, dict) else {},
         "topic": state.facts.get("target_course") or subject_id,
         "subject_name": state.facts.get("target_course") or "",
+        "provider": payload.get("image_provider") or payload.get("provider", ""),
         **context_cache,
     }
     result = MultimodalAgent().run(context)

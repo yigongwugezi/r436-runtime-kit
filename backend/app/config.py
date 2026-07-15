@@ -23,7 +23,7 @@ def load_backend_env(env_path: Path | None = None) -> bool:
         key = key.strip()
         value = value.strip().strip("'\"")
         if key:
-            os.environ.setdefault(key, value)
+            os.environ[key] = value
     logger.info("Backend env file loaded: %s", path)
     return True
 

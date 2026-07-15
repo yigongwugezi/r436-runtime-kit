@@ -467,6 +467,7 @@ export default function ChatPanel({ open, onClose, panelWidth = 420, onWidthChan
   const [input, setInput] = useState('');
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [imageProvider, setImageProvider] = useState('seedream');
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -590,7 +591,7 @@ export default function ChatPanel({ open, onClose, panelWidth = 420, onWidthChan
 
   const handleSend = () => {
     if (!input.trim() || isStreaming) return;
-    send(input.trim());
+    send(input.trim(), [], { imageProvider });
     setInput('');
     inputRef.current?.focus();
   };
@@ -752,6 +753,19 @@ export default function ChatPanel({ open, onClose, panelWidth = 420, onWidthChan
           {messages.length > 0 && !isStreaming && (
             <PromptTemplates onSelect={(prompt) => { setInput(prompt); inputRef.current?.focus(); }} />
           )}
+          <div className="flex items-center gap-1 mb-1.5">
+            <span className="text-[9px] text-gray-400 flex-shrink-0">生图引擎:</span>
+            <select
+              value={imageProvider}
+              onChange={(e) => setImageProvider(e.target.value)}
+              disabled={isStreaming}
+              className="text-[10px] border border-gray-200 rounded-md px-1.5 py-0.5 bg-white text-gray-600 outline-none focus:border-brand-400 disabled:opacity-50"
+            >
+              <option value="seedream">Seedream 5.0 Lite (豆包)</option>
+              <option value="spark">讯飞星火 绘画</option>
+              <option value="qwen" disabled>通义万相 (Key 过期)</option>
+            </select>
+          </div>
           <div className="flex items-end gap-1.5 mt-1">
             <textarea
               ref={inputRef}

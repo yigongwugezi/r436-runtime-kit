@@ -986,6 +986,115 @@ class QwenImageProvider:
             return _response(status="failed", provider=self.provider, warnings=[str(exc)], trace={"model": model, "endpoint": endpoint})
 
 
+# ── Seedream Image Provider (DeepSeek prompt optimisation → Seedream 5.0 Lite) ──
+
+_SEEDREAM_SYSTEM_PROMPT = """You are a bilingual image description assistant that works with an image generation bot.
+You will be prompted by people looking to create detailed, amazing educational and technical images.
+Take their short prompts and make them extremely detailed and descriptive.
+Rules:
+- Input can be in Chinese or English. If input is in Chinese, output in Chinese. If input is in English, output in English.
+- Output a single image description per request — no explanation, no process, just the description.
+- Include: subject, composition, medium, style, color palette, lighting, and specific visual details.
+- For educational/technical diagrams: specify layout (left/right, top/bottom), colors for each element, label positions, arrow directions.
+- Focus on tangible visual elements, not abstract emotions.
+- Descriptions should be 80-200 words."""
+
+_SEEDREAM_FEWSHOT: list[dict[str, str]] = [
+    {"role": "user", "content": 'Create an imaginative image descriptive caption for the user input : "画一个白发、神情忧郁的动漫女孩，手里拿着一支香烟"'},
+    {"role": "assistant", "content": "这幅图像是一幅动漫风格的插画，画中描绘了一位长发飘逸的白发女孩。她神情忧郁，双眼低垂，脸上带着微微的愁容。女孩穿着浅色外套，里面搭配深色衬衫和领带，增添了她沉静却时尚的外表。背景描绘了一个冬季的城市场景，地面和建筑物上覆盖着积雪，街边停着一辆车，增强了场景的荒凉氛围。整幅作品细致精美，典型的现代动漫插画风格。"},
+    {"role": "user", "content": 'Create an imaginative image descriptive caption for the user input : "画一张CNN卷积神经网络的工作流程图"'},
+    {"role": "assistant", "content": "A clear technical diagram showing a 3x3 convolution kernel sliding across a 5x5 input feature map. The kernel is highlighted in blue, the input grid in orange, positioned on a light gray background. Curved arrows trace the sliding path from left to right, top to bottom. Mathematical annotations appear below: F(i,j) = sum(W*X) + b. Clean academic textbook illustration style, isometric or flat 2D layout, labeled axes and dimension markers."},
+]
+
+def _optimize_prompt_with_deepseek(raw_prompt: str) -> str:
+    """Use DeepSeek to expand a short prompt into a detailed image description."""
+    ds_key = _env("DEEPSEEK_API_KEY")
+    ds_url = _env("DEEPSEEK_BASE_URL", default="https://api.deepseek.com/v1")
+    ds_model = _env("DEEPSEEK_MODEL", default="deepseek-chat")
+    if not ds_key:
+        raise RuntimeError("DEEPSEEK_API_KEY not configured for prompt optimisation")
+    messages: list[dict[str, str]] = [{"role": "system", "content": _SEEDREAM_SYSTEM_PROMPT}]
+    messages.extend(_SEEDREAM_FEWSHOT)
+    messages.append({"role": "user", "content": f'Create an imaginative image descriptive caption for the user input : "{raw_prompt}"'})
+    body = _json_post(
+        f"{ds_url}/chat/completions",
+        {"model": ds_model, "messages": messages, "temperature": 0.01, "max_tokens": 1024},
+        ds_key,
+        timeout=60,
+    )
+    enhanced = _text(body["choices"][0]["message"]["content"])
+    return enhanced
+
+
+class SeedreamImageProvider:
+    name = "SeedreamImageProvider"
+    provider = "seedream"
+
+    @staticmethod
+    def is_configured() -> bool:
+        ark_key = _env("ARK_API_KEY")
+        ds_key = _env("DEEPSEEK_API_KEY")
+        return bool(ark_key) and bool(ds_key)
+
+    def __init__(self, post_json: Any | None = None) -> None:
+        self.post_json = post_json or _json_post
+
+    def run(self, context: dict[str, Any]) -> dict[str, Any]:
+        ark_key = _env("ARK_API_KEY")
+        ds_key = _env("DEEPSEEK_API_KEY")
+        endpoint = _env("SEEDREAM_ENDPOINT") or "https://ark.cn-beijing.volces.com/api/v3/images/generations"
+        model = _env("SEEDREAM_MODEL", default="doubao-seedream-5-0-lite-260128")
+        size = _env("SEEDREAM_SIZE", default="1920x1920")
+
+        if not ark_key:
+            return _response(status="provider_not_configured", provider=self.provider,
+                warnings=["ARK_API_KEY not configured for Seedream image generation."],
+                trace={"required_env": ["ARK_API_KEY"]})
+        if not ds_key:
+            return _response(status="provider_not_configured", provider=self.provider,
+                warnings=["DEEPSEEK_API_KEY not configured for prompt optimisation."],
+                trace={"required_env": ["DEEPSEEK_API_KEY"]})
+
+        raw_prompt = _text(context.get("prompt") or context.get("user_message") or context.get("topic"))
+        if not raw_prompt:
+            return _response(status="needs_input", provider=self.provider,
+                warnings=["missing image prompt"])
+
+        try:
+            # Step 1 — DeepSeek prompt optimisation
+            enhanced_prompt = _optimize_prompt_with_deepseek(raw_prompt)
+            logger.info("Seedream prompt enhanced: %d → %d chars", len(raw_prompt), len(enhanced_prompt))
+        except Exception as exc:
+            logger.warning("Prompt optimisation failed, using raw prompt: %s", exc)
+            enhanced_prompt = raw_prompt
+
+        try:
+            # Step 2 — Seedream image generation
+            body = self.post_json(endpoint,
+                {"model": model, "prompt": enhanced_prompt, "n": 1, "size": size},
+                ark_key,
+                timeout=int(os.getenv("SEEDREAM_TIMEOUT", "120")))
+            urls: list[str] = []
+            for item in body.get("data") or []:
+                if isinstance(item, dict) and _text(item.get("url")):
+                    urls.append(_text(item.get("url")))
+            result = {
+                "image_urls": urls,
+                "raw_prompt": raw_prompt,
+                "enhanced_prompt": enhanced_prompt,
+                "model": model,
+            }
+            return _response(
+                status="success" if urls else "partial_success",
+                provider=self.provider,
+                result=result,
+                trace={"model": model, "endpoint": endpoint, "prompt_chars": len(enhanced_prompt)})
+        except Exception as exc:
+            return _response(status="failed", provider=self.provider,
+                warnings=[str(exc)],
+                trace={"model": model, "endpoint": endpoint})
+
+
 def _micro_lesson_script(context: dict[str, Any]) -> dict[str, Any]:
     topic = _text(context.get("topic") or context.get("user_message")) or "学习主题"
     subject = _text(context.get("subject_name") or topic)
@@ -1118,21 +1227,22 @@ class ManimVideoProvider:
         audio_path = ""
         audio_url = ""
 
-        # Use Qwen for code generation (better at Manim than DeepSeek)
+        # Use factory for code generation (respects LLM_CODER_PROVIDER from .env)
         code_llm = llm
         try:
-            qwen_key = _env("DASHSCOPE_API_KEY", "QWEN_API_KEY")
-            if qwen_key:
-                from app.services.llm_client import DeepSeekLLMClient
-                code_llm = DeepSeekLLMClient(
-                    api_key=qwen_key,
-                    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-                    model="qwen-plus",
-                    temperature=0.3,
-                )
-                logger.info("Using Qwen for Manim code generation")
+            from app.services.llm_factory import get_coder
+            coder_func = get_coder()
+            code_llm = llm  # fallback — UnifiedChatClient doesn't have chat(), use existing
+            # Actually use get_chat_client for Qwen-Coder
+            from app.services.llm_factory import get_chat_client as _coder_client
+            # Only swap if Qwen is configured as coder
+            import os as _os
+            coder_prov = _os.getenv("LLM_CODER_PROVIDER", "")
+            if coder_prov:
+                code_llm = _coder_client()
+                logger.info("Using factory coder (%s) for Manim code", coder_prov)
         except Exception as e:
-            logger.warning("Qwen init failed, using default: %s", e)
+            logger.warning("Factory coder init failed, using default: %s", e)
 
         # ── Step 2a: Generate narration FIRST, get its duration ──
         _tmp_audio = ""

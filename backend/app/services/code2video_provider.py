@@ -50,12 +50,10 @@ class Code2VideoProvider:
 
     @staticmethod
     def is_configured() -> bool:
-        """Check if at least one of DeepSeek or Qwen API is configured."""
-        ds_key = os.getenv("DEEPSEEK_API_KEY", "")
-        qwen_key = os.getenv("QWEN_API_KEY", "")
+        """Check if LLM factory has at least one provider configured."""
+        from app.services.llm_factory import is_configured as _factory_ok
         import shutil
-        has_manim = shutil.which("manim") is not None
-        return bool(ds_key or qwen_key) and has_manim
+        return _factory_ok() and shutil.which("manim") is not None
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         import shutil
@@ -67,15 +65,14 @@ class Code2VideoProvider:
                 trace={"required": ["manim CLI"]},
             )
 
-        # Check API keys — at least one must be configured
-        ds_key = os.getenv("DEEPSEEK_API_KEY", "")
-        qwen_key = os.getenv("QWEN_API_KEY", "")
-        if not ds_key and not qwen_key:
+        # Check API keys via unified factory
+        from app.services.llm_factory import is_configured as _factory_ok
+        if not _factory_ok():
             return _response(
                 status="provider_not_configured",
                 provider=self.provider,
-                warnings=["DEEPSEEK_API_KEY or QWEN_API_KEY not set. Switch to ManimVideoProvider."],
-                trace={"required": ["DEEPSEEK_API_KEY", "QWEN_API_KEY"]},
+                warnings=["No LLM provider configured. Set *_API_KEY in .env and check llm_factory.py"],
+                trace={"required": ["DEEPSEEK_API_KEY or QWEN_API_KEY or GLM_API_KEY or OPENAI_API_KEY"]},
             )
 
         topic = self._extract_topic(context)
@@ -93,7 +90,7 @@ class Code2VideoProvider:
         if progress:
             progress({"stage": "rag_retrieval", "status": "completed", "completed_units": 1, "total_units": 5})
 
-        # ── Step 2: Run Code2Video pipeline ──
+        # ── Step 2: Outline + Storyboard (no rendering yet) ──
         job_id = uuid.uuid4().hex
         work_dir = self.output_dir / job_id
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -124,7 +121,43 @@ class Code2VideoProvider:
                 cfg=cfg,
             )
 
-            video_path = agent.GENERATE_VIDEO()
+            agent.generate_outline()
+            agent.generate_storyboard()
+
+            # ── Step 2.5: Generate narration per-section BEFORE code ──
+            if progress:
+                progress({"stage": "narration", "status": "running", "completed_units": 2, "total_units": 5})
+
+            narration_audio_files = []
+            for section in agent.sections:
+                # Generate concise narration from lecture_lines
+                lines_text = "。".join(section.lecture_lines)
+                narration_text = self._generate_short_narration(
+                    f"{section.title}：{lines_text}", subject, kb_context
+                )
+                if narration_text and len(narration_text) > 5:
+                    agent.section_narrations[section.id] = narration_text
+                    audio_path = self._tts_chattts(narration_text, f"{job_id}_{section.id}") or self._tts_narration(narration_text, f"{job_id}_{section.id}")
+                    if audio_path:
+                        dur = self._get_audio_duration(audio_path)
+                        agent.section_durations[section.id] = dur
+                        narration_audio_files.append(audio_path)
+                        logger.info("Narration for %s: %.1fs", section.id, dur)
+
+            # ── Step 3: Render with duration hints ──
+            if progress:
+                progress({"stage": "rendering", "status": "running", "completed_units": 3, "total_units": 5})
+
+            for section in agent.sections:
+                logger.info(f"Processing: {section.id} - {section.title}")
+                agent.render_section(section)
+                if cfg.use_feedback and section.id in agent.section_videos:
+                    for round_num in range(cfg.feedback_rounds):
+                        feedback = agent.get_critic_feedback(section)
+                        if feedback:
+                            agent.optimize_with_feedback(section, feedback)
+
+            video_path = agent.merge_videos()
 
             if not video_path or not os.path.isfile(video_path):
                 return _response(
@@ -137,7 +170,7 @@ class Code2VideoProvider:
             logger.info("Code2Video generated: %s", video_path)
 
             if progress:
-                progress({"stage": "rendering", "status": "completed", "completed_units": 3, "total_units": 5})
+                progress({"stage": "rendering", "status": "completed", "completed_units": 4, "total_units": 5})
 
         except Exception as e:
             logger.warning("Code2Video failed: %s", e)
@@ -148,23 +181,19 @@ class Code2VideoProvider:
                 trace={"topic": topic},
             )
 
-        # ── Step 3: Generate Chinese narration + ChatTTS (precise audio) ──
-        if progress:
-            progress({"stage": "narration", "status": "running", "completed_units": 4, "total_units": 5})
-
-        narration_text = self._generate_narration(topic, subject, kb_context)
-        audio_path = ""
+        # ── Step 3: Concatenate per-section narration audio + merge ──
         audio_url = ""
-        if narration_text and len(narration_text) > 20:
-            audio_path = self._tts_chattts(narration_text, job_id) or self._tts_narration(narration_text, job_id)
-            if audio_path:
-                rel_a = audio_path.replace("\\", "/")
+        if narration_audio_files:
+            if progress:
+                progress({"stage": "narration", "status": "running", "completed_units": 4, "total_units": 5})
+            concat_audio = self._concat_audio(narration_audio_files, job_id)
+            if concat_audio:
+                rel_a = concat_audio.replace("\\", "/")
                 outputs_root_a = str(settings.project_root / "outputs").replace("\\", "/") + "/"
                 if rel_a.startswith(outputs_root_a):
                     rel_a = rel_a[len(outputs_root_a):]
                 audio_url = f"/api/multimodal/file/outputs/{rel_a}"
-                # Merge audio into video
-                merged = self._merge_audio_video(video_path, audio_path, job_id)
+                merged = self._merge_audio_video(video_path, concat_audio, job_id)
                 if merged:
                     video_path = merged
 
@@ -187,6 +216,11 @@ class Code2VideoProvider:
             rel = rel[len(outputs_root):]
         url = f"/api/multimodal/file/outputs/{rel}"
 
+        # Collect all narration texts from agent
+        all_narration = "\n\n".join(
+            agent.section_narrations.get(s.id, "") for s in agent.sections
+        ) if hasattr(agent, 'section_narrations') else ""
+
         return _response(
             status="success",
             provider=self.provider,
@@ -194,7 +228,7 @@ class Code2VideoProvider:
                 "video_url": url,
                 "local_path": video_path,
                 "audio_url": audio_url,
-                "narration_text": narration_text,
+                "narration_text": all_narration,
             },
         )
 
@@ -220,6 +254,64 @@ class Code2VideoProvider:
                     )
         except Exception:
             pass
+        return ""
+
+    @staticmethod
+    def _generate_short_narration(content: str, subject: str, kb_context: str) -> str:
+        """Generate a SHORT narration for a single section."""
+        kb_block = f"\n知识点参考：{kb_context[:500]}" if kb_context else ""
+        prompt = (
+            f"把以下教学要点写成一句中文讲解旁白，自然口语，20-40字。\n"
+            f"课程: {subject}\n要点: {content}{kb_block}\n只输出旁白。"
+        )
+        try:
+            from app.services.llm_client import get_llm_client
+            llm = get_llm_client()
+            return llm.chat(
+                messages=[
+                    {"role": "system", "content": "你是老师。把要点写成一句口语旁白。"},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.3, max_tokens=200,
+            ).strip()
+        except Exception:
+            return content[:50]
+
+    def _get_audio_duration(self, audio_path: str) -> float:
+        """Get audio duration via FFmpeg."""
+        import shutil as _s, subprocess, re as _re
+        ffmpeg = _s.which("ffmpeg")
+        if not ffmpeg:
+            for c in [r"C:\\Users\\hejiaxuan\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-8.1.2-full_build\\bin\\ffmpeg.exe"]:
+                if os.path.isfile(c): ffmpeg = c; break
+        if not ffmpeg: return 5.0
+        try:
+            r = subprocess.run([str(ffmpeg), "-i", audio_path, "-f", "null", "-"],
+                capture_output=True, text=True, timeout=10)
+            m = _re.search(r"Duration: (\d+):(\d+):(\d+\.\d+)", r.stderr)
+            if m: return int(m.group(1))*3600 + int(m.group(2))*60 + float(m.group(3))
+        except: pass
+        return 5.0
+
+    def _concat_audio(self, audio_files: list, job_id: str) -> str:
+        """Concatenate multiple audio files with FFmpeg."""
+        import shutil as _s, subprocess
+        ffmpeg = _s.which("ffmpeg")
+        if not ffmpeg:
+            for c in [r"C:\\Users\\hejiaxuan\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-8.1.2-full_build\\bin\\ffmpeg.exe"]:
+                if os.path.isfile(c): ffmpeg = c; break
+        if not ffmpeg: return ""
+        if len(audio_files) == 1: return audio_files[0]
+        list_file = self.output_dir / f"{job_id}_audio_list.txt"
+        with open(list_file, "w", encoding="utf-8") as f:
+            for af in audio_files: f.write(f"file '{af}'\n")
+        out = self.output_dir / f"{job_id}_narration_combined.wav"
+        try:
+            r = subprocess.run([str(ffmpeg), "-y", "-f", "concat", "-safe", "0",
+                "-i", str(list_file), "-c", "copy", str(out)],
+                capture_output=True, text=True, timeout=30)
+            if r.returncode == 0 and out.exists(): return str(out)
+        except: pass
         return ""
 
     @staticmethod

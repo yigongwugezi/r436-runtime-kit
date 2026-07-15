@@ -97,6 +97,9 @@ class TeachingVideoAgent:
         
         # Reference image path (optional)
         self.reference_img_path = None
+        # Per-section narration durations (set externally before rendering)
+        self.section_durations: Dict[str, float] = {}
+        self.section_narrations: Dict[str, str] = {}
     
     def _track_tokens(self, usage: Optional[Dict]) -> None:
         if usage:
@@ -219,6 +222,10 @@ class TeachingVideoAgent:
                 section=section,
                 base_class=base_class,
             )
+            # Add duration hint if narration duration is known
+            if section.id in self.section_durations:
+                dur = self.section_durations[section.id]
+                prompt += f"\n\n动画总时长必须精确为 {dur:.1f} 秒。每段动画的 self.wait() 总加和要等于 {dur:.1f} 秒。"
         
         response, usage = self.cfg.coder_api(
             prompt, max_tokens=self.cfg.max_code_token_length

@@ -9,6 +9,7 @@ from app.services.multimodal_provider import (
     MindMapTool,
     QwenImageProvider,
     QwenVisionProvider,
+    SeedreamImageProvider,
     WanVideoProvider,
 )
 from app.services.spark_provider import (
@@ -38,9 +39,12 @@ class ToolRegistry:
             "image_to_variant_questions": "QwenVisionProvider",
             "image_to_resource_bundle": "QwenVisionProvider",
             # ── 生成类 ──
-            "image_generation": "QwenImageProvider",
-            "concept_card_generation": "QwenImageProvider",
-            "teaching_diagram_generation": "QwenImageProvider",
+            "image_generation": "SeedreamImageProvider",
+            "concept_card_generation": "SeedreamImageProvider",
+            "teaching_diagram_generation": "SeedreamImageProvider",
+            "image_generation_qwen": "QwenImageProvider",
+            "concept_card_generation_qwen": "QwenImageProvider",
+            "teaching_diagram_generation_qwen": "QwenImageProvider",
             "video_generation": "Code2VideoProvider",
             "micro_lesson_video": "Code2VideoProvider",
             "video_script_generation": "Code2VideoProvider",
@@ -101,6 +105,7 @@ def default_registry() -> ToolRegistry:
     registry = ToolRegistry()
     registry.register_tool("MindMapTool", MindMapTool())
     registry.register_tool("QwenVisionProvider", QwenVisionProvider())
+    registry.register_tool("SeedreamImageProvider", SeedreamImageProvider())
     registry.register_tool("QwenImageProvider", QwenImageProvider())
     registry.register_tool("WanVideoProvider", WanVideoProvider())
     registry.register_tool("ManimVideoProvider", ManimVideoProvider())

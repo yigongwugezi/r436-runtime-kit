@@ -94,6 +94,12 @@ class MultimodalAgent:
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         task_type = _infer_task_type(context)
+        # ── 允许前端/上下文指定生图 Provider ──
+        _GEN_TASKS = {"image_generation", "teaching_diagram_generation", "concept_card_generation"}
+        if task_type in _GEN_TASKS:
+            provider = _text(context.get("provider") or context.get("image_provider"))
+            if provider and provider != "seedream":
+                task_type = f"{task_type}_{provider}"
         if task_type == "structured_learning_resource":
             from app.services.structured_multimodal_resources import build_structured_resource
 
