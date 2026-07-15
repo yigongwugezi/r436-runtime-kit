@@ -18,6 +18,7 @@ function start(command, args, options) { return spawn(command, args, { ...option
 async function stop(child) { if (child?.exitCode === null && !child.killed) { child.kill(); await Promise.race([new Promise((resolve) => child.once('exit', resolve)), sleep(5000)]); } }
 async function waitFor(url, label) { for (const deadline = Date.now() + 30_000; Date.now() < deadline; await sleep(100)) try { if ((await fetch(url)).ok) return; } catch {} throw new Error(`${label} did not start`); }
 async function waitForBrowser(cdp, expression, label) { for (const deadline = Date.now() + 20_000; Date.now() < deadline; await sleep(100)) if (await cdp.evaluate(expression)) return; throw new Error(`${label} did not render`); }
+async function waitForCondition(check, label, timeout = 15000) { for (const deadline = Date.now() + timeout; Date.now() < deadline; await sleep(100)) if (await check()) return; throw new Error(`${label} did not complete`); }
 
 class Cdp {
   constructor(socket) { this.socket = socket; this.nextId = 1; this.pending = new Map(); this.events = []; socket.addEventListener('message', ({ data }) => { const message = JSON.parse(data); if (message.id) this.pending.get(message.id)?.(message); else this.events.push(message); }); }
@@ -47,6 +48,11 @@ function workflowStarts(cdp) {
   const ids = new Set(requests.map((event) => event.params.requestId));
   return cdp.events.filter((event) => event.method === 'Network.responseReceived' && ids.has(event.params.requestId));
 }
+function chatSessionStarts(cdp) {
+  const requests = cdp.events.filter((event) => event.method === 'Network.requestWillBeSent' && event.params.request.url.includes('/api/chat/sessions') && event.params.request.method === 'POST');
+  const ids = new Set(requests.map((event) => event.params.requestId));
+  return cdp.events.filter((event) => event.method === 'Network.responseReceived' && ids.has(event.params.requestId));
+}
 async function responseBody(cdp, event) { return JSON.parse((await cdp.call('Network.getResponseBody', { requestId: event.params.requestId })).body); }
 function requestBody(cdp, event) { return JSON.parse(cdp.events.find((item) => item.method === 'Network.requestWillBeSent' && item.params.requestId === event.params.requestId).params.request.postData); }
 async function browserApi(cdp, url, token, method = 'GET', body) {
@@ -57,7 +63,7 @@ test('real Edge separates local resources from recoverable online search', { tim
   const tempDir = await mkdtemp(join(tmpdir(), 'eduagent-online-search-e2e-'));
   let backend; let frontend; let edge; let socket; let secondSocket;
   try {
-    backend = start('python', ['backend/tests/browser_fake_server.py'], { cwd: repoDir, env: { ...process.env, PYTHONPATH: 'backend', EDUAGENT_SKIP_ENV_FILE: '1', LLM_PROVIDER: 'mock', DATABASE_URL: `sqlite:///${join(tempDir, 'browser.db')}`, PORT: String(backendPort), EDUAGENT_RESOURCE_SEARCH_DELAY_MS: '1200' } });
+    backend = start('python', ['backend/tests/browser_fake_server.py'], { cwd: repoDir, env: { ...process.env, PYTHONPATH: 'backend', EDUAGENT_SKIP_ENV_FILE: '1', LLM_PROVIDER: 'mock', DATABASE_URL: `sqlite:///${join(tempDir, 'browser.db')}`, PORT: String(backendPort), EDUAGENT_RESOURCE_SEARCH_DELAY_MS: '5000' } });
     await waitFor(`http://127.0.0.1:${backendPort}/api/health`, 'isolated backend');
     const registered = await fetch(`http://127.0.0.1:${backendPort}/api/auth/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: '13900000011', password: 'e2e-only', nickname: 'search-fixture', role: 'student' }) });
     assert.equal(registered.ok, true);
@@ -71,12 +77,12 @@ test('real Edge separates local resources from recoverable online search', { tim
     await cdp.evaluate(`localStorage.setItem('edu_token', ${JSON.stringify(token)}); location.assign('/chat')`);
     await waitForBrowser(cdp, "Boolean(document.querySelector('textarea'))", 'chat page');
     await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.includes('新对话')).click()");
-    await sleep(400);
+    await waitForCondition(() => chatSessionStarts(cdp).length === 1, 'new chat session');
     await cdp.evaluate(`location.assign(${JSON.stringify(`/resources?mode=online&query=${encodeURIComponent('递归调用栈')}`)})`);
     await waitForBrowser(cdp, "Boolean(document.querySelector(\"input[placeholder='例如：递归调用栈']\"))", 'online resource page');
     assert.equal(await cdp.evaluate("document.querySelector(\"input[placeholder='例如：递归调用栈']\").value"), '递归调用栈');
     await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.trim() === '联网搜索').click()");
-    await sleep(250);
+    await waitForCondition(() => workflowStarts(cdp).length === 1, 'online search workflow start');
     assert.equal(workflowStarts(cdp).length, 1, 'online search creates one workflow task');
     const started = await responseBody(cdp, workflowStarts(cdp)[0]);
     const startPayload = requestBody(cdp, workflowStarts(cdp)[0]);
@@ -86,7 +92,7 @@ test('real Edge separates local resources from recoverable online search', { tim
     assert.ok(sessionId);
     await cdp.call('Page.reload');
     await waitForBrowser(cdp, "Boolean(document.querySelector(\"input[placeholder='例如：递归调用栈']\"))", 'reloaded online resource page');
-    await sleep(2200);
+    await waitForCondition(async () => (await browserApi(cdp, `http://127.0.0.1:${backendPort}/api/workflows/${started.task_id}?sessionId=${encodeURIComponent(sessionId)}`, token)).body.status === 'completed', 'recovered search workflow');
     const finished = await browserApi(cdp, `http://127.0.0.1:${backendPort}/api/workflows/${started.task_id}?sessionId=${encodeURIComponent(sessionId)}`, token);
     assert.equal(finished.body.status, 'completed');
     assert.equal(finished.body.result.data.recommendations.resources.length, 5);
@@ -97,10 +103,10 @@ test('real Edge separates local resources from recoverable online search', { tim
 
     await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.trim() === '视频').click()");
     await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.trim() === '保存').click()");
-    await sleep(250);
+    await waitForCondition(async () => (await browserApi(cdp, `http://127.0.0.1:${backendPort}/api/resources?sessionId=${encodeURIComponent(sessionId)}`, token)).body.data.resources.filter((item) => ['article', 'video'].includes(item.type)).length === 1, 'video save');
     await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.trim() === '文章').click()");
     await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.trim() === '保存').click()");
-    await sleep(250);
+    await waitForCondition(async () => (await browserApi(cdp, `http://127.0.0.1:${backendPort}/api/resources?sessionId=${encodeURIComponent(sessionId)}`, token)).body.data.resources.filter((item) => ['article', 'video'].includes(item.type)).length === 2, 'article save');
     const resources = await browserApi(cdp, `http://127.0.0.1:${backendPort}/api/resources?sessionId=${encodeURIComponent(sessionId)}`, token);
     assert.equal(resources.ok, true);
     assert.equal(resources.body.data.resources.filter((item) => ['article', 'video'].includes(item.type)).length, 2);
@@ -115,7 +121,7 @@ test('real Edge separates local resources from recoverable online search', { tim
     await waitForBrowser(cdp, "Boolean(document.querySelector(\"input[placeholder='例如：递归调用栈']\"))", 'online search form');
     await setText(cdp, "input[placeholder='例如：递归调用栈']", '递归调用栈、');
     await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.trim() === '联网搜索').click()");
-    await sleep(200);
+    await waitForCondition(() => workflowStarts(cdp).length >= 2, 'cancellable search workflow start');
     await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.trim() === '取消').click()");
     await waitForBrowser(cdp, "document.body.innerText.includes('任务已取消')", 'cancelled search task');
     await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.includes('重试')).click()");
@@ -127,17 +133,20 @@ test('real Edge separates local resources from recoverable online search', { tim
 
     await setText(cdp, "input[placeholder='例如：递归调用栈']", '递归调用栈示例');
     await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.trim() === '联网搜索').click()");
-    await sleep(200);
+    await waitForCondition(() => workflowStarts(cdp).length >= 4, 'active duplicate-search workflow');
     const firstActive = await responseBody(cdp, workflowStarts(cdp).at(-1));
+    const firstActivePayload = requestBody(cdp, workflowStarts(cdp).at(-1));
     const target = await cdp.call('Target.createTarget', { url: `http://127.0.0.1:${frontendPort}/resources?mode=online&query=${encodeURIComponent('递归调用栈示例')}` });
-    for (let deadline = Date.now() + 10_000; Date.now() < deadline; await sleep(100)) { const pages = await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json(); if (pages.some((page) => page.id === target.targetId)) break; }
+    await waitForCondition(async () => (await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json()).some((page) => page.id === target.targetId), 'second browser target', 10000);
     const pages = await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json(); const second = pages.find((page) => page.id === target.targetId);
     secondSocket = new WebSocket(second.webSocketDebuggerUrl); await new Promise((resolve, reject) => { secondSocket.addEventListener('open', resolve, { once: true }); secondSocket.addEventListener('error', reject, { once: true }); });
     const secondCdp = new Cdp(secondSocket); await secondCdp.call('Runtime.enable'); await secondCdp.call('Network.enable');
     await waitForBrowser(secondCdp, "Boolean(document.querySelector(\"input[placeholder='例如：递归调用栈']\"))", 'second online resource page');
     await secondCdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.trim() === '联网搜索').click()");
-    await sleep(200);
+    await waitForCondition(() => workflowStarts(secondCdp).length === 1, 'second tab workflow start');
     const secondActive = await responseBody(secondCdp, workflowStarts(secondCdp)[0]);
+    const secondActivePayload = requestBody(secondCdp, workflowStarts(secondCdp)[0]);
+    assert.equal(secondActivePayload.sessionId, firstActivePayload.sessionId, 'same browser profile must keep the same session scope');
     assert.equal(secondActive.task_id, firstActive.task_id, 'two tabs with same topic/context reuse one runner');
     assert.equal(secondActive.reused_existing, true);
   } finally {

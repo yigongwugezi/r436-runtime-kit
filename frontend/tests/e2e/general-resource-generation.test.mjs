@@ -18,6 +18,7 @@ function start(command, args, options) { return spawn(command, args, { ...option
 async function stop(child) { if (child?.exitCode === null && !child.killed) { child.kill(); await Promise.race([new Promise((resolve) => child.once('exit', resolve)), sleep(5000)]); } }
 async function waitFor(url, label) { for (const deadline = Date.now() + 30000; Date.now() < deadline; await sleep(100)) try { if ((await fetch(url)).ok) return; } catch {} throw new Error(`${label} did not start`); }
 async function waitForBrowser(cdp, expression, label) { for (const deadline = Date.now() + 15000; Date.now() < deadline; await sleep(100)) if (await cdp.evaluate(expression)) return; throw new Error(`${label} did not render`); }
+async function waitForCondition(check, label, timeout = 15000) { for (const deadline = Date.now() + timeout; Date.now() < deadline; await sleep(100)) if (await check()) return; throw new Error(`${label} did not complete`); }
 
 class Cdp {
   constructor(socket) { this.socket = socket; this.nextId = 1; this.pending = new Map(); this.events = []; socket.addEventListener('message', ({ data }) => { const message = JSON.parse(data); if (message.id) this.pending.get(message.id)?.(message); else this.events.push(message); }); }
@@ -82,10 +83,10 @@ test('real Edge generates typed resources through recoverable workflows without 
     assert.match(await cdp.evaluate("document.querySelector('textarea').value"), /CNN/);
     assert.match(await cdp.evaluate('location.search'), /q=/);
     await setText(cdp, 'textarea', '递归调用栈');
-    await sleep(100);
+    await waitForBrowser(cdp, "document.body.innerText.includes('5/500')", 'prompt counter');
     assert.equal(await cdp.evaluate("document.body.innerText.includes('5/500')"), true);
     await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.includes('开始生成')).click()");
-    await sleep(250);
+    await waitForCondition(() => batchResponses(cdp).length === 1, 'first batch request');
     assert.equal(batchResponses(cdp).length, 1, 'one UI batch click must make one batch request');
     const initial = await responseBody(cdp, batchResponses(cdp)[0]);
     assert.deepEqual(initial.tasks.map((task) => task.resource_type).sort(), ['lecture', 'mindmap', 'quiz']);
@@ -93,7 +94,7 @@ test('real Edge generates typed resources through recoverable workflows without 
     assert.ok(sessionId);
     await cdp.call('Page.reload');
     await waitForBrowser(cdp, "Boolean(document.querySelector('textarea'))", 'reloaded generation page');
-    await sleep(3600);
+    await waitForBrowser(cdp, `fetch('/api/resources?sessionId=${encodeURIComponent(sessionId)}').then((response) => response.json()).then((payload) => payload.data?.total === 3)`, 'recovered generated resources');
     assert.equal(batchResponses(cdp).length, 1, 'refresh must reconnect, never create a second batch');
     const resources = await cdp.evaluate(`fetch('/api/resources?sessionId=${encodeURIComponent(sessionId)}').then((response) => response.json())`);
     assert.equal(resources.data.total, 3);
@@ -105,24 +106,24 @@ test('real Edge generates typed resources through recoverable workflows without 
     assert.equal(deletion.data.deleted, true);
     await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.includes('思维导图')).click(); [...document.querySelectorAll('button')].find((button) => button.textContent.includes('课程讲义')).click()");
     await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.includes('开始生成')).click()");
-    await sleep(3600);
+    await waitForBrowser(cdp, `fetch('/api/resources?sessionId=${encodeURIComponent(sessionId)}').then((response) => response.json()).then((payload) => payload.data?.total === 3)`, 'regenerated resources');
     const recreated = await cdp.evaluate(`fetch('/api/resources?sessionId=${encodeURIComponent(sessionId)}').then((response) => response.json())`);
     assert.equal(recreated.data.total, 3, 'regenerating a deleted quiz must not duplicate prior rows');
 
     await setText(cdp, 'textarea', '二叉树层序遍历');
     await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.includes('课程讲义')).click()");
     await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.includes('开始生成')).click()");
-    await sleep(250);
+    await waitForCondition(() => batchResponses(cdp).length >= 3, 'lecture batch request');
     const firstLectureBatch = await responseBody(cdp, batchResponses(cdp).at(-1));
     const target = await cdp.call('Target.createTarget', { url: `http://127.0.0.1:${frontendPort}/generate?q=${encodeURIComponent('二叉树层序遍历')}&types=lecture` });
-    for (let deadline = Date.now() + 10000; Date.now() < deadline; await sleep(100)) { const pages = await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json(); if (pages.some((page) => page.id === target.targetId)) break; }
+    await waitForCondition(async () => (await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json()).some((page) => page.id === target.targetId), 'second browser target', 10000);
     const pages = await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json();
     const second = pages.find((page) => page.id === target.targetId);
     secondSocket = new WebSocket(second.webSocketDebuggerUrl); await new Promise((resolve, reject) => { secondSocket.addEventListener('open', resolve, { once: true }); secondSocket.addEventListener('error', reject, { once: true }); });
     const secondCdp = new Cdp(secondSocket); await secondCdp.call('Runtime.enable'); await secondCdp.call('Network.enable');
     await waitForBrowser(secondCdp, "Boolean(document.querySelector('textarea'))", 'second tab generation page');
     await secondCdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.includes('开始生成')).click()");
-    await sleep(250);
+    await waitForCondition(() => batchResponses(secondCdp).length === 1, 'second tab batch request');
     const secondBatch = await responseBody(secondCdp, batchResponses(secondCdp)[0]);
     const firstLectureTask = firstLectureBatch.tasks.find((task) => task.resource_type === 'lecture');
     const secondLectureTask = secondBatch.tasks.find((task) => task.resource_type === 'lecture');
