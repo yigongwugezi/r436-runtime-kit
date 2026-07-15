@@ -36,10 +36,8 @@ work/
 # Database files (local SQLite)
 *.db
 *.sqlite
-backend/data/*.db
-backend/data/*.db-shm
-backend/data/*.db-wal
-backend/data/textbooks/
+# backend/data is runtime-only; keep just the directory placeholder.
+backend/data/*
 !backend/data/.gitkeep
 
 # RAG / Vector DB (FAISS index + HuggingFace cache)

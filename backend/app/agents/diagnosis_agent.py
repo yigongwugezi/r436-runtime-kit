@@ -192,7 +192,7 @@ class DiagnosisAgent(BaseAgent):
         # 1. Load from generated knowledge graph
         try:
             import json, os
-            kp_file = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'knowledge_points.json')
+            kp_file = os.path.join(os.path.dirname(__file__), '..', 'data', 'knowledge_points.json')
             if os.path.exists(kp_file):
                 with open(kp_file, 'r', encoding='utf-8') as f:
                     for kp in json.load(f):
