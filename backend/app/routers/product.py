@@ -5996,7 +5996,7 @@ def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 @router.post("/sections/{section_id}/tutor/video")
 def tutor_video(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """生成小节讲解短视频（调用 MultimodalAgent）。"""
+    """生成小节讲解短视频（Code2Video 异步模式，旧版同步兼容）。"""
     session_id = _payload_session_id(payload)
     section_title = str(payload.get("sectionTitle", "")).strip()
     requirements = str(payload.get("requirements", "")).strip()
@@ -6018,33 +6018,65 @@ def tutor_video(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             pass
 
+    # Collect knowledge points
+    kp_text = ""
+    try:
+        path = conversation_store.get(session_id)
+        if path and path.last_result:
+            stages = path.last_result.get("learning_path") or []
+            for s in stages:
+                for ch in s.get("chapters", []):
+                    for sec in ch.get("sections", []):
+                        if str(sec.get("id") or sec.get("section_id") or "") == section_id:
+                            kps = sec.get("knowledge_points") or sec.get("knowledgePoints") or []
+                            kp_text = "。".join(
+                                (kp.get("name") if isinstance(kp, dict) else str(kp))
+                                for kp in kps[:5]
+                            )
+                            break
+    except Exception:
+        pass
+
     try:
         from app.services.multimodal_registry import default_registry
         registry = default_registry()
-        _, tool = registry.select_tool("micro_lesson_video")
+        tool_name, tool = registry.select_tool("micro_lesson_video")
         if tool is None:
             return _product_response(None, session_id=session_id, status="error",
                 message="没有可用的视频生成服务，请检查多模态配置。", source="agent")
 
-        # Collect knowledge points for richer video context
-        kp_text = ""
-        try:
-            path = conversation_store.get(session_id)
-            if path and path.last_result:
-                stages = path.last_result.get("learning_path") or []
-                for s in stages:
-                    for ch in s.get("chapters", []):
-                        for sec in ch.get("sections", []):
-                            if str(sec.get("id") or sec.get("section_id") or "") == section_id:
-                                kps = sec.get("knowledge_points") or sec.get("knowledgePoints") or []
-                                kp_text = "。".join(
-                                    (kp.get("name") if isinstance(kp, dict) else str(kp))
-                                    for kp in kps[:5]
-                                )
-                                break
-        except Exception:
-            pass
+        # Code2Video: use async workflow with progress bar
+        if tool_name == "Code2VideoProvider":
+            from app.routers import workflows as _wf
+            from app.middleware.auth import AuthContext
+            try:
+                from app.db.models import SessionModel
+                db = SessionLocal()
+                row = db.get(SessionModel, session_id)
+                learner_id = row.learner_id if row else session_id
+                db.close()
+            except Exception:
+                learner_id = session_id
+            auth = AuthContext(learner_id=learner_id, role="student")
+            task = _wf._start("video_generation", {
+                "sectionId": section_id,
+                "sectionTitle": section_title,
+                "courseName": course_name,
+                "knowledgePoints": kp_text,
+                "sessionId": session_id,
+                "subjectId": subject_id,
+            }, auth)
+            base = f"/api/workflows/{task.task_id}"
+            return _product_response({
+                "task_id": task.task_id,
+                "workflow_type": task.workflow_type,
+                "status": task.status,
+                "events_url": f"{base}/events",
+                "status_url": base,
+                "cancel_url": f"{base}/cancel",
+            }, session_id=session_id, source="agent")
 
+        # Old providers: synchronous
         result = tool.run({
             "user_message": f"为「{course_name}——{section_title}」生成微课讲解视频",
             "subject_name": course_name,
@@ -6053,7 +6085,6 @@ def tutor_video(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         })
         video_data = _public_tutor_video(result)
         content = video_data.get("url") or video_data.get("script") or ""
-        # Persist to resource library
         if content:
             try:
                 from app.db.repository import upsert_resource
@@ -6082,6 +6113,63 @@ def poll_video_task(task_id: str) -> dict[str, Any]:
     from app.services.multimodal_provider import WanVideoProvider
     result = WanVideoProvider.poll_task(task_id)
     return {"status": "success", "data": result}
+
+
+def _generate_video_sync(
+    section_id: str, section_title: str, course_name: str, kp_text: str,
+    session_id: str, progress_callback: Callable | None = None,
+    cancel_event: Event | None = None,
+) -> dict[str, Any]:
+    """Synchronous video generation with progress events (called by workflow runner)."""
+    try:
+        from app.services.multimodal_registry import default_registry
+        registry = default_registry()
+        _, tool = registry.select_tool("micro_lesson_video")
+        if tool is None:
+            return _product_response(None, session_id=session_id, status="error",
+                message="没有可用的视频生成服务", source="agent")
+
+        if progress_callback:
+            progress_callback({"stage": "rag_retrieval", "status": "running", "completed_units": 0, "total_units": 5})
+
+        result = tool.run({
+            "user_message": f"为「{course_name}——{section_title}」生成微课讲解视频",
+            "subject_name": course_name, "topic": section_title,
+            "knowledge_points": kp_text,
+            "progress_callback": progress_callback,
+            "cancel_event": cancel_event,
+        })
+
+        if progress_callback:
+            progress_callback({"stage": "rendering", "status": "completed", "completed_units": 3, "total_units": 5})
+            progress_callback({"stage": "narration", "status": "running", "completed_units": 4, "total_units": 5})
+
+        video_data = _public_tutor_video(result)
+        content = video_data.get("url") or video_data.get("script") or ""
+        if content:
+            try:
+                from app.db.repository import upsert_resource
+                db = SessionLocal()
+                upsert_resource(db, session_id, {
+                    "id": f"tutor-video-{section_id}",
+                    "type": "video", "title": f"{section_title} - 讲解动画",
+                    "content": content, "format": "video",
+                    "difficulty": "medium", "source": "code2video",
+                })
+                db.commit()
+                logger.info("Video persisted: id=%s session=%s", f"tutor-video-{section_id}", session_id)
+            except Exception as e:
+                logger.warning("Video persist failed: %s", e)
+            finally:
+                db.close()
+
+        if progress_callback:
+            progress_callback({"stage": "saving", "status": "completed", "completed_units": 5, "total_units": 5})
+
+        return _product_response({"video": video_data}, session_id=session_id, source="agent")
+    except Exception as e:
+        logger.warning("Video sync generation failed: %s", e)
+        return _product_response(None, session_id=session_id, status="error", message=str(e), source="agent")
 
 
 def _recommend_section_resources(

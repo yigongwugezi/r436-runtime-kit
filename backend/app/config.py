@@ -78,6 +78,7 @@ class Settings(BaseSettings):
     qwen_base_url: str = ""
     qwen_vl_model: str = ""
     qwen_image_model: str = ""
+    qwen_coder_model: str = ""  # qwen-coder-plus for code generation
     # Wan Video
     wan_api_key: str = ""
     wan_video_model: str = ""

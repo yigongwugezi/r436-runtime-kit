@@ -1,0 +1,5 @@
+file 'D:\EduAgent\outputs\code2video\7e5b40b51d02403d864dc87fb021ba07\media\videos\section_1\480p15\Section1Scene.mp4'
+file 'D:\EduAgent\outputs\code2video\7e5b40b51d02403d864dc87fb021ba07\media\videos\section_2\480p15\Section2Scene.mp4'
+file 'D:\EduAgent\outputs\code2video\7e5b40b51d02403d864dc87fb021ba07\media\videos\section_3\480p15\Section3Scene.mp4'
+file 'D:\EduAgent\outputs\code2video\7e5b40b51d02403d864dc87fb021ba07\media\videos\section_4\480p15\Section4Scene.mp4'
+file 'D:\EduAgent\outputs\code2video\7e5b40b51d02403d864dc87fb021ba07\media\videos\section_5\480p15\Section5Scene.mp4'
