@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import os
+import sqlite3
+import subprocess
+import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from fastapi import HTTPException
 from sqlalchemy import create_engine
@@ -18,7 +22,36 @@ from app.services import langgraph_orchestrator
 from app.services.profile_v2 import build_profile_v2, merge_profile_scopes, update_fact_control
 
 
+def _assert_legacy_schema_upgrade() -> None:
+    handle, path = tempfile.mkstemp(prefix="edu-legacy-session-", suffix=".db")
+    os.close(handle)
+    try:
+        db = sqlite3.connect(path)
+        db.execute("CREATE TABLE sessions (id VARCHAR(64) PRIMARY KEY, title VARCHAR(256), status VARCHAR(16), created_at DATETIME, updated_at DATETIME)")
+        db.execute("INSERT INTO sessions (id, title, status) VALUES ('legacy-session', 'legacy', 'active')")
+        db.commit()
+        db.close()
+        script = """
+from app.db.engine import SessionLocal, init_db
+from app.db.models import LearnerModel, SessionModel
+from app.db.repository import get_or_create_session
+init_db()
+db = SessionLocal()
+try:
+    assert get_or_create_session(db, 'legacy-session').learner_id is None
+    assert db.query(LearnerModel).count() == 0
+    assert 'learner_id' in {row[1] for row in db.connection().exec_driver_sql('PRAGMA table_info(sessions)')}
+finally:
+    db.close()
+"""
+        env = {**os.environ, "DATABASE_URL": f"sqlite:///{path}", "EDUAGENT_SKIP_ENV_FILE": "1", "LLM_PROVIDER": "mock", "RAG_ENABLED": "false", "PYTHONPATH": "backend"}
+        subprocess.run([sys.executable, "-c", script], cwd=Path(__file__).resolve().parents[2], env=env, check=True, capture_output=True, text=True)
+    finally:
+        os.unlink(path)
+
+
 def main() -> None:
+    _assert_legacy_schema_upgrade()
     handle, path = tempfile.mkstemp(prefix="edu-learner-profile-", suffix=".db")
     os.close(handle)
     engine = create_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False})
