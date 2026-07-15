@@ -763,7 +763,7 @@ export default function ChatPanel({ open, onClose, panelWidth = 420, onWidthChan
             >
               <option value="seedream">Seedream 5.0 Lite (豆包)</option>
               <option value="spark">讯飞星火 绘画</option>
-              <option value="qwen" disabled>通义万相 (Key 过期)</option>
+              <option value="qwen">通义万相 2.0</option>
             </select>
           </div>
           <div className="flex items-end gap-1.5 mt-1">

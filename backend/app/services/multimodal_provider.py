@@ -959,32 +959,41 @@ class QwenImageProvider:
     @staticmethod
     def is_configured() -> bool:
         api_key = _env("DASHSCOPE_API_KEY", "QWEN_API_KEY")
-        model = _env("QWEN_IMAGE_MODEL", default="qwen-image")
-        return bool(api_key) and bool(model)
+        return bool(api_key)
 
     def __init__(self, post_json: Any | None = None) -> None:
         self.post_json = post_json or _json_post
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         api_key = _env("DASHSCOPE_API_KEY", "QWEN_API_KEY")
-        model = _env("QWEN_IMAGE_MODEL", default="qwen-image")
-        endpoint = _env("QWEN_IMAGE_ENDPOINT") or f"{_env('QWEN_IMAGE_BASE_URL', 'QWEN_BASE_URL', default='https://dashscope.aliyuncs.com/compatible-mode/v1').rstrip('/')}/images/generations"
-        if not api_key or not model or not endpoint:
-            return _response(status="provider_not_configured", provider=self.provider, warnings=["Qwen image provider is not configured."], trace={"required_env": ["DASHSCOPE_API_KEY or QWEN_API_KEY", "QWEN_IMAGE_MODEL", "QWEN_IMAGE_ENDPOINT or QWEN_IMAGE_BASE_URL"]})
+        model = _env("QWEN_IMAGE_MODEL", default="qwen-image-2.0")
+        endpoint = _env("QWEN_IMAGE_ENDPOINT") or "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+        if not api_key:
+            return _response(status="provider_not_configured", provider=self.provider,
+                warnings=["Qwen image provider is not configured."],
+                trace={"required_env": ["DASHSCOPE_API_KEY or QWEN_API_KEY"]})
         prompt = _text(context.get("prompt") or context.get("user_message") or context.get("topic"))
         if not prompt:
             return _response(status="needs_input", provider=self.provider, warnings=["missing image prompt"])
         try:
-            body = self.post_json(endpoint, {"model": model, "prompt": prompt, "n": 1, "size": "1024x1024"}, api_key, int(os.getenv("QWEN_TIMEOUT", "60")))
-            urls = []
-            for item in body.get("data") or body.get("output", {}).get("results") or []:
-                if isinstance(item, dict) and _text(item.get("url")):
-                    urls.append(_text(item.get("url")))
-            result = {"image_urls": urls, "task_id": _text(body.get("task_id") or body.get("output", {}).get("task_id")), "remote_result": body}
-            return _response(status="success" if urls or result["task_id"] else "partial_success", provider=self.provider, result=result, trace={"model": model, "endpoint": endpoint})
+            body = self.post_json(endpoint, {
+                "model": model,
+                "input": {"messages": [{"role": "user", "content": [{"text": prompt}]}]},
+                "parameters": {"size": "1024*1024", "n": 1}
+            }, api_key, int(os.getenv("QWEN_TIMEOUT", "60")))
+            urls: list[str] = []
+            for choice in body.get("output", {}).get("choices") or []:
+                for content_item in choice.get("message", {}).get("content") or []:
+                    img_url = _text(content_item.get("image"))
+                    if img_url:
+                        urls.append(img_url)
+            result = {"image_urls": urls, "remote_result": body}
+            return _response(
+                status="success" if urls else "partial_success", provider=self.provider,
+                result=result, trace={"model": model, "endpoint": endpoint})
         except Exception as exc:
-            return _response(status="failed", provider=self.provider, warnings=[str(exc)], trace={"model": model, "endpoint": endpoint})
-
+            return _response(status="failed", provider=self.provider,
+                warnings=[str(exc)], trace={"model": model, "endpoint": endpoint})
 
 # ── Seedream Image Provider (DeepSeek prompt optimisation → Seedream 5.0 Lite) ──
 
