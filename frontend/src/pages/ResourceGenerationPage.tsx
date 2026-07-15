@@ -299,7 +299,7 @@ export default function ResourceGenerationPage() {
               {['CNN原理学习', 'Transformer架构', 'Python项目实战'].map((template, idx) => (
                 <button
                   key={idx}
-                  onClick={() => setPrompt(template + '相关知识点和代码示例')}
+                  onClick={() => updatePrompt(template + '相关知识点和代码示例')}
                   className="w-full flex items-center justify-between px-4 py-2.5 bg-white rounded-lg text-sm text-surface-600 hover:bg-primary-50 hover:text-primary-600 transition-colors"
                 >
                   <div className="flex items-center gap-2">

@@ -93,6 +93,12 @@ test('real Edge reaches the isolated application through the test backend', { ti
       env: { ...process.env, EDUAGENT_SKIP_ENV_FILE: '1', PYTHONPATH: 'backend', DATABASE_URL: `sqlite:///${database}`, PORT: String(backendPort) },
     });
     await waitFor(`http://127.0.0.1:${backendPort}/api/health`, 'test backend');
+    const authResponse = await fetch(`http://127.0.0.1:${backendPort}/api/auth/register`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: '13900000001', password: 'e2e-only', nickname: 'E2E', role: 'student' }),
+    });
+    assert.equal(authResponse.ok, true);
+    const { access_token: accessToken } = await authResponse.json();
 
     frontend = start(process.execPath, ['node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', String(frontendPort), '--strictPort'], {
       cwd: frontendDir,
@@ -124,6 +130,12 @@ test('real Edge reaches the isolated application through the test backend', { ti
     const apiRequests = cdp.events.filter((event) => event.method === 'Network.requestWillBeSent' && event.params.request.url.includes('/api/'));
     assert.ok(apiRequests.some((event) => event.params.request.url.includes(`:${backendPort}/api/`)), 'frontend must use the isolated backend');
     assert.equal(cdp.events.filter((event) => event.method === 'Runtime.exceptionThrown').length, 0);
+
+    await cdp.evaluate(`localStorage.setItem('edu_token', ${JSON.stringify(accessToken)}); location.assign('/generate')`);
+    await waitForBrowser(cdp, "Boolean(document.querySelector('textarea'))", 'resource generation page');
+    await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.includes('CNN')).click()");
+    assert.ok((await cdp.evaluate("document.querySelector('textarea').value")).includes('CNN'));
+    assert.ok((await cdp.evaluate('location.search')).includes('q='), 'quick templates must persist the prompt in the URL');
     socket.close();
   } finally {
     await stop(edge);
