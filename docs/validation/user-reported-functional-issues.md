@@ -32,8 +32,8 @@
 | F21 | 旧路径没有 stage.nodes 时无法显示／导航。 | ee823af | learningPathViewModel.test.ts | learning-path-compatibility.test.mjs | **CLOSED** |
 | F22 | 教材、日课、项目模式路由串线。 | 215f310 | learningPathViewModel.test.ts | learning-path-compatibility.test.mjs | **CLOSED** |
 | F23 | 长 objective／description 全量铺开。 | eeb3032 | learningPathViewModel.test.ts | learning-path-compatibility.test.mjs | **CLOSED** |
-| F24 | PPT Python 依赖未声明。 | f58efee | ppt_generator_test.py | PPT 资源旅程 | **CLOSED** |
-| F25 | PPT 下载、刷新、删除链路不完整。 | abfb43e, f58efee | ppt_generator_test.py, 资源回归 | general-resource-generation.test.mjs | **PARTIAL**：浏览器使用本地固定 PPT fixture；真实内容 Provider 未调用。 |
+| F24 | PPT Python 依赖未声明。 | f58efee | ppt_generator_test.py | 不适用（依赖声明） | **CLOSED** |
+| F25 | PPT 下载、刷新、删除链路不完整。 | abfb43e, f58efee | ppt_generator_test.py, 资源回归 | 通用资源生成旅程（非 PPT 专项） | **PARTIAL**：本地 PPT 文件生成和通用资源生命周期已覆盖；尚无 PPT 专项 Edge 下载/刷新/删除旅程，且真实内容 Provider 未调用。 |
 | F26 | Manim 未安装时只有泛化失败或伪造成功风险。 | f58efee, e9efe7e, 6a58272 | general_resource_generation_test.py, workflowTaskRecovery.test.ts | manim-unavailable.test.mjs | **PARTIAL**：安全提示已验证；未安装系统级 Manim 栈，不宣称渲染成功。 |
 | F27 | session A 可能删除 session B 资源。 | abfb43e, 6a58272（回归覆盖） | general_resource_generation_test.py | 资源删除旅程 | **CLOSED** |
 | F28 | 缺失 backend/.env 时无法导入／启动。 | c3e5897 | config_env_file_test.py | 所有隔离 Edge 服务 | **CLOSED** |

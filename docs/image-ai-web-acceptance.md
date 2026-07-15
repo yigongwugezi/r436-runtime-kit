@@ -7,7 +7,7 @@ Use a fresh browser chat session unless a case says `same session`.
 Backend:
 
 ```powershell
-cd C:\Users\20825\Documents\Codex\2026-06-07\seedance-ai-claude-code-ai-ai\backend
+cd <repository-root>\backend
 $env:PYTHONIOENCODING="utf-8"
 .venv310\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
@@ -15,7 +15,7 @@ $env:PYTHONIOENCODING="utf-8"
 Frontend:
 
 ```powershell
-cd C:\Users\20825\Documents\Codex\2026-06-07\seedance-ai-claude-code-ai-ai\frontend
+cd <repository-root>\frontend
 npm run dev
 ```
 
@@ -128,7 +128,7 @@ Local proxy expectation: `frontend/vite.config.ts` proxies `/api` to `http://127
 This does not require a real API key:
 
 ```powershell
-cd C:\Users\20825\Documents\Codex\2026-06-07\seedance-ai-claude-code-ai-ai\backend
+cd <repository-root>\backend
 $env:PYTHONIOENCODING="utf-8"
 .venv310\Scripts\python.exe tests\multimodal_agent_test.py
 .venv310\Scripts\python.exe tests\multimodal_router_test.py

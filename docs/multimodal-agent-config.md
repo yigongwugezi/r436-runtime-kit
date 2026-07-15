@@ -132,7 +132,7 @@ Never include API keys in traces, logs, docs, or tests.
 Mock acceptance smoke:
 
 ```powershell
-cd C:\Users\20825\Documents\Codex\2026-06-07\seedance-ai-claude-code-ai-ai\backend
+cd <repository-root>\backend
 $env:PYTHONIOENCODING="utf-8"
 .venv310\Scripts\python.exe scripts\smoke_multimodal_image_acceptance.py
 ```
