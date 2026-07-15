@@ -11,6 +11,7 @@ Design principles (Stage 2):
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import re
 import time
@@ -522,9 +523,9 @@ def _to_resource(
         "difficulty": item.get("difficulty", "easy"),
         "estimatedMinutes": item.get("estimatedMinutes", 20),
         "format": "diagram" if content_fmt == "mermaid" else ("code" if item.get("type") == "practice" else "text"),
-        "mermaidDef": content if (content_fmt == "mermaid" or item.get("type") == "mindmap") else None,
+        "mermaidDef": item.get("mermaid_def") or item.get("mermaidDef") or (content if (content_fmt == "mermaid" or item.get("type") == "mindmap") else None),
         "codeBlocks": item.get("code_blocks"),
-        "questions": item.get("items"),
+        "questions": item.get("questions") or item.get("items"),
         "pptOutline": item.get("ppt_outline"),
         "createdAt": int(time.time() * 1000),
         "bookmarked": resource_id in bookmarks,
@@ -3130,8 +3131,158 @@ def batch_export_resources(payload: dict[str, Any]) -> dict[str, Any]:
     return _product_response({"ok": True, "export": header + export_text, "count": len(items)}, session_id=session_id, source="user_action")
 
 
-@router.post("/resources/generate")
-def generate_resource(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
+GENERAL_RESOURCE_TYPES = {
+    "lecture", "mindmap", "quiz", "ppt", "video", "animation", "manim", "reading", "practice",
+}
+GENERAL_RESOURCE_TYPE_ALIASES = {
+    "mind-map": "mindmap", "mind_map": "mindmap", "case_study": "practice",
+}
+
+
+def normalize_general_resource_request(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate the explicit contract shared by the general resource page and workflow API."""
+    session_id = _payload_session_id(payload)
+    topic = " ".join(str(payload.get("topic") or "").split())
+    if not topic:
+        raise HTTPException(status_code=422, detail={"code": "TOPIC_REQUIRED", "message": "topic is required"})
+    if len(topic) > 500:
+        raise HTTPException(status_code=422, detail={"code": "TOPIC_TOO_LONG", "message": "topic must be at most 500 characters"})
+    raw_type = str(payload.get("resourceType") or payload.get("type") or "").strip().lower()
+    resource_type = GENERAL_RESOURCE_TYPE_ALIASES.get(raw_type, raw_type)
+    if resource_type not in GENERAL_RESOURCE_TYPES:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_RESOURCE_TYPE", "message": "resourceType must be a supported resource type"})
+    difficulty = str(payload.get("difficulty") or "medium").strip().lower()
+    if difficulty not in {"easy", "medium", "hard"}:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_DIFFICULTY", "message": "difficulty is invalid"})
+    options = payload.get("generationOptions")
+    if options is not None and not isinstance(options, dict):
+        raise HTTPException(status_code=422, detail={"code": "INVALID_OPTIONS", "message": "generationOptions must be an object"})
+    return {
+        "sessionId": session_id,
+        "learnerId": str(payload.get("learnerId") or "").strip(),
+        "subjectId": _payload_subject_id(payload),
+        "pathId": str(payload.get("pathId") or "").strip(),
+        "stageId": str(payload.get("stageId") or "").strip(),
+        "chapterId": str(payload.get("chapterId") or "").strip(),
+        "sectionId": str(payload.get("sectionId") or "").strip(),
+        "topic": topic,
+        "resourceType": resource_type,
+        "difficulty": difficulty,
+        "operation": str(payload.get("operation") or "generate").strip() or "generate",
+        "mode": str(payload.get("mode") or "general_resource_generation").strip() or "general_resource_generation",
+        "profileSnapshotVersion": str(payload.get("profileSnapshotVersion") or "").strip(),
+        "generationOptions": dict(options or {}),
+    }
+
+
+def _general_resource_id(request: dict[str, Any]) -> str:
+    identity = {key: request.get(key, "") for key in (
+        "sessionId", "subjectId", "pathId", "stageId", "chapterId", "sectionId", "topic", "resourceType", "difficulty", "operation", "generationOptions",
+    )}
+    digest = hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:24]
+    return f"general_{request['resourceType']}_{digest}"
+
+
+def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None) -> dict[str, Any]:
+    """Build renderable content from the requested canonical type, never prompt inference."""
+    from app.services.structured_multimodal_resources import sanitize_mermaid
+
+    topic = request["topic"]
+    resource_type = request["resourceType"]
+    safe_topic = re.sub(r"[()\[\]{}\"'\n\r]", " ", topic).strip()[:80] or "Learning topic"
+    task_id = str(getattr(workflow_task, "task_id", "") or "")
+    labels = {
+        "lecture": "课程讲义", "mindmap": "思维导图", "quiz": "练习题库", "ppt": "PPT演示",
+        "video": "教学视频", "animation": "教学动画", "manim": "Manim 动画", "reading": "拓展阅读", "practice": "实操案例",
+    }
+    resource: dict[str, Any] = {
+        "id": _general_resource_id(request),
+        "type": "case_study" if resource_type == "practice" else ("video" if resource_type in {"video", "animation", "manim"} else resource_type),
+        "title": f"{topic} - {labels[resource_type]}",
+        "description": f"围绕 {topic} 的{labels[resource_type]}",
+        "content": "",
+        "knowledge_points": [topic],
+        "tags": ["general_generated", resource_type],
+        "difficulty": request["difficulty"],
+        "estimated_minutes": {"lecture": 20, "mindmap": 8, "quiz": 12, "reading": 15, "practice": 25, "ppt": 18}.get(resource_type, 15),
+        "format": {"mindmap": "diagram", "quiz": "quiz", "practice": "code", "video": "video", "animation": "video", "manim": "video"}.get(resource_type, "text"),
+        "source": "agent_generated",
+        "related_stage_id": request["stageId"],
+        "related_chapter_id": request["chapterId"],
+        "related_section_id": request["sectionId"],
+        "task_id": task_id,
+        "resource_metadata": {
+            "general_generation": True,
+            "resource_type": resource_type,
+            "operation": request["operation"],
+            "generation_mode": request["mode"],
+            "profile_snapshot_version": request["profileSnapshotVersion"],
+            "quality_status": "passed",
+        },
+    }
+    if resource_type == "lecture":
+        resource["content"] = f"# {topic}\n\n## 学习目标\n理解 {topic} 的核心概念、关键过程和常见误区。\n\n## 核心讲解\n从定义开始，结合一个小例子逐步说明概念之间的关系。\n\n## 自测\n用自己的话复述关键步骤，并完成一道对应练习。"
+    elif resource_type == "mindmap":
+        resource["content"] = f"## {topic} 知识结构\n\n- 定义\n- 关键步骤\n- 常见误区\n- 自测"
+        resource["mermaid_def"] = sanitize_mermaid(f"mindmap\n  root(({safe_topic}))\n    定义\n    关键步骤\n    常见误区\n    自测")
+    elif resource_type == "quiz":
+        resource["content"] = f"## {topic} 自测题\n\n完成每题后查看解析。"
+        resource["questions"] = [
+            {"id": "q1", "type": "choice", "stem": f"学习 {topic} 时，第一步应优先确认什么？", "options": ["核心定义和边界", "跳过定义直接记结论", "只记术语", "忽略示例"], "answer": "A", "explanation": "先明确概念边界，后续步骤才有可靠依据。", "knowledgePoint": topic, "difficulty": request["difficulty"]},
+            {"id": "q2", "type": "choice", "stem": f"下列哪种做法最适合检验对 {topic} 的理解？", "options": ["复述并完成一个小例子", "只浏览标题", "只看答案", "跳过练习"], "answer": "A", "explanation": "复述和小例子能同时检查概念与应用。", "knowledgePoint": topic, "difficulty": request["difficulty"]},
+        ]
+    elif resource_type == "reading":
+        resource["content"] = f"# {topic} 拓展阅读\n\n先阅读定义与背景，再将关键术语整理为自己的笔记，最后用一个例子验证理解。"
+    elif resource_type == "practice":
+        resource["content"] = f"# {topic} 实操练习\n\n把问题拆成输入、过程和输出三个部分，再为边界条件添加测试。"
+        resource["code_blocks"] = [{"language": "python", "code": "def solve(value):\n    if value is None:\n        raise ValueError('value is required')\n    return value", "explanation": "从输入校验开始，再补充与主题对应的处理逻辑。"}]
+    elif resource_type == "ppt":
+        from app.services.ppt_generator import generate_pptx
+        pptx_path = generate_pptx(topic, request["difficulty"], request["sessionId"])
+        if not pptx_path:
+            raise RuntimeError("ppt_generation_failed")
+        rel_path = pptx_path.replace(str(settings.project_root), "").replace("\\", "/").lstrip("/")
+        resource["content"] = f"/api/multimodal/file/{rel_path}"
+        resource["format"] = "pptx"
+    else:
+        from app.services.multimodal_registry import default_registry
+        capability = "manim_generation" if resource_type in {"animation", "manim"} else "video_generation"
+        _, tool = default_registry().select_tool(capability)
+        if tool is None:
+            raise RuntimeError("provider_not_configured")
+        result = tool.run({"topic": topic, "subject_name": topic, "user_message": f"Generate {resource_type} for {topic}"})
+        output = result.get("result") if isinstance(result, dict) else {}
+        if result.get("status") != "success" or not isinstance(output, dict) or not (output.get("video_url") or output.get("url")):
+            raise RuntimeError("provider_not_configured")
+        resource["content"] = str(output.get("video_url") or output.get("url"))
+    return resource
+
+
+def _generate_general_resource(payload: dict[str, Any], workflow_task: Any = None) -> dict[str, Any]:
+    request = normalize_general_resource_request(payload)
+    _ensure_session_linked(request["sessionId"], subject_id=request["subjectId"])
+    resource = _general_resource_payload(request, workflow_task)
+    if workflow_task is not None:
+        from app.services.workflow_tasks import workflow_task_manager
+        workflow_task_manager.check_cancelled(workflow_task)
+        workflow_task_manager.emit(workflow_task, "preview_updated", "content_generation", "completed", label="资源内容已生成", text_delta=str(resource.get("content") or ""))
+    db = SessionLocal()
+    try:
+        from app.db.repository import upsert_resource
+        saved = upsert_resource(db, request["sessionId"], resource)
+        item = {
+            "resource_id": saved.id, "type": saved.type, "title": saved.title, "description": saved.description,
+            "content": saved.content, "knowledge_points": saved.knowledge_points, "difficulty": saved.difficulty,
+            "estimatedMinutes": saved.estimated_minutes, "format": saved.format, "mermaid_def": saved.mermaid_def,
+            "code_blocks": saved.code_blocks, "questions": saved.questions, "ppt_outline": saved.ppt_outline,
+            "source": saved.source, "task_id": saved.task_id,
+        }
+        return _product_response({"resource": _to_resource(item, session_id=request["sessionId"]), "reused": False}, session_id=request["sessionId"], subject_id=request["subjectId"], source="agent")
+    finally:
+        db.close()
+
+
+def _legacy_generate_resource(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     """Trigger agent pipeline to generate resources for a topic."""
     session_id = _payload_session_id(payload)
     topic = str(payload.get("topic", "学习主题"))
@@ -3222,6 +3373,12 @@ def generate_resource(payload: dict[str, Any], auth: AuthContext = Depends(rejec
     ]
     primary = resources[0] if resources else {"id": "res_new", "title": f"{topic} 个性化资源", "source": "none"}
     return _product_response({"resource": primary}, session_id=session_id, source="agent")
+
+
+@router.post("/resources/generate")
+def generate_resource(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
+    """Legacy synchronous endpoint with the same validated type contract as the workflow path."""
+    return _generate_general_resource(payload)
 
 
 @router.post("/resources/import-from-kb")
