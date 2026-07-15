@@ -2887,6 +2887,31 @@ def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "") -> 
     )
 
 
+@router.delete("/resources/{resource_id}")
+def delete_resource(resource_id: str, sessionId: str = "") -> dict[str, Any]:
+    """Delete a resource only from its owning session."""
+    session_id = _resolve_session_id(sessionId, "")
+    db = SessionLocal()
+    try:
+        from app.db.repository import delete_resource as repo_delete_resource
+        if not repo_delete_resource(db, session_id, resource_id):
+            return _product_response(
+                {"deleted": False}, session_id=session_id, status="error",
+                message="resource not found", source="db",
+            )
+        state = conversation_store.get_state_or_none(session_id)
+        if isinstance(state and state.last_result, dict):
+            resources = state.last_result.get("resources")
+            if isinstance(resources, list):
+                state.last_result["resources"] = [
+                    item for item in resources
+                    if str(item.get("resource_id") or item.get("id") or "") != resource_id
+                ]
+        return _product_response({"deleted": True}, session_id=session_id, source="db")
+    finally:
+        db.close()
+
+
 @router.post("/resources/{resource_id}/bookmark")
 def bookmark_resource(resource_id: str, sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
     session_id = _resolve_session_id(sessionId, subjectId)
@@ -3076,19 +3101,27 @@ def generate_resource(payload: dict[str, Any], auth: AuthContext = Depends(rejec
                 "subject_name": topic,
                 "topic": topic,
             })
-            vid = video_result.get("result", {})
-            resource = {
-                "id": f"vid_{session_id}_{hash(topic) % 10000:04d}",
+            vid = video_result.get("result") or {}
+            if video_result.get("status") == "success":
+                resource = {
+                "id": f"vid_{uuid.uuid4().hex}",
                 "type": "video",
                 "title": f"{topic} - 教学视频",
-                "content": vid.get("script", ""),
+                "content": vid.get("video_url") or vid.get("script") or "",
                 "format": "video",
                 "difficulty": difficulty or "medium",
-                "source": "wan_video",
+                "source": str(video_result.get("provider") or "manim_video"),
                 "task_id": vid.get("task_id", ""),
                 "task_status": video_result.get("status", ""),
-            }
-            return _product_response({"resource": resource}, session_id=session_id, source="agent")
+                }
+                if resource["content"]:
+                    db = SessionLocal()
+                    try:
+                        from app.db.repository import upsert_resource
+                        upsert_resource(db, session_id, resource)
+                    finally:
+                        db.close()
+                return _product_response({"resource": resource}, session_id=session_id, source="agent")
 
     parts = [f"请为「{topic}」"]
     if resource_type:
@@ -3109,6 +3142,28 @@ def generate_resource(payload: dict[str, Any], auth: AuthContext = Depends(rejec
     if subject_id:
         parts.append(f"所属科目ID为{subject_id}")
     message = "，".join(parts)
+
+    if resource_type == "ppt":
+        from app.services.ppt_generator import generate_pptx
+        pptx_path = generate_pptx(topic, difficulty or "medium", session_id)
+        if pptx_path:
+            rel_path = pptx_path.replace(str(settings.project_root), "").replace("\\", "/").lstrip("/")
+            resource = {
+                "id": f"ppt_{uuid.uuid4().hex}",
+                "type": "ppt",
+                "title": f"{topic} - PPT演示",
+                "content": f"/api/multimodal/file/{rel_path}",
+                "format": "pptx",
+                "difficulty": difficulty or "medium",
+                "source": "agent_generated",
+            }
+            db = SessionLocal()
+            try:
+                from app.db.repository import upsert_resource
+                upsert_resource(db, session_id, resource)
+            finally:
+                db.close()
+            return _product_response({"resource": resource}, session_id=session_id, source="agent")
 
     result = _run_agents(message, session_id=session_id)
     resources = [
@@ -5517,7 +5572,10 @@ def _public_tutor_video(result: dict[str, Any]) -> dict[str, Any]:
     inner = result.get("result") if isinstance(result.get("result"), dict) else {}
     script = str(inner.get("script") or result.get("script") or "").strip()
     task_id = str(inner.get("task_id") or result.get("task_id") or "")
-    if raw_status in {"success", "script_ready"}:
+    video_url = str(inner.get("video_url") or result.get("video_url") or "")
+    if raw_status == "success" and video_url:
+        status, message = "completed", "讲解动画已生成。"
+    elif raw_status in {"success", "script_ready"}:
         status, message = "completed", "讲解视频脚本已准备好。"
     elif raw_status == "submitted":
         status, message = "submitted", "视频任务已提交，正在生成中…"
@@ -5531,6 +5589,8 @@ def _public_tutor_video(result: dict[str, Any]) -> dict[str, Any]:
         "provider": str(result.get("provider") or "wan_video"),
         "script": script,
         "task_id": task_id,
+        "url": video_url,
+        "audio_url": str(inner.get("audio_url") or ""),
         "userMessage": message,
         "metadata": {"raw_status": raw_status},
     }
@@ -5909,7 +5969,26 @@ def tutor_video(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             "subject_name": course_name,
             "topic": section_title,
         })
-        return _product_response({"video": _public_tutor_video(result)}, session_id=session_id, source="agent")
+        video = _public_tutor_video(result)
+        content = video.get("url") or video.get("script") or ""
+        if video.get("status") == "completed" and content:
+            db = SessionLocal()
+            try:
+                from app.db.repository import upsert_resource
+                upsert_resource(db, session_id, {
+                    "id": f"tutor-video-{section_id}",
+                    "type": "video",
+                    "title": f"{section_title} - 讲解动画",
+                    "content": content,
+                    "format": "video",
+                    "difficulty": "medium",
+                    "source": str(video.get("provider") or "manim_video"),
+                    "related_section_id": section_id,
+                    "task_id": str(video.get("task_id") or ""),
+                })
+            finally:
+                db.close()
+        return _product_response({"video": video}, session_id=session_id, source="agent")
     except Exception as e:
         logger.warning("Tutor video failed for section %s: %s", section_id, e)
         return _product_response(None, session_id=session_id, status="error", message=f"视频生成失败: {e}", source="agent")

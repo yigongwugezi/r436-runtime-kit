@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.multimodal_provider import (
+    ManimVideoProvider,
     MindMapTool,
     QwenImageProvider,
     QwenVisionProvider,
@@ -39,9 +40,9 @@ class ToolRegistry:
             "image_generation": "SparkImageProvider",      # 科大讯飞星火绘画
             "concept_card_generation": "SparkImageProvider",
             "teaching_diagram_generation": "SparkImageProvider",
-            "video_generation": "WanVideoProvider",        # 通义万相视频生成（主）
-            "micro_lesson_video": "WanVideoProvider",
-            "video_script_generation": "WanVideoProvider",
+            "video_generation": "ManimVideoProvider",
+            "micro_lesson_video": "ManimVideoProvider",
+            "video_script_generation": "ManimVideoProvider",
             # Spark vision as alternative to Qwen VL
             "image_understanding_spark": "SparkVisionProvider",
             "image_to_mindmap_spark": "SparkVisionProvider",
@@ -50,6 +51,7 @@ class ToolRegistry:
             "image_generation_spark": "SparkImageProvider",
             "video_generation_wan": "WanVideoProvider",
             "video_generation_spark": "SparkVideoProvider",
+            "video_generation_manim": "ManimVideoProvider",
         }
 
     def register_tool(self, name: str, tool: Any) -> None:
@@ -102,6 +104,7 @@ def default_registry() -> ToolRegistry:
     registry.register_tool("QwenVisionProvider", QwenVisionProvider())
     registry.register_tool("QwenImageProvider", QwenImageProvider())
     registry.register_tool("WanVideoProvider", WanVideoProvider())
+    registry.register_tool("ManimVideoProvider", ManimVideoProvider())
     registry.register_tool("SparkImageProvider", SparkImageProvider())
     registry.register_tool("SparkVideoProvider", SparkVideoProvider())
     registry.register_tool("SparkVisionProvider", SparkVisionProvider())
