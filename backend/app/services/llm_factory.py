@@ -289,29 +289,51 @@ class UnifiedChatClient:
             raise RuntimeError("No LLM API key configured")
         model = kwargs.pop("model", self._model) or self._model
         temp = kwargs.pop("temperature", self._temperature)
-        # deepseek-reasoner 需要单独处理 reasoning_content
         _is_reasoner = "reasoner" in model
+
         if _is_reasoner:
-            kwargs.pop("reasoning", None)
+            # deepseek-reasoner: 绕过 OpenAI 库，直接读 HTTP SSE 流
+            import json as _json, urllib.request as _request
+            payload = _json.dumps({
+                "model": model, "messages": messages,
+                "temperature": temp, "stream": True,
+            }).encode("utf-8")
+            req = _request.Request(
+                url=f"{self._base_url}/chat/completions",
+                data=payload,
+                headers={"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"},
+                method="POST",
+            )
+            with _request.urlopen(req, timeout=30) as resp:
+                buf = ""
+                while True:
+                    chunk = resp.read(1)
+                    if not chunk:
+                        break
+                    buf += chunk.decode("utf-8", errors="replace")
+                    if buf.endswith("\n\n"):
+                        for line in buf.strip().split("\n"):
+                            if line.startswith("data: ") and line != "data: [DONE]":
+                                try:
+                                    d = _json.loads(line[6:])
+                                    rc = d.get("choices", [{}])[0].get("delta", {}).get("reasoning_content", "")
+                                    ct = d.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                                    if rc:
+                                        yield f"<thinking>{rc}</thinking>"
+                                    if ct:
+                                        yield ct
+                                except (_json.JSONDecodeError, IndexError):
+                                    pass
+                        buf = ""
+            return
+
+        # 非推理模型：用 OpenAI 客户端库
         stream = self._client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temp,
-            stream=True,
-            **kwargs,
+            model=model, messages=messages, temperature=temp, stream=True, **kwargs,
         )
         for chunk in stream:
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
-            if _is_reasoner:
-                # deepseek-reasoner: 跳过 reasoning 阶段（无内容），等实际内容
-                if not delta or not delta.content:
-                    continue
-                yield delta.content
-            else:
-                if delta and delta.content:
-                    yield delta.content
+            if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
 
 
 def get_chat_client() -> UnifiedChatClient:
