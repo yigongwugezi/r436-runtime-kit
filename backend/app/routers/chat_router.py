@@ -418,6 +418,25 @@ async def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_a
                 from app.services.llm_factory import get_chat_client
                 client = get_chat_client()
                 deep_think = bool(payload.get("deep_think_enabled", False))
+                if deep_think:
+                    # 深度思考走非流式（原生支持 reasoning_content 提取）
+                    from app.config import settings as _st
+                    from app.services.llm_client import get_llm_client as _glc
+                    raw = _glc(_st.llm_provider).chat(messages=[{"role": "user", "content": message}], temperature=0.7, reasoning=True)
+                    reply = raw
+                    thinking = ""
+                    s = raw.find("<thinking>")
+                    e = raw.rfind("</thinking>")
+                    if s >= 0 and e > s:
+                        thinking = raw[s + 10:e]
+                        reply = raw[e + 11:].strip()
+                    if thinking:
+                        yield f"data: {json.dumps({'reasoning': thinking}, ensure_ascii=False)}\n\n"
+                    for chunk in reply.splitlines(keepends=True):
+                        yield f"data: {json.dumps({'type': 'messages', 'content': chunk}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps(_done_event(session_id, {}), ensure_ascii=False)}\n\n"
+                    conversation_store.append_message(session_id, "assistant", reply)
+                    return
                 reasoning_buf = ""
                 token_buf = ""
                 for token in client.stream_chat([{"role": "user", "content": message}], model="deepseek-reasoner" if deep_think else None):
