@@ -171,6 +171,11 @@ class ConversationState:
     # 是否启用对话文字自动画像提取（默认关闭，仅在路径规划专用对话中开启）
     profile_extraction_enabled: bool = True
     path_planning_info_mode: bool = False  # 路径规划信息收集模式（不触发Planner）
+    # 结构化画像（topic 级明细、置信度、证据链）
+    rich_facts: dict[str, Any] = field(default_factory=lambda: {
+        dim: {"summary": "", "topics": [], "gaps_found": [], "probe_history": [], "next_probe_topics": [], "last_probed_at": 0}
+        for dim in ("background", "target_course", "knowledge_base", "weak_points", "learning_goal", "time_budget", "preference")
+    })
 
 
 # 核心画像事实字段——这些字段更新时会触发画像维度重建
@@ -567,6 +572,59 @@ class ConversationStore:
         result["diagnosis"] = diagnosis
         state.last_result = result
         state.updated_at = time.time()
+
+    # ── 结构化画像（topic 级别）──
+
+    def set_rich_fact_topic(
+        self, state: ConversationState, dim: str, topic: str,
+        *, level: str = "", detail: str = "", confidence: float = 0.5,
+        evidence: str = "", source_text: str = "", verified_by: str = "",
+    ) -> None:
+        """更新结构化画像中的单个 topic。"""
+        rich = state.rich_facts.setdefault(dim, {"summary": "", "topics": [], "gaps_found": [], "probe_history": [], "next_probe_topics": [], "last_probed_at": 0})
+        existing = [t for t in rich.get("topics", []) if t.get("topic") == topic]
+        now = time.time()
+        if existing:
+            t = existing[0]
+            if detail:
+                t["detail"] = detail
+            if level:
+                t["level"] = level
+            if evidence:
+                # 不覆盖已有 evidence，追加
+                t.setdefault("evidence_history", []).append(t.get("evidence", ""))
+                t["evidence"] = evidence
+            if source_text:
+                t["source_text"] = source_text
+            if verified_by:
+                t["verified_by"] = verified_by
+            t["confidence"] = max(t.get("confidence", 0), confidence)
+            t["updated_at"] = now
+        else:
+            rich["topics"].append({
+                "topic": topic, "level": level or "unknown",
+                "detail": detail or "", "confidence": confidence,
+                "evidence": evidence or "", "source_text": source_text or "",
+                "verified_by": verified_by or "", "created_at": now, "updated_at": now,
+            })
+        rich["last_probed_at"] = now
+
+    def get_rich_fact_topics(self, state: ConversationState, dim: str) -> list[dict]:
+        """获取结构化画像中的 topic 列表。"""
+        rich = state.rich_facts.get(dim, {})
+        return rich.get("topics", [])
+
+    def add_probe_history(self, state: ConversationState, dim: str, probe: str) -> None:
+        """记录对该维度的探针历史。"""
+        rich = state.rich_facts.setdefault(dim, {"summary": "", "topics": [], "gaps_found": [], "probe_history": [], "next_probe_topics": [], "last_probed_at": 0})
+        history = rich.setdefault("probe_history", [])
+        if probe not in history:
+            history.append(probe)
+
+    def set_next_probe_topics(self, state: ConversationState, dim: str, topics: list[str]) -> None:
+        """设置接下来应追问的 topic 列表。"""
+        rich = state.rich_facts.setdefault(dim, {"summary": "", "topics": [], "gaps_found": [], "probe_history": [], "next_probe_topics": [], "last_probed_at": 0})
+        rich["next_probe_topics"] = topics
 
     def extract_facts_with_llm(self, state: ConversationState, message: str) -> None:
         """用 LLM 从用户消息中提取画像事实。如果 LLM 不可用，回退到正则提取。"""

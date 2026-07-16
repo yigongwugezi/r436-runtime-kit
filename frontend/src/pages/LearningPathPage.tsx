@@ -19,12 +19,15 @@ import PathModeRouter from '../components/learning/PathModeViews';
 
 function ProfileInfoPanel({ sessionId }: { sessionId: string }) {
   const [facts, setFacts] = useState<Record<string, string>>({});
+  const [richFacts, setRichFacts] = useState<Record<string, any>>({});
+  const [expandedDim, setExpandedDim] = useState<string | null>(null);
   const nav = useNavigate();
 
   useEffect(() => {
     if (!sessionId) return;
     fetch(`/api/conversation-facts?sessionId=${sessionId}`).then(r => r.json()).then(d => {
       if (d.facts) setFacts(d.facts);
+      if (d.rich_facts) setRichFacts(d.rich_facts);
     }).catch(() => {});
   }, [sessionId]);
 
@@ -49,6 +52,21 @@ function ProfileInfoPanel({ sessionId }: { sessionId: string }) {
     nav('/chat', { state: { initialMessage: prompt, chatMode: 'planning' } });
   };
 
+  const levelLabel = (lvl: string) => {
+    const map: Record<string, string> = { none: '未掌握', beginner: '入门', intermediate: '中等', advanced: '精通' };
+    return map[lvl] || lvl;
+  };
+  const levelColor = (lvl: string) => {
+    const map: Record<string, string> = { none: 'text-red-500', beginner: 'text-amber-500', intermediate: 'text-primary-500', advanced: 'text-green-500' };
+    return map[lvl] || 'text-surface-400';
+  };
+  const evidenceIcon = (ev: string) => {
+    if (!ev) return '';
+    if (ev.includes('诊断') || ev.includes('探测')) return '🔍';
+    if (ev.includes('行为')) return '👀';
+    return '💬';
+  };
+
   return (
     <div className="bg-white rounded-2xl p-5 shadow-soft border border-surface-100">
       <div className="flex items-center justify-between mb-3">
@@ -64,28 +82,62 @@ function ProfileInfoPanel({ sessionId }: { sessionId: string }) {
         <div className="absolute inset-y-0 left-0 bg-gradient-to-r from-primary-400 to-accent-500 rounded-full transition-all duration-500" style={{ width: `${pct}%` }} />
       </div>
 
-      <div className="space-y-3">
+      <div className="space-y-2">
         {DIMS.map(d => {
           const v = facts[d.key] || '';
           const has = v && v !== '未提及' && v !== '待补充' && v !== '未知' && v !== '';
+          const rich = richFacts[d.key] || {};
+          const topics: any[] = rich.topics || [];
+          const isExpanded = expandedDim === d.key;
           return (
-            <div key={d.key} className={`rounded-xl p-3 border transition-all ${has ? 'bg-success-50/40 border-success-100' : 'bg-surface-50 border-surface-100'}`}>
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <span>{has ? '✅' : '⬜'}</span>
-                    <span className={`text-xs font-semibold ${has ? 'text-surface-700' : 'text-surface-400'}`}>{d.label}</span>
+            <div key={d.key}>
+              <div
+                className={`rounded-xl p-3 border transition-all cursor-pointer ${has ? 'bg-success-50/40 border-success-100' : 'bg-surface-50 border-surface-100'} ${isExpanded ? 'rounded-b-none border-b-0' : ''}`}
+                onClick={() => setExpandedDim(isExpanded ? null : d.key)}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <span>{has ? '✅' : '⬜'}</span>
+                      <span className={`text-xs font-semibold ${has ? 'text-surface-700' : 'text-surface-400'}`}>{d.label}</span>
+                      {topics.length > 0 && <span className="text-[10px] text-surface-400">({topics.length})</span>}
+                    </div>
+                    {has ? (
+                      <p className="text-xs text-surface-600 ml-6 leading-relaxed truncate">{v}</p>
+                    ) : (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); goChat(d.hint); }}
+                        className="ml-6 text-xs text-primary-500 hover:text-primary-700 hover:underline transition-colors"
+                      >💬 {d.hint}</button>
+                    )}
                   </div>
-                  {has ? (
-                    <p className="text-xs text-surface-600 ml-6 leading-relaxed truncate">{v}</p>
-                  ) : (
-                    <button
-                      onClick={() => goChat(d.hint)}
-                      className="ml-6 text-xs text-primary-500 hover:text-primary-700 hover:underline transition-colors"
-                    >💬 {d.hint}</button>
+                  {topics.length > 0 && (
+                    <span className="text-[10px] text-surface-400 flex-shrink-0">{isExpanded ? '▲' : '▼'}</span>
                   )}
                 </div>
               </div>
+              {isExpanded && topics.length > 0 && (
+                <div className="rounded-b-xl border border-t-0 border-surface-200 bg-surface-50/80 p-3 space-y-2">
+                  {topics.map((t: any, i: number) => (
+                    <div key={i} className="flex items-start gap-2 text-xs">
+                      <span className={`font-medium ${levelColor(t.level)}`}>●</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-medium text-surface-700">{t.topic}</span>
+                          <span className={`text-[10px] font-medium ${levelColor(t.level)}`}>{levelLabel(t.level)}</span>
+                          {t.confidence >= 0.7 && <span className="text-[10px] text-green-500">高置信</span>}
+                        </div>
+                        {t.detail && <p className="text-surface-500 mt-0.5">{t.detail}</p>}
+                        {t.evidence && (
+                          <p className="text-[10px] text-surface-400 mt-0.5">
+                            {evidenceIcon(t.evidence)} {t.evidence}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           );
         })}

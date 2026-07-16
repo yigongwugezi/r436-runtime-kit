@@ -7187,4 +7187,4 @@ def get_conversation_facts(sessionId: str = "") -> dict[str, Any]:
     state = conversation_store.get(sessionId) if sessionId else None
     if state is None:
         return {"facts": {}}
-    return {"facts": dict(state.facts)}
+    return {"facts": dict(state.facts), "rich_facts": state.rich_facts}

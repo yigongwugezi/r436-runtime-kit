@@ -148,8 +148,8 @@ async def _extract_facts_after_chat(
         f"## 当前已知\n{known_block}\n\n"
         f"## 尚未了解\n{unknown_block}\n\n"
         f"## 对话\n学生：{user_msg[:500]}\nAI：{assistant_reply[:600]}\n\n"
-        "请输出JSON，只包含从本次对话中新发现的维度（skip已充分了解的维度）：\n"
-        '{"updates": {"background": "[学生自述]软件工程大二", ...}}'
+        "请输出JSON，优先输出 rich_updates（结构化topic维度），同时保留旧格式的updates字段：\n"
+        '{"updates": {"background": "[学生自述]软件工程大二"}, "rich_updates": {"knowledge_base": {"summary": "有Python基础", "topics": [{"topic": "Python", "level": "intermediate", "detail": "基础语法", "confidence": 0.8, "evidence": "学生自述"}]}}}'
     )
 
     try:
@@ -177,6 +177,32 @@ async def _extract_facts_after_chat(
                 val = str(value).strip()
                 if val and val not in ("未提及", "待补充", "未知", "", "无") and len(val) > 1:
                     conversation_store._set_fact(state, key, val, source_text=user_msg)
+
+        # ── 处理 rich_updates（结构化 topic 级数据）──
+        try:
+            rich = _json.loads(raw[s:e]).get("rich_updates", {})
+        except Exception:
+            rich = {}
+        if isinstance(rich, dict):
+            for dim, data in rich.items():
+                if dim not in label_map:
+                    continue
+                summary = str(data.get("summary", "")).strip() if isinstance(data, dict) else ""
+                if summary:
+                    conversation_store._set_fact(state, dim, summary, source_text=user_msg)
+                topics = data.get("topics", []) if isinstance(data, dict) else []
+                if isinstance(topics, list):
+                    for t in topics:
+                        if isinstance(t, dict) and t.get("topic"):
+                            conversation_store.set_rich_fact_topic(
+                                state, dim, str(t["topic"]),
+                                level=str(t.get("level", "")),
+                                detail=str(t.get("detail", "")),
+                                confidence=float(t.get("confidence", 0.5)),
+                                evidence=str(t.get("evidence", "")),
+                                source_text=user_msg,
+                                verified_by=str(t.get("verified_by", "")),
+                            )
     except Exception:
         pass  # Fact extraction is best-effort, never blocks the reply
 
