@@ -652,8 +652,7 @@ export default function ChatPage() {
         userScrolledUpRef.current = false;
       } else {
         userScrolledUpRef.current = true;
-      }
-      setShowScrollBtn(distFromBottom > 100 && messages.length > 0);
+      };
     };
     el.addEventListener('scroll', h, { passive: true });
     return () => el.removeEventListener('scroll', h);
@@ -1021,15 +1020,6 @@ export default function ChatPage() {
           </div>
         </div>
       </div>
-
-      {showScrollBtn && (
-        <button
-          onClick={() => scrollToBottom(true)}
-          className="absolute bottom-32 left-1/2 -translate-x-1/2 w-8 h-8 bg-white border border-gray-200 rounded-full flex items-center justify-center shadow-md hover:shadow-lg transition-all z-10"
-        >
-          <ChevronDown className="w-4 h-4 text-gray-500" />
-        </button>
-      )}
 
       <ChatHistorySidebar
         open={historyOpen}
