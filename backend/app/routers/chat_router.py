@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.services.conversation_state import conversation_store
-from app.services.langgraph_orchestrator import run_pipeline
+from app.services.langgraph_orchestrator import run_pipeline, _is_likely_chat
 from app.db.engine import SessionLocal
 from app.db.models import SessionModel
 from app.db.repository import get_or_create_session
@@ -183,7 +183,7 @@ def _bind_current_subject_from_message(state_obj: Any) -> dict[str, Any] | None:
 
 async def _run_chat(message: str, session_id: str, search_enabled: bool = False, deep_think_enabled: bool = False, chat_mode: str = "free") -> tuple[str, str, dict[str, Any]]:
     # ── 自由模式：纯问答，零副作用，不走任何 Agent 管道 ──
-    if chat_mode == "free" and _is_chat_quick(message, None, deep_think_enabled, chat_mode):
+    if chat_mode == "free" and _is_likely_chat(message, {}):
         from app.services.deeptutor_facade import deeptutor
         try:
             if deep_think_enabled:
@@ -415,9 +415,8 @@ async def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_a
             chat_mode = str(payload.get("chat_mode", "free"))
             # ── 自由模式流式直调 ──
             if chat_mode == "free" and message and not any(kw in message for kw in ["生成", "出题", "规划", "路径"]):
-                from app.services.llm_client import get_llm_client
-                from app.config import settings
-                client = get_llm_client(settings.llm_provider)
+                from app.services.llm_factory import get_chat_client
+                client = get_chat_client()
                 deep_think = bool(payload.get("deep_think_enabled", False))
                 reasoning_chunks = []
                 for token in client.stream_chat([{"role": "user", "content": message}], reasoning=deep_think):

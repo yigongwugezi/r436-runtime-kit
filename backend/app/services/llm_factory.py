@@ -21,7 +21,7 @@ import time
 import random
 import base64
 import logging
-from typing import Callable, Dict, List, Optional, Tuple, Any
+from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 from openai import OpenAI
 
 logger = logging.getLogger(__name__)
@@ -282,6 +282,22 @@ class UnifiedChatClient:
                     raise RuntimeError(f"LLM chat failed: {e}")
                 time.sleep((2 ** attempt) * 0.5 + random.random() * 0.5)
         raise RuntimeError("LLM chat failed after retries")
+
+    def stream_chat(self, messages: list[dict], **kwargs) -> Generator[str, None, None]:
+        """流式聊天——边生成边 yield token。"""
+        if not self._client:
+            raise RuntimeError("No LLM API key configured")
+        temp = kwargs.pop("temperature", self._temperature)
+        stream = self._client.chat.completions.create(
+            model=self._model,
+            messages=messages,
+            temperature=temp,
+            stream=True,
+            **kwargs,
+        )
+        for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
 
 
 def get_chat_client() -> UnifiedChatClient:
