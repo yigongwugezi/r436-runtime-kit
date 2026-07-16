@@ -51,7 +51,6 @@ export default function ResourceTypeRenderer({ resource }: Props) {
       return <PracticeRenderer resource={resource} />;
     case 'multimodal':
       return <MultimodalRenderer resource={resource} />;
-      return <PracticeRenderer resource={resource} />;
     case 'video':
       return <VideoRenderer resource={resource} />;
     case 'ppt':
@@ -446,6 +445,7 @@ function VideoRenderer({ resource }: Props) {
  * Multimodal — 多模态资源（图片/视频脚本/结构化内容）
  * =================================================================== */
 function MultimodalRenderer({ resource }: Props) {
+  const content = resource.content || '';
   const contentUrl = resource.contentUrl || '';
   const status = resource.multimodalStatus || 'script_only';
   const isImage = resource.format === 'image' || /\.(png|jpg|jpeg|gif|svg|webp)/i.test(contentUrl);

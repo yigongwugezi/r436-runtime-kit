@@ -11,6 +11,7 @@ export interface SendMessageParams {
   image_url?: string;
   image_base64?: string;
   ignore_image_context?: boolean;
+  image_provider?: string;
 }
 
 export interface ChatResponse {

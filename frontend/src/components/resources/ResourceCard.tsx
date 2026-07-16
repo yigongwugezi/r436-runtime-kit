@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   Clock, BookOpen, Brain, Code, FileText, Lightbulb,
-  Play, Presentation, BookmarkCheck, CheckCircle2, ChevronRight,
+  Play, Presentation, Image, BookmarkCheck, CheckCircle2, ChevronRight,
   CheckSquare, Square, ChevronDown, ChevronUp, Shield,
 } from 'lucide-react';
 import type { Resource } from '../../types/resource';
@@ -18,7 +18,9 @@ const iconMap: Record<ResourceType, React.ReactNode> = {
   quiz:       <FileText className="w-5 h-5 text-amber-500" />,
   reading:    <Lightbulb className="w-5 h-5 text-green-500" />,
   case_study: <Code className="w-5 h-5 text-cyan-500" />,
+  practice:   <Code className="w-5 h-5 text-cyan-500" />,
   video:      <Play className="w-5 h-5 text-red-500" />,
+  multimodal: <Image className="w-5 h-5 text-pink-500" />,
   ppt:        <Presentation className="w-5 h-5 text-orange-500" />,
   textbook:   <BookOpen className="w-5 h-5 text-blue-500" />,
   article:    <FileText className="w-5 h-5 text-green-500" />,

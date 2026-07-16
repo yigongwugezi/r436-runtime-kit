@@ -37,6 +37,19 @@ export type MultimodalStatus = 'script_only' | 'generated' | 'generation_failed'
 /** 审核状态 */
 export type ReviewStatus = 'passed' | 'warning' | 'blocked';
 
+/** 资源质量状态；兼容资源生成、审核与本地兜底返回的既有字段。 */
+export type QualityStatus =
+  | 'passed'
+  | 'repaired'
+  | 'fallback'
+  | 'failed'
+  | 'pending'
+  | 'warning'
+  | 'blocked'
+  | 'insufficient_context'
+  | 'needs_review'
+  | 'fallback_passed';
+
 /** 审核问题项 */
 export interface ReviewIssue {
   /** 问题描述 */
