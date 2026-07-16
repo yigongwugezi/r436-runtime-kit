@@ -603,14 +603,13 @@ export default function ChatPage() {
     selectImageAttachment,
     searchEnabled,
     deepThinkEnabled,
-    chatMode,
   } = useChatStore() as any;
   const { send, abort } = useStreamChat();
   const setSearchEnabled = (v: boolean) => useChatStore.getState().setSearchEnabled(v);
   const setDeepThinkEnabled = (v: boolean) => useChatStore.getState().setDeepThinkEnabled(v);
   // Closed-loop assessment notifications — poll every 30s, pause during streaming
   useNotificationPoller(currentSessionId || '', !isStreaming);
-  const [input, setInput] = useState(''); const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [messagesLoaded, setMessagesLoaded] = useState(false); const [menuOpen, setMenuOpen] = useState(false); const [historyOpen, setHistoryOpen] = useState(false);
   const [selectedImage, setSelectedImage] = useState<{ file: File; preview: string } | null>(null);
   const [imageContextDisabled, setImageContextDisabled] = useState(false);
@@ -625,7 +624,7 @@ export default function ChatPage() {
   }, []);
   useEffect(() => () => { if (selectedImage) URL.revokeObjectURL(selectedImage.preview); }, [selectedImage]);
   const selectedReferenceAttachment = (imageAttachmentHistory || []).find((item: ChatAttachment) => imageAttachmentKey(item) === selectedImageAttachmentId) || lastImageAttachment;
-  const referencesLastImage = !selectedImage && Boolean(selectedReferenceAttachment) && IMAGE_REFERENCE_RE.test(input);
+  const referencesLastImage = !selectedImage && Boolean(selectedReferenceAttachment) && IMAGE_REFERENCE_RE.test(inputRef.current?.value || '');
   const willUseLastImage = referencesLastImage && !imageContextDisabled;
   useEffect(() => {
     if (!referencesLastImage) setImageContextDisabled(false);
@@ -652,7 +651,8 @@ export default function ChatPage() {
         userScrolledUpRef.current = false;
       } else {
         userScrolledUpRef.current = true;
-      };
+      }
+      setShowScrollBtn(distFromBottom > 100 && messages.length > 0);
     };
     el.addEventListener('scroll', h, { passive: true });
     return () => el.removeEventListener('scroll', h);
@@ -730,11 +730,12 @@ export default function ChatPage() {
     setImageContextDisabled(false);
   };
   const handleSend = async () => {
-    if ((!input.trim() && !selectedImage) || isStreaming) return;
-    const text = input.trim() || '识别这张图片';
+    const text = (inputRef.current?.value || '').trim();
+    if ((!text && !selectedImage) || isStreaming) return;
+    const finalText = text || '识别这张图片';
     const attachments = selectedImage ? [await uploadMultimodalImage(selectedImage.file, currentSessionId)] : [];
-    send(text, attachments, { ignoreImageContext: referencesLastImage && imageContextDisabled });
-    setInput('');
+    send(finalText, attachments, { ignoreImageContext: referencesLastImage && imageContextDisabled });
+    if (inputRef.current) inputRef.current.value = '';
     setImageContextDisabled(false);
     if (selectedImage) URL.revokeObjectURL(selectedImage.preview);
     setSelectedImage(null);
@@ -801,12 +802,12 @@ export default function ChatPage() {
       </div>
 
       {/* ── 模式切换栏 ── */}
-      <div className="flex-shrink-0 px-4 pt-2 pb-1 w-full min-w-0">
+      <div className="flex-shrink-0 px-4 pt-2 pb-1">
         <div className="max-w-[48rem] mx-auto flex items-center gap-1.5 rounded-xl bg-surface-100 p-1 w-fit">
           <button
             onClick={() => useChatStore.getState().setChatMode('free')}
             className={`rounded-lg px-4 py-1.5 text-xs font-medium transition-colors ${
-              chatMode === 'free'
+              useChatStore.getState().chatMode === 'free'
                 ? 'bg-white text-surface-800 shadow-sm'
                 : 'text-surface-500 hover:text-surface-700'
             }`}
@@ -814,7 +815,7 @@ export default function ChatPage() {
           <button
             onClick={() => useChatStore.getState().setChatMode('planning')}
             className={`rounded-lg px-4 py-1.5 text-xs font-medium transition-colors ${
-              chatMode === 'planning'
+              useChatStore.getState().chatMode === 'planning'
                 ? 'bg-white text-surface-800 shadow-sm'
                 : 'text-surface-500 hover:text-surface-700'
             }`}
@@ -823,14 +824,15 @@ export default function ChatPage() {
       </div>
 
       {/* ── Messages area ── */}
-      <div className="flex-1 overflow-hidden flex flex-col w-full min-w-0 will-change-transform">
-        <div ref={scrollRef} className="flex-1 overflow-y-scroll w-full min-w-0" style={{ overflowAnchor: 'auto' }}>
-          <div className="max-w-[48rem] mx-auto w-full px-4 py-4 space-y-6">
+      <div className="flex-1 overflow-hidden flex flex-col">
+        <div ref={scrollRef} className="flex-1 overflow-y-auto" style={{ overflowAnchor: 'none' }}>
+          <div className="max-w-[48rem] mx-auto px-4 py-4 space-y-6">
             {(() => {
-              const filtered = messages.filter((m: ChatMessage) => !m.mode || m.mode === chatMode);
+              const currentMode = useChatStore.getState().chatMode;
+              const filtered = messages.filter((m: ChatMessage) => !m.mode || m.mode === currentMode);
               return <>
               {filtered.length === 0 && !isStreaming ? (
-              chatMode === 'planning' ? (
+              currentMode === 'planning' ? (
                 <div className="flex flex-col items-center justify-center min-h-[55vh] text-center px-4">
                   <div className="w-14 h-14 rounded-2xl bg-accent-50 flex items-center justify-center mb-5">
                     <Sparkles size={24} className="text-accent-500" />
@@ -847,7 +849,7 @@ export default function ChatPage() {
                       { label: '两个月搞定英语四级', key: 'plan' },
                     ].map((cmd, i) => (
                       <button key={i}
-                        onClick={() => { setInput(cmd.label); inputRef.current?.focus(); }}
+                        onClick={() => { if (inputRef.current) inputRef.current.value = cmd.label; inputRef.current?.focus(); }}
                         className="px-4 py-2.5 bg-primary-50 border border-primary-200 rounded-xl text-sm text-primary-700 hover:bg-primary-100 transition-all"
                       >{cmd.label}</button>
                     ))}
@@ -865,7 +867,7 @@ export default function ChatPage() {
                   {quickCommands.slice(0, 4).map(cmd => (
                     <button
                       key={cmd.id}
-                      onClick={() => { setInput(cmd.prompt); inputRef.current?.focus(); }}
+                      onClick={() => { if (inputRef.current) inputRef.current.value = cmd.label; inputRef.current?.focus(); }}
                       className="px-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm text-gray-600 hover:border-gray-300 hover:bg-gray-50 transition-all"
                     >
                       {cmd.label}
@@ -911,7 +913,7 @@ export default function ChatPage() {
         </div>
 
         {/* ── Input area: exact ChatGPT + DeepSeek layout ── */}
-        <div className="flex-shrink-0 px-4 pb-4 pt-1 w-full min-w-0">
+        <div className="flex-shrink-0 px-4 pb-4 pt-1">
           <div className="max-w-[48rem] mx-auto">
             {/* DeepSeek-style mode toggles — centered above input */}
             <div className="flex items-center justify-center gap-2 mb-3">
@@ -970,7 +972,7 @@ export default function ChatPage() {
             {/* Prompt templates */}
             {messages.length > 0 && !isStreaming && (
               <div className="mb-2">
-                <PromptTemplates onSelect={(prompt: string) => { setInput(prompt); inputRef.current?.focus(); }} />
+                <PromptTemplates onSelect={(prompt: string) => { if (inputRef.current) inputRef.current.value = prompt; inputRef.current?.focus(); }} />
               </div>
             )}
 
@@ -987,8 +989,8 @@ export default function ChatPage() {
               </button>
               <textarea
                 ref={inputRef}
-                value={input}
-                onChange={e => setInput(e.target.value)}
+                defaultValue=""
+                key={currentSessionId}  // 切换会话时重置
                 onKeyDown={handleKeyDown}
                 placeholder="输入消息..."
                 rows={1}
@@ -1003,9 +1005,9 @@ export default function ChatPage() {
               ) : (
                 <button
                   onClick={handleSend}
-                  disabled={!input.trim() && !selectedImage}
+                  disabled={!selectedImage && !(inputRef.current?.value || '').trim()}
                   className={`p-1.5 rounded-full transition-all flex-shrink-0 ${
-                    input.trim() || selectedImage
+                    (inputRef.current?.value || "").trim() || selectedImage
                       ? 'bg-gray-800 text-white hover:bg-gray-700'
                       : 'bg-gray-300 text-gray-400 cursor-not-allowed'
                   }`}
@@ -1020,6 +1022,15 @@ export default function ChatPage() {
           </div>
         </div>
       </div>
+
+      {showScrollBtn && (
+        <button
+          onClick={() => scrollToBottom(true)}
+          className="absolute bottom-32 left-1/2 -translate-x-1/2 w-8 h-8 bg-white border border-gray-200 rounded-full flex items-center justify-center shadow-md hover:shadow-lg transition-all z-10"
+        >
+          <ChevronDown className="w-4 h-4 text-gray-500" />
+        </button>
+      )}
 
       <ChatHistorySidebar
         open={historyOpen}
