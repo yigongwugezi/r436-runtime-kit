@@ -269,13 +269,6 @@ async def _run_chat(message: str, session_id: str, search_enabled: bool = False,
         state["learning_path"] = last["learning_path"]
         state["existing_path"] = {"stages": last["learning_path"]}
 
-    # ── 普通对话快速通道：跳过 run_pipeline 全套 Agent 开销 ──
-    _chat_quick = _is_chat_quick(message, state_obj, deep_think_enabled, chat_mode)
-    if _chat_quick:
-        # 自由模式不带历史上下文，彻底隔绝规划模式的影响
-        reply, thinking = await _quick_chat(message, session_id, [] if chat_mode == "free" else state_obj.messages[-20:], assessment_context, deep_think_enabled)
-        _quick_end(session_id, state_obj, message, reply)
-        return reply, thinking, {}
 
     result = await run_pipeline(**state)
     reply = result.get("final_reply", "") or result.get("_conversation_reply", "") or "处理完成"
@@ -340,72 +333,6 @@ def _done_event(session_id: str, result: dict[str, Any], error: str | None = Non
 
 def _subject_id(payload: dict[str, Any]) -> str:
     return str(payload.get("subjectId") or payload.get("subject_id") or "").strip()
-
-
-# ── 聊天快速通道 ──────────────────────────────────────────────────────
-
-_GEN_TRIGGERS = frozenset({
-    "生成", "出题", "规划", "批改", "诊断", "路径", "资源", "导图",
-    "系统学", "专攻", "按章节", "每日学", "每日计划", "薄弱点", "强化",
-    "调整", "修改", "改一下", "加快", "放慢", "重新",
-    "计划", "制定", "安排",
-})
-
-
-def _is_chat_quick(message: str, state_obj: Any, deep_think_enabled: bool = False, chat_mode: str = "free") -> bool:
-    """判断是否为纯闲聊——只需 DeepTutor，不需要跑任何 Agent。"""
-    if not message:
-        return False
-    # 自由学习模式：永远不走 Agent
-    if chat_mode == "free":
-        return True
-    # 深度思考模式需要走完整链路（切换 deepseek-reasoner 模型）
-    if deep_think_enabled:
-        return False
-    compact = re.sub(r"\s+", "", message)
-    if any(t in compact for t in _GEN_TRIGGERS):
-        return False
-    # 有 Agent 待办提案时不能走捷径（例如 "可以" 需要确认提案）
-    if getattr(state_obj, "last_proposal", None):
-        return False
-    return True
-
-
-async def _quick_chat(message: str, session_id: str, messages: list, assessment_context: str = "", deep_think_enabled: bool = False) -> tuple[str, str]:
-    """极简聊天回复。深度思考模式走 LLM 直调，否则走 DeepTutor。"""
-    messages_raw = [{"role": m["role"], "content": m["content"]} for m in messages[-20:]]
-    if assessment_context:
-        messages_raw.append({"role": "system", "content": assessment_context})
-    msg = {"role": "user", "content": message}
-    try:
-        if deep_think_enabled:
-            from app.config import settings
-            from app.services.llm_client import get_llm_client
-            client = get_llm_client(settings.llm_provider)
-            raw = client.chat(messages=messages_raw + [msg], temperature=0.7, reasoning=True)
-            # 解析 reasoning_content（已在 llm_client 中转为 thinking 标签）
-            reply = raw
-            thinking = ""
-            s = raw.find("<thinking>")
-            e = raw.rfind("</thinking>")
-            if s >= 0 and e > s:
-                thinking = raw[s + 10:e]
-                reply = raw[e + 11:].strip()
-            conversation_store.append_message(session_id, "assistant", reply)
-            return reply, thinking
-        from app.services.deeptutor_facade import deeptutor
-        reply = await deeptutor.chat(message, messages_raw, profile_context="", persona_context="")
-        if not reply:
-            reply = "你好！我是EduAgent，有什么可以帮你的？"
-    except Exception:
-        reply = "你好！我是EduAgent，有什么可以帮你的？"
-    conversation_store.append_message(session_id, "assistant", reply)
-    return reply, ""
-
-
-def _quick_end(session_id: str, state_obj: Any, user_msg: str, reply: str) -> None:
-    """快速通道的后处理：保存画像快照，不触发 Agent。"""
-    _auto_save_profile(state_obj)
 
 
 def _learner_id(payload: dict[str, Any], auth: AuthContext) -> str:
