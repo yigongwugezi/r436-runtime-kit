@@ -248,9 +248,9 @@ async def _run_chat(message: str, session_id: str, search_enabled: bool = False,
     # ── 普通对话快速通道：跳过 run_pipeline 全套 Agent 开销 ──
     _chat_quick = _is_chat_quick(message, state_obj, deep_think_enabled, chat_mode)
     if _chat_quick:
-        reply, thinking = await _quick_chat(message, session_id, state_obj, assessment_context)
-        # ── Auto-persist profile snapshot after every message ──
-        _auto_save_profile(state_obj)
+        # 自由模式不带历史上下文，彻底隔绝规划模式的影响
+        reply, thinking = await _quick_chat(message, session_id, [] if chat_mode == "free" else state_obj.messages[-20:], assessment_context, deep_think_enabled)
+        _quick_end(session_id, state_obj, message, reply)
         return reply, thinking, {}
 
     result = await run_pipeline(**state)
@@ -347,14 +347,29 @@ def _is_chat_quick(message: str, state_obj: Any, deep_think_enabled: bool = Fals
     return True
 
 
-async def _quick_chat(message: str, session_id: str, state_obj: Any, assessment_context: str = "") -> tuple[str, str]:
-    """极简聊天回复——只调 DeepTutor，零 Agent 开销。"""
-    from app.services.deeptutor_facade import deeptutor
-
-    messages_raw = [{"role": m["role"], "content": m["content"]} for m in state_obj.messages[-20:]]
+async def _quick_chat(message: str, session_id: str, messages: list, assessment_context: str = "", deep_think_enabled: bool = False) -> tuple[str, str]:
+    """极简聊天回复。深度思考模式走 LLM 直调，否则走 DeepTutor。"""
+    messages_raw = [{"role": m["role"], "content": m["content"]} for m in messages[-20:]]
     if assessment_context:
         messages_raw.append({"role": "system", "content": assessment_context})
+    msg = {"role": "user", "content": message}
     try:
+        if deep_think_enabled:
+            from app.config import settings
+            from app.services.llm_client import get_llm_client
+            client = get_llm_client(settings.llm_provider)
+            raw = client.chat(messages=messages_raw + [msg], temperature=0.7, reasoning=True)
+            # 解析 reasoning_content（已在 llm_client 中转为 thinking 标签）
+            reply = raw
+            thinking = ""
+            s = raw.find("<thinking>")
+            e = raw.rfind("</thinking>")
+            if s >= 0 and e > s:
+                thinking = raw[s + 10:e]
+                reply = raw[e + 11:].strip()
+            conversation_store.append_message(session_id, "assistant", reply)
+            return reply, thinking
+        from app.services.deeptutor_facade import deeptutor
         reply = await deeptutor.chat(message, messages_raw, profile_context="", persona_context="")
         if not reply:
             reply = "你好！我是EduAgent，有什么可以帮你的？"
@@ -362,6 +377,11 @@ async def _quick_chat(message: str, session_id: str, state_obj: Any, assessment_
         reply = "你好！我是EduAgent，有什么可以帮你的？"
     conversation_store.append_message(session_id, "assistant", reply)
     return reply, ""
+
+
+def _quick_end(session_id: str, state_obj: Any, user_msg: str, reply: str) -> None:
+    """快速通道的后处理：保存画像快照，不触发 Agent。"""
+    _auto_save_profile(state_obj)
 
 
 def _learner_id(payload: dict[str, Any], auth: AuthContext) -> str:
