@@ -419,28 +419,30 @@ async def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_a
                 client = get_chat_client()
                 deep_think = bool(payload.get("deep_think_enabled", False))
                 if deep_think:
-                    # 深度思考走非流式（原生支持 reasoning_content 提取）
                     from app.services.llm_client import DeepSeekLLMClient
                     from app.config import settings as _st
-                    raw = DeepSeekLLMClient(
-                        api_key=_st.deepseek_api_key,
-                        base_url=_st.deepseek_base_url,
-                        model=_st.llm_model,
-                        temperature=0.7,
-                    ).chat(messages=[{"role": "user", "content": message}], reasoning=True)
-                    reply = raw
-                    thinking = ""
-                    s = raw.find("<thinking>")
-                    e = raw.rfind("</thinking>")
-                    if s >= 0 and e > s:
-                        thinking = raw[s + 10:e]
-                        reply = raw[e + 11:].strip()
-                    if thinking:
-                        yield f"data: {json.dumps({'reasoning': thinking}, ensure_ascii=False)}\n\n"
-                    for chunk in reply.splitlines(keepends=True):
-                        yield f"data: {json.dumps({'type': 'messages', 'content': chunk}, ensure_ascii=False)}\n\n"
+                    _dsc = DeepSeekLLMClient(api_key=_st.deepseek_api_key, base_url=_st.deepseek_base_url, model=_st.llm_model, temperature=0.7)
+                    rbuf = ""
+                    tbuf = ""
+                    for token in _dsc.stream_chat([{"role": "user", "content": message}], reasoning=True):
+                        if token.startswith("<thinking>"):
+                            rbuf += token[10:]
+                        elif rbuf:
+                            rbuf += token
+                            if rbuf.endswith("</thinking>"):
+                                r = rbuf[:-11]
+                                if r.strip():
+                                    yield f"data: {json.dumps({'reasoning': r.strip()}, ensure_ascii=False)}\n\n"
+                                rbuf = ""
+                        else:
+                            tbuf += token
+                            if len(tbuf) >= 4 or token in ("\n", ".", "!", "？", "。", "！"):
+                                yield f"data: {json.dumps({'type': 'messages', 'content': tbuf}, ensure_ascii=False)}\n\n"
+                                tbuf = ""
+                    if tbuf:
+                        yield f"data: {json.dumps({'type': 'messages', 'content': tbuf}, ensure_ascii=False)}\n\n"
                     yield f"data: {json.dumps(_done_event(session_id, {}), ensure_ascii=False)}\n\n"
-                    conversation_store.append_message(session_id, "assistant", reply)
+                    conversation_store.append_message(session_id, "assistant", "")
                     return
                 reasoning_buf = ""
                 token_buf = ""

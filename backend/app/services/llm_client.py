@@ -308,20 +308,21 @@ class DeepSeekLLMClient(BaseLLMClient):
                 if not chunk:
                     break
                 buffer += chunk.decode("utf-8", errors="replace")
-                # SSE 格式：data: {"choices":[{"delta":{"content":"..."}}]}
                 if buffer.endswith("\n\n"):
                     for line in buffer.strip().split("\n"):
                         if line.startswith("data: ") and line != "data: [DONE]":
                             try:
                                 d = json.loads(line[6:])
-                                token = d.get("choices", [{}])[0].get("delta", {}).get("content", "")
-                                if token:
-                                    yield token
+                                delta = d.get("choices", [{}])[0].get("delta", {})
+                                rc = delta.get("reasoning_content", "") or ""
+                                ct = delta.get("content", "") or ""
+                                if rc:
+                                    yield f"<thinking>{rc}</thinking>"
+                                if ct:
+                                    yield ct
                             except (json.JSONDecodeError, IndexError):
                                 pass
                     buffer = ""
-                # 也处理 reasoning_content
-                if buffer.endswith("\n\n"):
                     buffer = ""
 
     @staticmethod
