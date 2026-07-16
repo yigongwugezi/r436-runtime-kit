@@ -837,6 +837,11 @@ class SectionResourceRecommendationService:
                 ranked = self._rank(candidates, context, language, {**diagnostics, "filtered": Counter()}, feedback_by_url)
                 if len([item for item in ranked if item["resource_type"] == resource_type]) >= target_count:
                     break
+                # Both preferred layers are already in flight.  Wait for the
+                # outstanding result before spending another fallback call;
+                # it may satisfy the target on its own.
+                if pending:
+                    continue
                 if next_index < len(layers):
                     self._emit(progress_callback, "fallback_search", "running", fallback_used=True)
                     submit(next_index)

@@ -82,7 +82,8 @@ def main() -> None:
             client.search("circuit test")
         except SearchError:
             pass
-        assert failed_calls == 9 and CircuitFails.calls == failed_calls
+        expected_failures = len(DuckDuckGoSearchClient._BACKENDS) * 3
+        assert failed_calls == expected_failures and CircuitFails.calls == failed_calls
     DuckDuckGoSearchClient.reset_circuits()
 
     print("search client: PASS")

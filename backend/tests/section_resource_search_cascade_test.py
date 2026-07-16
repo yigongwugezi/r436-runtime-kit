@@ -47,7 +47,7 @@ def main() -> None:
     first = service.recommend(**payload)
     assert first["status"] == "completed" and first["resources"]
     assert len(client.calls) == 2
-    assert any(event["stage"] == "fallback_search" for event in events)
+    assert not any(event["stage"] == "fallback_search" for event in events)
     assert events[-1]["stage"] == "completed"
     second = service.recommend(**payload)
     assert second["resources"] and len(client.calls) == 2
