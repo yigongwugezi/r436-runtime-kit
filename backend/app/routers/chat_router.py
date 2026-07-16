@@ -413,6 +413,18 @@ async def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_a
             search_enabled = bool(payload.get("search_enabled", False))
             deep_think_enabled = bool(payload.get("deep_think_enabled", False))
             chat_mode = str(payload.get("chat_mode", "free"))
+            # ── 自由模式流式直调 ──
+            if chat_mode == "free" and message and not any(kw in message for kw in ["生成", "出题", "规划", "路径"]):
+                from app.services.llm_client import get_llm_client
+                from app.config import settings
+                client = get_llm_client(settings.llm_provider)
+                deep_think = bool(payload.get("deep_think_enabled", False))
+                reasoning_chunks = []
+                for token in client.stream_chat([{"role": "user", "content": message}], reasoning=deep_think):
+                    yield f"data: {json.dumps({'type': 'messages', 'content': token}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps(_done_event(session_id, {}), ensure_ascii=False)}\n\n"
+                conversation_store.append_message(session_id, "assistant", message)
+                return
             reply, thinking, result = await _run_chat(message, session_id, search_enabled=search_enabled, deep_think_enabled=deep_think_enabled, chat_mode=chat_mode)
             if thinking:
                 yield f"data: {json.dumps({'reasoning': thinking}, ensure_ascii=False)}\n\n"

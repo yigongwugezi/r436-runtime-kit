@@ -14,7 +14,7 @@ import logging
 import os
 import time
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Generator
 from urllib import error, request
 
 from app.config import settings
@@ -281,6 +281,48 @@ class DeepSeekLLMClient(BaseLLMClient):
         if reasoning:
             content = f"<thinking>{reasoning}</thinking>\n\n{content}"
         return content
+
+    def stream_chat(self, messages: list[dict[str, str]], **kwargs) -> Generator[str, None, None]:
+        """流式聊天——边生成边 yield token。"""
+        use_reasoning = kwargs.pop("reasoning", False)
+        use_search = kwargs.pop("search", False)
+
+        model = kwargs.get("model", self.model)
+        if use_reasoning:
+            model = getattr(settings, "llm_reasoner_model", "deepseek-reasoner")
+
+        payload = {"model": model, "messages": messages, "stream": True, "temperature": kwargs.get("temperature", 0.7)}
+        if use_search and settings.llm_enable_search:
+            payload["search"] = True
+
+        req = request.Request(
+            url=f"{self.base_url}/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with request.urlopen(req, timeout=kwargs.get("timeout", 30)) as response:
+            buffer = ""
+            while True:
+                chunk = response.read(1)
+                if not chunk:
+                    break
+                buffer += chunk.decode("utf-8", errors="replace")
+                # SSE 格式：data: {"choices":[{"delta":{"content":"..."}}]}
+                if buffer.endswith("\n\n"):
+                    for line in buffer.strip().split("\n"):
+                        if line.startswith("data: ") and line != "data: [DONE]":
+                            try:
+                                d = json.loads(line[6:])
+                                token = d.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                                if token:
+                                    yield token
+                            except (json.JSONDecodeError, IndexError):
+                                pass
+                    buffer = ""
+                # 也处理 reasoning_content
+                if buffer.endswith("\n\n"):
+                    buffer = ""
 
     @staticmethod
     def _read_error_body(exc: error.HTTPError) -> str:
