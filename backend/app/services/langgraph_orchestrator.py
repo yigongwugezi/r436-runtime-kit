@@ -774,17 +774,23 @@ async def _conversation_node(state: dict) -> dict:
     try:
         profile_facts = state.get("profile_facts", {}) or {}
 
-        # ── 普通对话不注入画像收集探针，只有路径规划入口才追问 ──
+        # ── 自由学习不注入探针；规划模式（含明确规划意图）才追问 ──
         profile_context = ""
         persona_context = ""
+        _need_probe = False
+        intent = state.get("intent", "")
+        if intent in ("plan", "full_workflow"):
+            _need_probe = True
         try:
             from app.services.conversation_state import conversation_store as _cs
             _s = _cs.get(state.get("session_id", ""))
             if _s and (_s.path_planning_info_mode or _s.profile_extraction_enabled):
-                profile_context = _build_profile_context(profile_facts)
-                persona_context = _build_chat_persona(profile_facts)
+                _need_probe = True
         except Exception:
             pass
+        if _need_probe:
+            profile_context = _build_profile_context(profile_facts)
+            persona_context = _build_chat_persona(profile_facts)
 
         dt_reply, reply_source = await _chat_provider_reply(
             msg, state.get("messages", []) or [], profile_context, persona_context,
@@ -885,7 +891,18 @@ async def _grading_node(state: dict) -> dict:
 
 def _route_by_intent(state: dict) -> str:
     """Route from intent_router → the appropriate LangGraph node."""
-    return get_node_route(state.get("intent", "none"))
+    intent = state.get("intent", "none")
+    # 规划模式下，只有 path_planning_info_mode 开启才走 agent 路径
+    # 否则让 DeepTutor 自然追问收集信息
+    if intent in ("plan", "full_workflow"):
+        try:
+            from app.services.conversation_state import conversation_store as _cs6
+            _s6 = _cs6.get(state.get("session_id", ""))
+            if not (_s6 and _s6.path_planning_info_mode):
+                return "conversation"
+        except Exception:
+            return "conversation"
+    return get_node_route(intent)
 
 
 def build_unified_graph() -> StateGraph:
@@ -1097,21 +1114,25 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
     agents_filter = state.pop("agents_filter", None)
     agent_ids = agents_filter if (agents_filter is not None and len(agents_filter) > 0) else get_agent_ids(intent)
     if agent_ids is not None and len(agent_ids) > 0:
-        # ── Safety net: planning requested but no mode selected → 引导到路径页 ──
-        if "planner_agent" in agent_ids and not state.get("plan_mode") and not state.get("path_mode"):
-            # 先跑 profile_agent 构建结构化画像（为后续路径规划页做准备）
-            if "profile_agent" in agent_ids:
-                await _run_agent("profile", state, factory)
-            state["final_reply"] = (
-                "好的！请到「学习路径」页面进行设置和生成，那里可以：\n"
-                "• 选择规划模式（教材式/日课式/精进式）\n"
-                "• 设定总天数和周末安排\n"
-                "• 在对话中收集学习信息再生成专属计划\n\n"
-                "点击左侧菜单的「学习路径」进入吧～"
-            )
-            state["pipeline_executed"] = True
-            state["overall_status"] = "completed"
-            return dict(state)
+        # ── 硬门槛：规划意图在对话中永远不执行 Planner ──
+        if "planner_agent" in agent_ids:
+            try:
+                from app.services.conversation_state import conversation_store as _cs7
+                _s7 = _cs7.get(state.get("session_id", ""))
+                _planning = _s7 and _s7.path_planning_info_mode
+            except Exception:
+                _planning = False
+            if not _planning or (not state.get("plan_mode") and not state.get("path_mode")):
+                state["final_reply"] = (
+                    "好的！请到「学习路径」页面进行设置和生成，那里可以：\n"
+                    "• 选择规划模式（教材式/日课式/精进式）\n"
+                    "• 设定总天数和周末安排\n"
+                    "• 在对话中收集学习信息再生成专属计划\n\n"
+                    "点击左侧菜单的「学习路径」进入吧～"
+                )
+                state["pipeline_executed"] = True
+                state["overall_status"] = "completed"
+                return dict(state)
 
         # Snapshot old results so we only report what's newly generated
         old_path = len(state.get("learning_path") or [])
