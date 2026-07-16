@@ -2,7 +2,7 @@
 
 ## 2026-07-16 候选线收口更新
 
-本节覆盖并取代下文仍以 `619607a` 为基线的“当前阻塞／下一轮”描述。当前本地候选为 `MAF-Refactor` 的 `00eccf4`，在 `619607a` 之后已经完成以下独立、可回归的本地修复：
+本节覆盖并取代下文仍以 `619607a` 为基线的“当前阻塞／下一轮”描述。当前本地候选为 `MAF-Refactor` 的 `c94957c`，在 `619607a` 之后已经完成以下独立、可回归的本地修复：
 
 | 状态 | 提交 | 已证实的结果 | 验证 |
 |---|---|---|---|
@@ -10,6 +10,7 @@
 | FIXED_LOCAL / BLOCKED_BY_NETWORK | `7e6bdc9` | 合并后 5 项 TypeScript 契约错误已修复：资源质量状态、资源类型映射、渲染正文变量与流式聊天 `image_provider` 均有明确类型。 | `npm run build` 成功；`workflowTaskRecovery` 与 learning-path ViewModel 回归通过。 |
 | FIXED_LOCAL / BLOCKED_BY_NETWORK | `c6dbc39` | 新对话只创建 session；未明确主题不会继承浏览器中历史 active subject。显式主题消息才会原子绑定该 session；无主题 Profile 只显示 learner-global 画像与“暂未选择学习主题”。 | 临时 SQLite 的 current-subject、learner/session、subject identity、Profile V2、chat fallback 测试，以及隔离 fake-Provider Edge 旅程均通过。 |
 | FIXED_LOCAL / BLOCKED_BY_NETWORK | `498d95c`, `00eccf4` | 多类型在线搜索为每种所选类型预留两次 primary 调用，`paper` 有独立两次 fallback reserve；等待已在途首选层，避免多发无意义 fallback。 | recommendations、general search、cascade、search client 与 fake Edge online-search 回归通过；未调用真实搜索 Provider。 |
+| FIXED_LOCAL / BLOCKED_BY_NETWORK | `c94957c` | Provider fallback 回归改为验证现行统一工厂的 `UnifiedChatClient` 契约，而非已经被工厂替代的旧 client 实现。 | `deeptutor_client_test.py` 在临时 SQLite／测试 key 下通过；没有发起网络请求，也没有修改 Provider 代码。 |
 
 `PUSHED` 目前为 0：本轮与此前多次 `git fetch origin` 都因 GitHub 连接被重置而失败，因此没有依据过期远端状态推送。上述四项均为本地候选修复，远端仍可能缺少它们，尤其是 `619607a` 的权限修复。
 

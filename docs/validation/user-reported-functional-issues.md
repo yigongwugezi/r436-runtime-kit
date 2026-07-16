@@ -1,6 +1,6 @@
 # 用户报告功能问题关闭矩阵
 
-> 2026-07-16 更新：以下矩阵已纳入 `7e6bdc9`、`c6dbc39`、`498d95c` 与 `00eccf4` 的隔离验证。所有新增提交仍为 **FIXED_LOCAL / BLOCKED_BY_NETWORK**：GitHub fetch 连接被重置，尚未推送；不应将其当作远端已发布状态。
+> 2026-07-16 更新：以下矩阵已纳入 `7e6bdc9`、`c6dbc39`、`498d95c`、`00eccf4` 与 `c94957c` 的隔离验证。所有新增提交仍为 **FIXED_LOCAL / BLOCKED_BY_NETWORK**：GitHub fetch 连接被重置，尚未推送；不应将其当作远端已发布状态。
 
 验证对象为候选分支 integrate/maf-refactor-31613f2。所有浏览器验证均使用隔离 SQLite、假 Provider 和可见的 Edge 自动化；没有读取真实用户内容、凭据或调用外部 LLM／搜索服务。
 
@@ -44,7 +44,7 @@
 | F31 | 无上下文确认词可能错误触发路径；有明确提议时又可能被短消息分支吞掉。 | fd390c3 | deeptutor_client_test.py | 普通聊天隔离旅程 | **CLOSED** |
 | F32 | “不生成路径”被当成学习“路径”主题。 | 5843dad | chat_fallback_test.py | 普通聊天隔离旅程 | **CLOSED** |
 | F33 | Profile 注入会被固定回复模板覆盖。 | 5ffab9e, cfa0ad2 | chat_fallback_test.py, profile_v2_test.py | browser-smoke.test.mjs | **CLOSED** |
-| F34 | Provider TLS／超时／fallback 需保持有界和当前消息相关。 | 4cda6ee, 3498f2a | deeptutor_client_test.py, chat_fallback_test.py | 假 Provider 普通聊天旅程 | **PARTIAL**：按要求未真实调用外部 Provider。 |
+| F34 | Provider TLS／超时／fallback 需保持有界和当前消息相关。 | 4cda6ee, 3498f2a, c94957c | deeptutor_client_test.py, chat_fallback_test.py | 假 Provider 普通聊天旅程 | **PARTIAL**：统一工厂 fallback 契约已回归；按要求未真实调用外部 Provider。 |
 | F35 | 视频学习偏好未进入资源偏好映射。 | cfa0ad2 | learner_session_profile_test.py, profile_v2_test.py | browser-smoke.test.mjs | **CLOSED** |
 
 ## 隔离验证摘要
