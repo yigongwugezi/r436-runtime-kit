@@ -800,10 +800,31 @@ export default function ChatPage() {
         </div>
       </div>
 
+      {/* ── 模式切换栏 ── */}
+      <div className="flex-shrink-0 px-4 pt-2 pb-1">
+        <div className="max-w-[48rem] mx-auto flex items-center gap-1.5 rounded-xl bg-surface-100 p-1 w-fit">
+          <button
+            onClick={() => useChatStore.getState().setChatMode('free')}
+            className={`rounded-lg px-4 py-1.5 text-xs font-medium transition-colors ${
+              useChatStore.getState().chatMode === 'free'
+                ? 'bg-white text-surface-800 shadow-sm'
+                : 'text-surface-500 hover:text-surface-700'
+            }`}
+          >自由学习</button>
+          <button
+            onClick={() => useChatStore.getState().setChatMode('planning')}
+            className={`rounded-lg px-4 py-1.5 text-xs font-medium transition-colors ${
+              useChatStore.getState().chatMode === 'planning'
+                ? 'bg-white text-surface-800 shadow-sm'
+                : 'text-surface-500 hover:text-surface-700'
+            }`}
+          >规划学习</button>
+        </div>
+      </div>
 
       {/* ── Messages area ── */}
       <div className="flex-1 overflow-hidden flex flex-col">
-        <div ref={scrollRef} className="flex-1 overflow-y-auto" style={{ overflowAnchor: 'none' }}>
+        <div ref={scrollRef} className="flex-1 overflow-y-scroll" style={{ overflowAnchor: 'auto' }}>
           <div className="max-w-[48rem] mx-auto px-4 py-4 space-y-6">
             {(() => {
               const currentMode = useChatStore.getState().chatMode;
