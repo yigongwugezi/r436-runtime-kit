@@ -603,6 +603,7 @@ export default function ChatPage() {
     selectImageAttachment,
     searchEnabled,
     deepThinkEnabled,
+    chatMode,
   } = useChatStore() as any;
   const { send, abort } = useStreamChat();
   const setSearchEnabled = (v: boolean) => useChatStore.getState().setSearchEnabled(v);
@@ -806,7 +807,7 @@ export default function ChatPage() {
           <button
             onClick={() => useChatStore.getState().setChatMode('free')}
             className={`rounded-lg px-4 py-1.5 text-xs font-medium transition-colors ${
-              useChatStore.getState().chatMode === 'free'
+              chatMode === 'free'
                 ? 'bg-white text-surface-800 shadow-sm'
                 : 'text-surface-500 hover:text-surface-700'
             }`}
@@ -814,7 +815,7 @@ export default function ChatPage() {
           <button
             onClick={() => useChatStore.getState().setChatMode('planning')}
             className={`rounded-lg px-4 py-1.5 text-xs font-medium transition-colors ${
-              useChatStore.getState().chatMode === 'planning'
+              chatMode === 'planning'
                 ? 'bg-white text-surface-800 shadow-sm'
                 : 'text-surface-500 hover:text-surface-700'
             }`}
@@ -827,11 +828,10 @@ export default function ChatPage() {
         <div ref={scrollRef} className="flex-1 overflow-y-auto" style={{ overflowAnchor: 'none' }}>
           <div className="max-w-[48rem] mx-auto px-4 py-4 space-y-6">
             {(() => {
-              const currentMode = useChatStore.getState().chatMode;
-              const filtered = messages.filter((m: ChatMessage) => !m.mode || m.mode === currentMode);
+              const filtered = messages.filter((m: ChatMessage) => !m.mode || m.mode === chatMode);
               return <>
               {filtered.length === 0 && !isStreaming ? (
-              currentMode === 'planning' ? (
+              chatMode === 'planning' ? (
                 <div className="flex flex-col items-center justify-center min-h-[55vh] text-center px-4">
                   <div className="w-14 h-14 rounded-2xl bg-accent-50 flex items-center justify-center mb-5">
                     <Sparkles size={24} className="text-accent-500" />
