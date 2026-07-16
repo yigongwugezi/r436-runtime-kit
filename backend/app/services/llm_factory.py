@@ -287,9 +287,10 @@ class UnifiedChatClient:
         """流式聊天——边生成边 yield token。"""
         if not self._client:
             raise RuntimeError("No LLM API key configured")
+        model = kwargs.pop("model", self._model) or self._model
         temp = kwargs.pop("temperature", self._temperature)
         stream = self._client.chat.completions.create(
-            model=self._model,
+            model=model,
             messages=messages,
             temperature=temp,
             stream=True,

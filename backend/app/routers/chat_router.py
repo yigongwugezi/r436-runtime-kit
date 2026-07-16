@@ -418,8 +418,7 @@ async def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_a
                 from app.services.llm_factory import get_chat_client
                 client = get_chat_client()
                 deep_think = bool(payload.get("deep_think_enabled", False))
-                reasoning_chunks = []
-                for token in client.stream_chat([{"role": "user", "content": message}], reasoning=deep_think):
+                for token in client.stream_chat([{"role": "user", "content": message}], model="deepseek-reasoner" if deep_think else None):
                     yield f"data: {json.dumps({'type': 'messages', 'content': token}, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps(_done_event(session_id, {}), ensure_ascii=False)}\n\n"
                 conversation_store.append_message(session_id, "assistant", message)
