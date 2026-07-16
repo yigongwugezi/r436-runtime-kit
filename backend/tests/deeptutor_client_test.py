@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.agents.conversation_agent import ConversationAgent
 from app.services import deeptutor_client, llm_client
+from app.services.llm_factory import UnifiedChatClient
 from app.services.llm_client import LLMClientError
 
 
@@ -116,7 +117,9 @@ def main() -> None:
         try:
             os.environ["LLM_API_KEY"] = "unit-test-key"
             llm_client._llm_client_cache.clear()
-            assert isinstance(llm_client.get_llm_client("deepseek"), llm_client.DeepSeekLLMClient)
+            configured = llm_client.get_llm_client("deepseek")
+            assert isinstance(configured, UnifiedChatClient)
+            assert configured.is_available()
         finally:
             llm_client._llm_client_cache.clear()
             llm_client._llm_client_cache.update(old_cache)
