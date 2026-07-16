@@ -28,6 +28,22 @@ function setDebugInfoFromPayload(payload: Record<string, unknown>) {
   }
 }
 
+function applyCurrentSubject(value: unknown) {
+  if (!value || typeof value !== 'object') return;
+  const source = value as Record<string, unknown>;
+  const id = String(source.id || '').trim();
+  const name = String(source.name || '').trim();
+  if (!id || !name) return;
+  const now = Date.now();
+  useSubjectStore.getState().setActive({
+    id,
+    name,
+    description: typeof source.description === 'string' ? source.description : undefined,
+    createdAt: Number(source.created_at) || now,
+    updatedAt: Number(source.updated_at) || now,
+  });
+}
+
 export function useStreamChat() {
   const {
     addMessage,
@@ -95,7 +111,6 @@ export function useStreamChat() {
         const reader = await streamRequest('/api/chat/stream', {
           message: text,
           sessionId: useChatStore.getState().currentSessionId,
-          subjectId: useSubjectStore.getState().activeSubject?.id,
           learnerId: getStableLearnerId(),
           attachments: requestAttachments,
           ignore_image_context: ignoreImageContext,
@@ -145,6 +160,7 @@ export function useStreamChat() {
                 if (payload.done) {
                   // Store debug info from final event (dev-only, §13.2)
                   setDebugInfoFromPayload(payload);
+                  applyCurrentSubject(payload.current_subject);
 
                   // Clear pending marker — generation ended
                   writeStorageItem(runtimeStorageKeys.pendingGeneration, '');
@@ -204,7 +220,6 @@ export function useStreamChat() {
           const fallback = await sendMessage({
             message: text,
             sessionId: useChatStore.getState().currentSessionId,
-            subjectId: useSubjectStore.getState().activeSubject?.id,
             learnerId: getStableLearnerId(),
             attachments: requestAttachments,
             ignore_image_context: ignoreImageContext,
@@ -212,6 +227,7 @@ export function useStreamChat() {
           });
           log.info('非流式回退成功');
           setDebugInfoFromPayload(fallback as unknown as Record<string, unknown>);
+          applyCurrentSubject(fallback.current_subject);
           writeStorageItem(runtimeStorageKeys.pendingGeneration, '');
           const cur = useChatStore.getState().agentProgress;
           if (cur && !cur.done) setAgentProgress({ ...cur, done: true, progress: 100 });

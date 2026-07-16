@@ -165,6 +165,9 @@ test('real Edge reaches the isolated application through the test backend', { ti
     await send('browser-session-a', '我是大二学生');
     await send('browser-session-a', '我喜欢视频学习');
     await send('browser-session-a', '这一次不要生成路径');
+    await create('browser-history-subject');
+    const historical = await send('browser-history-subject', '我想学习人工智能导论');
+    assert.equal(historical.current_subject?.name, '人工智能导论');
     await create('browser-session-b');
     const grade = await send('browser-session-b', '我现在是什么年级');
     const preference = await send('browser-session-b', '我偏好什么学习方式');
@@ -174,7 +177,21 @@ test('real Edge reaches the isolated application through the test backend', { ti
     assert.equal(profile.ok, true);
     assert.equal(profile.body.data.profileV2.subject_context.background, '大二学生');
     assert.deepEqual(profile.body.data.profileV2.subject_context.resource_preferences, ['视频']);
-    await cdp.evaluate('location.reload()');
+    assert.equal(profile.body.data.profileV2.subject_context.subject_id || '', '');
+
+    const me = await browserApi(cdp, `${apiBase}/auth/me`, accessToken);
+    assert.equal(me.ok, true);
+    const learnerId = me.body.learner.id;
+    await cdp.evaluate(`localStorage.removeItem(${JSON.stringify(`r436_runtime_active_subject_${learnerId}`)}); localStorage.removeItem(${JSON.stringify(`r436_runtime_active_class_subject_${learnerId}`)}); localStorage.setItem(${JSON.stringify(`r436_runtime_session_${learnerId}_default`)}, 'browser-session-b'); location.assign('/profile')`);
+    await waitForBrowser(cdp, "Boolean(document.body.innerText)", 'unscoped profile page');
+    const unscopedProfileText = await cdp.evaluate('document.body.innerText');
+    assert.equal(unscopedProfileText.includes('暂未选择学习主题'), true, unscopedProfileText);
+    assert.equal(unscopedProfileText.includes('人工智能导论'), false, 'new session profile must not inherit a historical subject');
+    const selected = await send('browser-session-b', '我想学习数据结构');
+    assert.equal(selected.current_subject?.name, '数据结构');
+    await cdp.evaluate("location.reload()");
+    await waitForBrowser(cdp, "document.body.innerText.includes('数据结构')", 'explicitly selected subject profile page');
+    await cdp.evaluate("location.assign('/chat')");
     await waitForBrowser(cdp, "Boolean(document.querySelector('textarea'))", 'reloaded chat page');
     assert.match((await send('browser-session-b', '我现在是什么年级')).reply.content, /大二/);
 

@@ -262,14 +262,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }
     const id = createSessionId();
     const now = Date.now();
-    const subjectId = useSubjectStore.getState().activeSubject?.id ?? useSubjectStore.getState().activeClassSubject?.subject;
     const sessions = [{ id, title: '新对话', messages: [], createdAt: now, updatedAt: now }, ...loadSessions().filter((session) => session.id !== id)];
     persistSessionId(id);
     persistSessions(sessions);
     writeStorageItem(runtimeStorageKeys.pendingGeneration, '');
     set({ currentSessionId: id, dataSessionId: id, sessions, messages: [], isStreaming: false, progressPipelineSteps: [], agentProgress: null, lastDebugInfo: null, lastImageAttachment: null, imageAttachmentHistory: [], selectedImageAttachmentId: null });
-    void createChatSession({ sessionId: id, subjectId, learnerId: getStableLearnerId() }).catch((error) => log.warn('Failed to create chat session', error));
-    // dataSessionId 不变，保持科目级数据查询稳定
+    void createChatSession({ sessionId: id, learnerId: getStableLearnerId() }).catch((error) => log.warn('Failed to create chat session', error));
   },
   removeLastMessage: () =>
     set((s) => {

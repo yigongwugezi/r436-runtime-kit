@@ -5,7 +5,6 @@ import { useNavigate } from 'react-router-dom';
 import { useChatPanel } from '../components/layout/AppLayout';
 import { useProfile } from '../hooks/useProfile';
 import { useChatStore } from '../store/chatStore';
-import { useSubjectStore } from '../store/subjectStore';
 import { assessInterest, updateProfileContext, updateProfileSelfReport, updateProfileFact } from '../api/profile';
 import { PageError, PageLoading } from '../components/common/PageState';
 import WorkflowProgress from '../components/common/WorkflowProgress';
@@ -39,8 +38,8 @@ export default function ProfilePage() {
   const nav = useNavigate();
   const chat = useChatPanel();
   const sessionId = useChatStore((state) => state.dataSessionId);
-  const subjectId = useSubjectStore((state) => state.activeSubject?.id ?? state.activeClassSubject?.subject);
   const { profileV2, loading, error, fetchProfile } = useProfile();
+  const subjectId = String(profileV2?.subject_context?.subject_id || '');
   const [context, setContext] = useState({});
   const [inlineKey, setInlineKey] = useState<string | null>(null);
   const [inlineValue, setInlineValue] = useState('');
@@ -162,7 +161,7 @@ export default function ProfilePage() {
 
   return <div className="space-y-6 pb-8">
     <header className="rounded-2xl bg-gradient-to-r from-blue-600 to-violet-600 p-6 text-white">
-      <p className="text-sm text-blue-100">当前学习概览</p><h2 className="mt-1 text-2xl font-bold">{subject.subject_name || '当前课程待确认'}</h2>
+      <p className="text-sm text-blue-100">当前学习概览</p><h2 className="mt-1 text-2xl font-bold">{subjectId ? (subject.subject_name || '已选择学习主题') : '暂未选择学习主题'}</h2>
       <div className="mt-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-4"><span>目标：{subject.learning_goal || '待补充'}</span><span>每日：{subject.daily_minutes ? `${subject.daily_minutes} 分钟` : '待补充'}</span><span>学习周期：{subject.deadline || '待补充'}</span><span>学习情境完整度：{Math.round((profileV2.profile_completeness || 0) * 100)}%</span></div><div className="mt-3 flex items-center gap-3"><p className="text-xs text-blue-100">该指标表示基础学习信息的完整程度，不代表所有能力与知识点均已完成测评。</p><button onClick={() => nav('/chat', { state: { initialMessage: '我想修改一下我的学习画像信息' } })} className="inline-flex items-center gap-1 rounded-lg bg-white/20 px-3 py-1.5 text-xs font-medium text-white hover:bg-white/30 transition-colors"><MessageCircle size={12} />修改画像</button></div>
     </header>
     {syncWorkflow && <WorkflowProgress key={`${syncWorkflow.taskId}:${syncWorkflow.status}`} state={syncWorkflow} onRetry={() => syncFromConversation(true)} />}

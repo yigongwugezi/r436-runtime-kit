@@ -2087,11 +2087,17 @@ def _profile_v2(session_id: str, legacy: dict[str, Any] | None = None) -> dict[s
         learner_prefs = get_user_preferences(db, learner_id) if learner_id else {}
         global_profile = learner_prefs.get("profile_v2_global") if isinstance(learner_prefs.get("profile_v2_global"), dict) else {}
         subject_profile = get_latest_profile_v2_for_subject(db, learner_id, subject_id) if learner_id and subject_id else None
+        subject_name = ""
+        if subject_id:
+            from app.db.models import PersonalSubjectModel
+            subject = db.get(PersonalSubjectModel, subject_id)
+            subject_name = str((subject.name if subject else "") or "")
     finally:
         db.close()
-    course = course_catalog.match_course(str(state.facts.get("target_course") or ""))
+    target_course = str(state.facts.get("target_course") or "").strip()
+    course = course_catalog.match_course(target_course) if target_course else None
     if subject_id:
-        course = {**(course or {}), "course_id": subject_id}
+        course = {**(course or {}), "course_id": subject_id, "course_name": subject_name or target_course}
     existing = prefs.get("profile_v2") if isinstance(prefs, dict) else None
     existing_subject = str(((existing or {}).get("subject_context") or {}).get("subject_id") or "") if isinstance(existing, dict) else ""
     if subject_id and existing_subject and existing_subject != subject_id:
@@ -2105,7 +2111,13 @@ def _profile_v2(session_id: str, legacy: dict[str, Any] | None = None) -> dict[s
         existing=existing,
         session_id=session_id,
     )
-    return merge_profile_scopes(global_profile, profile)
+    merged = merge_profile_scopes(global_profile, profile)
+    context = merged.setdefault("subject_context", {})
+    context["subject_id"] = subject_id
+    context["subject_name"] = subject_name if subject_id else ""
+    if not subject_id:
+        context["subject_category"] = "general"
+    return merged
 
 
 def _save_profile_v2(session_id: str, profile_v2: dict[str, Any], legacy: dict[str, Any] | None = None) -> None:

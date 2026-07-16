@@ -76,6 +76,35 @@ def get_or_create_personal_subject(
         return subject, True
 
 
+def bind_explicit_subject_to_session(
+    db: Session, session_id: str, learner_id: str, name: str,
+) -> PersonalSubjectModel | None:
+    """Bind an unscoped session to a learner subject named in this message."""
+    canonical_name = canonical_subject_name(name)
+    if not session_id or not learner_id or not canonical_name:
+        return None
+
+    session = db.get(SessionModel, session_id)
+    if session is None or session.learner_id != learner_id or session.subject_id:
+        return None
+
+    subject, _ = get_or_create_personal_subject(db, learner_id, canonical_name)
+    updated = (
+        db.query(SessionModel)
+        .filter(
+            SessionModel.id == session_id,
+            SessionModel.learner_id == learner_id,
+            SessionModel.subject_id.is_(None),
+        )
+        .update({SessionModel.subject_id: subject.id}, synchronize_session=False)
+    )
+    if not updated:
+        db.rollback()
+        return None
+    db.commit()
+    return subject
+
+
 def subject_deduplication_dry_run(db: Session, learner_id: str | None = None) -> list[dict[str, object]]:
     """Report reversible merge candidates only; this function never writes data."""
     query = db.query(PersonalSubjectModel)

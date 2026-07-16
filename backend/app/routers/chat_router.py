@@ -14,8 +14,10 @@ from fastapi.responses import StreamingResponse
 from app.services.conversation_state import conversation_store
 from app.services.langgraph_orchestrator import run_pipeline
 from app.db.engine import SessionLocal
+from app.db.models import SessionModel
 from app.db.repository import get_or_create_session
 from app.middleware.auth import AuthContext, get_auth, validate_anonymous_learner_id
+from app.services.subject_identity import bind_explicit_subject_to_session
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["chat"])
@@ -150,6 +152,35 @@ def _ensure_session(session_id: str, learner_id: str = "", subject_id: str = "")
         db.close()
 
 
+def _bind_current_subject_from_message(state_obj: Any) -> dict[str, Any] | None:
+    """Bind only an unscoped session whose current message named a subject."""
+    if "target_course" not in getattr(state_obj, "last_updated_fields", set()):
+        return None
+    name = str(getattr(state_obj, "facts", {}).get("target_course") or "").strip()
+    if not name:
+        return None
+    db = SessionLocal()
+    try:
+        session = db.get(SessionModel, state_obj.session_id)
+        learner_id = str((session.learner_id if session else "") or "")
+        subject = bind_explicit_subject_to_session(db, state_obj.session_id, learner_id, name)
+        if subject is None:
+            return None
+        return {
+            "id": subject.id,
+            "name": subject.name,
+            "description": subject.description,
+            "created_at": int(subject.created_at.timestamp() * 1000) if subject.created_at else 0,
+            "updated_at": int(subject.updated_at.timestamp() * 1000) if subject.updated_at else 0,
+        }
+    except Exception:
+        db.rollback()
+        logger.warning("Could not bind explicit subject for session=%s", state_obj.session_id)
+        return None
+    finally:
+        db.close()
+
+
 async def _run_chat(message: str, session_id: str) -> tuple[str, dict[str, Any]]:
     conversation_store.append_message(session_id, "user", message)
     state_obj = conversation_store.get(session_id)
@@ -224,6 +255,9 @@ async def _run_chat(message: str, session_id: str) -> tuple[str, dict[str, Any]]
             v = str(facts.get(lk,"")).strip()
             if v and len(v)>=2 and v not in {"的是什么","什么","啥","未知","未提及","无","none"}:
                 state_obj.facts[fk] = v
+    current_subject = _bind_current_subject_from_message(state_obj)
+    if current_subject:
+        result["current_subject"] = current_subject
     # ── Auto-persist profile snapshot after every message ──
     _auto_save_profile(state_obj)
     # Clear one-shot feedback signal after consumption, store new signal for next request
@@ -256,6 +290,7 @@ def _done_event(session_id: str, result: dict[str, Any], error: str | None = Non
         "planner_metadata": result.get("planner_metadata") or {},
         "warnings": result.get("warnings") or [],
         "fallback_used": bool(result.get("fallback_used")),
+        "current_subject": result.get("current_subject") or None,
     }
     if error:
         event["error"] = error

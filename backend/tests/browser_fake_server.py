@@ -20,6 +20,7 @@ from app.config import settings  # noqa: E402
 from app.services import ppt_generator  # noqa: E402
 from app.routers import chat_router  # noqa: E402
 from app.routers import product  # noqa: E402
+from app.services.conversation_state import conversation_store  # noqa: E402
 from app.services import section_resource_recommendations  # noqa: E402
 from app.services.search_client import SearchError, SearchResponse, SearchResultItem  # noqa: E402
 
@@ -55,6 +56,7 @@ async def _fake_chat_pipeline(**state: object) -> dict[str, object]:
 
 
 chat_router.run_pipeline = _fake_chat_pipeline
+conversation_store.extract_facts_with_llm = lambda state, message: conversation_store.extract_facts(state, message)
 
 _real_general_resource_generation = product._generate_general_resource
 

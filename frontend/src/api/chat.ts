@@ -31,6 +31,7 @@ export interface ChatResponse {
   learning_path_created?: boolean;
   resources_created?: boolean;
   questions_created?: boolean;
+  current_subject?: { id: string; name: string; description?: string | null; created_at?: number; updated_at?: number } | null;
   error?: string;
 }
 
