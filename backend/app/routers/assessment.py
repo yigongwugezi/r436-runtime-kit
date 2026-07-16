@@ -20,12 +20,7 @@ from app.db.models import AnswerRecordModel, AttemptModel, ExamSetModel, Practic
 from app.db.repository import (
     create_attempt,
     get_attempt,
-    get_attempt_answers,
-    get_exam_set,
-    get_quiz,
     list_attempts,
-    list_exam_sets,
-    list_quizzes,
     save_exam_set,
     save_quiz,
     update_attempt,
@@ -36,6 +31,16 @@ from app.middleware.auth import AuthContext, require_auth
 from app.agents.grading_agent import GradingAgent
 from app.services.agent_factory import AgentFactory
 from app.services.llm_client import get_llm_client
+from app.services.assessment_access import (
+    list_owned_exam_sets,
+    list_owned_quizzes,
+    require_matching_session,
+    require_owned_attempt,
+    require_owned_exam_set,
+    require_owned_quiz,
+    require_owned_session,
+    require_parent_attempt,
+)
 from app.utils.llm_json import parse_safe
 
 # Module-level shared instances — one LLM client + one GradingAgent per process
@@ -336,6 +341,7 @@ def create_quiz_endpoint(
     """Create a new instant quiz."""
     db = SessionLocal()
     try:
+        require_owned_session(db, body.session_id, auth.learner_id)
         quiz = save_quiz(db, {
             "id": f"quiz_{uuid.uuid4().hex[:12]}",
             "title": body.title,
@@ -366,7 +372,9 @@ def list_quizzes_endpoint(
     """List quizzes, optionally filtered by session and scope type."""
     db = SessionLocal()
     try:
-        quizzes = list_quizzes(db, session_id=session_id, scope_type=scope_type)
+        quizzes = list_owned_quizzes(
+            db, auth.learner_id, session_id=session_id, scope_type=scope_type,
+        )
         return {
             "status": "success",
             "data": {"quizzes": [_quiz_dict(q) for q in quizzes]},
@@ -383,13 +391,14 @@ def get_quiz_endpoint(
     """Get a quiz by ID, including its linked questions."""
     db = SessionLocal()
     try:
-        quiz = get_quiz(db, quiz_id)
-        if quiz is None:
-            raise HTTPException(status_code=404, detail="小测不存在")
+        quiz = require_owned_quiz(db, quiz_id, auth.learner_id)
         # Resolve linked questions from practice_questions table
         linked_questions = (
             db.query(PracticeQuestionModel)
-            .filter(PracticeQuestionModel.question_set_id == quiz_id)
+            .filter(
+                PracticeQuestionModel.question_set_id == quiz_id,
+                PracticeQuestionModel.session_id == quiz.session_id,
+            )
             .all()
         )
         question_list = []
@@ -418,15 +427,14 @@ def start_quiz_attempt(
     """Start a new attempt on a quiz."""
     db = SessionLocal()
     try:
-        quiz = get_quiz(db, quiz_id)
-        if quiz is None:
-            raise HTTPException(status_code=404, detail="小测不存在")
+        quiz = require_owned_quiz(db, quiz_id, auth.learner_id)
+        session_id = require_matching_session(quiz.session_id, body.session_id)
         attempt = create_attempt(db, {
             "attempt_id": f"att_{uuid.uuid4().hex[:12]}",
-            "session_id": body.session_id,
+            "session_id": session_id,
             "quiz_id": quiz_id,
             "max_score": body.max_score,
-            "learner_id": auth.learner_id if auth else None,
+            "learner_id": auth.learner_id,
         })
         return {"status": "success", "data": {"attempt": _attempt_dict(attempt)}}
     finally:
@@ -441,7 +449,8 @@ def list_quiz_attempts(
     """List all attempts for a quiz."""
     db = SessionLocal()
     try:
-        attempts = list_attempts(db, quiz_id=quiz_id)
+        quiz = require_owned_quiz(db, quiz_id, auth.learner_id)
+        attempts = list_attempts(db, session_id=quiz.session_id, quiz_id=quiz_id)
         return {
             "status": "success",
             "data": {"attempts": [_attempt_dict(a) for a in attempts]},
@@ -459,13 +468,14 @@ def get_quiz_results(
     """Get quiz results with answers and grading after submission."""
     db = SessionLocal()
     try:
-        quiz = get_quiz(db, quiz_id)
-        if quiz is None:
-            raise HTTPException(status_code=404, detail="小测不存在")
+        quiz = require_owned_quiz(db, quiz_id, auth.learner_id)
         # Resolve linked questions with answers revealed
         linked_questions = (
             db.query(PracticeQuestionModel)
-            .filter(PracticeQuestionModel.question_set_id == quiz_id)
+            .filter(
+                PracticeQuestionModel.question_set_id == quiz_id,
+                PracticeQuestionModel.session_id == quiz.session_id,
+            )
             .all()
         )
         question_list = []
@@ -485,10 +495,15 @@ def get_quiz_results(
 
         # If attempt_id provided, include grading results
         if attempt_id:
-            attempt = get_attempt(db, attempt_id)
+            attempt = require_parent_attempt(
+                db, attempt_id, auth.learner_id, quiz_id=quiz_id,
+            )
             if attempt:
                 result["attempt"] = _attempt_dict(attempt)
-                answer_records = get_attempt_answers(db, attempt_id)
+                answer_records = db.query(AnswerRecordModel).filter(
+                    AnswerRecordModel.attempt_id == attempt_id,
+                    AnswerRecordModel.session_id == quiz.session_id,
+                ).all()
                 # Resolve knowledge points from linked questions
                 kp_map = {pq.question_id: (pq.knowledge_points or [""])[0]
                           for pq in linked_questions}
@@ -528,6 +543,7 @@ def generate_section_quiz(
     """
     db = SessionLocal()
     try:
+        require_owned_session(db, body.session_id, auth.learner_id)
         # ── Build LLM prompt ────────────────────────────────────
         kp_text = "\n".join(f"- {kp}" for kp in body.knowledge_points[:8])
         summary = body.lecture_summary[:2000] if body.lecture_summary else "暂无讲义摘要"
@@ -674,14 +690,15 @@ def submit_quiz(
     """
     db = SessionLocal()
     try:
-        quiz = get_quiz(db, quiz_id)
-        if quiz is None:
-            raise HTTPException(status_code=404, detail="小测不存在")
-
+        quiz = require_owned_quiz(db, quiz_id, auth.learner_id)
+        session_id = require_matching_session(quiz.session_id, body.session_id)
         # ── Load linked questions with answers ──────────────────
         linked = (
             db.query(PracticeQuestionModel)
-            .filter(PracticeQuestionModel.question_set_id == quiz_id)
+            .filter(
+                PracticeQuestionModel.question_set_id == quiz_id,
+                PracticeQuestionModel.session_id == session_id,
+            )
             .all()
         )
         if not linked:
@@ -691,10 +708,10 @@ def submit_quiz(
         # ── Create attempt ─────────────────────────────────────
         attempt = create_attempt(db, {
             "attempt_id": f"att_{uuid.uuid4().hex[:12]}",
-            "session_id": body.session_id,
+            "session_id": session_id,
             "quiz_id": quiz_id,
             "max_score": 100 * len(linked),
-            "learner_id": auth.learner_id if auth else None,
+            "learner_id": auth.learner_id,
         })
 
         # ── Grade each answer ──────────────────────────────────
@@ -744,7 +761,7 @@ def submit_quiz(
                 error_expl = "" if is_correct else (expl or f"正确答案是 {correct_ans}")
 
                 ar = AnswerRecordModel(
-                    session_id=body.session_id,
+                    session_id=session_id,
                     question_id=qid,
                     attempt_id=attempt.attempt_id,
                     student_answer=student_answer,
@@ -788,7 +805,7 @@ def submit_quiz(
                 error_expl = grade_result.get("error_explanation", "") or (pq.explanation or "")
 
                 ar = AnswerRecordModel(
-                    session_id=body.session_id,
+                    session_id=session_id,
                     question_id=qid,
                     attempt_id=attempt.attempt_id,
                     student_answer=student_answer,
@@ -839,13 +856,13 @@ def submit_quiz(
 
         # ── Record weaknesses ─────────────────────────────────
         weak_points = _record_quiz_weaknesses(
-            db, body.session_id, linked, results,
+            db, session_id, linked, results,
             quiz_title=quiz.title,
         )
 
         # ── Trigger closed-loop assessment (fire-and-forget) ────
         _trigger_post_submit_assessment(
-            session_id=body.session_id,
+            session_id=session_id,
             quiz_title=quiz.title,
             quiz_score=avg_score,
             weak_points=weak_points,
@@ -880,14 +897,22 @@ def create_attempt_endpoint(
     db = SessionLocal()
     try:
         if not body.quiz_id and not body.exam_set_id:
-            raise HTTPException(status_code=400, detail="必须指定 quizId 或 examSetId")
+            raise HTTPException(status_code=400, detail="assessment parent required")
+        if body.quiz_id and body.exam_set_id:
+            raise HTTPException(status_code=400, detail="select one assessment")
+        parent = (
+            require_owned_quiz(db, body.quiz_id, auth.learner_id)
+            if body.quiz_id
+            else require_owned_exam_set(db, body.exam_set_id, auth.learner_id)
+        )
+        session_id = require_matching_session(parent.session_id, body.session_id)
         attempt = create_attempt(db, {
             "attempt_id": f"att_{uuid.uuid4().hex[:12]}",
-            "session_id": body.session_id,
+            "session_id": session_id,
             "quiz_id": body.quiz_id,
             "exam_set_id": body.exam_set_id,
             "max_score": body.max_score,
-            "learner_id": auth.learner_id if auth else None,
+            "learner_id": auth.learner_id,
         })
         return {"status": "success", "data": {"attempt": _attempt_dict(attempt)}}
     finally:
@@ -902,11 +927,12 @@ def get_attempt_endpoint(
     """Get an attempt by ID, including its linked answer records."""
     db = SessionLocal()
     try:
-        attempt = get_attempt(db, attempt_id)
-        if attempt is None:
-            raise HTTPException(status_code=404, detail="作答记录不存在")
+        attempt = require_owned_attempt(db, attempt_id, auth.learner_id)
         # Resolve linked answer records
-        answer_records = get_attempt_answers(db, attempt_id)
+        answer_records = db.query(AnswerRecordModel).filter(
+            AnswerRecordModel.attempt_id == attempt_id,
+            AnswerRecordModel.session_id == attempt.session_id,
+        ).all()
         linked_answers = []
         for ar in answer_records:
             linked_answers.append({
@@ -936,6 +962,7 @@ def update_attempt_endpoint(
     """Update an attempt — save progress or change status."""
     db = SessionLocal()
     try:
+        require_owned_attempt(db, attempt_id, auth.learner_id)
         data = {}
         if body.answers is not None:
             data["answers"] = body.answers
@@ -963,6 +990,7 @@ def submit_attempt_endpoint(
     """
     db = SessionLocal()
     try:
+        require_owned_attempt(db, attempt_id, auth.learner_id)
         data = {
             "answers": body.answers,
             "total_score": body.total_score,
@@ -989,6 +1017,7 @@ def create_exam_set_endpoint(
     """Create a new exam set."""
     db = SessionLocal()
     try:
+        require_owned_session(db, body.session_id, auth.learner_id)
         exam = save_exam_set(db, {
             "id": f"exam_{uuid.uuid4().hex[:12]}",
             "title": body.title,
@@ -1023,8 +1052,8 @@ def list_exam_sets_endpoint(
     """List exam sets, optionally filtered."""
     db = SessionLocal()
     try:
-        exam_sets = list_exam_sets(
-            db, session_id=session_id, scope_type=scope_type, status=status,
+        exam_sets = list_owned_exam_sets(
+            db, auth.learner_id, session_id=session_id, scope_type=scope_type, status=status,
         )
         return {
             "status": "success",
@@ -1042,13 +1071,14 @@ def get_exam_set_endpoint(
     """Get an exam set by ID, including linked questions."""
     db = SessionLocal()
     try:
-        exam_set = get_exam_set(db, exam_set_id)
-        if exam_set is None:
-            raise HTTPException(status_code=404, detail="题集不存在")
+        exam_set = require_owned_exam_set(db, exam_set_id, auth.learner_id)
         # Resolve linked questions
         linked_questions = (
             db.query(PracticeQuestionModel)
-            .filter(PracticeQuestionModel.question_set_id == exam_set_id)
+            .filter(
+                PracticeQuestionModel.question_set_id == exam_set_id,
+                PracticeQuestionModel.session_id == exam_set.session_id,
+            )
             .all()
         )
         question_list = []
@@ -1077,6 +1107,7 @@ def update_exam_set_endpoint(
     """Partial-update an exam set."""
     db = SessionLocal()
     try:
+        require_owned_exam_set(db, exam_set_id, auth.learner_id)
         data = {}
         if body.title is not None:
             data["title"] = body.title
@@ -1109,15 +1140,14 @@ def start_exam_set_attempt(
     """Start a new attempt on an exam set."""
     db = SessionLocal()
     try:
-        exam_set = get_exam_set(db, exam_set_id)
-        if exam_set is None:
-            raise HTTPException(status_code=404, detail="题集不存在")
+        exam_set = require_owned_exam_set(db, exam_set_id, auth.learner_id)
+        session_id = require_matching_session(exam_set.session_id, body.session_id)
         attempt = create_attempt(db, {
             "attempt_id": f"att_{uuid.uuid4().hex[:12]}",
-            "session_id": body.session_id,
+            "session_id": session_id,
             "exam_set_id": exam_set_id,
             "max_score": body.max_score or exam_set.total_score,
-            "learner_id": auth.learner_id if auth else None,
+            "learner_id": auth.learner_id,
         })
         return {"status": "success", "data": {"attempt": _attempt_dict(attempt)}}
     finally:
@@ -1155,6 +1185,7 @@ def generate_exam_set(
     """
     db = SessionLocal()
     try:
+        require_owned_session(db, body.session_id, auth.learner_id)
         # ── Determine question count ──────────────────────────
         if body.question_count > 0:
             count = min(body.question_count, 30)
@@ -1301,13 +1332,14 @@ def submit_exam_set(
     """Submit all answers for an exam set — grade each and return results."""
     db = SessionLocal()
     try:
-        exam_set = get_exam_set(db, exam_set_id)
-        if exam_set is None:
-            raise HTTPException(status_code=404, detail="题集不存在")
-
+        exam_set = require_owned_exam_set(db, exam_set_id, auth.learner_id)
+        session_id = require_matching_session(exam_set.session_id, body.session_id)
         linked = (
             db.query(PracticeQuestionModel)
-            .filter(PracticeQuestionModel.question_set_id == exam_set_id)
+            .filter(
+                PracticeQuestionModel.question_set_id == exam_set_id,
+                PracticeQuestionModel.session_id == session_id,
+            )
             .all()
         )
         if not linked:
@@ -1316,10 +1348,10 @@ def submit_exam_set(
 
         attempt = create_attempt(db, {
             "attempt_id": f"att_{uuid.uuid4().hex[:12]}",
-            "session_id": body.session_id,
+            "session_id": session_id,
             "exam_set_id": exam_set_id,
             "max_score": 100 * len(linked),
-            "learner_id": auth.learner_id if auth else None,
+            "learner_id": auth.learner_id,
         })
 
         results = []
@@ -1402,7 +1434,7 @@ def submit_exam_set(
                     strengths = []
 
             ar = AnswerRecordModel(
-                session_id=body.session_id,
+                session_id=session_id,
                 question_id=qid,
                 attempt_id=attempt.attempt_id,
                 student_answer=student_answer,
@@ -1443,14 +1475,14 @@ def submit_exam_set(
         db.commit()
 
         weak_points = _record_quiz_weaknesses(
-            db, body.session_id, linked, results, quiz_title=exam_set.title,
+            db, session_id, linked, results, quiz_title=exam_set.title,
         )
 
         suggestion = "mastered" if avg_score >= 80 else ("in_progress" if avg_score >= 50 else "needs_review")
 
         # ── Trigger closed-loop assessment (fire-and-forget) ────
         _trigger_post_submit_assessment(
-            session_id=body.session_id,
+            session_id=session_id,
             quiz_title=exam_set.title,
             quiz_score=avg_score,
             weak_points=weak_points,
@@ -1480,13 +1512,13 @@ def get_exam_set_results(
     """Get exam set results with answers and grading after submission."""
     db = SessionLocal()
     try:
-        exam_set = get_exam_set(db, exam_set_id)
-        if exam_set is None:
-            raise HTTPException(status_code=404, detail="题集不存在")
-
+        exam_set = require_owned_exam_set(db, exam_set_id, auth.learner_id)
         linked_questions = (
             db.query(PracticeQuestionModel)
-            .filter(PracticeQuestionModel.question_set_id == exam_set_id)
+            .filter(
+                PracticeQuestionModel.question_set_id == exam_set_id,
+                PracticeQuestionModel.session_id == exam_set.session_id,
+            )
             .all()
         )
         question_list = []
@@ -1506,10 +1538,15 @@ def get_exam_set_results(
         result["linkedQuestions"] = question_list
 
         if attempt_id:
-            attempt = get_attempt(db, attempt_id)
+            attempt = require_parent_attempt(
+                db, attempt_id, auth.learner_id, exam_set_id=exam_set_id,
+            )
             if attempt:
                 result["attempt"] = _attempt_dict(attempt)
-                answer_records = get_attempt_answers(db, attempt_id)
+                answer_records = db.query(AnswerRecordModel).filter(
+                    AnswerRecordModel.attempt_id == attempt_id,
+                    AnswerRecordModel.session_id == exam_set.session_id,
+                ).all()
                 kp_map = {pq.question_id: (pq.knowledge_points or [""])[0] for pq in linked_questions}
                 result["gradingResults"] = []
                 for ar in answer_records:
@@ -1537,7 +1574,10 @@ def list_exam_set_attempts(
     """List all attempts for an exam set."""
     db = SessionLocal()
     try:
-        attempts = list_attempts(db, exam_set_id=exam_set_id)
+        exam_set = require_owned_exam_set(db, exam_set_id, auth.learner_id)
+        attempts = list_attempts(
+            db, session_id=exam_set.session_id, exam_set_id=exam_set_id,
+        )
         return {
             "status": "success",
             "data": {"attempts": [_attempt_dict(a) for a in attempts]},
@@ -1554,9 +1594,7 @@ def delete_exam_set(
     """Delete an exam set and its associated records."""
     db = SessionLocal()
     try:
-        es = db.query(ExamSetModel).filter(ExamSetModel.id == exam_set_id).first()
-        if es is None:
-            raise HTTPException(status_code=404, detail="题集不存在")
+        es = require_owned_exam_set(db, exam_set_id, auth.learner_id)
         # Delete related answer records, attempts, and practice questions
         db.query(AnswerRecordModel).filter(
             AnswerRecordModel.attempt_id.in_(
@@ -1580,9 +1618,7 @@ def delete_quiz(
     """Delete a quiz and its associated records."""
     db = SessionLocal()
     try:
-        q = db.query(QuizModel).filter(QuizModel.id == quiz_id).first()
-        if q is None:
-            raise HTTPException(status_code=404, detail="小测不存在")
+        q = require_owned_quiz(db, quiz_id, auth.learner_id)
         db.query(AnswerRecordModel).filter(
             AnswerRecordModel.attempt_id.in_(
                 db.query(AttemptModel.attempt_id).filter(AttemptModel.quiz_id == quiz_id)
