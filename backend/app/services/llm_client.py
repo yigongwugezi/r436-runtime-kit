@@ -301,27 +301,25 @@ class DeepSeekLLMClient(BaseLLMClient):
             headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
             method="POST",
         )
-        with request.urlopen(req, timeout=kwargs.get("timeout", 30)) as response:
-            buf = ""
-            for raw_chunk in iter(lambda: response.read(4096), b""):
-                buf += raw_chunk.decode("utf-8", errors="replace")
-                while "\n\n" in buf:
-                    part, buf = buf.split("\n\n", 1)
-                    for line in part.split("\n"):
-                        if not line.startswith("data: ") or line == "data: [DONE]":
-                            continue
-                        try:
-                            d = json.loads(line[6:])
-                            delta = d.get("choices", [{}])[0].get("delta", {})
-                            # 先 yield content（如果有），再 yield reasoning_content
-                            ct = delta.get("content") or ""
-                            rc = delta.get("reasoning_content") or ""
-                            if ct:
-                                yield ct
-                            if rc:
-                                yield f"<thinking>{rc}</thinking>"
-                        except (json.JSONDecodeError, IndexError):
-                            pass
+        with request.urlopen(req, timeout=kwargs.get("timeout", 60)) as response:
+            while True:
+                raw = response.readline()
+                if not raw:
+                    break
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line.startswith("data: ") or line == "data: [DONE]":
+                    continue
+                try:
+                    d = json.loads(line[6:])
+                    delta = d.get("choices", [{}])[0].get("delta", {})
+                    rc = delta.get("reasoning_content") or ""
+                    ct = delta.get("content") or ""
+                    if rc:
+                        yield f"<thinking>{rc}</thinking>"
+                    if ct:
+                        yield ct
+                except (json.JSONDecodeError, IndexError):
+                    pass
                     buffer = ""
 
     @staticmethod
