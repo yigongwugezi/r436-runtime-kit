@@ -2371,12 +2371,14 @@ def get_profile(sessionId: str = "", subjectId: str = "", learnerId: str = "", a
     """Read the latest profile from the database. Never triggers agents."""
     session_id = _resolve_session_id(sessionId, subjectId)
     subject_id = str(subjectId).strip()
+    logger.info("get_profile: session=%s subject=%s auth_ok=%s", session_id, subject_id, auth.is_authenticated)
     try:
         _ensure_session_linked(
             session_id, subject_id=subject_id,
             learner_id=_request_learner_id(auth, learnerId) if auth.is_authenticated else None,
         )
     except PermissionError as exc:
+        logger.warning("get_profile 403: session=%s learner_id check failed: %s", session_id, exc)
         raise HTTPException(status_code=403, detail="session belongs to another learner") from exc
 
     # Default preferences (safe for frontend)
