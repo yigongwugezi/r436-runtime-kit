@@ -289,6 +289,10 @@ class UnifiedChatClient:
             raise RuntimeError("No LLM API key configured")
         model = kwargs.pop("model", self._model) or self._model
         temp = kwargs.pop("temperature", self._temperature)
+        # deepseek-reasoner 需要单独处理 reasoning_content
+        _is_reasoner = "reasoner" in model
+        if _is_reasoner:
+            kwargs.pop("reasoning", None)
         stream = self._client.chat.completions.create(
             model=model,
             messages=messages,
@@ -297,8 +301,21 @@ class UnifiedChatClient:
             **kwargs,
         )
         for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            # deepseek-reasoner: reasoning_content 没有 OpenAI 标准字段
+            if _is_reasoner:
+                # 尝试从原始响应中提取 reasoning_content
+                try:
+                    raw = chunk.model_dump() if hasattr(chunk, 'model_dump') else None
+                    rc = raw and raw.get("choices", [{}])[0].get("delta", {}).get("reasoning_content", "")
+                    if rc:
+                        yield f"<thinking>{rc}</thinking>"
+                except Exception:
+                    pass
+            if delta and delta.content:
+                yield delta.content
 
 
 def get_chat_client() -> UnifiedChatClient:
