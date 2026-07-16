@@ -740,15 +740,19 @@ class SectionResourceRecommendationService:
         return len(ranked) >= settings.search_min_results_all and len(types) >= settings.search_min_types_all
 
     @staticmethod
-    def _paper_fallbacks(context: dict[str, Any]) -> list[tuple[Any, str]]:
+    def _paper_fallbacks(context: dict[str, Any], max_calls: int) -> tuple[list[tuple[Any, str]], int]:
         query = " ".join(context.get("english_keywords") or []) or str(context.get("primary_topic") or "")
         results: list[tuple[Any, str]] = []
+        calls = 0
         for search in (search_crossref, search_arxiv):
+            if calls >= max_calls:
+                break
+            calls += 1
             try:
                 results.extend((item, "expanded_research") for item in search(query, max_results=5, timeout=settings.search_provider_timeout_seconds).results)
             except SearchError:
                 continue
-        return results
+        return results, calls
 
     def _search_layers(
         self,
@@ -763,6 +767,8 @@ class SectionResourceRecommendationService:
         warnings: list[str],
         feedback_by_url: dict[str, str] | None,
         target_count: int,
+        provider_call_limit: int,
+        future_type_call_reserve: int,
         progress_callback: ProgressCallback | None,
         cancel_event: Event | None,
     ) -> None:
@@ -787,9 +793,10 @@ class SectionResourceRecommendationService:
         def submit(index: int) -> None:
             nonlocal next_index
             query, match_level = layers[index]
-            if diagnostics["provider_calls"] >= settings.search_max_provider_calls:
+            if diagnostics["provider_calls"] >= provider_call_limit - future_type_call_reserve:
                 return
             diagnostics["provider_calls"] += 1
+            diagnostics["provider_calls_by_type"][resource_type] += 1
             queries.append(query)
             pending[executor.submit(self._client.search, query, settings.search_max_results_single_type)] = (query, match_level)
             next_index = max(next_index, index + 1)
@@ -867,7 +874,12 @@ class SectionResourceRecommendationService:
         queries: list[str] = []
         warnings: list[str] = []
         total_budget = settings.search_total_timeout_all_seconds if len(requested) > 1 else settings.search_total_timeout_single_seconds
-        diagnostics: dict[str, Any] = {"queries": [], "raw_count": 0, "url_valid_count": 0, "relevance_candidate_count": 0, "relevant_count": 0, "final_count": 0, "filtered": Counter(), "provider_calls": 0, "cache": "miss", "_deadline": time.monotonic() + total_budget}
+        multi_type = len(requested) > 1
+        per_type_calls = settings.search_min_provider_calls_per_type if multi_type else 0
+        fallback_reserve = settings.search_fallback_provider_call_reserve if multi_type and "paper" in requested else 0
+        provider_call_limit = max(settings.search_max_provider_calls, len(requested) * per_type_calls + fallback_reserve)
+        primary_call_limit = provider_call_limit - fallback_reserve
+        diagnostics: dict[str, Any] = {"queries": [], "raw_count": 0, "url_valid_count": 0, "relevance_candidate_count": 0, "relevant_count": 0, "final_count": 0, "filtered": Counter(), "provider_calls": 0, "provider_call_limit": provider_call_limit, "provider_calls_by_type": Counter(), "cache": "miss", "_deadline": time.monotonic() + total_budget}
         target_count = 1 if len(requested) > 1 else settings.search_min_results_single_type
         cache_key = self._cache_key(context, requested, language)
         cache_state, cached = SearchCascade.get(cache_key) if self._use_cache else ("miss", None)
@@ -894,15 +906,19 @@ class SectionResourceRecommendationService:
                     layers=self._query_layers(context, resource_type, language),
                     candidates=candidates, queries=queries, context=context, language=language,
                     diagnostics=diagnostics, warnings=warnings, feedback_by_url=feedback_by_url,
-                    target_count=target_count, progress_callback=progress_callback, cancel_event=cancel_event,
+                    target_count=target_count, provider_call_limit=primary_call_limit,
+                    future_type_call_reserve=(len(search_requested) - idx - 1) * per_type_calls,
+                    progress_callback=progress_callback, cancel_event=cancel_event,
                 )
                 ranked = self._rank(candidates, context, language, {**diagnostics, "filtered": Counter()}, feedback_by_url)
                 if self._use_cache and resource_type == "paper" and len([item for item in ranked if item["resource_type"] == "paper"]) < target_count:
                     self._emit(progress_callback, "fallback_search", "running", fallback_used=True)
-                    for item, paper_match in self._paper_fallbacks(context):
-                        if diagnostics["provider_calls"] >= settings.search_max_provider_calls or (cancel_event and cancel_event.is_set()):
+                    fallback_items, fallback_calls = self._paper_fallbacks(context, max(0, provider_call_limit - diagnostics["provider_calls"]))
+                    diagnostics["provider_calls"] += fallback_calls
+                    diagnostics["provider_calls_by_type"]["paper_fallback"] += fallback_calls
+                    for item, paper_match in fallback_items:
+                        if cancel_event and cancel_event.is_set():
                             break
-                        diagnostics["provider_calls"] += 1
                         diagnostics["raw_count"] += 1
                         candidates.append({"item": item, "resource_type": "paper", "match_level": paper_match})
         except SearchCancelled:
@@ -966,7 +982,7 @@ class SectionResourceRecommendationService:
         }
         self._emit(progress_callback, "completed", "completed", candidate_count=diagnostics["raw_count"], result_count=len(resources), source_count=len({item["source"] for item in resources}))
         if collect_diagnostics:
-            result["diagnostics"] = {key: value for key, value in {**diagnostics, "filtered": dict(diagnostics["filtered"]), "cache_stats": SearchCascade.stats()}.items() if not key.startswith("_")}
+            result["diagnostics"] = {key: value for key, value in {**diagnostics, "filtered": dict(diagnostics["filtered"]), "provider_calls_by_type": dict(diagnostics["provider_calls_by_type"]), "cache_stats": SearchCascade.stats()}.items() if not key.startswith("_")}
         return result
 
     @staticmethod

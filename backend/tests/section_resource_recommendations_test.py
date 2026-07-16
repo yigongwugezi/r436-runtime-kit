@@ -2,6 +2,7 @@ from collections import Counter
 from dataclasses import dataclass
 
 from app.services.search_client import SearchError, SearchResponse
+from app.services import section_resource_recommendations as recommendations
 from app.services.section_resource_recommendations import (
     SectionResourceRecommendationService,
     classify_platform,
@@ -64,7 +65,7 @@ class TypedClient:
 class ExpandedPaperClient(TypedClient):
     def search(self, query: str, max_results: int = 5) -> SearchResponse:
         self.queries.append(query)
-        if "tail recursion" in query:
+        if "research paper" in query:
             item = Item("Tail Recursion Optimization", "https://arxiv.org/abs/2402.54321", "tail recursion runtime stack optimization")
             return SearchResponse(query=query, results=[item], total_estimated=1, source="fake")
         return SearchResponse(query=query, results=[], total_estimated=0, source="fake")
@@ -142,6 +143,35 @@ def main() -> None:
     mixed = service.recommend(session_id="test", section_id="s1", section_title="\u9012\u5f52\u8c03\u7528\u6808", resource_types=["article", "video", "course", "document", "paper"], profile={"subject_context": {"subject_name": "\u6570\u636e\u7ed3\u6784"}})
     assert {item["resource_type"] for item in mixed["resources"]} >= {"article", "video", "course", "document", "paper"}
     assert max(Counter(item["source"] for item in mixed["resources"]).values()) <= 2
+    coverage = SectionResourceRecommendationService(client=TypedClient()).recommend(
+        session_id="test", section_id="coverage", section_title="recursion call stack",
+        resource_types=["article", "video", "course", "document", "paper"], collect_diagnostics=True,
+    )
+    assert coverage["diagnostics"]["provider_call_limit"] >= 12
+    assert coverage["diagnostics"]["provider_calls_by_type"].get("paper", 0) >= 1
+
+    class NoPrimaryPaperClient(TypedClient):
+        def search(self, query: str, max_results: int = 5) -> SearchResponse:
+            if "paper" in query or "论文" in query:
+                self.queries.append(query)
+                return SearchResponse(query=query, results=[], total_estimated=0, source="fake")
+            return super().search(query, max_results)
+
+    original_crossref, original_arxiv = recommendations.search_crossref, recommendations.search_arxiv
+    fallback_item = Item("Call Stack Research", "https://arxiv.org/abs/2403.98765", "recursion runtime stack research")
+    recommendations.search_crossref = lambda *_args, **_kwargs: SearchResponse(query="fixture", results=[fallback_item], source="fixture")
+    recommendations.search_arxiv = lambda *_args, **_kwargs: SearchResponse(query="fixture", results=[], source="fixture")
+    try:
+        fallback_service = SectionResourceRecommendationService(client=NoPrimaryPaperClient())
+        fallback_service._use_cache = True
+        fallback = fallback_service.recommend(
+            session_id="test", section_id="fallback", section_title="recursion call stack",
+            resource_types=["article", "video", "course", "document", "paper"], collect_diagnostics=True,
+        )
+        assert "paper" in {item["resource_type"] for item in fallback["resources"]}
+        assert fallback["diagnostics"]["provider_calls_by_type"].get("paper_fallback", 0) == 2
+    finally:
+        recommendations.search_crossref, recommendations.search_arxiv = original_crossref, original_arxiv
 
     expanded = recommend(SectionResourceRecommendationService(client=ExpandedPaperClient()), "paper")
     assert expanded["resources"] and expanded["resources"][0]["match_level"] == "expanded_research"
