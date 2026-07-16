@@ -753,6 +753,108 @@ def log_event(
     return evt
 
 
+# ── Quiz Result Events ────────────────────────────────────────────────────
+
+
+def create_quiz_result_event(
+    db: Session,
+    *,
+    event_id: str,
+    session_id: str,
+    learner_id: str,
+    subject_id: str | None,
+    idempotency_key: str,
+    attempt_id: str,
+    quiz_id: str,
+    total_score: int,
+    max_score: int,
+    normalized_score: float,
+    assessment_eligible: bool,
+    knowledge_point_results: list[dict],
+    path_id: str | None = None,
+    stage_id: str | None = None,
+    chapter_id: str | None = None,
+    section_id: str | None = None,
+    occurred_at: str = "",
+    schema_version: str = "1.0",
+    source: str = "server",
+) -> LearningEventModel:
+    """Create a canonical quiz_result event (spec §3.6).
+
+    The full structured payload is serialised into ``metadata_`` as a
+    ``QuizResultEventDTO``-compatible dict.  The DB-level partial unique
+    index on ``(attempt_id) WHERE event_type='quiz_result'`` prevents
+    duplicate events for the same attempt.
+
+    Raises ``IntegrityError`` on duplicate (callers should catch and
+    treat as a no-op for idempotent replay).
+    """
+    from datetime import datetime, timezone
+
+    metadata = {
+        "eventType": "quiz_result",
+        "eventId": event_id,
+        "idempotencyKey": idempotency_key,
+        "learnerId": learner_id,
+        "subjectId": subject_id,
+        "sessionId": session_id,
+        "pathId": path_id,
+        "stageId": stage_id,
+        "chapterId": chapter_id,
+        "sectionId": section_id,
+        "quizId": quiz_id,
+        "attemptId": attempt_id,
+        "totalScore": total_score,
+        "maxScore": max_score,
+        "normalizedScore": normalized_score,
+        "assessmentEligible": assessment_eligible,
+        "knowledgePointResults": knowledge_point_results,
+        "occurredAt": occurred_at or datetime.now(timezone.utc).isoformat(),
+        "source": source,
+        "schemaVersion": schema_version,
+    }
+    evt = LearningEventModel(
+        event_id=event_id,
+        session_id=session_id,
+        learner_id=learner_id,
+        subject_id=subject_id,
+        event_type="quiz_result",
+        idempotency_key=idempotency_key,
+        attempt_id=attempt_id,
+        schema_version=schema_version,
+        metadata_=metadata,
+    )
+    db.add(evt)
+    return evt
+
+
+def get_quiz_result_event(
+    db: Session, attempt_id: str,
+) -> LearningEventModel | None:
+    """Return the quiz_result event for *attempt_id*, or None."""
+    return (
+        db.query(LearningEventModel)
+        .filter(
+            LearningEventModel.attempt_id == attempt_id,
+            LearningEventModel.event_type == "quiz_result",
+        )
+        .first()
+    )
+
+
+def check_quiz_result_event_exists(db: Session, attempt_id: str) -> bool:
+    """Return True if a quiz_result event already exists for *attempt_id*."""
+    return (
+        db.query(LearningEventModel)
+        .filter(
+            LearningEventModel.attempt_id == attempt_id,
+            LearningEventModel.event_type == "quiz_result",
+        )
+        .first()
+        is not None
+    )
+
+
 def get_events(
     db: Session,
     session_id: str | None = None,
@@ -820,50 +922,69 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
 
         # Quiz accuracy
         if etype in {"quiz_submit", "quiz_result", "practice_result"}:
-            if "accuracy" in meta:
+            # ── Structured format (commit 3+ server-authoritative events) ──
+            if meta.get("eventType") == "quiz_result":
                 try:
-                    quiz_scores.append(float(meta["accuracy"]))
+                    ts = int(meta.get("totalScore", 0))
+                    ms = int(meta.get("maxScore", 100))
+                    ns = float(meta.get("normalizedScore", 0))
+                    quiz_scores.append(round(ns * 100))
+                    quiz_correct += max(0, ts)
+                    quiz_total += ms
+                    quiz_pct = round(ns * 100)
+                    quiz_results.append({
+                        "score": quiz_pct,
+                        "topic": "",
+                        "timestamp": evt.created_at.isoformat() if evt.created_at else "",
+                    })
                 except (TypeError, ValueError):
                     pass
-            if "score" in meta:
-                try:
-                    quiz_scores.append(float(meta["score"]))
-                except (TypeError, ValueError):
-                    pass
-            if "correct" in meta and "total" in meta:
-                try:
-                    quiz_correct += int(meta["correct"])
-                    quiz_total += int(meta["total"])
-                except (TypeError, ValueError):
-                    pass
-            # Track individual quiz result for latest/best
-            quiz_pct: float | None = None
-            if "accuracy" in meta:
-                try:
-                    a = float(meta["accuracy"])
-                    quiz_pct = round(a * 100) if a <= 1 else round(a)
-                except (TypeError, ValueError):
-                    pass
-            if quiz_pct is None and "score" in meta:
-                try:
-                    s = float(meta["score"])
-                    quiz_pct = round(s * 100) if s <= 1 else round(s)
-                except (TypeError, ValueError):
-                    pass
-            if quiz_pct is None and "correct" in meta and "total" in meta:
-                try:
-                    c = int(meta["correct"])
-                    t = int(meta["total"])
-                    if t > 0:
-                        quiz_pct = round(c / t * 100)
-                except (TypeError, ValueError):
-                    pass
-            if quiz_pct is not None:
-                quiz_results.append({
-                    "score": quiz_pct,
-                    "topic": meta.get("topic") or meta.get("knowledgePoint") or "",
-                    "timestamp": evt.created_at.isoformat() if evt.created_at else "",
-                })
+            else:
+                # ── Legacy format (frontend-logged events) ──
+                if "accuracy" in meta:
+                    try:
+                        quiz_scores.append(float(meta["accuracy"]))
+                    except (TypeError, ValueError):
+                        pass
+                if "score" in meta:
+                    try:
+                        quiz_scores.append(float(meta["score"]))
+                    except (TypeError, ValueError):
+                        pass
+                if "correct" in meta and "total" in meta:
+                    try:
+                        quiz_correct += int(meta["correct"])
+                        quiz_total += int(meta["total"])
+                    except (TypeError, ValueError):
+                        pass
+                # Track individual quiz result for latest/best
+                quiz_pct2: float | None = None
+                if "accuracy" in meta:
+                    try:
+                        a = float(meta["accuracy"])
+                        quiz_pct2 = round(a * 100) if a <= 1 else round(a)
+                    except (TypeError, ValueError):
+                        pass
+                if quiz_pct2 is None and "score" in meta:
+                    try:
+                        s = float(meta["score"])
+                        quiz_pct2 = round(s * 100) if s <= 1 else round(s)
+                    except (TypeError, ValueError):
+                        pass
+                if quiz_pct2 is None and "correct" in meta and "total" in meta:
+                    try:
+                        c = int(meta["correct"])
+                        t = int(meta["total"])
+                        if t > 0:
+                            quiz_pct2 = round(c / t * 100)
+                    except (TypeError, ValueError):
+                        pass
+                if quiz_pct2 is not None:
+                    quiz_results.append({
+                        "score": quiz_pct2,
+                        "topic": meta.get("topic") or meta.get("knowledgePoint") or "",
+                        "timestamp": evt.created_at.isoformat() if evt.created_at else "",
+                    })
 
         # Feedback stats
         if etype == "feedback":
@@ -876,11 +997,25 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
                     pass
 
         # Topic stats
-        topic = meta.get("topic") or meta.get("knowledgePoint")
-        if topic:
-            key = str(topic)
-            topic_total[key] = topic_total.get(key, 0) + int(meta.get("total", 1) or 1)
-            topic_wrong[key] = topic_wrong.get(key, 0) + int(meta.get("wrong", 0) or 0)
+        if meta.get("eventType") == "quiz_result":
+            # ── Structured format: iterate knowledgePointResults ──
+            kprs = meta.get("knowledgePointResults") or []
+            for kpr in (kprs if isinstance(kprs, list) else []):
+                if not isinstance(kpr, dict):
+                    continue
+                kp_key = str(kpr.get("knowledgePointKey") or kpr.get("knowledgePointLabel") or "")
+                if not kp_key:
+                    continue
+                topic_total[kp_key] = topic_total.get(kp_key, 0) + 1
+                if not kpr.get("isCorrect", True):
+                    topic_wrong[kp_key] = topic_wrong.get(kp_key, 0) + 1
+        else:
+            # ── Legacy format ──
+            topic = meta.get("topic") or meta.get("knowledgePoint")
+            if topic:
+                key = str(topic)
+                topic_total[key] = topic_total.get(key, 0) + int(meta.get("total", 1) or 1)
+                topic_wrong[key] = topic_wrong.get(key, 0) + int(meta.get("wrong", 0) or 0)
 
     # Quiz accuracy
     quiz_accuracy: int | None = None
@@ -917,20 +1052,34 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
     topic_sources: dict[str, set[str]] = {}
     for evt in events:
         meta = evt.metadata_ or {}
-        topic = meta.get("topic") or meta.get("knowledgePoint")
-        if not topic:
-            continue
-        tk = str(topic)
-        if tk not in topic_sources:
-            topic_sources[tk] = set()
-        if evt.event_type in ("quiz_result", "quiz_submit"):
-            topic_sources[tk].add("quiz")
-        elif evt.event_type == "practice_result":
-            topic_sources[tk].add("practice")
-        elif evt.event_type == "feedback":
-            topic_sources[tk].add("feedback")
-        elif evt.event_type == "diagnosis":
-            topic_sources[tk].add("diagnosis")
+        if meta.get("eventType") == "quiz_result":
+            # ── Structured format ──
+            kprs = meta.get("knowledgePointResults") or []
+            for kpr in (kprs if isinstance(kprs, list) else []):
+                if not isinstance(kpr, dict):
+                    continue
+                tk = str(kpr.get("knowledgePointKey") or kpr.get("knowledgePointLabel") or "")
+                if not tk:
+                    continue
+                if tk not in topic_sources:
+                    topic_sources[tk] = set()
+                topic_sources[tk].add("quiz")
+        else:
+            # ── Legacy format ──
+            topic = meta.get("topic") or meta.get("knowledgePoint")
+            if not topic:
+                continue
+            tk = str(topic)
+            if tk not in topic_sources:
+                topic_sources[tk] = set()
+            if evt.event_type in ("quiz_result", "quiz_submit"):
+                topic_sources[tk].add("quiz")
+            elif evt.event_type == "practice_result":
+                topic_sources[tk].add("practice")
+            elif evt.event_type == "feedback":
+                topic_sources[tk].add("feedback")
+            elif evt.event_type == "diagnosis":
+                topic_sources[tk].add("diagnosis")
 
     ranked = sorted(
         topic_wrong.items(),

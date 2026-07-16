@@ -187,6 +187,14 @@ def init_db() -> None:
             "source": "VARCHAR(16) DEFAULT 'explicit'",
             "mapping_version": "INTEGER DEFAULT 1",
         },
+        "learning_events": {
+            "event_id": "VARCHAR(64)",
+            "learner_id": "VARCHAR(64)",
+            "subject_id": "VARCHAR(64)",
+            "idempotency_key": "VARCHAR(128)",
+            "attempt_id": "VARCHAR(64)",
+            "schema_version": "VARCHAR(8)",
+        },
     }
     for table, columns in migrations.items():
         for column, definition in columns.items():
@@ -194,6 +202,9 @@ def init_db() -> None:
 
     # ── Attempt idempotency unique indexes ────────────────────────────
     _migrate_attempts_idempotency_indexes()
+
+    # ── Quiz result event unique index ────────────────────────────────
+    _migrate_quiz_result_unique_index()
 
     # ── Fix stale FK on student_questions.session_id ──────────────────
     # Earlier versions had session_id -> sessions.id FK.  Teacher-pushed
@@ -240,6 +251,35 @@ def _migrate_attempts_idempotency_indexes() -> None:
                 conn.commit()
             except Exception:
                 conn.rollback()
+
+
+def _migrate_quiz_result_unique_index() -> None:
+    """Create partial unique index to enforce one quiz_result event per attempt.
+
+    SQLite 3.8+ partial unique index — only applies to rows where
+    event_type = 'quiz_result' AND attempt_id IS NOT NULL.
+    """
+    with engine.connect() as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table' AND name='learning_events'")
+            ).fetchall()
+        }
+        if "learning_events" not in tables:
+            return
+
+        try:
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_quiz_result_per_attempt "
+                    "ON learning_events(attempt_id) "
+                    "WHERE event_type = 'quiz_result' AND attempt_id IS NOT NULL"
+                )
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
 
 
 def _migrate_student_questions_session_fk() -> None:

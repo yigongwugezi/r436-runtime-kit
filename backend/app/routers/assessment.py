@@ -14,15 +14,19 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 
 from app.db.engine import SessionLocal
 from app.db.models import AnswerRecordModel, AttemptModel, ExamSetModel, PracticeQuestionModel, QuizModel
 from app.db.repository import (
+    check_quiz_result_event_exists,
     create_attempt,
+    create_quiz_result_event,
     find_attempt_by_idempotency_key,
     get_attempt,
     get_attempt_answers,
     get_next_attempt_number,
+    get_quiz_result_event,
     list_attempts,
     save_exam_set,
     save_quiz,
@@ -442,6 +446,17 @@ def _build_idempotent_response(
                 attempt.attempt_id, subject_id,
                 assessment_eligible,
             )
+            # Write quiz_result event on replay if missing
+            _write_quiz_result_event(
+                db,
+                attempt=attempt,
+                session_id=session_id,
+                learner_id=attempt.learner_id or "",
+                subject_id=subject_id,
+                kp_results=kp_results,
+                quiz_id=quiz_id,
+                exam_set_id=exam_set_id,
+            )
             for r in results:
                 pq = next((q for q in linked if q.question_id == r["questionId"]), None)
                 if pq is not None:
@@ -461,6 +476,70 @@ def _build_idempotent_response(
             "knowledgePointResults": kp_results,
         },
     }
+
+
+def _write_quiz_result_event(
+    db,
+    *,
+    attempt: AttemptModel,
+    session_id: str,
+    learner_id: str,
+    subject_id: str | None,
+    kp_results: list[dict],
+    quiz_id: str = "",
+    exam_set_id: str = "",
+    path_id: str | None = None,
+    stage_id: str | None = None,
+    chapter_id: str | None = None,
+    section_id: str | None = None,
+) -> str:
+    """Write the canonical quiz_result event for an attempt.  Idempotent.
+
+    Returns the event_id.  Silently skips if an event already exists for
+    this attempt (the unique index guarantees at most one event).
+    """
+    # ── Check for existing event ─────────────────────────────────
+    if check_quiz_result_event_exists(db, attempt.attempt_id):
+        existing = get_quiz_result_event(db, attempt.attempt_id)
+        if existing and existing.event_id:
+            return existing.event_id
+        return ""
+
+    # ── Build event ──────────────────────────────────────────────
+    event_id = f"evt_{uuid.uuid4().hex[:12]}"
+    total_score = attempt.total_score or 0
+    max_score = attempt.max_score or 100
+    normalized = total_score / max(max_score, 1.0)
+
+    try:
+        create_quiz_result_event(
+            db,
+            event_id=event_id,
+            session_id=session_id,
+            learner_id=learner_id,
+            subject_id=subject_id,
+            idempotency_key=attempt.idempotency_key or "",
+            attempt_id=attempt.attempt_id,
+            quiz_id=quiz_id or exam_set_id,
+            total_score=total_score,
+            max_score=max_score,
+            normalized_score=normalized,
+            assessment_eligible=attempt.assessment_eligible,
+            knowledge_point_results=kp_results,
+            path_id=path_id,
+            stage_id=stage_id,
+            chapter_id=chapter_id,
+            section_id=section_id,
+        )
+        db.flush()
+        return event_id
+    except IntegrityError:
+        # Race: another concurrent request already wrote it
+        db.rollback()
+        existing2 = get_quiz_result_event(db, attempt.attempt_id)
+        if existing2 and existing2.event_id:
+            return existing2.event_id
+        return ""
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1046,7 +1125,21 @@ def submit_quiz(
             attempt.attempt_id, subject_id,
             not body.answers_revealed,
         )
-        db.commit()  # persist any fallback mappings created
+        # ── Write canonical quiz_result event ──────────────────
+        _write_quiz_result_event(
+            db,
+            attempt=attempt,
+            session_id=session_id,
+            learner_id=auth.learner_id,
+            subject_id=subject_id,
+            kp_results=kp_results,
+            quiz_id=quiz_id,
+            path_id=quiz.path_id,
+            stage_id=quiz.stage_id,
+            chapter_id=quiz.chapter_id,
+            section_id=quiz.section_id,
+        )
+        db.commit()  # persist fallback mappings + event
 
         # Update per-result knowledgePoint to highest-weight label
         for i, r in enumerate(results):
@@ -1755,7 +1848,20 @@ def submit_exam_set(
             attempt.attempt_id, subject_id,
             not body.answers_revealed,
         )
-        db.commit()  # persist any fallback mappings created
+        # ── Write canonical quiz_result event ──────────────────
+        _write_quiz_result_event(
+            db,
+            attempt=attempt,
+            session_id=session_id,
+            learner_id=auth.learner_id,
+            subject_id=subject_id,
+            kp_results=kp_results,
+            exam_set_id=exam_set_id,
+            path_id=exam_set.path_id,
+            stage_id=exam_set.stage_id,
+            chapter_id=exam_set.chapter_id,
+        )
+        db.commit()  # persist fallback mappings + event
 
         # Update per-result knowledgePoint to highest-weight label
         for i, r in enumerate(results):

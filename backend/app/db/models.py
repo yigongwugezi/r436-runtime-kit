@@ -259,14 +259,40 @@ class ResourceModel(Base):
 # ── Learning Event ───────────────────────────────────────────────────────
 
 class LearningEventModel(Base):
+    """A timestamped learning event — the canonical audit trail for Analytics & Diagnosis.
+
+    Before commit 3 (quiz result events), only session_id, event_type,
+    resource_id, and metadata_ were populated.  The new fields below are
+    populated for server-authoritative events (e.g. quiz_result) and are
+    NULL for legacy / frontend-logged events.
+    """
+
     __tablename__ = "learning_events"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None, unique=True, index=True,
+    )
     session_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("sessions.id", ondelete="CASCADE"), index=True
     )
+    learner_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None, index=True,
+    )
+    subject_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None,
+    )
     event_type: Mapped[str] = mapped_column(String(64), default="generic")
     resource_id: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, default=None,
+    )
+    attempt_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None, index=True,
+    )
+    schema_version: Mapped[str | None] = mapped_column(
+        String(8), nullable=True, default=None,
+    )
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
