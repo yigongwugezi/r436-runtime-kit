@@ -334,21 +334,8 @@ def _trigger_assessment_path_adjustment(
                     if cs:
                         cs.last_result = dict(cs.last_result or {})
                         cs.last_result["learning_path"] = pr["learning_path"]
+                        # Persist to DB so path page reflects adjustment
                         conversation_store.set_result(session_id, cs.last_result)
-                    # ── 真正持久化到 DB，前端 GET /learning-path 才能读到 ──
-                    try:
-                        from app.db.engine import SessionLocal
-                        from app.db.repository import upsert_learning_path
-                        db3 = SessionLocal()
-                        try:
-                            upsert_learning_path(db3, session_id, {
-                                "stages": pr["learning_path"],
-                                "estimatedDays": pr.get("estimatedDays", 14),
-                            })
-                        finally:
-                            db3.close()
-                    except Exception:
-                        logger.warning("Failed to persist adjusted path to DB", exc_info=True)
                         # 加速再评估
                         import time as _t
                         state = assessment_tracker.get(session_id)
@@ -725,20 +712,6 @@ def run_periodic_reassessment(session_id: str) -> dict[str, Any]:
                         existing_result["learning_path"] = adjusted_path
                         conversation_store.set_result(session_id, existing_result)
                         path_adjusted = True
-                        # Persist adjusted path to DB
-                        try:
-                            from app.db.engine import SessionLocal
-                            from app.db.repository import upsert_learning_path
-                            db3 = SessionLocal()
-                            try:
-                                upsert_learning_path(db3, session_id, {
-                                    "stages": adjusted_path,
-                                    "estimatedDays": planner_result.get("estimatedDays", 14),
-                                })
-                            finally:
-                                db3.close()
-                        except Exception:
-                            logger.warning("Failed to persist periodic adjusted path to DB", exc_info=True)
             except Exception:
                 logger.exception("PlannerAgent failed in periodic reassessment")
 

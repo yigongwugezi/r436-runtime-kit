@@ -19,20 +19,6 @@ export interface LearningPath {
   estimatedDays: number;
   source?: 'agent_generated' | 'system_inferred' | 'none';
   stageResourceStats?: Record<string, { total: number; completed: number }>;
-  /** 路径调整日志，由后端 adjust 模式产生 */
-  adjustments: Adjustment[];
-  /** 每次调整递增，前端用于检测路径结构变化 */
-  pathVersion: number;
-}
-
-/** 一次路径调整的记录 */
-export interface Adjustment {
-  /** 调整描述，如 "加速 极限与连续：7天→3天" */
-  description: string;
-  /** 调整类型 */
-  type?: 'accelerate' | 'remedial' | 'insert' | 'split' | 'sprint' | 'init';
-  /** 调整时间戳 */
-  timestamp?: number;
 }
 
 export type StageStatus = 'not_started' | 'in_progress' | 'completed';
