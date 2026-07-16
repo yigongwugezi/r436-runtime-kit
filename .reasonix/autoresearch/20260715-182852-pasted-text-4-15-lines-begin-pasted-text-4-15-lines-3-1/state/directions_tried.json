@@ -1,0 +1,16 @@
+[
+  {
+    "fingerprint": "turn-completed",
+    "summary": "turn completed",
+    "first_seen_iteration": 1,
+    "last_seen_iteration": 1,
+    "count": 1
+  },
+  {
+    "fingerprint": "llm-992e389b",
+    "summary": "函数正确实现了 LLM 重试 → 静态兜底的两层机制。验证通过。",
+    "first_seen_iteration": 2,
+    "last_seen_iteration": 2,
+    "count": 1
+  }
+]

@@ -13,6 +13,8 @@ export async function generateLearningPath(params: {
   subjectId?: string;
   courseId?: string;
   userMessage?: string;
+  planMode?: string;
+  pathMode?: string;
 }): Promise<{ path: LearningPath }> {
   const { data } = await client.post('/api/learning-path/generate', params);
   return data;
@@ -25,4 +27,124 @@ export async function updateNodeProgress(
   params: { sessionId: string; subjectId?: string; status?: string },
 ): Promise<void> {
   await client.patch(`/api/learning-path/nodes/${nodeId}`, { mastery, ...params });
+}
+
+/** 验证课程名称 */
+export async function validateCourse(courseName: string): Promise<{ exact: string | null; suggestions: string[]; valid: boolean; courseId?: string }> {
+  const { data } = await client.get('/api/learning-path/validate-course', { params: { courseName } });
+  return data;
+}
+
+/** 为路径规划对话开启画像提取 */
+export async function enableProfileExtraction(sessionId: string): Promise<{ ok: boolean }> {
+  const { data } = await client.post('/api/learning-path/enable-profile-extraction', { sessionId });
+  return data;
+}
+
+/** 路径规划专用对话：发送消息，返回提取的信息+引导语+是否就绪 */
+export async function planningChat(params: {
+  sessionId: string;
+  message: string;
+  facts?: Record<string, string>;
+}): Promise<{ ok: boolean; extracted?: Record<string, string>; reply?: string; ready?: boolean; error?: string }> {
+  const { data } = await client.post('/api/learning-path/planning-chat', params);
+  return data;
+}
+
+// ── Planning Drafts ──
+
+export interface PlanningDraft {
+  draftId: string;
+  learnerId: string;
+  sessionId: string;
+  subjectId: string;
+  topic: string;
+  goal: string;
+  currentLevel: string;
+  dailyTime: string;
+  targetDuration: string;
+  resourcePreferences: string[];
+  status: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  confirmedAt: string | null;
+}
+
+export interface DraftCompleteness {
+  filled: number;
+  total: number;
+  percent: number;
+  fields: Record<string, boolean>;
+}
+
+/** 创建或更新规划草稿 */
+export async function upsertPlanningDraft(params: {
+  draftId: string;
+  sessionId: string;
+  subjectId?: string;
+  topic?: string;
+  goal?: string;
+  currentLevel?: string;
+  dailyTime?: string;
+  targetDuration?: string;
+  resourcePreferences?: string[];
+  confirmed?: boolean;
+}): Promise<{ ok: boolean; draft: PlanningDraft; completeness: DraftCompleteness }> {
+  const { data } = await client.post('/api/learning-path/drafts', params);
+  return data;
+}
+
+/** 获取规划草稿 */
+export async function getPlanningDraft(draftId: string): Promise<{ ok: boolean; draft: PlanningDraft | null; completeness: DraftCompleteness | null }> {
+  const { data } = await client.get(`/api/learning-path/drafts/${draftId}`);
+  return data;
+}
+
+/** 列出当前session的规划草稿 */
+export async function listPlanningDrafts(params: { sessionId?: string; subjectId?: string }): Promise<{ ok: boolean; draft: PlanningDraft | null; drafts?: PlanningDraft[] }> {
+  const { data } = await client.get('/api/learning-path/drafts', { params });
+  return data;
+}
+
+// ── Workflow Tasks ──
+
+export interface WorkflowTask {
+  task_id: string;
+  workflow_type: string;
+  status: string;
+  current_stage: string;
+  result?: any;
+  result_available?: boolean;
+  safe_error_message?: string;
+  created_at?: string;
+  completed_at?: string;
+  metadata?: any;
+}
+
+/** 创建路径生成workflow任务 */
+export async function createPathGenerationTask(params: {
+  sessionId: string;
+  subjectId?: string;
+  planMode?: string;
+  pathMode?: string;
+  totalDays?: number;
+  weekends?: boolean;
+  dynamicAdjust?: boolean;
+  reviewEnabled?: boolean;
+  draft?: Record<string, any>;
+}): Promise<{ ok: boolean; task: WorkflowTask }> {
+  const { data } = await client.post('/api/workflows/learning_path_generation/start', params);
+  return data;
+}
+
+/** 查询workflow任务状态 */
+export async function getWorkflowTask(taskId: string): Promise<{ ok: boolean; task: WorkflowTask }> {
+  const { data } = await client.get(`/api/workflows/${taskId}`);
+  return data;
+}
+
+/** 取消workflow任务 */
+export async function cancelWorkflowTask(taskId: string): Promise<{ ok: boolean }> {
+  const { data } = await client.post(`/api/workflows/${taskId}/cancel`);
+  return data;
 }

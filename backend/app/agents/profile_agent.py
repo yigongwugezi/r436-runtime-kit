@@ -181,6 +181,7 @@ class ProfileAgent(BaseAgent):
 
         mapping = {
             "background": "major_background",
+            "learning_history": "learning_history",
             "knowledge_base": "knowledge_base",
             "learning_goal": "learning_goal",
             "preference": "cognitive_style",
@@ -253,10 +254,12 @@ class ProfileAgent(BaseAgent):
         learning_goal = str(facts.get("learning_goal", "")).strip() or self._learning_goal(text, course_text, time_budget)
         preference = str(facts.get("preference", "")).strip() or self._cognitive_style(text)
         background = str(facts.get("background", "")).strip() or self._background_from_text(text)
+        learning_history = str(facts.get("learning_history", "")).strip() or self._learning_history_from_text(text)
         interest_direction = self._clean_profile_fact("target_course", facts.get("target_course", "")) or self._interest_direction(text, course_text, weak_points)
 
         profile = {
             "major_background": self._direct_dimension("major_background", background, "学习者专业或身份背景"),
+            "learning_history": self._direct_dimension("learning_history", learning_history, "过往学习经历"),
             "knowledge_base": self._knowledge_dimension(knowledge_base),
             "learning_goal": self._direct_dimension("learning_goal", learning_goal, "当前学习目标"),
             "cognitive_style": self._style_dimension(preference),
@@ -430,6 +433,17 @@ class ProfileAgent(BaseAgent):
         if fact_course:
             return fact_course
         return self._course_from_text(text)
+
+    def _learning_history_from_text(self, text: str) -> str:
+        clues = []
+        for m in re.finditer(
+            r"(?:(?:高中|初中|大学|以前|之前|过去|曾经).(?:学过|上过|修过|考过).{3,40})",
+            text,
+        ):
+            clues.append(m.group(0).strip())
+        for m in re.finditer(r"(?:理科|文科|工科).(?:数学|生|背景|底子).{0,15}", text):
+            clues.append(m.group(0).strip())
+        return "；".join(dict.fromkeys(clues[:5])) if clues else ""
 
     def _background_from_text(self, text: str) -> str:
         patterns = [

@@ -87,11 +87,16 @@ interface ChatStore {
   /** 动态进度条步骤（根据实际运行的 Agent 构建，替代硬编码 GEN_PIPELINE） */
   progressPipelineSteps: import('../types/chat').ProgressStep[];
   dataVersion: number;
+  /** 联网搜索开关 */
+  searchEnabled: boolean;
+  /** 深度思考开关 */
+  deepThinkEnabled: boolean;
 
   setCurrentSession: (id: string) => void;
   addMessage: (msg: ChatMessage) => void;
   updateLastAssistant: (updater: (msg: ChatMessage) => ChatMessage) => void;
   appendToLastAssistant: (chunk: string) => void;
+  appendReasoningToLastAssistant: (chunk: string) => void;
   setStreaming: (v: boolean) => void;
   setAgentProgress: (p: GenerationProgress | null) => void;
   setLastImageAttachment: (attachment: import('../types/chat').ChatAttachment | null) => void;
@@ -103,6 +108,8 @@ interface ChatStore {
   setSessions: (sessions: ChatSession[]) => void;
   setQuickCommands: (cmds: QuickCommand[]) => void;
   setLoading: (v: boolean) => void;
+  setSearchEnabled: (v: boolean) => void;
+  setDeepThinkEnabled: (v: boolean) => void;
   clearMessages: () => void;
   newSession: () => void;
   removeLastMessage: () => void;
@@ -134,6 +141,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   progressPipelineSteps: [],
   dataVersion: 0,
   dataSessionId: loadSessionId(),
+  searchEnabled: false,
+  deepThinkEnabled: false,
 
   setCurrentSession: (id) => {
     log.debug(`切换会话: ${id.slice(0, 20)}...`);
@@ -150,14 +159,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       return;
     }
 
-    // 3. 切换不同会话 → 从 localStorage 加载缓存消息
+    // 切换对话只改 currentSessionId，dataSessionId 保持不变（科目级数据隔离）
     const sessions = loadSessions();
     const targetSession = sessions.find(s => s.id === id);
     const cachedMessages = targetSession?.messages || [];
 
     persistSessionId(id);
     writeStorageItem(runtimeStorageKeys.pendingGeneration, '');
-    set({ currentSessionId: id, dataSessionId: id, messages: cachedMessages, isStreaming: false, progressPipelineSteps: [], agentProgress: null, lastDebugInfo: null, lastImageAttachment: null, imageAttachmentHistory: [], selectedImageAttachmentId: null });
+    set({ currentSessionId: id, messages: cachedMessages, isStreaming: false, progressPipelineSteps: [], agentProgress: null, lastDebugInfo: null, lastImageAttachment: null, imageAttachmentHistory: [], selectedImageAttachmentId: null });
   },
 
   addMessage: (msg) =>
@@ -213,6 +222,20 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       return { messages: msgs };
     }),
 
+  appendReasoningToLastAssistant: (chunk) =>
+    set((s) => {
+      const msgs = [...s.messages];
+      const last = msgs[msgs.length - 1];
+      if (last?.role === 'assistant') {
+        msgs[msgs.length - 1] = {
+          ...last,
+          reasoningContent: (last.reasoningContent || '') + chunk,
+        };
+      }
+      syncMessagesToSession(s.currentSessionId, msgs);
+      return { messages: msgs };
+    }),
+
   setStreaming: (v) => set({ isStreaming: v }),
   setAgentProgress: (p) => set({ agentProgress: p }),
   setLastImageAttachment: (attachment) => set({ lastImageAttachment: attachment, selectedImageAttachmentId: imageAttachmentKey(attachment) || null }),
@@ -238,6 +261,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   setSessions: (sessions) => set({ sessions }),
   setQuickCommands: (cmds) => set({ quickCommands: cmds }),
   setLoading: (v) => set({ loading: v }),
+  setSearchEnabled: (v) => set({ searchEnabled: v }),
+  setDeepThinkEnabled: (v) => set({ deepThinkEnabled: v }),
   clearMessages: () => set({ messages: [] }),
   newSession: () => {
     const state = get();
@@ -268,9 +293,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     persistSessionId(id);
     persistSessions(sessions);
     writeStorageItem(runtimeStorageKeys.pendingGeneration, '');
-    set({ currentSessionId: id, dataSessionId: id, sessions, messages: [], isStreaming: false, progressPipelineSteps: [], agentProgress: null, lastDebugInfo: null, lastImageAttachment: null, imageAttachmentHistory: [], selectedImageAttachmentId: null });
+    set({ currentSessionId: id, sessions, messages: [], isStreaming: false, progressPipelineSteps: [], agentProgress: null, lastDebugInfo: null, lastImageAttachment: null, imageAttachmentHistory: [], selectedImageAttachmentId: null });
     void createChatSession({ sessionId: id, subjectId }).catch((error) => log.warn('Failed to create chat session', error));
-    // dataSessionId 不变，保持科目级数据查询稳定
+    // currentSessionId 变了但 dataSessionId 不变，保持科目级数据查询稳定
   },
   removeLastMessage: () =>
     set((s) => {

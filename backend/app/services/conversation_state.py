@@ -168,6 +168,9 @@ class ConversationState:
     updated_at: float = field(default_factory=time.time)
     # 标记核心 facts 是否有更新，用于触发画像维度增量重建
     profile_dirty: bool = False
+    # 是否启用对话文字自动画像提取（默认关闭，仅在路径规划专用对话中开启）
+    profile_extraction_enabled: bool = True
+    path_planning_info_mode: bool = False  # 路径规划信息收集模式（不触发Planner）
 
 
 # 核心画像事实字段——这些字段更新时会触发画像维度重建
@@ -903,15 +906,14 @@ class ConversationStore:
             set_fact("preference", "、".join(dict.fromkeys(formats)) or text)
 
         extracted_profile_facts = extract_profile_facts(text)
-        # Explicit facts are more precise than the broad rules above for this message.
         for key, value in extracted_profile_facts.facts.items():
-            # Map daily_minutes → time_budget so PlannerAgent gets consistent data
+        # Map daily_minutes → time_budget so PlannerAgent gets consistent data
             if key == "daily_minutes":
                 existing = str(state.facts.get("time_budget", "")).strip()
                 if not existing or existing in ("未提及", "待补充", "未知", "", "无"):
                     set_fact("time_budget", f"每天{int(value) // 60}小时" if int(value) >= 60 else f"每天{value}分钟")
-            else:
-                set_fact(key, value, force=True)
+        else:
+            set_fact(key, value, force=True)
         for key, values in extracted_profile_facts.supplemental.items():
             for value in values:
                 add_supplemental(key, value)

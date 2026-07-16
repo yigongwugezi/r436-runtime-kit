@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Search, BookOpen, Brain, Code, FileText, Lightbulb, Play, Presentation, Clock, Star, ChevronRight, BookmarkPlus, BookmarkCheck, CheckCircle2, X, LayoutGrid, List, ChevronDown, MoreHorizontal, RotateCcw, ListChecks, Download, SlidersHorizontal, MessageSquare, Send, ArrowLeft, Trash2 } from 'lucide-react';
+import { Search, BookOpen, Brain, Code, FileText, Lightbulb, Play, Presentation, Clock, Star, ChevronRight, BookmarkPlus, BookmarkCheck, CheckCircle2, X, LayoutGrid, List, ChevronDown, MoreHorizontal, RotateCcw, ListChecks, Download, SlidersHorizontal, MessageSquare, Send, ArrowLeft, Trash2, FolderOpen, Sparkles } from 'lucide-react';
 import { useResources } from '../hooks/useResources';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
@@ -18,6 +18,7 @@ import { PageLoading, PageEmpty, PageError } from '../components/common/PageStat
 import SourceBadge from '../components/common/SourceBadge';
 import Markdown from '../utils/markdown';
 import MermaidDiagram from '../utils/mermaid';
+import RecommendationsTab from '../components/resources/RecommendationsTab';
 
 const icons: Record<string, React.ReactNode> = {
   lecture: <BookOpen className="w-5 h-5 text-blue-500" />, mindmap: <Brain className="w-5 h-5 text-purple-500" />,
@@ -40,7 +41,7 @@ const diffLabel: Record<string, string> = { easy: '基础', medium: '进阶', ha
 const qualityLabel: Record<string, string> = { passed: '质检通过', repaired: '已修复', fallback: '本地兜底', failed: '需复核', needs_review: '需复核', fallback_passed: '兜底通过' };
 const qualityBadge: Record<string, string> = { passed: 'bg-success-50 text-success-700', repaired: 'bg-blue-50 text-blue-700', fallback: 'bg-warning-50 text-warning-700', failed: 'bg-error-50 text-error-700', needs_review: 'bg-error-50 text-error-700', fallback_passed: 'bg-warning-50 text-warning-700' };
 const TYPES = ['', 'lecture', 'mindmap', 'quiz', 'reading', 'case_study', 'video', 'ppt', 'textbook'];
-const SORTS = [{ v: 'default', l: '推荐' }, { v: 'newest', l: '最新' }, { v: 'easiest', l: '最简单' }, { v: 'hardest', l: '最困难' }];
+const SORTS = [{ v: 'default', l: '默认' }, { v: 'newest', l: '最新' }, { v: 'easiest', l: '最简单' }, { v: 'hardest', l: '最困难' }];
 const resourceLabel = (resource: Resource) => RESOURCE_TYPE_LABELS[resource.taskId || ''] || RESOURCE_TYPE_LABELS[resource.type] || resource.type;
 const resourceIcon = (resource: Resource) => icons[resource.taskId || ''] || icons[resource.type];
 const generatedResourceTypes = new Set(['summary_card', 'concept_comparison', 'worked_example', 'mistake_checklist', 'review_notes', 'knowledge_map', 'process_flow', 'concept_diagram', 'execution_trace', 'code_trace']);
@@ -674,11 +675,24 @@ export default function ResourceLibrary() {
     );
   }
 
-  // 列表视图
+  // ── 读取 Tab 状态 ──
+  const activeTab = searchParams.get('tab') === 'recommendations' ? 'recommendations' : 'local';
+
+  const switchTab = (tab: string) => {
+    const params = new URLSearchParams(searchParams);
+    if (tab === 'recommendations') {
+      params.set('tab', 'recommendations');
+    } else {
+      params.delete('tab');
+    }
+    nav(`/resources?${params.toString()}`, { replace: true });
+  };
+
+  // 列表视图（含 Tab 切换）
   return (
     <div>
-      {/* Textbook card (shown when textbook exists for active subject) */}
-      {textbook && textbook.status === 'ready' && (
+      {/* Textbook card (shown when textbook exists for active subject, local tab only) */}
+      {activeTab === 'local' && textbook && textbook.status === 'ready' && (
         <div className="mb-4">
           <div
             onClick={() => nav(`/textbook/${activeSubject?.id}`)}
@@ -701,19 +715,56 @@ export default function ResourceLibrary() {
           </div>
         </div>
       )}
-      <ResourceListView
-        resources={resources}
-        total={total}
-        loading={loading}
-        error={error}
-        onRefetch={refetch}
-        onToggleBookmark={toggleBookmark}
-        onApplyFilter={applyFilter}
-        sessionId={sessionId}
-        activeTaskId={searchParams.get('taskId') || undefined}
-        activeStageId={searchParams.get('relatedStageId') || undefined}
-        isReadOnly={isParent}
-      />
+
+      {/* ── Tab 栏 ── */}
+      <div className="flex items-center gap-1 mb-5 bg-surface-100 rounded-xl p-1 w-fit">
+        <button
+          onClick={() => switchTab('local')}
+          className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+            activeTab === 'local'
+              ? 'bg-white text-surface-800 shadow-sm'
+              : 'text-surface-500 hover:text-surface-700'
+          }`}
+        >
+          <FolderOpen size={16} />
+          本地资源库
+          {total > 0 && (
+            <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${activeTab === 'local' ? 'bg-surface-100 text-surface-600' : 'bg-surface-200 text-surface-500'}`}>
+              {total}
+            </span>
+          )}
+        </button>
+        <button
+          onClick={() => switchTab('recommendations')}
+          className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+            activeTab === 'recommendations'
+              ? 'bg-white text-surface-800 shadow-sm'
+              : 'text-surface-500 hover:text-surface-700'
+          }`}
+        >
+          <Sparkles size={16} />
+          智能推荐
+        </button>
+      </div>
+
+      {/* ── Tab 内容 ── */}
+      {activeTab === 'local' ? (
+        <ResourceListView
+          resources={resources}
+          total={total}
+          loading={loading}
+          error={error}
+          onRefetch={refetch}
+          onToggleBookmark={toggleBookmark}
+          onApplyFilter={applyFilter}
+          sessionId={sessionId}
+          activeTaskId={searchParams.get('taskId') || undefined}
+          activeStageId={searchParams.get('relatedStageId') || undefined}
+          isReadOnly={isParent}
+        />
+      ) : (
+        <RecommendationsTab localResources={resources} />
+      )}
     </div>
   );
 }

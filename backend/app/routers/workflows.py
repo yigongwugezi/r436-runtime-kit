@@ -24,7 +24,7 @@ SUPPORTED_WORKFLOWS = {
 }
 CANCELLABLE_WORKFLOWS = {
     "resource_search", "generated_resource", "generated_resource_regeneration", "lecture_generation",
-    "video_generation",
+    "video_generation", "learning_path_generation",
 }
 
 

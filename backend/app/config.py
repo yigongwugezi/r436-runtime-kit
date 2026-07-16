@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     llm_provider: str = "mock"
     llm_model: str = "deepseek-chat"
     llm_temperature: float = 0.2
+    llm_enable_search: bool = True   # DeepSeek web search for chat model
+    llm_reasoner_model: str = "deepseek-reasoner"  # Deep thinking model
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
 

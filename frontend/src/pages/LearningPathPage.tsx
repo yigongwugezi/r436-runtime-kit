@@ -3,10 +3,13 @@ import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useChatPanel } from '../components/layout/AppLayout';
 import { useLearningPath } from '../hooks/useLearningPath';
-import { PlayCircle, BookOpen, Code2, FileCheck, Lock, CheckCircle2, Circle, Loader2, ChevronRight, Zap, Target, ArrowLeft, FileText, Brain, Calendar, ExternalLink, Clock, ClipboardList, Plus } from 'lucide-react';
+import { PlayCircle, BookOpen, Code2, FileCheck, Lock, CheckCircle2, Circle, Loader2, ChevronRight, Zap, Target, ArrowLeft, FileText, Brain, Calendar, ExternalLink, Clock, ClipboardList, Plus, AlertCircle } from 'lucide-react';
 import { listExamSets, generateExamSet } from '../api/assessment';
+import { generateLearningPath, validateCourse, enableProfileExtraction, planningChat, listPlanningDrafts, type PlanningDraft } from '../api/learningPath';
+import { useProfile } from '../hooks/useProfile';
 import { useChatStore } from '../store/chatStore';
 import type { ExamSet } from '../types/assessment';
+import PlanningWizard from '../components/learning/PlanningWizard';
 import { PageLoading, PageEmpty, PageError } from '../components/common/PageState';
 import { getCurrentLearner } from '../store/authStore';
 import PathModeRouter from '../components/learning/PathModeViews';
@@ -56,6 +59,40 @@ export default function LearningPathPage() {
   const nav = useNavigate();
   const chat = useChatPanel();
   const { path, loading, error, fetchPath } = useLearningPath();
+  const { profileV2 } = useProfile();
+  const subject = profileV2?.subject_context || {};
+  // Settings
+  const [planMode, setPlanMode] = useState('textbook'); // textbook / daily / focus // systematic / sprint / gap_fill
+  const [granularity, setGranularity] = useState('standard'); // coarse / standard / fine
+  const [weekends, setWeekends] = useState(true);
+  const [dynamicAdjust, setDynamicAdjust] = useState(true);
+  const [reviewEnabled, setReviewEnabled] = useState(true);
+  const [textbookAligned, setTextbookAligned] = useState(true);
+  const [initTotalDays, setInitTotalDays] = useState(30);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  // Course + info
+  const [courseName, setCourseName] = useState(subject.subject_name || '');
+  const [courseSuggestions, setCourseSuggestions] = useState([]);
+  const [courseValid, setCourseValid] = useState(!!subject.subject_name);
+  const [courseId, setCourseId] = useState('');
+  const [initGoal, setInitGoal] = useState(subject.learning_goal || '');
+  const [initTime, setInitTime] = useState(subject.daily_minutes ? subject.daily_minutes + '分钟/天' : '');
+  const [initBase, setInitBase] = useState((subject.prior_experience || []).join('、'));
+  const [initGenerating, setInitGenerating] = useState(false);
+  const [initError, setInitError] = useState('');
+  // Planning chat state
+  const [planChatMessages, setPlanChatMessages] = useState<{ role: string; text: string }[]>([
+    { role: 'assistant', text: '你好！我是你的学习路径规划助手。' },
+    { role: 'assistant', text: '在生成路径前，我需要简单了解三件事：\n1️⃣ 你的学习目标是什么？\n2️⃣ 每天能投入多少时间？\n3️⃣ 目前的基础怎么样？' },
+    { role: 'assistant', text: '不用一次说完，我们慢慢聊～先告诉我，你想通过这门课达到什么目标？' },
+  ]);
+  const [planChatInput, setPlanChatInput] = useState('');
+  const [planChatFacts, setPlanChatFacts] = useState<Record<string, string>>({});
+  const [planChatReady, setPlanChatReady] = useState(false);
+  const [planChatBusy, setPlanChatBusy] = useState(false);
+  // Draft state (returning from chat)
+  const [existingDraft, setExistingDraft] = useState<any>(null);
+  const [draftLoading, setDraftLoading] = useState(true);
 
   const stages = path?.stages || [];
   const allNodes = stages.flatMap(s => s.nodes || []);
@@ -149,6 +186,21 @@ export default function LearningPathPage() {
   };
 
   const sessionId = useChatStore((s) => s.currentSessionId);
+
+  // Check for existing planning draft (returning from chat)
+  useEffect(() => {
+    if (!sessionId) { setDraftLoading(false); return; }
+    (async () => {
+      try {
+        const res = await listPlanningDrafts({ sessionId });
+        if (res.ok && res.draft && res.draft.status !== 'expired') {
+          setExistingDraft(res.draft);
+        }
+      } catch {}
+      setDraftLoading(false);
+    })();
+  }, [sessionId]);
+
   const inProgressStage = stages.find(s => s.nodes?.some(n => n.status === 'in_progress'));
   const [activeStageId, setActiveStageId] = useState<string | null>(null);
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
@@ -213,25 +265,212 @@ export default function LearningPathPage() {
   const ss = (k: string) => statusStyle[k] || _def;
   const nb = (k: string) => nodeBorder[k] || 'bg-surface-50 border-surface-200';
 
+  const handleValidateCourse = async (name: string) => {
+    setCourseName(name);
+    if (!name.trim()) { setCourseValid(false); setCourseSuggestions([]); return; }
+    try {
+      const res = await validateCourse(name.trim());
+      if (res.valid && res.exact) {
+        setCourseName(res.exact);
+        setCourseId(res.courseId || '');
+        setCourseValid(true);
+        setCourseSuggestions([]);
+      } else {
+        setCourseValid(false);
+        setCourseSuggestions(res.suggestions || []);
+      }
+    } catch { setCourseValid(false); }
+  };
+
+
+
+
+
   if (loading) return <PageLoading text="加载学习路径中…" />;
   if (error && stages.length === 0) return <PageError title="学习路径加载失败" description={error} onRetry={fetchPath} />;
 
   if (!path || stages.length === 0) {
+    // Show draft confirmation if returning from chat with collected info
+    if (existingDraft && !draftLoading) {
+      return <PlanningWizard
+        sessionId={useChatStore.getState().dataSessionId || sessionId || ''}
+        subjectId={subject.subject_id || ''}
+        subjectName={subject.subject_name || courseName || ''}
+        profileV2={profileV2}
+        planMode={planMode}
+        pathMode={planMode === 'daily' ? 'daily' : 'textbook'}
+        totalDays={initTotalDays}
+        weekends={weekends}
+        dynamicAdjust={dynamicAdjust}
+        reviewEnabled={reviewEnabled}
+        onPathGenerated={(pathId: string) => { setExistingDraft(null); fetchPath(); }}
+      />;
+    }
+    if (draftLoading) {
+      return <div className="flex-1 flex items-center justify-center"><Loader2 size={24} className="animate-spin text-primary-500" /></div>;
+    }
     return (
-      <div className="space-y-6 animate-fade-in">
-        <div className="flex items-center justify-between">
-          <div><h2 className="font-display text-2xl font-bold text-surface-800">学习路径</h2><p className="text-surface-500 mt-1">基于你的学习画像智能规划的进阶路线</p></div>
+      <div className="w-full max-w-3xl mx-auto flex-1 flex flex-col space-y-6 animate-fade-in py-8">
+        <div className="text-center space-y-2">
+          <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-primary-50 mb-2">
+            <Target size={24} className="text-primary-500" />
+          </div>
+          <h2 className="font-display text-2xl font-bold text-surface-800">创建学习路径</h2>
+          <p className="text-surface-500 text-sm">设定偏好后，智能对话会帮你收集信息并生成专属学习计划</p>
         </div>
-        <PageEmpty
-          icon={<Target size={40} className="text-surface-300" />}
-          title="尚未生成学习路径"
-          description={<span>在聊天中告诉 AI 你的学习目标，例如：<br /><span className="text-primary-600 font-medium">"我想用两周时间入门深度学习"</span></span>}
-          action={<button onClick={() => nav('/chat', { state: { initialMessage: '帮我规划学习路径' } })} className="mt-4 px-5 py-2.5 bg-primary-600 text-white rounded-xl font-medium hover:bg-primary-700 transition-colors">去对话生成</button>}
-        />
+
+        <div className="bg-white rounded-2xl p-5 shadow-soft border border-surface-100">
+          <label className="text-xs font-medium text-surface-400 uppercase tracking-wide mb-2 block">目标课程</label>
+          <input
+            value={courseName}
+            onChange={e => handleValidateCourse(e.target.value)}
+            onBlur={e => handleValidateCourse(e.target.value)}
+            placeholder="输入课程名称，系统自动识别"
+            className={`w-full px-4 py-3 rounded-xl border text-surface-800 placeholder-surface-400 focus:outline-none focus:ring-2 transition-all text-lg font-medium ${courseName && courseValid ? 'border-green-300 focus:ring-green-400 bg-green-50/30' : courseName && !courseValid ? 'border-amber-300 focus:ring-amber-400' : 'border-surface-200 focus:ring-primary-400'}`}
+          />
+          {courseName && courseValid && <p className="mt-1.5 text-xs text-green-600 flex items-center gap-1"><CheckCircle2 size={12} />已识别课程</p>}
+          {courseSuggestions.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              <span className="text-xs text-surface-400 mt-0.5">推荐：</span>
+              {courseSuggestions.map((s: string) => (
+                <button key={s} onClick={() => handleValidateCourse(s)} className="text-xs px-2.5 py-1 bg-surface-100 hover:bg-primary-100 hover:text-primary-700 text-surface-600 rounded-full border border-surface-200 transition-all">{s}</button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="bg-white rounded-2xl p-5 shadow-soft border border-surface-100 space-y-6">
+          <div>
+            <label className="text-xs font-medium text-surface-400 uppercase tracking-wide mb-3 block">规划模式</label>
+            <div className="grid grid-cols-3 gap-3">
+              {[
+                ['textbook', '教材式', '按章节系统推进', BookOpen],
+                ['daily', '日课式', '每日定量学习任务', Calendar],
+                ['focus', '精进式', '聚焦薄弱点突破', Zap],
+              ].map(([v, label, desc, Icon]) => (
+                <button key={v}
+                  onClick={() => setPlanMode(v)}
+                  className={`p-4 rounded-xl border-2 text-left transition-all ${planMode === v ? 'border-primary-400 bg-primary-50/50 shadow-sm' : 'border-surface-100 hover:border-surface-200 hover:bg-surface-50'}`}
+                >
+                  <Icon size={20} className={planMode === v ? 'text-primary-500' : 'text-surface-400'} />
+                  <div className="text-sm font-semibold text-surface-800 mt-2">{label}</div>
+                  <div className="text-[11px] text-surface-400 mt-1 leading-relaxed">{desc}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="text-xs font-medium text-surface-400 mb-1.5 block">总天数</label>
+              <input type="number" min={1} max={365} value={initTotalDays}
+                onChange={e => setInitTotalDays(Math.max(1, Math.min(365, Number(e.target.value) || 30)))}
+                className="w-full px-4 py-2.5 rounded-xl border border-surface-200 text-surface-800 focus:outline-none focus:ring-2 focus:ring-primary-400"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-surface-400 mb-1.5 block">周末安排</label>
+              <div className="flex gap-2">
+                {[[true, '坚持学习'], [false, '休息']].map(([v, label]) => (
+                  <button key={label} onClick={() => setWeekends(v as boolean)}
+                    className={`flex-1 py-2.5 rounded-xl border text-sm transition-all ${weekends === v ? 'border-primary-400 bg-primary-50 text-primary-700 font-medium' : 'border-surface-200 text-surface-500'}`}
+                  >{label}</button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-4">
+            <label className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-surface-50 border border-surface-100 cursor-pointer hover:bg-surface-100 transition-colors">
+              <input type="checkbox" checked={dynamicAdjust} onChange={e => setDynamicAdjust(e.target.checked)} className="sr-only" />
+              <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors ${dynamicAdjust ? 'bg-primary-500 border-primary-500' : 'border-surface-300'}`}>
+                {dynamicAdjust && <CheckCircle2 size={12} className="text-white" />}
+              </div>
+              <span className="text-sm text-surface-700">动态调整</span>
+            </label>
+            <label className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-surface-50 border border-surface-100 cursor-pointer hover:bg-surface-100 transition-colors">
+              <input type="checkbox" checked={reviewEnabled} onChange={e => setReviewEnabled(e.target.checked)} className="sr-only" />
+              <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors ${reviewEnabled ? 'bg-primary-500 border-primary-500' : 'border-surface-300'}`}>
+                {reviewEnabled && <CheckCircle2 size={12} className="text-white" />}
+              </div>
+              <span className="text-sm text-surface-700">含复习阶段</span>
+            </label>
+          </div>
+
+          <button onClick={() => setShowAdvanced(!showAdvanced)}
+            className="w-full text-left text-xs text-surface-400 hover:text-surface-600 flex items-center gap-1 transition-colors"
+          >
+            <span className="w-3 text-center">{showAdvanced ? '-' : '+'}</span> 高级设置
+          </button>
+          {showAdvanced && (
+            <div className="space-y-4 pt-1">
+              <div>
+                <label className="text-xs font-medium text-surface-400 mb-1.5 block">路径粒度</label>
+                <div className="flex gap-2">
+                  {[['coarse', '按周'], ['standard', '标准'], ['fine', '按天']].map(([v, label]) => (
+                    <button key={v} onClick={() => setGranularity(v)}
+                      className={`flex-1 py-2 rounded-lg border text-xs transition-all ${granularity === v ? 'border-primary-400 bg-primary-50 text-primary-700 font-medium' : 'border-surface-200 text-surface-500'}`}
+                    >{label}</button>
+                  ))}
+                </div>
+              </div>
+              <label className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-surface-50 border border-surface-100 cursor-pointer hover:bg-surface-100 transition-colors">
+                <input type="checkbox" checked={textbookAligned} onChange={e => setTextbookAligned(e.target.checked)} className="sr-only" />
+                <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors ${textbookAligned ? 'bg-primary-500 border-primary-500' : 'border-surface-300'}`}>
+                  {textbookAligned && <CheckCircle2 size={12} className="text-white" />}
+                </div>
+                <span className="text-sm text-surface-700">关联教材章节</span>
+              </label>
+            </div>
+          )}
+        </div>
+
+        {initError && (
+          <div className="px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-600 flex items-center gap-2">
+            <AlertCircle size={16} /> {initError}
+          </div>
+        )}
+
+        <div className="flex gap-3">
+          <button onClick={async () => {
+            const sid = useChatStore.getState().dataSessionId || sessionId || '';
+            try { await enableProfileExtraction(sid); } catch {}
+            const msg = [
+              '帮我制定学习计划',
+              courseName && '课程：' + courseName,
+              '规划模式：' + (planMode === 'textbook' ? '教材式按章节系统学习' : planMode === 'daily' ? '日课式每日定量任务' : '精进式针对薄弱点突破'),
+              '总天数：' + initTotalDays + '天',
+              weekends ? '周末也学' : '周末休息',
+              dynamicAdjust && '需要动态调整',
+              !reviewEnabled && '不需要复习阶段',
+            ].filter(Boolean).join('，') + '。请先问我几个问题了解我的具体情况吧。';
+            nav('/chat', { state: { initialMessage: msg } });
+          }}
+            className="flex-1 py-3 border-2 border-primary-200 text-primary-700 rounded-xl font-medium hover:bg-primary-50 transition-colors text-sm"
+          >
+            去对话收集信息
+          </button>
+          <button onClick={() => {
+            const sid = useChatStore.getState().dataSessionId || sessionId || '';
+            generateLearningPath({
+              sessionId: sid,
+              planMode: planMode === 'focus' ? 'focus' : '',
+              pathMode: planMode === 'daily' ? 'daily' : 'textbook',
+              totalDays: initTotalDays,
+              weekends: weekends,
+              dynamicAdjust: dynamicAdjust,
+              reviewEnabled: reviewEnabled,
+              userMessage: [courseName && '学习' + courseName, '规划模式：' + planMode, '总天数：' + initTotalDays + '天'].filter(Boolean).join('。'),
+            }).then(() => fetchPath()).catch(e => setInitError(e?.message || '生成失败'));
+          }}
+            className="flex-1 py-3 bg-primary-600 text-white rounded-xl font-medium hover:bg-primary-700 transition-colors text-sm flex items-center justify-center gap-2"
+          >
+            <Zap size={16} />直接生成路径
+          </button>
+        </div>
       </div>
     );
   }
-
   const isDetailView = !!activeStageId;
 
   // ── Daily/Focus modes → use PathModeRouter. Textbook → keep original UI ──
@@ -379,6 +618,34 @@ export default function LearningPathPage() {
               ))}
             </div>
           )}
+        </div>
+      )}
+      {!isParent && (
+        <div className="bg-white rounded-2xl p-4 shadow-soft mb-4">
+          <details className="group" open={path.adjustments && path.adjustments.length > 0}>
+            <summary className="flex items-center gap-2 cursor-pointer list-none">
+              <Brain size={16} className="text-amber-500" />
+              <span className="text-sm font-semibold text-surface-700">学习路径调整记录</span>
+              {path.adjustments && path.adjustments.length > 0 && (
+                <span className="px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded-full text-[10px] font-medium">{path.adjustments.length}</span>
+              )}
+              <span className="ml-auto text-surface-400 group-open:rotate-180 transition-transform">▾</span>
+            </summary>
+            <div className="mt-2 space-y-2 max-h-48 overflow-y-auto">
+              {!path.adjustments || path.adjustments.length === 0 ? (
+                <p className="text-xs text-surface-400">暂无调整记录。学习路径会根据你的答题表现自动调整。</p>
+              ) : (
+                path.adjustments.map((adj, i) => (
+                  <div key={i} className="flex items-start gap-2 text-xs">
+                    <span className="mt-0.5 flex-shrink-0">
+                      {adj.type === 'accelerate' ? '⚡' : adj.type === 'remedial' ? '⚠️' : adj.type === 'insert' ? '➕' : adj.type === 'split' ? '✂️' : adj.type === 'sprint' ? '🎯' : '📌'}
+                    </span>
+                    <span className="text-surface-600">{typeof adj === 'string' ? adj : adj.description}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </details>
         </div>
       )}
 

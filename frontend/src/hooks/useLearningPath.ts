@@ -64,6 +64,7 @@ export function useLearningPath() {
   const [error, setError] = useState<string | null>(null);
   const [generationWorkflow, setGenerationWorkflow] = useState<WorkflowState | null>(null);
   const lastVersionRef = useRef<number>(0);
+  const pathVersionRef = useRef<number>(0);
   const hasDataRef = useRef(false);
   const initialLoadRef = useRef(true);
 
@@ -74,7 +75,17 @@ export function useLearningPath() {
     try {
       const res = await learningPathApi.getLearningPath({ sessionId, subjectId });
       const p = res?.path ?? null;
-      setPath(p);
+      // Merge path: only update if pathVersion changed (structural change)
+      // or if force (initial load / explicit refresh)
+      if (p) {
+        const newVersion = p.pathVersion ?? 0;
+        if (force || newVersion !== pathVersionRef.current) {
+          pathVersionRef.current = newVersion;
+          setPath(p);
+        }
+      } else {
+        setPath(p);
+      }
       hasDataRef.current = !!p;
       if (!p && !hasDataRef.current) setError('学习路径数据为空');
     } catch (e) {
@@ -186,6 +197,13 @@ export function useLearningPath() {
 
   useEffect(() => { fetchPath(true); }, [sessionId, subjectId]);
   useEffect(() => { if (dataVersion <= 0 || dataVersion === lastVersionRef.current) return; lastVersionRef.current = dataVersion; fetchPath(true); }, [dataVersion, fetchPath]);
+
+  // ── Silent poll: detect structural path changes from backend adjustments ──
+  useEffect(() => {
+    if (!sessionId || !subjectId) return;
+    const interval = setInterval(() => { fetchPath(); }, 30_000);
+    return () => clearInterval(interval);
+  }, [sessionId, subjectId, fetchPath]);
 
   return { path, loading, error, generationWorkflow, fetchPath, generatePath, updateNode, updateNodeStatus, updateKnowledgePoint, updateChapterStatus, updateSectionStatus };
 }

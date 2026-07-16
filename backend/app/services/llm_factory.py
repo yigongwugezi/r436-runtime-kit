@@ -145,6 +145,15 @@ PROVIDERS = {
             "vision": "gpt-4o",
         },
     },
+    "ark": {
+        "env_key": "ARK_API_KEY",
+        "env_url": "ARK_BASE_URL",
+        "default_url": "https://ark.cn-beijing.volces.com/api/v3",
+        "models": {
+            "text": "doubao-1.5-pro-32k",
+            "vision": None,
+        },
+    },
 }
 
 
@@ -220,6 +229,17 @@ def get_narrator() -> TokenFunc:
     client = _make_client(cfg["base_url"], cfg["api_key"])
     return _make_text_func(client, model)
 
+
+def get_ppt_writer() -> TokenFunc:
+    provider = os.getenv("LLM_PPT_PROVIDER", "ark")
+    cfg = _get_provider_config(provider)
+    env_model = os.getenv("LLM_PPT_MODEL", "")
+    model = env_model or cfg["models"]["text"]
+    if not cfg["api_key"]:
+        logger.warning("LLM_PPT_PROVIDER=%s but %s not set", provider, cfg["env_key"])
+        return get_planner()
+    client = _make_client(cfg["base_url"], cfg["api_key"])
+    return _make_text_func(client, model)
 
 def is_configured() -> bool:
     """检查是否至少有一个 provider 配置了 API key"""

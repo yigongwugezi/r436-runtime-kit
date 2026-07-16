@@ -840,3 +840,33 @@ class AssessmentStateModel(Base):
     resource_completions_since_diagnosis: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+
+# ── Planning Draft ────────────────────────────────────────────────────────
+
+class PlanningDraftModel(Base):
+    """Guided learning path planning draft — scoped to learner + session + subject."""
+    __tablename__ = "planning_drafts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    learner_id: Mapped[str] = mapped_column(String(64), index=True)
+    session_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("sessions.id", ondelete="CASCADE"), index=True
+    )
+    subject_id: Mapped[str] = mapped_column(String(64), index=True, default="")
+
+    # Planning fields
+    topic: Mapped[str] = mapped_column(String(256), default="")
+    goal: Mapped[str] = mapped_column(String(64), default="")
+    current_level: Mapped[str] = mapped_column(String(64), default="")
+    daily_time: Mapped[str] = mapped_column(String(64), default="")
+    target_duration: Mapped[str] = mapped_column(String(64), default="")
+    resource_preferences: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+
+    # Lifecycle
+    status: Mapped[str] = mapped_column(String(32), default="collecting")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+
+    session: Mapped["SessionModel"] = relationship("SessionModel")

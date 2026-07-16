@@ -1,0 +1,23 @@
+[
+  {
+    "fingerprint": "4-qualitystatus-21947a61",
+    "summary": "全部通过（4个报错是项目已有的 QualityStatus 问题）。",
+    "first_seen_iteration": 1,
+    "last_seen_iteration": 1,
+    "count": 1
+  },
+  {
+    "fingerprint": "task-ecc5d816",
+    "summary": "全部完成。总结：",
+    "first_seen_iteration": 2,
+    "last_seen_iteration": 2,
+    "count": 1
+  },
+  {
+    "fingerprint": "task-526b65f0",
+    "summary": "全部验证通过。",
+    "first_seen_iteration": 3,
+    "last_seen_iteration": 3,
+    "count": 1
+  }
+]

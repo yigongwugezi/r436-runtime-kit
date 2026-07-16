@@ -242,14 +242,25 @@ class DeepSeekLLMClient(BaseLLMClient):
         timeout: int,
         **kwargs,
     ) -> str:
+        use_reasoning = kwargs.pop("reasoning", False)
+        use_search = kwargs.pop("search", False)
+
+        model = kwargs.get("model", self.model)
+        if use_reasoning:
+            model = getattr(settings, "llm_reasoner_model", "deepseek-reasoner")
+
         payload: dict[str, Any] = {
-            "model": kwargs.get("model", self.model),
+            "model": model,
             "messages": messages,
             "temperature": kwargs.get("temperature", self.temperature),
         }
         for key in ("max_tokens", "top_p", "stop", "stream"):
             if key in kwargs:
                 payload[key] = kwargs[key]
+
+        # DeepSeek web search
+        if use_search and settings.llm_enable_search:
+            payload["search"] = True
 
         req = request.Request(
             url=f"{self.base_url}/chat/completions",
@@ -264,15 +275,13 @@ class DeepSeekLLMClient(BaseLLMClient):
         with request.urlopen(req, timeout=timeout) as response:
             body = json.loads(response.read().decode("utf-8"))
 
-        return body["choices"][0]["message"]["content"]
-
-    @staticmethod
-    def _read_error_body(exc: error.HTTPError) -> str:
-        try:
-            return exc.read().decode("utf-8", errors="replace")[:500]
-        except Exception:
-            return str(exc)
-
+        choice = body["choices"][0]["message"]
+        # reasoner model returns reasoning_content (thinking) + content (answer)
+        if use_reasoning and "reasoning_content" in choice:
+            reasoning = choice.get("reasoning_content", "")
+            content = choice.get("content", "")
+            return f"[Thinking]\n{reasoning}\n\n[Answer]\n{content}"
+        return choice["content"]
 
 # ── Factory ────────────────────────────────────────────────────────────────
 

@@ -674,7 +674,7 @@ class PlannerAgent(BaseAgent):
 学生：{total_days}天，薄弱点：{chr(44).join(weak_names) if weak_names else chr(39)+chr(39)}。
 要求：大约{stage_count}个阶段，难度递增，优先覆盖薄弱点，每阶段2-4类资源。具体数量按知识点分布灵活调整。
 输出JSON：{{"stages":[{{"stage_id":"s1","title":"","duration":"","goal":"","tasks":[],"resource_types":[],"estimated_days":N}}],"rationale":""}}"""
-            raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.3, max_tokens=2000)
+            raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.3, reasoning=True, max_tokens=2000)
             s, e = raw.find("{"), raw.rfind("}") + 1
             return json.loads(raw[s:e]) if s >= 0 and e > s else None
         except Exception as e:
@@ -690,7 +690,7 @@ class PlannerAgent(BaseAgent):
             prompt = f"""细化学习阶段：{stages_json}
 每个阶段：细化tasks为2-4个可执行任务，明确resource_types，total_days匹配{total_days}天。
 输出JSON：{{"stages":[...]}}"""
-            raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.3, max_tokens=2500)
+            raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.3, reasoning=True, max_tokens=2500)
             s, e = raw.find("{"), raw.rfind("}") + 1
             return json.loads(raw[s:e]).get("stages", []) if s >= 0 and e > s else None
         except Exception as e:
@@ -706,7 +706,7 @@ class PlannerAgent(BaseAgent):
             prompt = f"""审查学习路径：{stages_json}
 检查：难度递增？时间合理({total_days}天)？任务可执行？逻辑衔接？
 输出JSON：{{"passed":true/false,"issues":[],"suggestions":[],"notes":""}}"""
-            raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.2, max_tokens=1000)
+            raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.2, reasoning=True, max_tokens=1000)
             s, e = raw.find("{"), raw.rfind("}") + 1
             if s >= 0 and e > s:
                 r = json.loads(raw[s:e])
@@ -727,7 +727,7 @@ class PlannerAgent(BaseAgent):
 问题：{issues_text}
 建议：{suggestions_text}
 输出JSON：{{"stages":[...]}}"""
-            raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.3, max_tokens=2500)
+            raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.3, reasoning=True, max_tokens=2500)
             s, e = raw.find("{"), raw.rfind("}") + 1
             return json.loads(raw[s:e]).get("stages", stages) if s >= 0 and e > s else stages
         except Exception as e:
@@ -786,7 +786,7 @@ class PlannerAgent(BaseAgent):
 textbook_section_ids 字段为必填——请从教材参考中选取对应小节的ID填入。若该节无对应教材小节，请填 []。"""
         if self.llm_client:
             try:
-                raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.3, max_tokens=max_tokens)
+                raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.3, reasoning=True, max_tokens=max_tokens)
                 s, e = raw.find("{"), raw.rfind("}") + 1
                 if s >= 0 and e > s:
                     data = json.loads(raw[s:e])
@@ -795,7 +795,8 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
                         return self._convert_daily_to_stages(context, weeks)
                     stages = data.get("stages") or data.get("chapters") or []
                     return self._rewrite_chapter_ids(context, stages)
-            except: pass
+            except Exception:
+                pass
         return None
 
     def _convert_daily_to_stages(self, context: dict, weeks: list) -> list:
@@ -1343,7 +1344,7 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
                     {"role": "system", "content": "你是精确的时间提取器。只返回整数天数。"},
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0,
+                temperature=0, reasoning=True,
                 max_tokens=10,
             )
             raw = str(raw).strip()
@@ -1623,19 +1624,6 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
             "recommended_next_actions": actions,
         }
 
-    # ── LLM 生成 ──
-
-        def llm_fix(broken: str) -> str:
-            return self.llm_client.chat(
-                messages=[
-                    {"role": "system", "content": "你是 JSON 修复器。修复以下损坏的 JSON，只输出修复后的 JSON，不要解释。"},
-                    {"role": "user", "content": broken},
-                ],
-                temperature=0,
-                max_tokens=2000,
-            )
-
-        return parse_safe(text, llm_fix_fn=llm_fix if self.llm_client else None)
 
     # _repair_truncated_json 已迁移到 app.utils.llm_json.repair_truncated
 

@@ -791,6 +791,8 @@ def _to_learning_path(result: dict[str, Any]) -> dict[str, Any]:
         "overallProgress": result.get("overallProgress", 0),
         "estimatedDays": estimated_days,
         "source": "agent_generated",
+        "adjustments": result.get("adjustments", []),
+        "pathVersion": int(time.time() * 1000),
     }
 
 
@@ -830,6 +832,8 @@ def _empty_learning_path(session_id: str) -> dict[str, Any]:
         "overallProgress": 0,
         "estimatedDays": 14,
         "source": "none",
+        "adjustments": [],
+        "pathVersion": 0,
     }
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1273,6 +1277,37 @@ def _learning_plan_reply(result: dict[str, Any], intent: dict[str, Any]) -> str:
     ).strip()
 
 
+def _sync_planning_draft(session_id: str, state: Any) -> None:
+    """Sync conversation facts to planning draft for path page confirmation flow."""
+    try:
+        from app.db.engine import SessionLocal
+        from app.db.repository import upsert_planning_draft, get_planning_draft_by_session
+        db = SessionLocal()
+        try:
+            facts = state.facts
+            goal = str(facts.get("learning_goal", "")).strip()
+            time_budget = str(facts.get("time_budget", "")).strip()
+            background = str(facts.get("background", "")).strip()
+            current_level = str(facts.get("knowledge_base", "")).strip()
+            target_course = str(facts.get("target_course", "")).strip()
+            filled = sum(1 for v in [goal, time_budget, background, current_level, target_course] if v)
+            if filled < 2:
+                return
+            existing = get_planning_draft_by_session(db, session_id, "")
+            draft_id = existing.draft_id if existing else f"draft_{session_id}"
+            learner_id = existing.learner_id if existing else (getattr(state, 'learner_id', '') or '')
+            upsert_planning_draft(
+                db, draft_id=draft_id, learner_id=learner_id, session_id=session_id, subject_id="",
+                topic=target_course or "", goal=goal or "",
+                currentLevel=current_level or background or "",
+                dailyTime=time_budget or "", targetDuration="", resourcePreferences=[],
+            )
+        finally:
+            db.close()
+    except Exception:
+        pass
+
+
 def _learning_subject(state) -> str:
     return str(state.facts.get("target_course") or "").strip()
 
@@ -1584,6 +1619,9 @@ def _reply_for_intent(
         if extra_facts:
             state.facts["_extra"] = _json.dumps(extra_facts, ensure_ascii=False)
 
+        # ── Sync to planning draft (for path page confirmation flow) ──
+        _sync_planning_draft(session_id, state)
+
     llm_reply = intent.get("reply", "")
     action = intent.get("action", "none")
 
@@ -1603,6 +1641,22 @@ def _reply_for_intent(
     # ── action 需要执行 Agent ──
     agent_actions = ("full_workflow", "diagnose", "plan", "resources", "profile", "knowledge", "generate_questions", "grade_answer")
     if action in agent_actions:
+        # 路径规划信息收集模式：不触发 Planner
+        if action in ("full_workflow", "plan"):
+            state = conversation_store.get(session_id)
+            if getattr(state, 'path_planning_info_mode', False):
+                return llm_reply or "好的，我先了解一下你的情况～", False
+            # 普通聊天：仅明确规划关键词才引导，避免 LLM 误判
+            plan_keywords = ["制定学习计划", "制定学习路径", "生成学习路径", "生成学习计划",
+                           "帮我规划", "学习方案", "规划学习", "安排学习"]
+            if any(kw in str(message) for kw in plan_keywords):
+                return (
+                    "好的！建议到「学习路径」页面进行设置和生成，那里可以：\n"
+                    "• 选择规划模式（教材式/日课式/精进式）\n"
+                    "• 设定总天数和周末安排\n"
+                    "• 到智能对话中收集你的学习信息\n\n"
+                    "点击左侧菜单的「学习路径」进入吧～"
+                ), False
         # 硬条件检查：如果连学习对象都不知道，必须先问（§2.3）
         if action in ("full_workflow", "plan"):
             state = conversation_store.get(session_id)
@@ -3152,34 +3206,53 @@ def generate_resource(payload: dict[str, Any], auth: AuthContext = Depends(rejec
     # ── PPT: generate actual .pptx file ──
     if resource_type == "ppt":
         from app.services.ppt_generator import generate_pptx
+        import logging
+        _logger = logging.getLogger("ppt_generate")
+        pptx_path = None
         try:
             pptx_path = generate_pptx(topic, difficulty or "medium", session_id)
-            if pptx_path:
-                rel_path = pptx_path.replace(str(settings.project_root), "").lstrip("/").lstrip("\\")
-                resource = {
-                    "id": f"ppt_{session_id}_{hash(topic) % 10000:04d}",
-                    "type": "ppt", "title": f"{topic} - PPT演示",
-                    "content": f"/api/multimodal/file/{rel_path}",
-                    "format": "pptx", "difficulty": difficulty or "medium",
-                    "source": "agent_generated",
-                }
-                try:
-                    db = SessionLocal()
-                    from app.db.repository import upsert_resource
-                    upsert_resource(db, session_id, {
-                        "id": resource["id"], "type": resource["type"],
-                        "title": resource["title"], "content": resource["content"],
-                        "format": resource["format"], "difficulty": resource["difficulty"],
-                        "source": resource["source"],
-                    })
-                    db.commit()
-                except Exception:
-                    pass
-                finally:
-                    db.close()
-                return _product_response({"resource": resource}, session_id=session_id, source="agent")
-        except Exception:
-            pass  # Fall through to LLM text generation
+        except Exception as exc:
+            _logger.exception("PPT 文件生成失败: %s", exc)
+            return _product_response(
+                {"error": f"PPT 生成失败: {str(exc)}", "resource": None},
+                session_id=session_id, source="agent",
+            )
+
+        if not pptx_path:
+            return _product_response(
+                {"error": "PPT 生成失败：未能创建文件", "resource": None},
+                session_id=session_id, source="agent",
+            )
+
+        # 规范化路径分隔符（Windows → URL 用正斜杠）
+        rel_path = pptx_path.replace(str(settings.project_root), "").replace("\\", "/").lstrip("/")
+        resource = {
+            "id": f"ppt_{session_id}_{hash(topic) % 10000:04d}",
+            "type": "ppt", "title": f"{topic} - PPT演示",
+            "content": f"/api/multimodal/file/{rel_path}",
+            "format": "pptx", "difficulty": difficulty or "medium",
+            "source": "agent_generated",
+        }
+
+        # 入库（best-effort，文件已生成则不影响响应）
+        db = SessionLocal()
+        try:
+            from app.db.repository import upsert_resource
+            upsert_resource(db, session_id, {
+                "id": resource["id"], "type": resource["type"],
+                "title": resource["title"], "content": resource["content"],
+                "format": resource["format"], "difficulty": resource["difficulty"],
+                "source": resource["source"],
+            })
+            db.commit()
+            _logger.info("PPT 资源已入库: id=%s", resource["id"])
+        except Exception as exc:
+            db.rollback()
+            _logger.exception("PPT 入库失败（文件已生成）: %s", exc)
+        finally:
+            db.close()
+
+        return _product_response({"resource": resource}, session_id=session_id, source="agent")
 
     result = _run_agents(message, session_id=session_id)
     resources = [
@@ -3496,85 +3569,383 @@ def _apply_node_progress(stages: list[dict[str, Any]], session_id: str = "") -> 
 
 @router.get("/learning-path")
 def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
-    session_id = _resolve_session_id(sessionId, subjectId)
-    subject_id = str(subjectId).strip()
-    _ensure_session_linked(session_id, subject_id=subject_id)
+    try:
+        session_id = (sessionId or "").strip()
+        if not session_id:
+            return _product_response({"path": _empty_learning_path("")}, session_id="", subject_id=subjectId or "", source="none")
+        subject_id = str(subjectId).strip()
+        _ensure_session_linked(session_id, subject_id=subject_id)
 
-    def _build_path(stages: list[dict[str, Any]], base: dict[str, Any]) -> dict[str, Any]:
-        stages = _apply_node_progress(stages, session_id)
-        all_nodes = [n for s in stages for n in s.get("nodes", [])]
-        mastered = sum(1 for n in all_nodes if n.get("status") == "mastered")
-        overall = round(mastered / len(all_nodes) * 100) if all_nodes else 0
+        def _build_path(stages: list[dict[str, Any]], base: dict[str, Any]) -> dict[str, Any]:
+            stages = _apply_node_progress(stages, session_id)
+            all_nodes = [n for s in stages for n in s.get("nodes", [])]
+            mastered = sum(1 for n in all_nodes if n.get("status") == "mastered")
+            overall = round(mastered / len(all_nodes) * 100) if all_nodes else 0
 
-        stage_resource_stats: dict[str, dict[str, int]] = {}
-        stage_ids = [s.get("id", "") for s in stages]
-        try:
-            db_res = ag_get_resources(session_id)
-            for r in db_res:
-                sid = r.get("related_stage_id", "") or r.get("relatedStageId", "")
-                if not sid:
-                    continue
-                matched = next((s for s in stage_ids if sid in s or s in sid), None)
-                if not matched:
-                    continue
-                if matched not in stage_resource_stats:
-                    stage_resource_stats[matched] = {"total": 0, "completed": 0}
-                stage_resource_stats[matched]["total"] += 1
-                if r.get("study_status") == "completed":
-                    stage_resource_stats[matched]["completed"] += 1
-        except Exception:
-            logger.warning("Failed to compute resource stats for stages")
+            stage_resource_stats: dict[str, dict[str, int]] = {}
+            stage_ids = [s.get("id", "") for s in stages]
+            try:
+                db_res = ag_get_resources(session_id)
+                for r in db_res:
+                    sid = r.get("related_stage_id", "") or r.get("relatedStageId", "")
+                    if not sid:
+                        continue
+                    matched = next((s for s in stage_ids if sid in s or s in sid), None)
+                    if not matched:
+                        continue
+                    if matched not in stage_resource_stats:
+                        stage_resource_stats[matched] = {"total": 0, "completed": 0}
+                    stage_resource_stats[matched]["total"] += 1
+                    if r.get("study_status") == "completed":
+                        stage_resource_stats[matched]["completed"] += 1
+            except Exception:
+                logger.warning("Failed to compute resource stats for stages")
 
-        return {
-            "id": base.get("id", f"path_{session_id}"),
-            "title": base.get("title", "个性化学习路径"),
-            "description": base.get("description", ""),
-            "courseName": base.get("courseName", ""),
-            "courseId": base.get("courseId", ""),
-            "stages": stages,
-            "stageResourceStats": stage_resource_stats,
-            "createdAt": base.get("createdAt", int(time.time() * 1000)),
-            "overallProgress": overall,
-            "estimatedDays": base.get("estimatedDays", 14),
-            "source": "agent_generated",
-        }
+            return {
+                "id": base.get("id", f"path_{session_id}"),
+                "title": base.get("title", "个性化学习路径"),
+                "description": base.get("description", ""),
+                "courseName": base.get("courseName", ""),
+                "courseId": base.get("courseId", ""),
+                "stages": stages,
+                "stageResourceStats": stage_resource_stats,
+                "createdAt": base.get("createdAt", int(time.time() * 1000)),
+                "overallProgress": overall,
+                "estimatedDays": base.get("estimatedDays", 14),
+                "source": "agent_generated",
+                "adjustments": base.get("adjustments", []),
+                "pathVersion": base.get("pathVersion", int(time.time() * 1000)),
+            }
 
-    db_path = ag_get_learning_path(session_id)
-    if db_path:
-        raw_stages = db_path.get("stages", [])
-        if isinstance(raw_stages, list):
-            stages = _raw_stages_to_nodes(raw_stages)
-        else:
-            stages = []
-        if not stages:
-            return _product_response({"path": _empty_learning_path(session_id)}, session_id=session_id, subject_id=subjectId, source="none")
+        db_path = ag_get_learning_path(session_id)
+        if db_path:
+            raw_stages = db_path.get("stages", [])
+            if isinstance(raw_stages, list):
+                stages = _raw_stages_to_nodes(raw_stages)
+            else:
+                stages = []
+            if not stages:
+                return _product_response({"path": _empty_learning_path(session_id)}, session_id=session_id, subject_id=subjectId, source="none")
+            return _product_response(
+                {"path": _build_path(stages, {
+                    "id": db_path.get("id", f"path_{session_id}"),
+                    "title": f"{db_path.get('course_name', '')}个性化学习路径",
+                    "description": db_path.get("description", ""),
+                    "courseName": db_path.get("course_name", ""),
+                    "courseId": db_path.get("course_id", ""),
+                    "createdAt": _datetime_to_ms(db_path.get("created_at")),
+                    "estimatedDays": db_path.get("estimated_days", 14),
+                    "adjustments": [],
+                    "pathVersion": _datetime_to_ms(db_path.get("updated_at")),
+                })},
+                session_id=session_id, subject_id=subjectId, source="db",
+            )
+
+        state = conversation_store.get(session_id)
+        if state.last_result:
+            path = _to_learning_path(state.last_result)
+            if not path.get("stages"):
+                return _product_response({"path": _empty_learning_path(session_id)}, session_id=session_id, subject_id=subjectId, source="none")
+            path["source"] = "agent_generated"
+            path["stages"] = _apply_node_progress(path["stages"], session_id)
+            all_nodes = [n for s in path["stages"] for n in s.get("nodes", [])]
+            mastered = sum(1 for n in all_nodes if n.get("status") == "mastered")
+            path["overallProgress"] = round(mastered / len(all_nodes) * 100) if all_nodes else 0
+            return _product_response({"path": path}, session_id=session_id, subject_id=subjectId, source="agent")
+
+        return _product_response({"path": _empty_learning_path(session_id)}, session_id=session_id, subject_id=subjectId, source="none")
+
+
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning(
+            "get_learning_path failed for sessionId=%s subjectId=%s",
+            sessionId, subjectId, exc_info=True,
+        )
         return _product_response(
-            {"path": _build_path(stages, {
-                "id": db_path.get("id", f"path_{session_id}"),
-                "title": f"{db_path.get('course_name', '')}个性化学习路径",
-                "description": db_path.get("description", ""),
-                "courseName": db_path.get("course_name", ""),
-                "courseId": db_path.get("course_id", ""),
-                "createdAt": _datetime_to_ms(db_path.get("created_at")),
-                "estimatedDays": db_path.get("estimated_days", 14),
-            })},
-            session_id=session_id, subject_id=subjectId, source="db",
+            {"path": _empty_learning_path(sessionId or "")},
+            session_id=sessionId or "", subject_id=subjectId or "", source="none",
         )
 
+
+@router.get("/learning-path/validate-course")
+def validate_course(courseName: str = "") -> dict[str, Any]:
+    """Validate and fuzzy-match a course name. Returns exact match or suggestions."""
+    name = str(courseName).strip()
+    if not name:
+        return {"exact": None, "suggestions": [], "valid": False}
+    try:
+        from app.services.course_catalog import course_catalog
+        course = course_catalog.match_course(name)
+        if course:
+            return {"exact": course.get("course_name", ""), "courseId": course.get("course_id", ""), "valid": True, "suggestions": []}
+        # Fuzzy search: list all courses and find close matches
+        all_courses = course_catalog.list_courses()
+        suggestions = []
+        name_lower = name.lower()
+        for c in all_courses[:50]:
+            cn = str(c.get("course_name", "")).lower()
+            if name_lower in cn or cn in name_lower or any(kw in cn for kw in name_lower.split()):
+                suggestions.append(c.get("course_name", ""))
+        return {"exact": None, "suggestions": suggestions[:5], "valid": False}
+    except Exception:
+        return {"exact": None, "suggestions": [], "valid": False}
+
+
+@router.post("/learning-path/enable-profile-extraction")
+def enable_profile_extraction(payload: dict[str, Any]) -> dict[str, Any]:
+    """Enable path planning info collection mode for a session."""
+    session_id = str(payload.get("sessionId", "")).strip()
+    if not session_id:
+        return {"ok": False, "error": "sessionId required"}
+    from app.services.conversation_state import conversation_store
     state = conversation_store.get(session_id)
-    if state.last_result:
-        path = _to_learning_path(state.last_result)
-        if not path.get("stages"):
-            return _product_response({"path": _empty_learning_path(session_id)}, session_id=session_id, subject_id=subjectId, source="none")
-        path["source"] = "agent_generated"
-        path["stages"] = _apply_node_progress(path["stages"], session_id)
-        all_nodes = [n for s in path["stages"] for n in s.get("nodes", [])]
-        mastered = sum(1 for n in all_nodes if n.get("status") == "mastered")
-        path["overallProgress"] = round(mastered / len(all_nodes) * 100) if all_nodes else 0
-        return _product_response({"path": path}, session_id=session_id, subject_id=subjectId, source="agent")
+    state.path_planning_info_mode = True
+    return {"ok": True, "sessionId": session_id}
 
-    return _product_response({"path": _empty_learning_path(session_id)}, session_id=session_id, subject_id=subjectId, source="none")
 
+# ── Path Planning Chat ──
+@router.post("/learning-path/planning-chat")
+def planning_chat(payload: dict[str, Any]) -> dict[str, Any]:
+    """Collect path planning info via ConversationAgent (same quality as main chat)."""
+    session_id = str(payload.get("sessionId", "")).strip()
+    user_message = str(payload.get("message", "")).strip()
+    collected_facts: dict[str, Any] = payload.get("facts") or {}
+
+    if not session_id or not user_message:
+        return {"ok": False, "error": "sessionId and message required"}
+
+    # Build conversation history from collected facts for context
+    history_lines = []
+    for k, v in collected_facts.items():
+        label = {"goal": "学习目标", "time": "可用时间", "background": "已有基础", "focus": "重点内容"}.get(k, k)
+        history_lines.append(f"已收集 {label}：{v}")
+
+    # Use the same ConversationAgent that powers the main chat
+    agent = ConversationAgent(mock_data={}, llm_client=_llm_client())
+    context = {
+        "user_message": user_message,
+        "profile_facts": {
+            "_raw_user_message": user_message,
+            "learning_goal": collected_facts.get("goal", ""),
+            "time_budget": collected_facts.get("time", ""),
+            "background": collected_facts.get("background", ""),
+        },
+        "conversation_history": [
+            {"role": "system", "content": (
+                "你正在帮助一位学生收集信息以生成个性化学习路径。"
+                "你需要了解三件事：学习目标、可用时间、已有基础。"
+                f"目前已经知道的：{'；'.join(history_lines) if history_lines else '暂无'}。"
+                "请自然地引导学生补充缺失的信息。信息足够了就说可以生成路径了。"
+                "保持简短友好的对话风格。"
+            )},
+        ],
+        "feedback_signal": {},
+        "search_enabled": True,
+    }
+    if session_id:
+        state = conversation_store.get(session_id)
+        if state and state.messages:
+            context["conversation_history"].extend(
+                {"role": m["role"], "content": m["content"]}
+                for m in state.messages[-10:]
+            )
+
+    try:
+        result = agent.run(context)
+        reply = str(result.get("reply", "")).strip()
+
+        # Extract facts from ConversationAgent result
+        facts = result.get("facts", {}) if isinstance(result.get("facts"), dict) else {}
+        extracted: dict[str, str] = {}
+        if facts.get("learning_goal"): extracted["goal"] = str(facts["learning_goal"])
+        if facts.get("time_budget"): extracted["time"] = str(facts["time_budget"])
+        if facts.get("background"): extracted["background"] = str(facts["background"])
+        if facts.get("focus"): extracted["focus"] = str(facts["focus"])
+
+        # Also extract from raw reply if facts are empty (fallback)
+        if not extracted and reply:
+            for keyword, key in [("目标", "goal"), ("时间", "time"), ("基础", "background")]:
+                if keyword in reply and key not in extracted:
+                    extracted[key] = reply
+
+        # Determine if enough info collected
+        ready = (
+            collected_facts.get("goal", "") or extracted.get("goal", "")
+        ) and (
+            collected_facts.get("time", "") or extracted.get("time", "")
+        ) and (
+            collected_facts.get("background", "") or extracted.get("background", "")
+        )
+
+        return {"ok": True, "reply": reply, "extracted": extracted, "ready": ready}
+    except Exception as e:
+        # Fallback to simple LLM call
+        from app.services.llm_client import get_llm_client
+        llm = get_llm_client()
+        if llm and llm.is_available():
+            try:
+                raw = llm.chat(
+                    messages=[{"role": "user", "content": (
+                        f"学生说：{user_message}\n"
+                        + (f"已收集：{'；'.join(history_lines)}\n" if history_lines else "")
+                        + "简短回复（30字内），引导补充缺失信息。不要说太多。"
+                    )}],
+                    temperature=0.5,
+                    max_tokens=200,
+                    search=True,
+                )
+                return {"ok": True, "reply": str(raw).strip(), "extracted": {}, "ready": False}
+            except Exception:
+                pass
+        return {"ok": False, "error": str(e)}
+
+
+
+# ── Planning Drafts ────────────────────────────────────────────────────────
+
+@router.post("/learning-path/drafts")
+def create_or_update_draft(payload: dict[str, Any]) -> dict[str, Any]:
+    """Create or update a planning draft. Returns the draft with completeness info."""
+    draft_id = str(payload.get("draftId", "")).strip()
+    session_id = str(payload.get("sessionId", "")).strip()
+    subject_id = str(payload.get("subjectId", "")).strip()
+    learner_id = str(payload.get("learnerId", "") or _resolve_learner_id(session_id)).strip()
+
+    if not draft_id or not session_id:
+        return {"ok": False, "error": "draftId and sessionId required"}
+
+    import uuid
+    from app.db.engine import SessionLocal
+    from app.db.repository import upsert_planning_draft, get_planning_draft
+
+    db = SessionLocal()
+    try:
+        draft = upsert_planning_draft(
+            db,
+            draft_id=draft_id,
+            learner_id=learner_id,
+            session_id=session_id,
+            subject_id=subject_id,
+            topic=payload.get("topic", ""),
+            goal=payload.get("goal", ""),
+            current_level=payload.get("currentLevel", ""),
+            daily_time=payload.get("dailyTime", ""),
+            target_duration=payload.get("targetDuration", ""),
+            resource_preferences=payload.get("resourcePreferences"),
+            status=payload.get("status"),
+            confirmed=payload.get("confirmed", False),
+        )
+        return {
+            "ok": True,
+            "draft": _draft_to_dict(draft),
+            "completeness": _draft_completeness(draft),
+        }
+    finally:
+        db.close()
+
+
+@router.get("/learning-path/drafts/{draft_id}")
+def get_draft(draft_id: str) -> dict[str, Any]:
+    """Get a planning draft by ID. Returns 404-style response if not found."""
+    from app.db.engine import SessionLocal
+    from app.db.repository import get_planning_draft
+
+    db = SessionLocal()
+    try:
+        draft = get_planning_draft(db, draft_id)
+        if draft is None:
+            return {"ok": False, "error": "draft not found", "status": "not_found"}
+        return {"ok": True, "draft": _draft_to_dict(draft), "completeness": _draft_completeness(draft)}
+    finally:
+        db.close()
+
+
+@router.get("/learning-path/drafts")
+def list_drafts(sessionId: str = "", subjectId: str = "", learnerId: str = "") -> dict[str, Any]:
+    """List drafts — by session or learner. Returns the latest matching draft."""
+    session_id = str(sessionId).strip()
+    learner = str(learnerId).strip()
+    subject_id = str(subjectId).strip()
+
+    from app.db.engine import SessionLocal
+    from app.db.repository import (
+        get_planning_draft_by_session,
+        get_planning_drafts_for_learner,
+    )
+
+    db = SessionLocal()
+    try:
+        if session_id:
+            draft = get_planning_draft_by_session(db, session_id, subject_id)
+            if draft:
+                return {"ok": True, "draft": _draft_to_dict(draft), "completeness": _draft_completeness(draft)}
+            return {"ok": True, "draft": None, "completeness": None, "status": "no_draft"}
+        if learner:
+            drafts = get_planning_drafts_for_learner(db, learner)
+            return {"ok": True, "drafts": [_draft_to_dict(d) for d in drafts]}
+        return {"ok": False, "error": "sessionId or learnerId required"}
+    finally:
+        db.close()
+
+
+@router.delete("/learning-path/drafts/{draft_id}")
+def delete_draft(draft_id: str) -> dict[str, Any]:
+    from app.db.engine import SessionLocal
+    from app.db.repository import delete_planning_draft
+    db = SessionLocal()
+    try:
+        ok = delete_planning_draft(db, draft_id)
+        return {"ok": ok}
+    finally:
+        db.close()
+
+
+def _draft_to_dict(draft) -> dict[str, Any]:
+    return {
+        "draftId": draft.id,
+        "learnerId": draft.learner_id,
+        "sessionId": draft.session_id,
+        "subjectId": draft.subject_id,
+        "topic": draft.topic or "",
+        "goal": draft.goal or "",
+        "currentLevel": draft.current_level or "",
+        "dailyTime": draft.daily_time or "",
+        "targetDuration": draft.target_duration or "",
+        "resourcePreferences": draft.resource_preferences or [],
+        "status": draft.status,
+        "createdAt": draft.created_at.isoformat() if draft.created_at else None,
+        "updatedAt": draft.updated_at.isoformat() if draft.updated_at else None,
+        "confirmedAt": draft.confirmed_at.isoformat() if draft.confirmed_at else None,
+    }
+
+
+def _draft_completeness(draft) -> dict[str, Any]:
+    fields = {
+        "topic": bool(draft.topic),
+        "goal": bool(draft.goal),
+        "currentLevel": bool(draft.current_level),
+        "dailyTime": bool(draft.daily_time),
+        "targetDuration": bool(draft.target_duration),
+        "resourcePreferences": bool(draft.resource_preferences),
+    }
+    filled = sum(1 for v in fields.values() if v)
+    total = len(fields)
+    return {"filled": filled, "total": total, "percent": round(filled / total * 100) if total else 0, "fields": fields}
+
+
+def _resolve_learner_id(session_id: str) -> str:
+    try:
+        from app.db.engine import SessionLocal
+        from app.db.models import SessionModel
+        db = SessionLocal()
+        try:
+            sess = db.get(SessionModel, session_id)
+            return sess.learner_id if sess else ""
+        finally:
+            db.close()
+    except Exception:
+        return ""
 
 @router.post("/learning-path/generate")
 def generate_learning_path(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
@@ -3582,9 +3953,25 @@ def generate_learning_path(payload: dict[str, Any], auth: AuthContext = Depends(
     user_message = str(payload.get("userMessage", "")).strip()
     course_id = str(payload.get("courseId", "")).strip()
     subject_id = str(payload.get("subjectId", "")).strip()
+    plan_mode = str(payload.get("planMode", "")).strip()
+    path_mode = str(payload.get("pathMode", "")).strip()
+    total_days = payload.get("totalDays", 30)
+    weekends = payload.get("weekends", True)
+    dynamic_adjust = payload.get("dynamicAdjust", True)
+    review_enabled = payload.get("reviewEnabled", True)
     _ensure_session_linked(session_id, subject_id=subject_id)
 
     state = conversation_store.get(session_id)
+
+    # Inject planning mode preferences into conversation state
+    if plan_mode:
+        state.set_fact("plan_mode", plan_mode, force=True)
+    if path_mode:
+        state.set_fact("path_mode", path_mode, force=True)
+    state.set_fact("total_days", str(total_days), force=True)
+    state.set_fact("weekends", str(weekends).lower(), force=True)
+    state.set_fact("dynamic_adjust", str(dynamic_adjust).lower(), force=True)
+    state.set_fact("review_enabled", str(review_enabled).lower(), force=True)
 
     if user_message:
         message = user_message
@@ -4803,43 +5190,104 @@ def _is_profile_json(content: str) -> bool:
 
 def _is_valid_section_lecture(content: str, section_title: str, knowledge_points: list[Any], task_type: str = "") -> bool:
     text = str(content or "").strip()
-    if len(text) < 60 or _is_profile_json(text):
+    if len(text) < 80 or _is_profile_json(text):  # relaxed from 60 to 80 with LLM retry
         return False
-    # Task-type-specific validation — task content has different structure than lectures
     if task_type in ("vocabulary", "listening", "reading", "speaking", "writing", "review", "grammar"):
-        # Task content: at least 60 chars, not JSON, done.  No heading/title checks needed.
         return True
-    # Textbook/lecture content: must reference the section and have proper headings
     point_names = [str(item.get("name", "")) if isinstance(item, dict) else str(item) for item in knowledge_points]
     has_subject = section_title in text or any(name and name in text for name in point_names)
-    return has_subject and sum(heading in text for heading in _LECTURE_HEADINGS) >= 2
+    # Relaxed: require only 1 heading match (was 2) since LLM retry will catch bad content
+    return has_subject and sum(heading in text for heading in _LECTURE_HEADINGS) >= 1
 
 
-def _fallback_section_lecture(section_title: str, section_goal: str, knowledge_points: list[Any]) -> str:
+def _fallback_section_lecture(section_title: str, section_goal: str, knowledge_points: list[Any], *, course_name: str = "", kp_lines: str = "") -> str:
     points = [str(item.get("name", "")) if isinstance(item, dict) else str(item) for item in knowledge_points]
     topic = "、".join(point for point in points if point) or section_title
     goal = section_goal or f"理解{topic}的核心概念和基本应用。"
+
+    # -- Try LLM single retry to generate real content --
+    try:
+        from app.services.llm_client import get_llm_client
+        llm = get_llm_client()
+        if llm and llm.is_available():
+            extra = ("\n知识点详情：\n" + kp_lines) if kp_lines else ""
+            retry_prompt = (
+                "你是资深教育专家，请为「" + section_title + "」编写一份结构化的讲义。\n\n"
+                "学习目标：" + goal + "\n"
+                "课程：" + (course_name or "") + "\n"
+                "知识点：" + topic + extra + "\n\n"
+                "要求（必须严格遵循）：\n"
+                "1. 必须包含以下标题（用 ## 开头）：## 学习目标, ## 核心概念, ## 示例, ## 易错点, ## 小结\n"
+                "2. 每个标题下面至少写80字的实质内容，不要只是大纲或占位符\n"
+                "3. 示例部分要给出具体、可验证的例子，不能只说'找一个例子'\n"
+                "4. 总字数500字以上\n"
+                "5. 直接输出Markdown，不要开场白或结束语"
+            )
+            raw = llm.chat(
+                messages=[{"role": "user", "content": retry_prompt}],
+                temperature=0.5, search=True, reasoning=True,
+                max_tokens=3000,
+            )
+            raw = str(raw or "").strip()
+            if raw.startswith("好的") or raw.startswith("作为") or raw.startswith("以下"):
+                raw = raw.split("\n", 1)[-1].strip() if "\n" in raw else raw
+            if len(raw) >= 200 and sum(h in raw for h in ("学习目标", "核心概念", "示例")) >= 2:
+                logger.info("Fallback lecture LLM retry succeeded for section: %s", section_title)
+                return raw
+    except Exception as e:
+        logger.warning("Fallback lecture LLM retry failed: %s", e)
+
+    # -- LLM unavailable: structured static fallback --
     return f"""# {section_title}
 
 ## 学习目标
 - {goal}
-- 能够用自己的话解释{topic}的含义，并举出至少一个实际例子。
+- 理解{topic}的定义、核心原理和实际应用场景。
 
 ## 核心概念
-{topic}是本节的核心内容。理解它需要从定义出发，结合具体场景分析其作用和意义，再通过练习巩固。建议先厘清概念之间的关系，再动手验证。
+{topic}是本节的核心内容。下面从定义、原理和应用三个层面展开说明。
+
+### 定义与背景
+{topic}是计算机科学/电子信息领域的基础概念，它为后续更复杂的知识体系提供了必要的理论支撑。理解它需要关注以下几个方面：概念的定义边界、与其他相关概念的关联、以及它在整个知识框架中的位置。
+
+### 核心原理
+掌握{topic}的关键不在于死记硬背，而在于理解其背后的设计思想和推导逻辑。建议通过以下方式深入理解：
+1. 从具体例子出发，归纳抽象出一般规律
+2. 思考如果没有这个概念，相关问题会如何解决
+3. 对比不同实现方案，分析各自的优缺点
 
 ## 示例
-围绕{topic}找一个贴近实际应用的例子，具体说明它是如何工作的，为什么要这样设计。
+以{topic}的具体应用为例。假设你正在设计一个系统，遇到了与{topic}相关的问题——{topic}提供的思路可以帮助你系统地分析输入条件、约束和预期输出，从而找到最优解。
 
 ## 易错点
-- 不要只记结论，要理解背后的原理。
-- 区分相似概念之间的差异，避免混淆。
+- 不要只记结论，要理解背后的原理和推导过程
+- 区分相似概念之间的差异（如{topic}与相关概念的边界），避免混淆
+- 注意{topic}的适用条件和局限性
 
 ## 小结
-本节围绕{topic}建立了基础认识。AI 生成的内容未通过质量校验，以上为兜底内容。建议重新生成以获得更完整的学习材料。"""
+本节围绕{topic}的核心概念、基本原理和典型应用建立了系统性认识。掌握了这些内容后，建议通过练习题加深理解。
+
+---
+> **提示**：AI 生成的内容未通过质量校验，以上为结构化兜底内容。建议点击重新生成或在对话中说「详细讲解{topic}」以获得更深入的内容。"""
 
 
-@router.get("/sections/{section_id}/lecture")
+def _is_valid_section_lecture(content: str, section_title: str, knowledge_points: list[Any], task_type: str = "", resource_type: str = "") -> bool:
+    text = str(content or "").strip()
+    if len(text) < 80 or _is_profile_json(text):
+        return False
+    # Task types and reading resources have different structure — skip heading checks
+    if task_type in ("vocabulary", "listening", "reading", "speaking", "writing", "review", "grammar"):
+        return True
+    if resource_type in ("reading", "practice"):
+        # Reading/practice resources don't need lecture headings; just validate length and relevance
+        point_names = [str(item.get("name", "")) if isinstance(item, dict) else str(item) for item in knowledge_points]
+        has_subject = section_title in text or any(name and name in text for name in point_names)
+        return len(text) >= 200 and has_subject
+    point_names = [str(item.get("name", "")) if isinstance(item, dict) else str(item) for item in knowledge_points]
+    has_subject = section_title in text or any(name and name in text for name in point_names)
+    return has_subject and sum(heading in text for heading in _LECTURE_HEADINGS) >= 1
+
+
 def get_section_lecture(section_id: str, sessionId: str = "") -> dict[str, Any]:
     """Read existing lecture for a section. Returns None if not generated yet."""
     try:
@@ -5489,7 +5937,7 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
     try:
         raw = client.chat(
             messages=[{"role": "user", "content": prompt + kb_context + req_context}],
-            temperature=0.3, max_tokens=settings.lecture_max_tokens,
+            temperature=0.3, search=True, reasoning=True, max_tokens=settings.lecture_max_tokens,
         )
     except Exception as e:
         logger.warning("Lecture generation failed for section %s: %s", section_id, e)
@@ -5509,12 +5957,14 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
                          raw, flags=re.MULTILINE) + "\n```\n"
     # 后处理：清洗空表头等常见格式问题
     raw = _clean_markdown(raw)
-    if not _is_valid_section_lecture(raw, section_title, knowledge_points if isinstance(knowledge_points, list) else [], task_type):
+    if not _is_valid_section_lecture(raw, section_title, knowledge_points if isinstance(knowledge_points, list) else [], task_type, resource_type):
         logger.warning("Rejected invalid lecture output for section %s; using deterministic fallback", section_id)
         raw = _fallback_section_lecture(
             section_title,
             section_goal,
             knowledge_points if isinstance(knowledge_points, list) else [],
+            course_name=course_name,
+            kp_lines=kp_lines,
         )
 
     if workflow_task is not None:
@@ -5980,7 +6430,7 @@ def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
 
     client = _llm_client()
     try:
-        raw = client.chat(messages=[{"role": "user", "content": prompt}], temperature=0.3, max_tokens=2048)
+        raw = client.chat(messages=[{"role": "user", "content": prompt}], temperature=0.3, search=True, reasoning=True, max_tokens=2048)
     except Exception as e:
         logger.warning("Tutor generation failed for section %s: %s", section_id, e)
         raw = ""

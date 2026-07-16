@@ -18,8 +18,8 @@ from typing import Any, Callable
 from app.db.engine import SessionLocal
 from app.db.repository import (
     get_event_analytics,
-    get_latest_learning_path as repo_get_latest_path,
-    get_latest_profile as repo_get_latest_profile,
+    get_cross_session_learning_path as repo_get_latest_path,
+    get_latest_cross_session_profile as repo_get_latest_profile,
     get_resources as repo_get_resources,
 )
 from app.services.conversation_state import conversation_store

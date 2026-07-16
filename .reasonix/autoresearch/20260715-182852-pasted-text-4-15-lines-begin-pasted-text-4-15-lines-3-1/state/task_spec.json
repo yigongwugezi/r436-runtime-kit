@@ -1,0 +1,27 @@
+{
+  "task_id": "20260715-182852-pasted-text-4-15-lines-begin-pasted-text-4-15-lines-3-1",
+  "goal": "你拓展阅读的生成的内容还是很水啊[Pasted text #4 · 15 lines]\n\n--- Begin [Pasted text #4 · 15 lines] ---\n3.1 MIPS/RISC-V指令格式概述\r学习目标\r理解R型、I型、S型、U型等基本指令格式的字段划分与含义。\r能够用自己的话解释指令格式（R, I, S, U）、操作码与功能码、寄存器编号的含义，并举出至少一个实际例子。\r核心概念\r指令格式（R, I, S, U）、操作码与功能码、寄存器编号是本节的核心内容。理解它需要从定义出发，结合具体场景分析其作用和意义，再通过练习巩固。建议先厘清概念之间的关系，再动手验证。\r\r示例\r围绕指令格式（R, I, S, U）、操作码与功能码、寄存器编号找一个贴近实际应用的例子，具体说明它是如何工作的，为什么要这样设计。\r\r易错点\r不要只记结论，要理解背后的原理。\r区分相似概念之间的差异，避免混淆。\r小结\r本节围绕指令格式（R, I, S, U）、操作码与功能码、寄存器编号建立了基础认识。AI 生成的内容未通过质量校验，以上为兜底内容。建议重新生成以获得更完整的学习材料。\n--- End [Pasted text #4 · 15 lines] ---",
+  "scope": null,
+  "non_goals": null,
+  "allowed_operations": {
+    "write": true,
+    "network": false,
+    "publish": false
+  },
+  "success_criteria": [
+    {
+      "id": "objective_evidence",
+      "description": "The goal outcome is supported by direct evidence, such as inspected code, reproduced behavior, source material, or concrete findings.",
+      "required": true,
+      "evidence_ids": [
+        "f1"
+      ]
+    },
+    {
+      "id": "verification",
+      "description": "The result has relevant verification evidence, such as tests, commands, benchmarks, manual checks, or a documented reason why verification is not applicable.",
+      "required": true,
+      "evidence_ids": null
+    }
+  ]
+}

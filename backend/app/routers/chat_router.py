@@ -142,7 +142,8 @@ def _ensure_session(session_id: str) -> None:
         raise MissingSessionIdError()
 
 
-async def _run_chat(message: str, session_id: str) -> tuple[str, dict[str, Any]]:
+async def _run_chat(message: str, session_id: str, search_enabled: bool = False, deep_think_enabled: bool = False) -> tuple[str, str, dict[str, Any]]:
+    logger.info("_run_chat: search=%s deep_think=%s", search_enabled, deep_think_enabled)
     conversation_store.append_message(session_id, "user", message)
     state_obj = conversation_store.get(session_id)
     # ── Log extracted facts for debugging profile capture ──
@@ -186,6 +187,8 @@ async def _run_chat(message: str, session_id: str) -> tuple[str, dict[str, Any]]
         "course_id": state_obj.facts.get("target_course"),
         "profile_facts": dict(state_obj.facts),
         "feedback_signal": state_obj.feedback_signal,
+        "search_enabled": search_enabled,
+        "deep_think_enabled": deep_think_enabled,
     }
 
     # ── 注入后台评估闭环更新的完整结构化画像 ──
@@ -201,6 +204,8 @@ async def _run_chat(message: str, session_id: str) -> tuple[str, dict[str, Any]]
 
     result = await run_pipeline(**state)
     reply = result.get("final_reply", "") or result.get("_conversation_reply", "") or "处理完成"
+    thinking = result.get("_conversation_thinking", "") or ""
+    llm_suggestions = result.get("_conversation_suggestions") or []
     conversation_store.append_message(session_id, "assistant", reply)
     # ── 随学随新：每轮对话自动提取facts并更新画像 ──
     facts = result.get("_conversation_facts", {}) or {}
@@ -221,11 +226,23 @@ async def _run_chat(message: str, session_id: str) -> tuple[str, dict[str, Any]]
         state_obj.feedback_signal = new_signal
     if result:
         conversation_store.set_result(session_id, result)
-    return reply, result
+    return reply, thinking, result
 
 
-def _done_event(session_id: str, result: dict[str, Any], error: str | None = None) -> dict[str, Any]:
+def _done_event(session_id: str, result: dict[str, Any], error: str | None = None, llm_suggestions: list | None = None) -> dict[str, Any]:
     result = result if isinstance(result, dict) else {}
+    # ── 资源摘要：提取 id/type/title 供前端渲染入口卡片 ──
+    resources = result.get("resources") or []
+    resources_summary = []
+    if isinstance(resources, list):
+        for r in resources:
+            if isinstance(r, dict) and r.get("title"):
+                resources_summary.append({
+                    "id": str(r.get("id", r.get("resource_id", ""))),
+                    "type": str(r.get("type", "")),
+                    "title": str(r.get("title", "")),
+                    "description": str(r.get("description", ""))[:120],
+                })
     event = {
         "type": "done",
         "done": True,
@@ -236,7 +253,8 @@ def _done_event(session_id: str, result: dict[str, Any], error: str | None = Non
         "progress": result.get("progress") or {},
         "learning_path_created": bool(result.get("learning_path")),
         "learning_path_adjusted": bool(result.get("path_adjusted")),
-        "resources_created": bool(result.get("resources")),
+        "resources_created": bool(resources_summary),
+        "resources_summary": resources_summary,
         "questions_created": bool(result.get("questions")),
         "multimodal_result": result.get("multimodal_result") or {},
         "diagnosis_result": result.get("diagnosis_result") or result.get("diagnosis") or {},
@@ -244,6 +262,22 @@ def _done_event(session_id: str, result: dict[str, Any], error: str | None = Non
         "warnings": result.get("warnings") or [],
         "fallback_used": bool(result.get("fallback_used")),
     }
+    # ── 推荐操作：优先用 LLM 动态生成的，否则用 pipeline 兜底 ──
+    if llm_suggestions and len(llm_suggestions) > 0:
+        suggested = llm_suggestions
+    else:
+        suggested = []
+        if resources_summary:
+            suggested.append({"label": "查看生成资源", "prompt": "展示一下刚才生成的资源详情"})
+            suggested.append({"label": "继续学习下一个知识点", "prompt": "根据刚才的学习内容，推荐下一个要学的知识点"})
+        if result.get("learning_path"):
+            suggested.append({"label": "查看学习路径", "prompt": "展示我的完整学习路径"})
+        if result.get("questions"):
+            suggested.append({"label": "来做练习题", "prompt": "根据刚才学的内容出几道练习题"})
+        if not suggested:
+            suggested.append({"label": "制定学习计划", "prompt": "帮我制定一个学习计划"})
+            suggested.append({"label": "诊断薄弱点", "prompt": "帮我诊断一下知识薄弱点"})
+    event["suggested_actions"] = suggested
     if error:
         event["error"] = error
     return event
@@ -300,6 +334,10 @@ async def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
 
     _ensure_session(session_id)
 
+    logger.info("stream_chat: search=%s deep_think=%s raw_keys=%s",
+                payload.get("search_enabled"), payload.get("deep_think_enabled"),
+                [k for k in payload if 'search' in k.lower() or 'deep' in k.lower() or 'think' in k.lower()])
+
     async def event_stream():
         try:
             multimodal_payload = _try_multimodal_chat(message, session_id, payload)
@@ -319,10 +357,34 @@ async def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
                 yield f"data: {json.dumps(_done_event(session_id, result), ensure_ascii=False)}\n\n"
                 return
 
-            reply, result = await _run_chat(message, session_id)
+            # ── 启动 pipeline 后台任务 + 实时推送协同进度 ──
+            import asyncio
+            pipeline_task = asyncio.ensure_future(_run_chat(
+                message, session_id,
+                search_enabled=bool(payload.get("search_enabled", False)),
+                deep_think_enabled=bool(payload.get("deep_think_enabled", False)),
+            ))
+            # 等待 pipeline 完成，期间每 0.6s 发送一次进度心跳
+            progress_stages = ["正在分析需求...", "检索知识库...", "生成学习方案...", "为你准备资源..."]
+            stage_idx = 0
+            while not pipeline_task.done():
+                stage_label = progress_stages[min(stage_idx, len(progress_stages) - 1)]
+                yield f"data: {json.dumps({'stage': stage_label, 'progress': min(25 * (stage_idx + 1), 95), 'done': False}, ensure_ascii=False)}\n\n"
+                stage_idx += 1
+                try:
+                    await asyncio.wait_for(asyncio.shield(pipeline_task), timeout=0.8)
+                except asyncio.TimeoutError:
+                    pass
+            reply, thinking, result = await pipeline_task
+            # ── 先发送深度思考过程 ──
+            if thinking:
+                for chunk in thinking.splitlines(keepends=True):
+                    yield f"data: {json.dumps({'reasoning': chunk}, ensure_ascii=False)}\n\n"
+                # 短暂停顿让前端渲染思考过程
+                time.sleep(0.3)
             for chunk in reply.splitlines(keepends=True):
                 yield f"data: {json.dumps({'type': 'messages', 'content': chunk}, ensure_ascii=False)}\n\n"
-            yield f"data: {json.dumps(_done_event(session_id, result), ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps(_done_event(session_id, result, llm_suggestions=llm_suggestions), ensure_ascii=False)}\n\n"
         except Exception as exc:
             logger.error("Stream error: %s", exc, exc_info=exc)
             error_message = "学习方案生成失败，请稍后重试。"
@@ -366,7 +428,11 @@ async def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
                 **_done_event(session_id, result),
             }
 
-        reply, result = await _run_chat(message, session_id)
+        reply, thinking, result = await _run_chat(
+            message, session_id,
+            search_enabled=bool(payload.get("search_enabled", False)),
+            deep_think_enabled=bool(payload.get("deep_think_enabled", False)),
+        )
         return {
             "sessionId": session_id,
             "reply": {

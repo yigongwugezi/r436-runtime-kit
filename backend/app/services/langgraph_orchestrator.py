@@ -562,10 +562,12 @@ async def _run_conversation_agent(context: dict[str, Any], factory: AgentFactory
             "plan_mode": str(result.get("plan_mode", "")),
             "path_mode": str(result.get("path_mode", "")),
             "_llm_proposal": str(result.get("_llm_proposal", "")),
+            "_conversation_thinking": str(result.get("_conversation_thinking", "")),
+            "_conversation_suggestions": result.get("_conversation_suggestions", []),
             "needs_clarification": bool(result.get("needs_clarification", False)),
         }
     except Exception:
-        return {"action": "none", "reply": "", "facts": {}, "plan_mode": "", "path_mode": "", "_llm_proposal": "", "needs_clarification": False}
+        return {"action": "none", "reply": "", "facts": {}, "plan_mode": "", "path_mode": "", "_llm_proposal": "", "_conversation_thinking": "", "needs_clarification": False}
 
 
 def _emit_feedback_signal(state: dict) -> dict[str, Any]:
@@ -609,13 +611,28 @@ async def _intent_node(state: dict) -> dict:
         "profile_facts": state.get("profile_facts", {}),
         "conversation_history": state.get("messages", []),
         "feedback_signal": state.get("feedback_signal"),
+        "search_enabled": state.get("search_enabled", False),
+        "deep_think_enabled": state.get("deep_think_enabled", False),
     }, factory)
 
     state["intent"] = ca_result["action"]
     state["_conversation_reply"] = ca_result["reply"]
+    if ca_result.get("_conversation_thinking"):
+        state["_conversation_thinking"] = ca_result["_conversation_thinking"]
+    if ca_result.get("_conversation_suggestions"):
+        state["_conversation_suggestions"] = ca_result["_conversation_suggestions"]
     state["_conversation_facts"] = ca_result["facts"]
     plan_mode = ca_result.get("plan_mode", "")
     path_mode = ca_result.get("path_mode", "")
+    # ── Fact-based overrides (from path init page) take priority over auto-detection ──
+    from app.services.conversation_state import conversation_store as _cs_n
+    conv_state = _cs_n.get(state["session_id"])
+    fact_plan = conv_state.facts.get("plan_mode", "")
+    fact_path = conv_state.facts.get("path_mode", "")
+    if fact_plan:
+        plan_mode = fact_plan
+    if fact_path:
+        path_mode = fact_path
     if plan_mode:
         state["plan_mode"] = plan_mode
     if path_mode:
@@ -727,6 +744,10 @@ async def _plan_node(state: dict) -> dict:
             state["pipeline_executed"] = True
             state["overall_status"] = "completed"
             return state
+    # Translate plan_mode="adjust" → mode="adjust" so PlannerAgent.run()
+    # enters _run_adjustment() for incremental path updates.
+    if state.get("plan_mode") == "adjust":
+        state["mode"] = "adjust"
     return await _run_agent("planner", state, state["_factory"])
 
 async def _resource_node(state: dict) -> dict:
@@ -878,10 +899,20 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
                 "profile_facts": state.get("profile_facts", {}),
                 "conversation_history": state.get("messages", []),
                 "feedback_signal": state.get("feedback_signal"),
+                "search_enabled": state.get("search_enabled", False),
+                "deep_think_enabled": state.get("deep_think_enabled", False),
             }, factory)
             intent = ca_result["action"]
             plan_mode = ca_result.get("plan_mode", "")
             path_mode = ca_result.get("path_mode", "")
+            # Fact-based overrides from path init page
+            from app.services.conversation_state import conversation_store as _cs2
+            cs2 = _cs2.get(state.get("session_id", ""))
+            if cs2:
+                fp = cs2.facts.get("plan_mode", "")
+                fph = cs2.facts.get("path_mode", "")
+                if fp: plan_mode = fp
+                if fph: path_mode = fph
             if plan_mode:
                 state["plan_mode"] = plan_mode
             if path_mode:
@@ -1008,6 +1039,9 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
                 pass
             finally:
                 db.close()
+            # Translate plan_mode="adjust" → mode="adjust" so PlannerAgent
+            # enters _run_adjustment() instead of generating a brand-new path.
+            state["mode"] = "adjust"
 
         for full_id in agent_ids:
             short_key = full_id.replace("_agent", "")

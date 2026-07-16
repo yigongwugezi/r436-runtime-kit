@@ -31,6 +31,7 @@ export function useStreamChat() {
   const {
     addMessage,
     appendToLastAssistant,
+    appendReasoningToLastAssistant,
     updateLastAssistant,
     setStreaming,
     setAgentProgress,
@@ -68,6 +69,7 @@ export function useStreamChat() {
         id: uid(),
         role: 'assistant',
         content: '',
+        reasoningContent: '',
         timestamp: Date.now(),
         streaming: true,
       };
@@ -98,6 +100,8 @@ export function useStreamChat() {
           attachments: requestAttachments,
           ignore_image_context: ignoreImageContext,
           image_provider: options.imageProvider || '',
+          search_enabled: store.searchEnabled,
+          deep_think_enabled: store.deepThinkEnabled,
         }, controller.signal);
 
         const decoder = new TextDecoder();
@@ -140,6 +144,9 @@ export function useStreamChat() {
                 if (payload.content) {
                   appendToLastAssistant(payload.content);
                 }
+                if (payload.reasoning) {
+                  appendReasoningToLastAssistant(payload.reasoning);
+                }
                 if (payload.done) {
                   // Store debug info from final event (dev-only, §13.2)
                   setDebugInfoFromPayload(payload);
@@ -159,6 +166,13 @@ export function useStreamChat() {
                       ...m,
                       streaming: false,
                       multimodalResult: payload.multimodal_result || m.multimodalResult,
+                      suggestedActions: payload.suggested_actions || m.suggestedActions,
+                      resourceCards: payload.resources_summary?.length
+                        ? payload.resources_summary.map((r: any) => ({
+                            id: r.id, type: r.type, title: r.title, description: r.description,
+                            tags: [] as string[], knowledgePoints: [] as string[],
+                          }))
+                        : m.resourceCards,
                     }));
                     // 确保 agentProgress 标记为完成（done 事件可能不带 agentName）
                     const cur = useChatStore.getState().agentProgress;
@@ -206,6 +220,8 @@ export function useStreamChat() {
             attachments: requestAttachments,
             ignore_image_context: ignoreImageContext,
             image_provider: options.imageProvider || '',
+            search_enabled: store.searchEnabled,
+            deep_think_enabled: store.deepThinkEnabled,
           });
           log.info('非流式回退成功');
           setDebugInfoFromPayload(fallback as unknown as Record<string, unknown>);

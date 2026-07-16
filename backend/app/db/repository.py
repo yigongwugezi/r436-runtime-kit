@@ -5,7 +5,7 @@ This keeps queries close to the ORM while giving callers control over
 transaction boundaries.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone, timedelta, timezone
 import logging
 from typing import Any
 import uuid
@@ -23,6 +23,7 @@ from app.db.models import (
     LearningEventModel,
     LearningPathModel,
     MessageModel,
+    PlanningDraftModel,
     PracticeQuestionModel,
     ProfileSnapshotModel,
     QuizModel,
@@ -383,9 +384,12 @@ def upsert_learning_path(
     session_id: str,
     path_data: dict[str, Any],
 ) -> LearningPathModel:
-    get_or_create_session(db, session_id)
+    sess = get_or_create_session(db, session_id)
+    # Scope path by learner+subject, not session — one subject = one path
+    learner_id = sess.learner_id or "default"
+    subject_id = sess.subject_id or "default"
     path = LearningPathModel(
-        id=path_data.get("id", f"path_{session_id}"),
+        id=path_data.get("id", f"path_{learner_id}_{subject_id}"),
         session_id=session_id,
         course_id=path_data.get("course_id", ""),
         course_name=path_data.get("course_name", ""),
@@ -1631,3 +1635,72 @@ def get_stale_assessment_sessions(db: Session, stale_seconds: float) -> list[str
         .all()
     )
     return [row[0] for row in rows]
+
+
+# ── Planning Drafts ───────────────────────────────────────────────────────
+
+def upsert_planning_draft(
+    db: Session,
+    draft_id: str,
+    learner_id: str,
+    session_id: str,
+    subject_id: str,
+    **fields,
+) -> PlanningDraftModel:
+    sess = get_or_create_session(db, session_id, learner_id=learner_id, subject_id=subject_id)
+    draft = db.get(PlanningDraftModel, draft_id)
+    if draft is None:
+        draft = PlanningDraftModel(
+            id=draft_id,
+            learner_id=learner_id,
+            session_id=session_id,
+            subject_id=subject_id,
+        )
+        db.add(draft)
+    for key in ("topic", "goal", "current_level", "daily_time", "target_duration", "status"):
+        if key in fields and fields[key] is not None:
+            setattr(draft, key, fields[key])
+    if "resource_preferences" in fields:
+        draft.resource_preferences = fields["resource_preferences"]
+    if fields.get("confirmed") and draft.status == "ready_for_confirmation":
+        draft.status = "confirmed"
+        draft.confirmed_at = datetime.now(tz=timezone.utc)
+    db.commit()
+    db.refresh(draft)
+    return draft
+
+
+def get_planning_draft(db: Session, draft_id: str) -> PlanningDraftModel | None:
+    return db.get(PlanningDraftModel, draft_id)
+
+
+def get_planning_draft_by_session(
+    db: Session, session_id: str, subject_id: str = "",
+) -> PlanningDraftModel | None:
+    terminal = {"succeeded", "cancelled", "expired"}
+    query = db.query(PlanningDraftModel).filter(
+        PlanningDraftModel.session_id == session_id,
+        ~PlanningDraftModel.status.in_(terminal),
+    )
+    if subject_id:
+        query = query.filter(PlanningDraftModel.subject_id == subject_id)
+    return query.order_by(PlanningDraftModel.updated_at.desc()).first()
+
+
+def get_planning_drafts_for_learner(db: Session, learner_id: str) -> list[PlanningDraftModel]:
+    return (
+        db.query(PlanningDraftModel)
+        .filter(PlanningDraftModel.learner_id == learner_id)
+        .order_by(PlanningDraftModel.updated_at.desc())
+        .limit(50)
+        .all()
+    )
+
+
+def delete_planning_draft(db: Session, draft_id: str) -> bool:
+    draft = db.get(PlanningDraftModel, draft_id)
+    if draft is None:
+        return False
+    db.delete(draft)
+    db.commit()
+    return True

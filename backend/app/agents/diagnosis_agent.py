@@ -723,7 +723,7 @@ class DiagnosisAgent(BaseAgent):
                 {"role": "system", "content": "你是学习诊断专家。综合分析多源数据。只输出JSON。"},
                 {"role": "user", "content": prompt},
             ],
-            temperature=0.2,
+            temperature=0.2, reasoning=True,
             max_tokens=1500,
         )
 
@@ -738,7 +738,7 @@ class DiagnosisAgent(BaseAgent):
                         {"role": "system", "content": "你是 JSON 修复器。修复以下损坏的 JSON，只输出修复后的 JSON。"},
                         {"role": "user", "content": broken},
                     ],
-                    temperature=0,
+                    temperature=0, reasoning=True,
                     max_tokens=1000,
                 )
 
