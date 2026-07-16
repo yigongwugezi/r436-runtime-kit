@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { imageAttachmentKey, useChatStore, detectOrphanedStreaming } from '../store/chatStore';
 import { useStreamChat } from '../hooks/useStreamChat';
@@ -571,6 +571,28 @@ function AgentPipelineProgress({ progress, onRetry, onNavigate }: { progress: Ge
   return <div className="px-4 py-4 bg-white border border-surface-200 rounded-2xl shadow-soft animate-fade-in-up space-y-3 max-w-[82%] ml-12"><div className="flex items-center gap-2.5"><div className="w-5 h-5 rounded-full border-2 border-primary-500 border-t-transparent animate-spin" /><span className="text-sm font-semibold text-surface-800">{progress.stage || '多智能体协同处理中'}</span><span className="text-xs text-primary-600 font-medium ml-auto tabular-nums">{Math.round(progress.progress)}%</span></div><div className="flex items-center gap-1">{pipeline.map((step, idx) => { const done = idx < currentIdx; const cur = idx === currentIdx; return <div key={step.key} className="flex items-center gap-1 flex-1 min-w-0"><div className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 transition-all ${done ? 'bg-success-100 ring-2 ring-success-200' : cur ? 'bg-primary-100 ring-2 ring-primary-300' : 'bg-surface-50 ring-2 ring-surface-100'}`}>{done ? <Check className="w-3 h-3 text-success-600" /> : cur ? <div className="w-2.5 h-2.5 rounded-full bg-primary-500 animate-pulse" /> : <div className="w-2 h-2 rounded-full bg-surface-300" />}</div>{idx < pipeline.length - 1 && <div className={`flex-1 h-0.5 rounded-full ${done ? 'bg-success-300' : cur ? 'bg-surface-200' : 'bg-surface-100'}`} />}</div>; })}</div><div className="h-1.5 bg-surface-100 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-primary-500 to-accent-500 rounded-full transition-all duration-700 ease-out" style={{ width: `${Math.round(progress.progress)}%` }} /></div></div>;
 }
 
+const ModeToggleBar = memo(function ModeToggleBar() {
+  const chatMode = useChatStore((s) => s.chatMode);
+  return (
+    <div className="flex-shrink-0 px-4 pt-2 pb-1 w-full min-w-0">
+      <div className="max-w-[48rem] mx-auto flex items-center gap-1.5 rounded-xl bg-surface-100 p-1 w-fit">
+        <button
+          onClick={() => useChatStore.getState().setChatMode('free')}
+          className={`rounded-lg px-4 py-1.5 text-xs font-medium transition-colors ${
+            chatMode === 'free' ? 'bg-white text-surface-800 shadow-sm' : 'text-surface-500 hover:text-surface-700'
+          }`}
+        >自由学习</button>
+        <button
+          onClick={() => useChatStore.getState().setChatMode('planning')}
+          className={`rounded-lg px-4 py-1.5 text-xs font-medium transition-colors ${
+            chatMode === 'planning' ? 'bg-white text-surface-800 shadow-sm' : 'text-surface-500 hover:text-surface-700'
+          }`}
+        >规划学习</button>
+      </div>
+    </div>
+  );
+});
+
 export default function ChatPage() {
   const loc = useLocation(); const nav = useNavigate();
   const isParent = getCurrentLearner()?.role === 'parent';
@@ -800,27 +822,7 @@ export default function ChatPage() {
         </div>
       </div>
 
-      {/* ── 模式切换栏 ── */}
-      <div className="flex-shrink-0 px-4 pt-2 pb-1 w-full min-w-0">
-        <div className="max-w-[48rem] mx-auto flex items-center gap-1.5 rounded-xl bg-surface-100 p-1 w-fit">
-          <button
-            onClick={() => useChatStore.getState().setChatMode('free')}
-            className={`rounded-lg px-4 py-1.5 text-xs font-medium transition-colors ${
-              chatMode === 'free'
-                ? 'bg-white text-surface-800 shadow-sm'
-                : 'text-surface-500 hover:text-surface-700'
-            }`}
-          >自由学习</button>
-          <button
-            onClick={() => useChatStore.getState().setChatMode('planning')}
-            className={`rounded-lg px-4 py-1.5 text-xs font-medium transition-colors ${
-              chatMode === 'planning'
-                ? 'bg-white text-surface-800 shadow-sm'
-                : 'text-surface-500 hover:text-surface-700'
-            }`}
-          >规划学习</button>
-        </div>
-      </div>
+      <ModeToggleBar />
 
       {/* ── Messages area ── */}
       <div className="flex-1 overflow-hidden flex flex-col w-full min-w-0">
