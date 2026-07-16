@@ -419,13 +419,22 @@ async def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_a
                 client = get_chat_client()
                 deep_think = bool(payload.get("deep_think_enabled", False))
                 if deep_think:
-                    # 非流式获取完整结果（含 reasoning + content），切小块模拟流式
                     from app.services.llm_client import DeepSeekLLMClient
                     from app.config import settings as _st
-                    raw = DeepSeekLLMClient(
-                        api_key=_st.deepseek_api_key, base_url=_st.deepseek_base_url,
-                        model=_st.llm_model, temperature=0.7,
-                    ).chat(messages=[{"role": "user", "content": message}], reasoning=True)
+                    try:
+                        raw = DeepSeekLLMClient(
+                            api_key=_st.deepseek_api_key, base_url=_st.deepseek_base_url,
+                            model=_st.llm_model, temperature=0.7,
+                        ).chat(messages=[{"role": "user", "content": message}], reasoning=True)
+                    except Exception as e:
+                        logger.error("DeepThink call failed: %s", e, exc_info=e)
+                        yield f"data: {json.dumps({'type': 'error', 'message': '深度思考调用失败'}, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps(_done_event(session_id, {}, str(e)), ensure_ascii=False)}\n\n"
+                        return
+                    if not raw or len(raw) < 10:
+                        yield f"data: {json.dumps({'type': 'error', 'message': '深度思考返回为空'}, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps(_done_event(session_id, {}), ensure_ascii=False)}\n\n"
+                        return
                     thinking = ""
                     reply = raw
                     s = raw.find("<thinking>")
@@ -435,9 +444,11 @@ async def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_a
                         reply = raw[e + 11:].strip()
                     if thinking:
                         yield f"data: {json.dumps({'reasoning': thinking}, ensure_ascii=False)}\n\n"
-                    # 切小块模拟流式
-                    for i in range(0, len(reply), 16):
-                        yield f"data: {json.dumps({'type': 'messages', 'content': reply[i:i+16]}, ensure_ascii=False)}\n\n"
+                    if reply:
+                        for i in range(0, len(reply), 16):
+                            yield f"data: {json.dumps({'type': 'messages', 'content': reply[i:i+16]}, ensure_ascii=False)}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'type': 'messages', 'content': '（无回答）'}, ensure_ascii=False)}\n\n"
                     yield f"data: {json.dumps(_done_event(session_id, {}), ensure_ascii=False)}\n\n"
                     conversation_store.append_message(session_id, "assistant", reply)
                     return
