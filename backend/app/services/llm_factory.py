@@ -13,6 +13,7 @@
 """
 
 from __future__ import annotations
+import json
 import os
 # Ensure .env is loaded before reading config
 from app.config import load_backend_env
@@ -292,39 +293,30 @@ class UnifiedChatClient:
         _is_reasoner = "reasoner" in model
 
         if _is_reasoner:
-            # deepseek-reasoner: 绕过 OpenAI 库，直接读 HTTP SSE 流
-            import json as _json, urllib.request as _request
-            payload = _json.dumps({
+            # deepseek-reasoner: 绕过 OpenAI 库，用 httpx 流式读原始 SSE
+            import httpx
+            payload = {
                 "model": model, "messages": messages,
                 "temperature": temp, "stream": True,
-            }).encode("utf-8")
-            req = _request.Request(
-                url=f"{self._base_url}/chat/completions",
-                data=payload,
-                headers={"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"},
-                method="POST",
-            )
-            with _request.urlopen(req, timeout=30) as resp:
-                buf = ""
-                while True:
-                    chunk = resp.read(1)
-                    if not chunk:
-                        break
-                    buf += chunk.decode("utf-8", errors="replace")
-                    if buf.endswith("\n\n"):
-                        for line in buf.strip().split("\n"):
-                            if line.startswith("data: ") and line != "data: [DONE]":
-                                try:
-                                    d = _json.loads(line[6:])
-                                    rc = d.get("choices", [{}])[0].get("delta", {}).get("reasoning_content", "")
-                                    ct = d.get("choices", [{}])[0].get("delta", {}).get("content", "")
-                                    if rc:
-                                        yield f"<thinking>{rc}</thinking>"
-                                    if ct:
-                                        yield ct
-                                except (_json.JSONDecodeError, IndexError):
-                                    pass
-                        buf = ""
+            }
+            with httpx.Client(timeout=30) as hc:
+                with hc.stream("POST", f"{self._base_url}/chat/completions",
+                              json=payload,
+                              headers={"Authorization": f"Bearer {self._api_key}"}) as resp:
+                    for line in resp.iter_lines():
+                        if not line.startswith("data: ") or line == "data: [DONE]":
+                            continue
+                        try:
+                            d = json.loads(line[6:])
+                            delta = d.get("choices", [{}])[0].get("delta", {})
+                            rc = delta.get("reasoning_content", "") or ""
+                            ct = delta.get("content", "") or ""
+                            if rc:
+                                yield f"<thinking>{rc}</thinking>"
+                            if ct:
+                                yield ct
+                        except (json.JSONDecodeError, IndexError):
+                            pass
             return
 
         # 非推理模型：用 OpenAI 客户端库
