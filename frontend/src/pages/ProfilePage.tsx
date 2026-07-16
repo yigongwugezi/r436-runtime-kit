@@ -100,6 +100,7 @@ export default function ProfilePage() {
   }, [profileV2]);
 
   if (loading && !profileV2) return <PageLoading text="加载学习画像…" />;
+  if (error && !profileV2 && !sessionId) return <PageLoading text="等待会话就绪…" />;
   if (error && !profileV2) return <PageError title="画像加载失败" description={error} onRetry={fetchProfile} />;
   if (!profileV2) return <div className="rounded-2xl bg-white p-10 text-center shadow-sm"><Brain className="mx-auto mb-3 text-surface-300" size={42} /><h2 className="text-xl font-bold">尚未构建学习画像</h2><p className="mt-2 text-sm text-surface-500">在对话中告诉 AI 你的课程、目标和时间安排。</p><button onClick={() => chat.setOpen(true)} className="mt-5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white">开始对话</button></div>;
 
@@ -127,10 +128,10 @@ export default function ProfilePage() {
     } finally { setSaving(false); }
   };
 
-  const saveInterest = async () => { if (interest == null) return; setSaving(true); setActionError(''); try { await updateProfileSelfReport(sessionId, { interest }); await fetchProfile(); } catch (e: any) { setActionError(e?.message || '保存兴趣自评失败'); } finally { setSaving(false); } };
+  const saveInterest = async () => { if (interest == null || !sessionId) return; setSaving(true); setActionError(''); try { await updateProfileSelfReport(sessionId, { interest }); await fetchProfile(); } catch (e: any) { setActionError(e?.message || '保存兴趣自评失败'); } finally { setSaving(false); } };
   const startInterestSelfReport = () => { setInterest(interestState?.self_report ?? 50); setEditingInterest(true); };
-  const startAssessment = async () => { setActionError(''); try { const result = await assessInterest(sessionId); setQuestions(result.questions || []); } catch (e: any) { setActionError(e?.message || 'AI校准请求失败'); } };
-  const submitAssessment = async () => { setSaving(true); setActionError(''); try { await assessInterest(sessionId, answers); await fetchProfile(); setQuestions([]); } catch (e: any) { setActionError(e?.message || '提交校准失败'); } finally { setSaving(false); } };
+  const startAssessment = async () => { if (!sessionId) return; setActionError(''); try { const result = await assessInterest(sessionId); setQuestions(result.questions || []); } catch (e: any) { setActionError(e?.message || 'AI校准请求失败'); } };
+  const submitAssessment = async () => { if (!sessionId) return; setSaving(true); setActionError(''); try { await assessInterest(sessionId, answers); await fetchProfile(); setQuestions([]); } catch (e: any) { setActionError(e?.message || '提交校准失败'); } finally { setSaving(false); } };
   const syncFromConversation = async (preview = true) => { if (!subjectId || !sessionId || saving || (syncWorkflow && isActiveWorkflowStatus(syncWorkflow.status))) return; setSaving(true); setSyncError('');
     syncAbort.current?.abort(); const controller = new AbortController(); syncAbort.current = controller;
     try {
@@ -146,7 +147,7 @@ export default function ProfilePage() {
   } catch (error) { setSyncError(error instanceof Error ? error.message : '同步失败，请稍后重试。'); } finally { setSaving(false); } };
   const factEvidence = (key: string) => profileV2?.fact_records?.[key] ? [{ ...profileV2.fact_records[key], detail: profileV2.fact_records[key].evidence_summary }] : [];
   const controlFact = async (key: string, action: string) => { if (!sessionId) return; setFactBusy(key); try { await updateProfileFact(sessionId, key, action); await fetchProfile(); } finally { setFactBusy(''); } };
-  const editFact = async (key: string, current: string) => { const value = window.prompt('修改画像事实', String(current ?? '')); if (value?.trim()) { setFactBusy(key); try { await updateProfileFact(sessionId, key, 'edit', value.trim()); await fetchProfile(); } finally { setFactBusy(''); } } };
+  const editFact = async (key: string, current: string) => { if (!sessionId) return; const value = window.prompt('修改画像事实', String(current ?? '')); if (value?.trim()) { setFactBusy(key); try { await updateProfileFact(sessionId, key, 'edit', value.trim()); await fetchProfile(); } finally { setFactBusy(''); } } };
 
   // ── 行内可编辑字段定义 ──
   const CONTEXT_FIELDS: [string, string, string][] = [

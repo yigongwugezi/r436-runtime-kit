@@ -418,61 +418,37 @@ async def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_a
                 from app.services.llm_factory import get_chat_client
                 client = get_chat_client()
                 deep_think = bool(payload.get("deep_think_enabled", False))
-                if deep_think:
-                    from app.services.llm_client import DeepSeekLLMClient
-                    from app.config import settings as _st
-                    try:
-                        raw = DeepSeekLLMClient(
-                            api_key=_st.deepseek_api_key, base_url=_st.deepseek_base_url,
-                            model=_st.llm_model, temperature=0.7,
-                        ).chat(messages=[{"role": "user", "content": message}], reasoning=True)
-                    except Exception as e:
-                        logger.error("DeepThink call failed: %s", e, exc_info=e)
-                        yield f"data: {json.dumps({'type': 'error', 'message': '深度思考调用失败'}, ensure_ascii=False)}\n\n"
-                        yield f"data: {json.dumps(_done_event(session_id, {}, str(e)), ensure_ascii=False)}\n\n"
-                        return
-                    if not raw or len(raw) < 10:
-                        yield f"data: {json.dumps({'type': 'error', 'message': '深度思考返回为空'}, ensure_ascii=False)}\n\n"
-                        yield f"data: {json.dumps(_done_event(session_id, {}), ensure_ascii=False)}\n\n"
-                        return
-                    thinking = ""
-                    reply = raw
-                    s = raw.find("<thinking>")
-                    e = raw.rfind("</thinking>")
-                    if s >= 0 and e > s:
-                        thinking = raw[s + 10:e]
-                        reply = raw[e + 11:].strip()
-                    if thinking:
-                        yield f"data: {json.dumps({'reasoning': thinking}, ensure_ascii=False)}\n\n"
-                    if reply:
-                        for i in range(0, len(reply), 16):
-                            yield f"data: {json.dumps({'type': 'messages', 'content': reply[i:i+16]}, ensure_ascii=False)}\n\n"
-                    else:
-                        yield f"data: {json.dumps({'type': 'messages', 'content': '（无回答）'}, ensure_ascii=False)}\n\n"
-                    yield f"data: {json.dumps(_done_event(session_id, {}), ensure_ascii=False)}\n\n"
-                    conversation_store.append_message(session_id, "assistant", reply)
-                    return
-                reasoning_buf = ""
+                # ── 统一使用流式调用 ──
+                # deep_think → 推理模型（如 deepseek-reasoner），实时流式输出思考过程和结果
+                # 普通模式 → 默认对话模型，同样流式输出
                 token_buf = ""
-                for token in client.stream_chat([{"role": "user", "content": message}], model="deepseek-reasoner" if deep_think else None):
-                    if token.startswith("<thinking>"):
-                        reasoning_buf += token[10:]
-                    elif reasoning_buf:
-                        reasoning_buf += token
-                        if reasoning_buf.endswith("</thinking>"):
-                            r = reasoning_buf[:-11]
-                            if r.strip():
-                                yield f"data: {json.dumps({'reasoning': r.strip()}, ensure_ascii=False)}\n\n"
-                            reasoning_buf = ""
-                    else:
-                        token_buf += token
-                        if len(token_buf) >= 4 or token in ("\n", ".", "!", "？", "。", "！"):
-                            yield f"data: {json.dumps({'type': 'messages', 'content': token_buf}, ensure_ascii=False)}\n\n"
-                            token_buf = ""
-                if token_buf:
-                    yield f"data: {json.dumps({'type': 'messages', 'content': token_buf}, ensure_ascii=False)}\n\n"
+                full_reply = ""
+                stream_model = None
+                if deep_think:
+                    from app.config import settings as _st
+                    stream_model = getattr(_st, "llm_reasoner_model", "deepseek-reasoner")
+                try:
+                    for token in client.stream_chat([{"role": "user", "content": message}], model=stream_model):
+                        # stream_chat 对推理模型每个 token 是自包含的 <thinking>chunk</thinking>
+                        if token.startswith("<thinking>"):
+                            rc = token[len("<thinking>"):-len("</thinking>")] if token.endswith("</thinking>") else token[len("<thinking>"):]
+                            if rc:
+                                yield f"data: {json.dumps({'reasoning': rc}, ensure_ascii=False)}\n\n"
+                        else:
+                            token_buf += token
+                            full_reply += token
+                            if len(token_buf) >= 4 or token in ("\n", ".", "!", "？", "。", "！"):
+                                yield f"data: {json.dumps({'type': 'messages', 'content': token_buf}, ensure_ascii=False)}\n\n"
+                                token_buf = ""
+                    if token_buf:
+                        yield f"data: {json.dumps({'type': 'messages', 'content': token_buf}, ensure_ascii=False)}\n\n"
+                except Exception as e:
+                    logger.error("Stream chat failed: %s", e, exc_info=e)
+                    yield f"data: {json.dumps({'type': 'error', 'message': '对话生成失败'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps(_done_event(session_id, {}, str(e)), ensure_ascii=False)}\n\n"
+                    return
                 yield f"data: {json.dumps(_done_event(session_id, {}), ensure_ascii=False)}\n\n"
-                conversation_store.append_message(session_id, "assistant", message)
+                conversation_store.append_message(session_id, "assistant", full_reply or message)
                 return
             reply, thinking, result = await _run_chat(message, session_id, search_enabled=search_enabled, deep_think_enabled=deep_think_enabled, chat_mode=chat_mode)
             if thinking:

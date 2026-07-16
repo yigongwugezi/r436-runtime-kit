@@ -627,7 +627,7 @@ export default function ChatPage() {
     deepThinkEnabled,
     chatMode,
   } = useChatStore() as any;
-  const { send, abort } = useStreamChat();
+  const { send, sendSuggested, abort } = useStreamChat();
   const setSearchEnabled = (v: boolean) => useChatStore.getState().setSearchEnabled(v);
   const setDeepThinkEnabled = (v: boolean) => useChatStore.getState().setDeepThinkEnabled(v);
   // Closed-loop assessment notifications — poll every 30s, pause during streaming
@@ -637,6 +637,7 @@ export default function ChatPage() {
   const [imageContextDisabled, setImageContextDisabled] = useState(false);
   const [imagePickerOpen, setImagePickerOpen] = useState(false);
   const [quickCommands, setQuickCommands] = useState<QuickCommand[]>(DEFAULT_QUICK_COMMANDS);
+  const [inputValue, setInputValue] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null); const inputRef = useRef<HTMLTextAreaElement>(null); const bottomRef = useRef<HTMLDivElement>(null); const fileRef = useRef<HTMLInputElement>(null);
   const userScrolledUpRef = useRef(false);
 
@@ -751,11 +752,12 @@ export default function ChatPage() {
     setImageContextDisabled(false);
   };
   const handleSend = async () => {
-    const text = (inputRef.current?.value || '').trim();
+    const text = inputValue.trim();
     if ((!text && !selectedImage) || isStreaming) return;
     const finalText = text || '识别这张图片';
     const attachments = selectedImage ? [await uploadMultimodalImage(selectedImage.file, currentSessionId)] : [];
     send(finalText, attachments, { ignoreImageContext: referencesLastImage && imageContextDisabled });
+    setInputValue('');
     if (inputRef.current) inputRef.current.value = '';
     setImageContextDisabled(false);
     if (selectedImage) URL.revokeObjectURL(selectedImage.preview);
@@ -849,7 +851,7 @@ export default function ChatPage() {
                       { label: '两个月搞定英语四级', key: 'plan' },
                     ].map((cmd, i) => (
                       <button key={i}
-                        onClick={() => { if (inputRef.current) inputRef.current.value = cmd.label; inputRef.current?.focus(); }}
+                        onClick={() => { if (inputRef.current) inputRef.current.value = cmd.label; setInputValue(cmd.label); inputRef.current?.focus(); }}
                         className="px-4 py-2.5 bg-primary-50 border border-primary-200 rounded-xl text-sm text-primary-700 hover:bg-primary-100 transition-all"
                       >{cmd.label}</button>
                     ))}
@@ -867,7 +869,7 @@ export default function ChatPage() {
                   {quickCommands.slice(0, 4).map(cmd => (
                     <button
                       key={cmd.id}
-                      onClick={() => { if (inputRef.current) inputRef.current.value = cmd.label; inputRef.current?.focus(); }}
+                      onClick={() => { if (inputRef.current) inputRef.current.value = cmd.label; setInputValue(cmd.label); inputRef.current?.focus(); }}
                       className="px-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm text-gray-600 hover:border-gray-300 hover:bg-gray-50 transition-all"
                     >
                       {cmd.label}
@@ -878,7 +880,7 @@ export default function ChatPage() {
               )
             ) : (
               <>
-                {filtered.map((msg: ChatMessage) => <MessageBubble key={msg.id} msg={msg} onClarificationSelect={send} />)}
+                {filtered.map((msg: ChatMessage) => <MessageBubble key={msg.id} msg={msg} onClarificationSelect={sendSuggested} />)}
                 {agentProgress && (
                   <div className="max-w-[85%] ml-10">
                     <AgentPipelineProgress
@@ -915,33 +917,6 @@ export default function ChatPage() {
         {/* ── Input area: exact ChatGPT + DeepSeek layout ── */}
         <div className="flex-shrink-0 px-4 pb-4 pt-1 w-full min-w-0">
           <div className="max-w-[48rem] mx-auto">
-            {/* DeepSeek-style mode toggles — centered above input */}
-            <div className="flex items-center justify-center gap-2 mb-3">
-              <button
-                onClick={() => setSearchEnabled(!searchEnabled)}
-                disabled={isStreaming}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${
-                  searchEnabled
-                    ? 'bg-blue-50 border-blue-200 text-blue-600'
-                    : 'bg-white border-gray-200 text-gray-400 hover:text-gray-500 hover:border-gray-300'
-                } disabled:opacity-50`}
-              >
-                <Globe size={13} />
-                联网搜索
-              </button>
-              <button
-                onClick={() => setDeepThinkEnabled(!deepThinkEnabled)}
-                disabled={isStreaming}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${
-                  deepThinkEnabled
-                    ? 'bg-purple-50 border-purple-200 text-purple-600'
-                    : 'bg-white border-gray-200 text-gray-400 hover:text-gray-500 hover:border-gray-300'
-                } disabled:opacity-50`}
-              >
-                <BrainCircuit size={13} />
-                深度思考
-              </button>
-            </div>
 
             {/* Image preview */}
             {selectedImage && (
@@ -972,13 +947,13 @@ export default function ChatPage() {
             {/* Prompt templates */}
             {messages.length > 0 && !isStreaming && (
               <div className="mb-2">
-                <PromptTemplates onSelect={(prompt: string) => { if (inputRef.current) inputRef.current.value = prompt; inputRef.current?.focus(); }} />
+                <PromptTemplates onSelect={(prompt: string) => { if (inputRef.current) inputRef.current.value = prompt; setInputValue(prompt); inputRef.current?.focus(); }} />
               </div>
             )}
 
             {/* ChatGPT-style pill input */}
-            <div className="flex items-center gap-2 bg-[#f4f4f4] rounded-full border border-gray-200 px-3 py-2 shadow-sm focus-within:border-gray-300 focus-within:shadow-md focus-within:bg-white transition-all">
-              <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => handleImageChange(e.target.files?.[0])} />
+            <div className="flex items-center gap-1.5 bg-[#f4f4f4] rounded-full border border-gray-200 px-3 py-2 shadow-sm focus-within:border-gray-300 focus-within:shadow-md focus-within:bg-white transition-all">
+<input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => handleImageChange(e.target.files?.[0])} />
               <button
                 onClick={() => fileRef.current?.click()}
                 disabled={isStreaming}
@@ -989,7 +964,8 @@ export default function ChatPage() {
               </button>
               <textarea
                 ref={inputRef}
-                defaultValue=""
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
                 key={currentSessionId}  // 切换会话时重置
                 onKeyDown={handleKeyDown}
                 placeholder="输入消息..."
@@ -1005,9 +981,9 @@ export default function ChatPage() {
               ) : (
                 <button
                   onClick={handleSend}
-                  disabled={!selectedImage && !(inputRef.current?.value || '').trim()}
+                  disabled={!selectedImage && !inputValue.trim()}
                   className={`p-1.5 rounded-full transition-all flex-shrink-0 ${
-                    (inputRef.current?.value || "").trim() || selectedImage
+                    inputValue.trim() || selectedImage
                       ? 'bg-gray-800 text-white hover:bg-gray-700'
                       : 'bg-gray-300 text-gray-400 cursor-not-allowed'
                   }`}
@@ -1015,6 +991,33 @@ export default function ChatPage() {
                   <Send size={14} />
                 </button>
               )}
+            </div>
+            {/* Mode toggles — bottom-left, separate from topics */}
+            <div className="flex items-center gap-2 mt-2">
+              <button
+                onClick={() => setSearchEnabled(!searchEnabled)}
+                disabled={isStreaming}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${
+                  searchEnabled
+                    ? 'bg-blue-50 border-blue-200 text-blue-600'
+                    : 'bg-white border-gray-200 text-gray-400 hover:text-gray-500 hover:border-gray-300'
+                } disabled:opacity-50`}
+              >
+                <Globe size={13} />
+                联网搜索
+              </button>
+              <button
+                onClick={() => setDeepThinkEnabled(!deepThinkEnabled)}
+                disabled={isStreaming}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${
+                  deepThinkEnabled
+                    ? 'bg-purple-50 border-purple-200 text-purple-600'
+                    : 'bg-white border-gray-200 text-gray-400 hover:text-gray-500 hover:border-gray-300'
+                } disabled:opacity-50`}
+              >
+                <BrainCircuit size={13} />
+                深度思考
+              </button>
             </div>
             <p className="mt-2.5 text-center text-[10px] text-gray-300">
               内容由AI生成，请查阅教材确认

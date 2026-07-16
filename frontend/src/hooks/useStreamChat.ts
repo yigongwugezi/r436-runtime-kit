@@ -303,5 +303,152 @@ export function useStreamChat() {
     setStreaming(false);
   }, [updateLastAssistant, setStreaming, setAgentProgress]);
 
-  return { send, abort, isStreaming };
+  /** 直接发送指令（不添加用户消息气泡），用于推荐按钮点击 */
+  const sendSuggested = useCallback(
+    async (text: string) => {
+      if (isStreaming || !text.trim()) return;
+      const store = useChatStore.getState();
+
+      // 只创建空的 assistant 消息用于流式输出
+      const aiMsg: ChatMessage = {
+        id: uid(),
+        role: 'assistant',
+        content: '',
+        reasoningContent: '',
+        timestamp: Date.now(),
+        mode: store.chatMode,
+        streaming: true,
+      };
+      addMessage(aiMsg);
+      setStreaming(true);
+      setAgentProgress(null);
+      useChatStore.getState().setProgressPipelineSteps([]);
+
+      writeStorageJson(runtimeStorageKeys.pendingGeneration, {
+        sessionId: useChatStore.getState().currentSessionId,
+        userMessage: text,
+        startedAt: Date.now(),
+      });
+
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      let hasRealAgentProgress = false;
+
+      try {
+        const reader = await streamRequest('/api/chat/stream', {
+          message: text,
+          sessionId: useChatStore.getState().currentSessionId,
+          learnerId: getStableLearnerId(),
+          search_enabled: store.searchEnabled,
+          deep_think_enabled: store.deepThinkEnabled,
+          chat_mode: store.chatMode,
+        }, controller.signal);
+
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const payload = JSON.parse(line.slice(6));
+                if (payload.stage || payload.agentName) {
+                  if (payload.agentName && !['understanding', 'saving'].includes(payload.agentName)) {
+                    hasRealAgentProgress = true;
+                    useChatStore.getState().addProgressPipelineStep({
+                      key: payload.agentName,
+                      label: payload.stage || payload.agentName,
+                    });
+                  }
+                  setAgentProgress({
+                    stage: payload.stage || payload.agentName,
+                    progress: payload.progress || 0,
+                    agentName: payload.agentName,
+                    detail: payload.detail,
+                    error: payload.error,
+                    done: payload.done,
+                  });
+                }
+                if (payload.content) {
+                  appendToLastAssistant(payload.content);
+                }
+                if (payload.reasoning) {
+                  appendReasoningToLastAssistant(payload.reasoning);
+                }
+                if (payload.done) {
+                  writeStorageItem(runtimeStorageKeys.pendingGeneration, '');
+                  if (payload.error) {
+                    updateLastAssistant((m) => ({ ...m, streaming: false, error: payload.error }));
+                    setTimeout(() => setAgentProgress(null), 5000);
+                  } else {
+                    updateLastAssistant((m) => ({
+                      ...m,
+                      streaming: false,
+                      suggestedActions: payload.suggested_actions || m.suggestedActions,
+                      resourceCards: payload.resources_summary?.length
+                        ? payload.resources_summary.map((r: any) => ({
+                            id: r.id, type: r.type, title: r.title, description: r.description,
+                            tags: [] as string[], knowledgePoints: [] as string[],
+                          }))
+                        : m.resourceCards,
+                    }));
+                    const cur = useChatStore.getState().agentProgress;
+                    if (cur && !cur.done) {
+                      if (hasRealAgentProgress) setAgentProgress({ ...cur, done: true, progress: 100 });
+                      else setAgentProgress(null);
+                    }
+                  }
+                }
+              } catch { /* skip non-JSON lines */ }
+            }
+          }
+        }
+        bumpDataVersion();
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          writeStorageItem(runtimeStorageKeys.pendingGeneration, '');
+          updateLastAssistant((m) => ({ ...m, streaming: false }));
+          setAgentProgress(null);
+          return;
+        }
+        log.warn('推荐指令流式失败，尝试非流式回退', err instanceof Error ? err.message : err);
+        try {
+          const fallback = await sendMessage({
+            message: text,
+            sessionId: useChatStore.getState().currentSessionId,
+            learnerId: getStableLearnerId(),
+            search_enabled: store.searchEnabled,
+            deep_think_enabled: store.deepThinkEnabled,
+            chat_mode: store.chatMode,
+          });
+          writeStorageItem(runtimeStorageKeys.pendingGeneration, '');
+          updateLastAssistant((m) => ({
+            ...m,
+            content: fallback.reply.content,
+            timestamp: fallback.reply.timestamp,
+            streaming: false,
+            error: undefined,
+          }));
+          bumpDataVersion();
+        } catch (fallbackErr) {
+          log.error('推荐指令非流式回退也失败', fallbackErr instanceof Error ? fallbackErr.message : fallbackErr);
+          updateLastAssistant((m) => ({ ...m, streaming: false, error: '请求失败' }));
+          setTimeout(() => setAgentProgress(null), 5000);
+        }
+      } finally {
+        setStreaming(false);
+      }
+    },
+    [addMessage, appendToLastAssistant, appendReasoningToLastAssistant, updateLastAssistant, setStreaming, setAgentProgress, isStreaming, bumpDataVersion],
+  );
+
+  return { send, sendSuggested, abort, isStreaming };
 }
