@@ -16,7 +16,7 @@ from app.services.langgraph_orchestrator import run_pipeline
 from app.db.engine import SessionLocal
 from app.db.models import SessionModel
 from app.db.repository import get_or_create_session
-from app.middleware.auth import AuthContext, get_auth, validate_anonymous_learner_id
+from app.middleware.auth import AuthContext, get_auth
 from app.services.subject_identity import bind_explicit_subject_to_session
 
 logger = logging.getLogger(__name__)
@@ -317,12 +317,12 @@ def _subject_id(payload: dict[str, Any]) -> str:
 
 
 def _learner_id(payload: dict[str, Any], auth: AuthContext) -> str:
+    if not auth.is_authenticated:
+        return ""
     requested = str(payload.get("learnerId") or payload.get("learner_id") or "").strip()
-    if auth.is_authenticated:
-        if requested and requested != auth.learner_id:
-            raise HTTPException(status_code=403, detail="learnerId does not match the authenticated user")
-        return auth.learner_id
-    return validate_anonymous_learner_id(requested)
+    if requested and requested != auth.learner_id:
+        raise HTTPException(status_code=403, detail="learnerId does not match the authenticated user")
+    return auth.learner_id
 
 
 def _try_multimodal_chat(message: str, session_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
