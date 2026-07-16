@@ -1654,7 +1654,8 @@ def _reply_for_intent(
                 return llm_reply or "好的，我先了解一下你的情况～", False
             # 普通聊天：仅明确规划关键词才引导，避免 LLM 误判
             plan_keywords = ["制定学习计划", "制定学习路径", "生成学习路径", "生成学习计划",
-                           "帮我规划", "学习方案", "规划学习", "安排学习"]
+                           "帮我规划", "学习方案", "规划学习", "安排学习",
+                           "制定", "安排课程", "帮我安排"]
             if any(kw in str(message) for kw in plan_keywords):
                 return (
                     "好的！建议到「学习路径」页面进行设置和生成，那里可以：\n"

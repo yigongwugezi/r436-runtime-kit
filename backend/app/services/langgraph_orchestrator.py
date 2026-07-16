@@ -326,7 +326,8 @@ def _is_likely_chat(msg: str, facts: dict) -> bool:
     # Explicit generation triggers → need full classification
     gen_triggers = ["生成", "出题", "规划", "批改", "诊断", "路径", "资源", "导图",
                     "系统学", "专攻", "按章节", "每日学", "每日计划", "薄弱点", "强化",
-                    "调整", "修改", "改一下", "加快", "放慢", "重新"]
+                    "调整", "修改", "改一下", "加快", "放慢", "重新",
+                    "计划", "制定", "安排"]
     if any(t in compact for t in gen_triggers):
         return False
     # Everything else is probably chat
@@ -843,21 +844,20 @@ async def _diagnosis_node(state: dict) -> dict:
     return await _run_agent("diagnosis", state, state["_factory"])
 
 async def _plan_node(state: dict) -> dict:
-    # ── Mode picker gate: if no mode selected yet, show picker first ──
-    if not state.get("plan_mode") and not state.get("path_mode"):
-        profile_facts = state.get("profile_facts", {}) or {}
-        course = str(profile_facts.get("target_course", ""))
-        if course:
-            is_lang = any(w in course for w in ["英语","日语","韩语","法语","德语","语言","雅思","托福"])
-            default_mode = "日课式" if is_lang else "教材式"
-            state["final_reply"] = (
-                f"好的！在生成学习路径之前，先选一下你想要的规划模式吧～\n\n"
-                f"[[mode-pick:教材式,日课式,精进式|course:{course}|default:{default_mode}]]"
-            )
-            state["pipeline_executed"] = True
-            state["overall_status"] = "completed"
-            return state
-    return await _run_agent("planner", state, state["_factory"])
+    # ── 硬门槛：不自动触发 Planner，引导用户到路径规划页面 ──
+    # 只有从路径页面过来（plan_mode/path_mode 已设置）才执行规划
+    if state.get("plan_mode") or state.get("path_mode"):
+        return await _run_agent("planner", state, state["_factory"])
+    state["final_reply"] = (
+        "好的！请到「学习路径」页面进行设置和生成，那里可以：\n"
+        "• 选择规划模式（教材式/日课式/精进式）\n"
+        "• 设定总天数和周末安排\n"
+        "• 在对话中收集学习信息再生成专属计划\n\n"
+        "点击左侧菜单的「学习路径」进入吧～"
+    )
+    state["pipeline_executed"] = True
+    state["overall_status"] = "completed"
+    return state
 
 async def _resource_node(state: dict) -> dict:
     return await _run_agent("resource", state, state["_factory"])
@@ -1091,21 +1091,21 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
     agents_filter = state.pop("agents_filter", None)
     agent_ids = agents_filter if (agents_filter is not None and len(agents_filter) > 0) else get_agent_ids(intent)
     if agent_ids is not None and len(agent_ids) > 0:
-        # ── Safety net: planning requested but no mode selected → check readiness first ──
-        # ── Planning requested but no mode selected → show mode picker directly ──
+        # ── Safety net: planning requested but no mode selected → 引导到路径页 ──
         if "planner_agent" in agent_ids and not state.get("plan_mode") and not state.get("path_mode"):
-            profile_facts = state.get("profile_facts", {}) or {}
-            course = str(profile_facts.get("target_course", ""))
-            if course:
-                is_lang = any(w in course for w in ["英语","日语","韩语","法语","德语","语言","雅思","托福"])
-                default_mode = "日课式" if is_lang else "教材式"
-                state["final_reply"] = (
-                    f"好的！在生成学习路径之前，先选一下你想要的规划模式吧～\n\n"
-                    f"[[mode-pick:教材式,日课式,精进式|course:{course}|default:{default_mode}]]"
-                )
-                state["pipeline_executed"] = True
-                state["overall_status"] = "completed"
-                return dict(state)
+            # 先跑 profile_agent 构建结构化画像（为后续路径规划页做准备）
+            if "profile_agent" in agent_ids:
+                await _run_agent("profile", state, factory)
+            state["final_reply"] = (
+                "好的！请到「学习路径」页面进行设置和生成，那里可以：\n"
+                "• 选择规划模式（教材式/日课式/精进式）\n"
+                "• 设定总天数和周末安排\n"
+                "• 在对话中收集学习信息再生成专属计划\n\n"
+                "点击左侧菜单的「学习路径」进入吧～"
+            )
+            state["pipeline_executed"] = True
+            state["overall_status"] = "completed"
+            return dict(state)
 
         # Snapshot old results so we only report what's newly generated
         old_path = len(state.get("learning_path") or [])
