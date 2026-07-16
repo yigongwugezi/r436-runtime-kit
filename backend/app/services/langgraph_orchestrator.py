@@ -803,16 +803,6 @@ async def _conversation_node(state: dict) -> dict:
             state["reply_source"] = "chat_fallback"
     state["final_reply"] = reply
 
-    # ── Auto-inject mode picker when all dimensions are deep ──
-    profile_facts = state.get("profile_facts", {}) or {}
-    if reply and "[[mode-pick:" not in reply and _all_dims_deep(profile_facts):
-        course = str(profile_facts.get("target_course", "")).strip()
-        if course:
-            is_lang = any(w in course for w in ["英语","日语","韩语","法语","德语","语言","雅思","托福"])
-            default_mode = "日课式" if is_lang else "教材式"
-            state["final_reply"] = reply.rstrip() + (
-                f"\n\n[[mode-pick:教材式,日课式,精进式|course:{course}|default:{default_mode}]]"
-            )
     state.setdefault("agent_steps", []).append({"node": "conversation"})
     return state
 
@@ -1059,32 +1049,6 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
                 state["reply_source"] = "chat_fallback"
         state["final_reply"] = reply
 
-        # ── Auto-inject mode picker when all dimensions are deep ──
-        # The model can't reliably output [[mode-pick:...]] — backend enforces it.
-        if reply and "[[mode-pick:" not in reply:
-            all_deep = _all_dims_deep(profile_facts)
-            if all_deep:
-                course = str(profile_facts.get("target_course", "")).strip()
-                if course:
-                    is_lang = any(w in course for w in ["英语","日语","韩语","法语","德语","语言","雅思","托福"])
-                    default_mode = "日课式" if is_lang else "教材式"
-                    state["final_reply"] = reply.rstrip() + (
-                        f"\n\n[[mode-pick:教材式,日课式,精进式|course:{course}|default:{default_mode}]]"
-                    )
-
-        # ── Extract facts from the exchange and persist to conversation state ──
-        if reply and user_msg:
-            try:
-                await _extract_facts_after_chat(
-                    state.get("session_id", ""),
-                    user_msg,
-                    reply,
-                    profile_facts,
-                )
-            except Exception:
-                pass
-
-        # ── Rebuild profile dimensions if core facts changed ──
         # 让"随学随新"真正落地：facts 有核心字段更新时，立即重建画像维度
         try:
             cs = conversation_store.get(state.get("session_id", ""))
