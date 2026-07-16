@@ -773,7 +773,16 @@ async def _conversation_node(state: dict) -> dict:
     try:
         profile_facts = state.get("profile_facts", {}) or {}
         profile_context = _build_profile_context(profile_facts)
-        persona_context = _build_chat_persona(profile_facts)
+
+        # ── 普通对话不注入画像收集探针，只有路径规划入口才追问 ──
+        persona_context = ""
+        try:
+            from app.services.conversation_state import conversation_store as _cs
+            _s = _cs.get(state.get("session_id", ""))
+            if _s and (_s.path_planning_info_mode or _s.profile_extraction_enabled):
+                persona_context = _build_chat_persona(profile_facts)
+        except Exception:
+            pass
 
         dt_reply, reply_source = await _chat_provider_reply(
             msg, state.get("messages", []) or [], profile_context, persona_context,
@@ -1022,7 +1031,13 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
     if intent in chat_only_intents():
         profile_facts = state.get("profile_facts", {}) or {}
         profile_context = _build_profile_context(profile_facts)
-        persona_context = _build_chat_persona(profile_facts)
+        # ── 普通对话不注入画像收集探针 ──
+        try:
+            from app.services.conversation_state import conversation_store as _cs2
+            _s2 = _cs2.get(state.get("session_id", ""))
+            persona_context = _build_chat_persona(profile_facts) if (_s2 and (_s2.path_planning_info_mode or _s2.profile_extraction_enabled)) else ""
+        except Exception:
+            persona_context = ""
         user_msg = state.get("user_message", "")
         reply = ""
         try:
