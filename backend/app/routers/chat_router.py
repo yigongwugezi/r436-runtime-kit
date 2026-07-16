@@ -182,6 +182,30 @@ def _bind_current_subject_from_message(state_obj: Any) -> dict[str, Any] | None:
 
 
 async def _run_chat(message: str, session_id: str, search_enabled: bool = False, deep_think_enabled: bool = False, chat_mode: str = "free") -> tuple[str, str, dict[str, Any]]:
+    # ── 自由模式：纯问答，零副作用，不走任何 Agent 管道 ──
+    if chat_mode == "free" and _is_chat_quick(message, None, deep_think_enabled, chat_mode):
+        from app.services.deeptutor_facade import deeptutor
+        try:
+            if deep_think_enabled:
+                from app.config import settings
+                from app.services.llm_client import get_llm_client
+                raw = get_llm_client(settings.llm_provider).chat(messages=[{"role": "user", "content": message}], temperature=0.7, reasoning=True)
+                reply = raw
+                thinking = ""
+                s = raw.find("<thinking>")
+                e = raw.rfind("</thinking>")
+                if s >= 0 and e > s:
+                    thinking = raw[s + 10:e]
+                    reply = raw[e + 11:].strip()
+            else:
+                reply = await deeptutor.chat(message, [], profile_context="", persona_context="")
+        except Exception:
+            reply = "你好！我是EduAgent，有什么可以帮你的？"
+            thinking = ""
+        conversation_store.append_message(session_id, "assistant", reply)
+        return reply, thinking if deep_think_enabled else "", {}
+
+    # ── 规划模式：走完整链路 ──
     conversation_store.append_message(session_id, "user", message)
     state_obj = conversation_store.get(session_id)
     # ── Log extracted facts for debugging profile capture ──
