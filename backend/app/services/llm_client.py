@@ -303,26 +303,25 @@ class DeepSeekLLMClient(BaseLLMClient):
         )
         with request.urlopen(req, timeout=kwargs.get("timeout", 30)) as response:
             buf = ""
-            while True:
-                chunk = response.read(4096)
-                if not chunk:
-                    break
-                buf += chunk.decode("utf-8", errors="replace")
+            for raw_chunk in iter(lambda: response.read(4096), b""):
+                buf += raw_chunk.decode("utf-8", errors="replace")
                 while "\n\n" in buf:
                     part, buf = buf.split("\n\n", 1)
                     for line in part.split("\n"):
-                        if line.startswith("data: ") and line != "data: [DONE]":
-                            try:
-                                d = json.loads(line[6:])
-                                delta = d.get("choices", [{}])[0].get("delta", {})
-                                rc = delta.get("reasoning_content", "") or ""
-                                ct = delta.get("content", "") or ""
-                                if rc:
-                                    yield f"<thinking>{rc}</thinking>"
-                                if ct:
-                                    yield ct
-                            except (json.JSONDecodeError, IndexError):
-                                pass
+                        if not line.startswith("data: ") or line == "data: [DONE]":
+                            continue
+                        try:
+                            d = json.loads(line[6:])
+                            delta = d.get("choices", [{}])[0].get("delta", {})
+                            # 先 yield content（如果有），再 yield reasoning_content
+                            ct = delta.get("content") or ""
+                            rc = delta.get("reasoning_content") or ""
+                            if ct:
+                                yield ct
+                            if rc:
+                                yield f"<thinking>{rc}</thinking>"
+                        except (json.JSONDecodeError, IndexError):
+                            pass
                     buffer = ""
 
     @staticmethod
