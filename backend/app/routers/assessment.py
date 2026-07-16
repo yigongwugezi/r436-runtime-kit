@@ -387,14 +387,14 @@ def _build_idempotent_response(
     quiz_id: str = "",
     exam_set_id: str = "",
     session_id: str = "",
-    subject_id: str | None = None,
     assessment_eligible: bool = True,
 ) -> dict:
     """Reconstruct the post-submit response from a previously-graded attempt.
 
     Reads existing AnswerRecords from the database rather than re-grading,
     so the response is identical to what the original submission returned.
-    Also recomputes knowledge-point results from stored answer records.
+    Also recomputes knowledge-point results from stored answer records and
+    writes a quiz_result event if one does not already exist.
     """
     answer_records = (
         db.query(AnswerRecordModel)
@@ -428,6 +428,17 @@ def _build_idempotent_response(
     else:
         suggestion = "needs_review"
 
+    # ── Resolve subject_id from attempt's session ─────────────────
+    subject_id: str | None = attempt.subject_id
+    if not subject_id and session_id:
+        try:
+            from app.db.models import SessionModel
+            sess = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+            if sess and sess.subject_id:
+                subject_id = sess.subject_id
+        except Exception:
+            pass
+
     # ── Compute knowledge-point results ──────────────────────────
     kp_results: list[dict] = []
     qset_id = quiz_id or exam_set_id
@@ -446,6 +457,25 @@ def _build_idempotent_response(
                 attempt.attempt_id, subject_id,
                 assessment_eligible,
             )
+            # ── Resolve curriculum scope from quiz/exam set ──
+            _path_id: str | None = None
+            _stage_id: str | None = None
+            _chapter_id: str | None = None
+            _section_id: str | None = None
+            if quiz_id:
+                qset = db.query(QuizModel).filter(QuizModel.id == quiz_id).first()
+                if qset:
+                    _path_id = qset.path_id
+                    _stage_id = qset.stage_id
+                    _chapter_id = qset.chapter_id
+                    _section_id = qset.section_id
+            elif exam_set_id:
+                eset = db.query(ExamSetModel).filter(ExamSetModel.id == exam_set_id).first()
+                if eset:
+                    _path_id = eset.path_id
+                    _stage_id = eset.stage_id
+                    _chapter_id = eset.chapter_id
+
             # Write quiz_result event on replay if missing
             _write_quiz_result_event(
                 db,
@@ -456,7 +486,13 @@ def _build_idempotent_response(
                 kp_results=kp_results,
                 quiz_id=quiz_id,
                 exam_set_id=exam_set_id,
+                path_id=_path_id,
+                stage_id=_stage_id,
+                chapter_id=_chapter_id,
+                section_id=_section_id,
             )
+            db.commit()  # persist fallback mappings + event
+
             for r in results:
                 pq = next((q for q in linked if q.question_id == r["questionId"]), None)
                 if pq is not None:
@@ -919,7 +955,7 @@ def submit_quiz(
                 return _build_idempotent_response(
                     db, existing, quiz_title=quiz.title,
                     quiz_id=quiz_id, session_id=session_id,
-                    subject_id=None, assessment_eligible=not body.answers_revealed,
+                    assessment_eligible=not body.answers_revealed,
                 )
             raise HTTPException(
                 status_code=409,
@@ -978,7 +1014,7 @@ def submit_quiz(
                 return _build_idempotent_response(
                     db, existing2, quiz_title=quiz.title,
                     quiz_id=quiz_id, session_id=session_id,
-                    subject_id=None, assessment_eligible=not body.answers_revealed,
+                    assessment_eligible=not body.answers_revealed,
                 )
             raise HTTPException(
                 status_code=409,
@@ -1657,7 +1693,7 @@ def submit_exam_set(
                 return _build_idempotent_response(
                     db, existing, quiz_title=exam_set.title,
                     exam_set_id=exam_set_id, session_id=session_id,
-                    subject_id=None, assessment_eligible=not body.answers_revealed,
+                    assessment_eligible=not body.answers_revealed,
                 )
             raise HTTPException(
                 status_code=409,
@@ -1713,7 +1749,7 @@ def submit_exam_set(
                 return _build_idempotent_response(
                     db, existing2, quiz_title=exam_set.title,
                     exam_set_id=exam_set_id, session_id=session_id,
-                    subject_id=None, assessment_eligible=not body.answers_revealed,
+                    assessment_eligible=not body.answers_revealed,
                 )
             raise HTTPException(
                 status_code=409,
