@@ -531,7 +531,7 @@ function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onCla
           </div>
           {/* ── 推荐操作按钮 ── */}
           {!isUser && !msg.streaming && msg.suggestedActions && msg.suggestedActions.length > 0 && onClarificationSelect && (
-            <div className="mt-3 flex flex-wrap gap-2">
+            <div className="mt-3 flex flex-col gap-1.5">
               {msg.suggestedActions.map((action, idx: number) => (
                 <button
                   key={idx}

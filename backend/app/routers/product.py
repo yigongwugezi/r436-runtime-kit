@@ -7033,7 +7033,14 @@ def recommend_and_generate_v2(payload: dict[str, Any], auth: AuthContext = Depen
 
 
 def _recommend_and_generate_v2(session_id: str, subject_id: str = "") -> dict[str, Any]:
-    """Fan-out: DB recommendations, online search, AI generation — then categorize."""
+    """Fan-out: DB recommendations, online search, AI generation — then categorize.
+
+    Seeds for search+generation come from the full learning context:
+    - Current learning path stage (what they're studying NOW)
+    - Weak/knowledge gaps
+    - Profile interests and goals
+    - Subject/domain context
+    """
     # ── 1. Load data ──
     from app.services.agent_service import get_profile as ag_profile
     from app.db.repository import get_resources as repo_resources, get_latest_learning_path, get_event_analytics
@@ -7047,22 +7054,60 @@ def _recommend_and_generate_v2(session_id: str, subject_id: str = "") -> dict[st
         analytics = get_event_analytics(db, session_id) or {}
         weak_topics_raw = analytics.get("weakTopics") or []
         subject_context = profile.get("subject_context") or {}
+        knowledge_mastery = profile.get("knowledge_mastery") or []
         course_name = str(subject_context.get("subject_name") or subject_context.get("course_name") or subject_id or "")
     finally:
         db.close()
 
-    # Extract weak topic names
-    weak_topic_names = []
+    # ── 2. Build focused recommendation seeds from current learning context ──
+    seeds: list[str] = []
+
+    # (a) Subject/course name as primary context — resolve from DB first, then profile
+    subject_name = ""
+    if subject_id:
+        try:
+            from app.db.models import PersonalSubjectModel
+            db2 = SessionLocal()
+            try:
+                ps = db2.get(PersonalSubjectModel, subject_id)
+                if ps and ps.name:
+                    subject_name = str(ps.name).strip()
+            finally:
+                db2.close()
+        except Exception:
+            pass
+    if not subject_name:
+        subject_name = str(subject_context.get("subject_name") or subject_context.get("course_name") or course_name or "").strip()
+    if subject_name and len(subject_name) >= 2:
+        seeds.append(subject_name)
+
+    # (b) Current learning path stage — only the active (non-completed) stage
+    if path and hasattr(path, "stages") and isinstance(path.stages, list):
+        for stage in path.stages:
+            status = str(stage.get("status") or "").strip()
+            if status == "completed":
+                continue
+            title = str(stage.get("title") or "").strip()
+            if title and len(title) >= 2 and title not in seeds:
+                seeds.append(title)
+            for task in (stage.get("tasks") or []):
+                t = str(task).strip()
+                if t and len(t) >= 2 and t not in seeds:
+                    seeds.append(t)
+            break  # only the first non-completed stage
+
+    # (c) Weak topics from analytics (should be subject-specific)
     for wt in weak_topics_raw:
         name = str(wt.get("topic") or wt.get("name") or "").strip()
-        if name and len(name) >= 2:
-            weak_topic_names.append(name)
-    if not weak_topic_names:
-        for w in (profile.get("weaknesses") or []):
-            name = str(w.get("topic") or w.get("name") or "").strip()
-            if name and len(name) >= 2:
-                weak_topic_names.append(name)
-    weak_topic_names = list(dict.fromkeys(weak_topic_names))[:5]
+        if name and len(name) >= 2 and name not in seeds:
+            seeds.append(name)
+
+    # Cap at 4 seeds to keep search+generation focused
+    seeds = seeds[:4]
+    logger.info("recommend-v2: seeds=%s subject_name=%s subject_id=%s (stages=%d weak=%d)",
+                seeds, subject_name, subject_id,
+                len(path.stages) if path and hasattr(path, "stages") and isinstance(path.stages, list) else 0,
+                len(weak_topics_raw))
 
     from concurrent.futures import ThreadPoolExecutor
 
@@ -7077,15 +7122,15 @@ def _recommend_and_generate_v2(session_id: str, subject_id: str = "") -> dict[st
         )
 
         # Task 2: Online search (transient external links)
-        if weak_topic_names:
+        if seeds:
             futures["search"] = executor.submit(
-                _search_topics_online, weak_topic_names, course_name,
+                _search_topics_online, seeds, course_name,
             )
 
-        # Task 3: AI generation (template-based resources for each weak topic)
-        if weak_topic_names:
+        # Task 3: AI generation — generate diverse types per seed
+        if seeds:
             futures["generate"] = executor.submit(
-                _generate_for_weak_topics, weak_topic_names, session_id, subject_id,
+                _generate_diverse_resources, seeds, session_id, subject_id,
             )
 
         results = {}
@@ -7099,6 +7144,9 @@ def _recommend_and_generate_v2(session_id: str, subject_id: str = "") -> dict[st
     db_recs = results.get("db") or []
     web_results = results.get("search") or []
     gen_results = results.get("generate") or []
+    logger.info("recommend-v2: db_recs=%d web_results=%d gen_results=%d",
+                len(db_recs) if isinstance(db_recs, list) else (db_recs.get("recommendations") and len(db_recs["recommendations"]) or 0),
+                len(web_results), len(gen_results))
 
     # ── 3. Categorize ──
     categories: list[dict[str, Any]] = []
@@ -7176,28 +7224,42 @@ def _search_topics_online(
         logger.warning("_search_topics_online failed: %s", exc)
         return []
     resources = result.get("resources") or []
+    logger.info("_search_topics_online: primary=%s, returned %d resources, status=%s",
+                primary_topic, len(resources), result.get("status"))
     normalized = []
     for r in resources:
-        item = r.get("item") or {}
         normalized.append({
-            "title": str(item.get("title") or ""),
-            "url": str(item.get("url") or ""),
-            "snippet": str(item.get("snippet") or item.get("description") or ""),
-            "source": str(item.get("source") or item.get("publisher") or ""),
+            "title": str(r.get("title") or ""),
+            "url": str(r.get("url") or ""),
+            "snippet": str(r.get("snippet") or r.get("description") or ""),
+            "source": str(r.get("source") or r.get("publisher") or ""),
             "resource_type": r.get("resource_type", "article"),
         })
     return normalized
 
 
-def _generate_for_weak_topics(
-    weak_topic_names: list[str],
+def _generate_diverse_resources(
+    seeds: list[str],
     session_id: str,
     subject_id: str = "",
 ) -> list[dict[str, Any]]:
-    """Generate lecture + mindmap resources for each weak topic."""
+    """Generate diverse resource types per seed, saved to DB.
+
+    Each seed gets 2 resource types (e.g. lecture + mindmap, or quiz + reading).
+    Different seeds get different type combinations so the overall result covers
+    documents, videos, quizzes, practice cases, etc.
+    """
+    type_rotations = [
+        ("lecture", "quiz"),
+        ("mindmap", "reading"),
+        ("lecture", "practice"),
+        ("reading", "quiz"),
+        ("lecture", "mindmap"),
+    ]
     results: list[dict[str, Any]] = []
-    for topic in weak_topic_names:
-        for resource_type in ("lecture", "mindmap"):
+    for idx, topic in enumerate(seeds):
+        types = type_rotations[idx % len(type_rotations)]
+        for resource_type in types:
             request = {
                 "sessionId": session_id, "subjectId": subject_id,
                 "topic": topic, "resourceType": resource_type,
@@ -7207,11 +7269,14 @@ def _generate_for_weak_topics(
                 "learnerId": "", "profileSnapshotVersion": "", "generationOptions": {},
             }
             try:
-                resource = _general_resource_payload(request)
-                results.append(resource)
+                response = _generate_general_resource(request)
+                resource = (response.get("data") or {}).get("resource") or {}
+                if resource.get("id"):
+                    results.append(resource)
             except Exception as exc:
-                logger.debug("_generate_for_weak_topics skip %s/%s: %s", topic, resource_type, exc)
+                logger.debug("_generate_diverse_resources skip %s/%s: %s", topic, resource_type, exc)
                 continue
+    logger.info("_generate_diverse_resources: seeds=%s, generated %d resources", seeds, len(results))
     return results
 
 

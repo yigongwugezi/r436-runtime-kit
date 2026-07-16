@@ -8,7 +8,7 @@ import { listExamSets, generateExamSet } from '../api/assessment';
 import { generateLearningPath, validateCourse, enableProfileExtraction, planningChat, listPlanningDrafts, type PlanningDraft } from '../api/learningPath';
 import { useProfile } from '../hooks/useProfile';
 import { useChatStore } from '../store/chatStore';
-import DayDistributionView from '../components/learning/DayDistributionView';
+import DayPlanView from '../components/learning/DayPlanView';
 import type { ExamSet } from '../types/assessment';
 import PlanningWizard from '../components/learning/PlanningWizard';
 import { PageLoading, PageEmpty, PageError } from '../components/common/PageState';
@@ -226,7 +226,7 @@ export default function LearningPathPage() {
   const [existingDraft, setExistingDraft] = useState<any>(null);
   const [draftLoading, setDraftLoading] = useState(true);
   // View mode: 'graph' | 'day'
-  const [viewMode, setViewMode] = useState<'graph' | 'day'>('graph');
+  const [viewMode, setViewMode] = useState<'graph' | 'day'>('day');
 
   const stages = path?.stages || [];
   const allNodes = stages.flatMap(s => s.nodes || []);
@@ -826,11 +826,10 @@ export default function LearningPathPage() {
       {viewMode === 'day' && !isDetailView ? (
         /* ── 日视图（全宽） ── */
         <div className="bg-white rounded-2xl p-6 shadow-soft">
-          <DayDistributionView
-            stages={stages}
-            estimatedMinutesTotal={(path as any)?.estimated_minutes_total}
-            dailyMinutes={60}
-            onSectionClick={(sectionId) => {
+          <DayPlanView
+            dayPlan={(path as any)?.day_plan ?? null}
+            adjustedDays={(path as any)?.day_plan?._adjusted_days}
+            onItemClick={(sectionId) => {
               if (sectionId) nav(`/lecture/section/${encodeURIComponent(sectionId)}`);
             }}
           />

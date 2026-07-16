@@ -24,6 +24,7 @@ from app.db.repository import (
 )
 from app.services.conversation_state import conversation_store
 from app.services.course_catalog import course_catalog
+from app.services.day_planner import build_day_plan
 from app.utils.profile_facts import profile_item, apply_state_facts_to_result
 from app.utils.profile_normalizer import PROFILE_DIMENSION_LABELS, normalize_profile_dimensions
 
@@ -204,6 +205,7 @@ def get_learning_path(session_id: str) -> dict[str, Any] | None:
             for ch in (s.get("chapters") or []) if isinstance(ch, dict)
             for sec in (ch.get("sections") or []) if isinstance(sec, dict)
         )
+        day_plan = build_day_plan(stages, daily_minutes=60)
         return {
             "id": path.id,
             "course_id": path.course_id,
@@ -213,6 +215,7 @@ def get_learning_path(session_id: str) -> dict[str, Any] | None:
             "overall_progress": path.overall_progress or 0,
             "estimated_days": path.estimated_days or 14,
             "estimated_minutes_total": estimated_minutes_total,
+            "day_plan": day_plan,
             "version": int(path.updated_at.timestamp() * 1000) if path.updated_at else 0,
             "created_at": path.created_at.isoformat() if path.created_at else None,
             "updated_at": path.updated_at.isoformat() if path.updated_at else None,

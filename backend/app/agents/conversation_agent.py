@@ -1000,16 +1000,12 @@ action："""
             "生成吧", "开始吧", "按这些信息生成",
         ]
         if any(p in compact for p in _GEN_PLAN):
-            # Profile-depth gate: don't jump to planner if we barely know the student.
-            # The conversation agent will naturally probe first, then re-trigger plan
-            # via <proposal>plan</proposal> once the profile is deep enough.
-            if not self._is_profile_ready_for_plan(context):
-                return self._fallback_result("none", "plan_requested_but_profile_shallow", needs_clarification=True)
-            # Profile is ready → route to planner. Mode picker if no explicit mode selected.
+            # 对明确意图：核心维度足够就放行，不等 7 个全填满
             profile_facts = context.get("profile_facts", {}) if isinstance(context.get("profile_facts"), dict) else {}
-            course = str(profile_facts.get("target_course", ""))
-            if course and not has_focus and not has_daily and not has_textbook and not has_project and not has_lang_subject:
-                return self._fallback_result("plan", "explicit_generation_request")
+            essential = ["target_course", "background", "time_budget", "learning_goal"]
+            known = sum(1 for d in essential if str(profile_facts.get(d, "")).strip() not in ("", "未提及", "待补充", "未知", "无"))
+            if known < 2:
+                return self._fallback_result("none", "plan_requested_but_profile_shallow", needs_clarification=True)
             return self._fallback_result("plan", "explicit_generation_request")
 
         _GEN_FULL = ["完整方案", "全套方案", "全部方案", "整套方案", "生成全套", "全部生成"]

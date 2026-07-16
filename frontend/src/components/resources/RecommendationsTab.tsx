@@ -102,32 +102,38 @@ function WebResultCard({ item }: { item: WebSearchResultItem }) {
       href={item.url}
       target="_blank"
       rel="noopener noreferrer"
-      className="block bg-white rounded-xl border border-surface-200 p-4 hover:border-primary-200 hover:shadow-sm transition-all group"
+      className="block bg-white rounded-xl border border-surface-200 p-4 hover:border-primary-200 hover:shadow-sm transition-all group h-full"
     >
-      <div className="flex items-start gap-3">
-        <div className="w-9 h-9 rounded-lg bg-surface-100 flex items-center justify-center flex-shrink-0">
-          {TYPE_ICONS[item.resource_type] || <FileText className="w-4 h-4 text-surface-500" />}
+      <div className="flex flex-col h-full">
+        {/* 类型标记行 */}
+        <div className="flex items-center justify-between mb-2">
+          <span className="inline-flex items-center gap-1.5 text-[11px] text-surface-500">
+            <span className="text-surface-400">{TYPE_ICONS[item.resource_type] || <FileText className="w-3.5 h-3.5" />}</span>
+            {WEB_TYPE_LABELS[item.resource_type] || item.resource_type}
+          </span>
+          <span className="text-[10px] text-primary-600 truncate max-w-[140px]">{host}</span>
         </div>
-        <div className="flex-1 min-w-0">
-          <h4 className="text-sm font-medium text-surface-800 line-clamp-2 group-hover:text-primary-600 transition-colors">
-            {item.title}
-          </h4>
-          {item.snippet && (
-            <p className="text-xs text-surface-500 mt-1 line-clamp-2 leading-relaxed">{item.snippet}</p>
-          )}
-          <div className="flex items-center gap-2 mt-2">
-            <span className="text-[11px] text-primary-600 truncate max-w-[180px]">{host}</span>
-            <span className="text-[10px] text-surface-300">·</span>
-            <span className="text-[10px] text-surface-400">{WEB_TYPE_LABELS[item.resource_type] || item.resource_type}</span>
-            {item.source && (
-              <>
-                <span className="text-[10px] text-surface-300">·</span>
-                <span className="text-[10px] text-surface-400 truncate max-w-[100px]">{item.source}</span>
-              </>
-            )}
-          </div>
+
+        {/* 标题 */}
+        <h4 className="text-sm font-medium text-surface-800 line-clamp-2 group-hover:text-primary-600 transition-colors mb-2">
+          {item.title}
+        </h4>
+
+        {/* 描述 — 资源内容概要 */}
+        {item.snippet && (
+          <p className="text-xs text-surface-500 line-clamp-3 leading-relaxed flex-1">{item.snippet}</p>
+        )}
+        {!item.snippet && (
+          <p className="text-xs text-surface-400 line-clamp-3 leading-relaxed flex-1 italic">暂无内容摘要</p>
+        )}
+
+        {/* 底部 */}
+        <div className="flex items-center justify-between mt-3 pt-2 border-t border-surface-100">
+          <span className="text-[10px] text-surface-400">外部链接</span>
+          <span className="inline-flex items-center gap-1 text-[11px] text-primary-600 font-medium">
+            打开 <ExternalLink size={11} />
+          </span>
         </div>
-        <ExternalLink size={14} className="text-surface-300 flex-shrink-0 mt-1" />
       </div>
     </a>
   );
@@ -139,34 +145,122 @@ function GeneratedCard({ item }: { item: GeneratedResourceItem }) {
   const nav = useNavigate();
   const diffLabel: Record<string, string> = { easy: '基础', medium: '进阶', hard: '挑战' };
   const diffBadge: Record<string, string> = { easy: 'bg-success-100 text-success-700', medium: 'bg-warning-100 text-warning-700', hard: 'bg-error-100 text-error-700' };
+  // Extract readable description from content if backend description is too generic
+  const description = (() => {
+    if (item.description && !item.description.startsWith('围绕') && item.description.length > 8) return item.description;
+    if (item.content) {
+      const clean = item.content.replace(/^#\s+.*$/m, '').replace(/[#*`\n|]/g, ' ').replace(/\s+/g, ' ').trim();
+      return clean.slice(0, 140) + (clean.length > 140 ? '…' : '');
+    }
+    return item.description || GEN_TYPE_LABELS[item.type] || item.type;
+  })();
+  const estimatedMinutes = item.estimated_minutes || item.estimatedMinutes;
 
   return (
     <div
       onClick={() => item.id && nav(`/resources/${item.id}`)}
-      className="bg-white rounded-xl border border-surface-200 p-4 hover:border-primary-200 hover:shadow-sm transition-all cursor-pointer group"
+      className="bg-white rounded-xl border border-surface-200 p-4 hover:border-primary-200 hover:shadow-sm transition-all cursor-pointer group h-full"
     >
-      <div className="flex items-center gap-3">
-        <div className="w-9 h-9 rounded-lg bg-primary-50 flex items-center justify-center flex-shrink-0">
-          {TYPE_ICONS[item.type] || <FileText className="w-4 h-4 text-primary-600" />}
+      <div className="flex flex-col h-full">
+        {/* 类型标记行 */}
+        <div className="flex items-center justify-between mb-2">
+          <span className="inline-flex items-center gap-1.5 text-[11px] text-surface-500">
+            <span className="text-primary-500">{TYPE_ICONS[item.type] || <FileText className="w-3.5 h-3.5" />}</span>
+            {GEN_TYPE_LABELS[item.type] || item.type}
+          </span>
+          {item.difficulty && (
+            <span className={`text-[10px] px-1.5 py-0.5 rounded ${diffBadge[item.difficulty] || 'bg-surface-100 text-surface-500'}`}>
+              {diffLabel[item.difficulty] || item.difficulty}
+            </span>
+          )}
         </div>
-        <div className="flex-1 min-w-0">
-          <h4 className="text-sm font-medium text-surface-800 truncate group-hover:text-primary-600 transition-colors">
-            {item.title}
-          </h4>
-          <div className="flex items-center gap-2 mt-1">
-            <span className="text-[11px] text-surface-400">{GEN_TYPE_LABELS[item.type] || item.type}</span>
-            {item.difficulty && (
-              <span className={`text-[10px] px-1.5 py-0.5 rounded ${diffBadge[item.difficulty] || 'bg-surface-100 text-surface-500'}`}>
-                {diffLabel[item.difficulty] || item.difficulty}
-              </span>
-            )}
+
+        {/* 标题 */}
+        <h4 className="text-sm font-medium text-surface-800 line-clamp-2 group-hover:text-primary-600 transition-colors mb-2">
+          {item.title}
+        </h4>
+
+        {/* 描述 — 从内容提取的概要 */}
+        {description && (
+          <p className="text-xs text-surface-500 line-clamp-3 leading-relaxed flex-1">{description}</p>
+        )}
+        {!description && (
+          <p className="text-xs text-surface-400 line-clamp-3 leading-relaxed flex-1 italic">查看资源内容</p>
+        )}
+
+        {/* 底部元信息 */}
+        <div className="flex items-center justify-between mt-3 pt-2 border-t border-surface-100">
+          <div className="flex items-center gap-3 text-[10px] text-surface-400">
+            {estimatedMinutes != null && estimatedMinutes > 0 && <span>约 {estimatedMinutes} 分钟</span>}
+            <span>AI 生成</span>
           </div>
+          <span className="inline-flex items-center gap-1 text-[11px] text-primary-600 font-medium">
+            {item.id ? '查看详情' : '预览'} <ArrowRight size={11} />
+          </span>
         </div>
-        <ArrowRight size={14} className="text-surface-300 flex-shrink-0" />
       </div>
     </div>
   );
 }
+
+// ── 子组件：DB 推荐资源卡片（全面，与生成卡片一致）────────────────
+
+function RecommendationCardItem({ rec }: { rec: any }) {
+  const nav = useNavigate();
+  const hasResource = Boolean(rec.target_resource_id);
+  const priorityLabel: Record<string, string> = { high: '优先', medium: '推荐', low: '参考' };
+  const priorityBadge: Record<string, string> = { high: 'bg-primary-100 text-primary-700', medium: 'bg-surface-100 text-surface-600', low: 'bg-surface-50 text-surface-400' };
+
+  return (
+    <div
+      onClick={() => hasResource && nav(`/resources/${rec.target_resource_id}`)}
+      className={`bg-white rounded-xl border border-surface-200 p-4 ${
+        hasResource ? 'cursor-pointer group hover:border-primary-200 hover:shadow-sm' : 'opacity-60 cursor-default'
+      } transition-all h-full`}
+    >
+      <div className="flex flex-col h-full">
+        {/* 优先级 + 来源 */}
+        <div className="flex items-center justify-between mb-2">
+          <span className={`text-[10px] px-1.5 py-0.5 rounded ${priorityBadge[rec.priority] || 'bg-surface-100 text-surface-500'}`}>
+            {priorityLabel[rec.priority] || '推荐'}
+          </span>
+          <span className="text-[10px] text-surface-400">{rec.source || 'db'}</span>
+        </div>
+
+        {/* 标题 */}
+        <h4 className={`text-sm font-medium text-surface-800 line-clamp-2 mb-2 ${hasResource ? 'group-hover:text-primary-600' : ''} transition-colors`}>
+          {rec.title}
+        </h4>
+
+        {/* 推荐理由 + 内容概要 */}
+        {rec.reason && (
+          <p className="text-xs text-surface-500 line-clamp-3 leading-relaxed flex-1">{rec.reason}</p>
+        )}
+        {!rec.reason && (
+          <p className="text-xs text-surface-400 line-clamp-3 leading-relaxed flex-1 italic">继续学习该资源以巩固知识</p>
+        )}
+
+        {/* 置信度 */}
+        <div className="flex items-center justify-between mt-3 pt-2 border-t border-surface-100">
+          {rec.confidence != null && (
+            <span className="text-[10px] text-surface-400">置信 {Math.round(rec.confidence * 100)}%</span>
+          )}
+          {hasResource ? (
+            <span className="inline-flex items-center gap-1 text-[11px] text-surface-700 font-medium ml-auto">
+              开始学习 <ArrowRight size={11} />
+            </span>
+          ) : (
+            <span className="text-[10px] text-surface-400 ml-auto">暂无关联资源</span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── 缓存：避免每次切 Tab 都重新请求 ──────────────────────────────
+const cache = new Map<string, { categories: RecommendCategory[]; expiresAt: number }>();
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 分钟
 
 // ── 主组件 ──────────────────────────────────────────────────────────
 
@@ -180,21 +274,48 @@ export default function RecommendationsTab({ sessionId: propSessionId, subjectId
   const storeSubjectId = useSubjectStore((s) => s.activeSubject?.id || '');
   const sessionId = propSessionId ?? storeSessionId;
   const subjectId = propSubjectId ?? storeSubjectId;
+  const cacheKey = `${sessionId}:${subjectId}`;
 
-  const [categories, setCategories] = useState<RecommendCategory[]>([]);
+  const [categories, setCategories] = useState<RecommendCategory[]>(() => {
+    const cached = cache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.categories;
+    return [];
+  });
   const [activeCategory, setActiveCategory] = useState<string>('recommended');
-  const [loading, setLoading] = useState(true);
+  const [fetched, setFetched] = useState(() => {
+    const cached = cache.get(cacheKey);
+    return !!(cached && cached.expiresAt > Date.now());
+  });
+  const [loading, setLoading] = useState(!fetched);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchRecommendations = useCallback(async () => {
+  const fetchRecommendations = useCallback(async (force = false) => {
     if (!sessionId) { setLoading(false); setError('请先进入学习会话'); return; }
+    // Check cache again (may have been populated since mount)
+    if (!force) {
+      const cached = cache.get(cacheKey);
+      if (cached && cached.expiresAt > Date.now()) {
+        setCategories(cached.categories);
+        setFetched(true);
+        setLoading(false);
+        const firstNonEmpty = cached.categories.find((c) => {
+          if (c.items && c.items.length > 0) return true;
+          if (c.groups && c.groups.some((g) => g.items.length > 0)) return true;
+          return false;
+        });
+        if (firstNonEmpty) setActiveCategory(firstNonEmpty.id);
+        return;
+      }
+    }
     setLoading(true);
     setError(null);
     try {
       const data = await recommendV2({ sessionId, subjectId });
-      setCategories(data.categories || []);
-      // Auto-switch to first non-empty category
-      const firstNonEmpty = (data.categories || []).find((c) => {
+      const cats = data.categories || [];
+      cache.set(cacheKey, { categories: cats, expiresAt: Date.now() + CACHE_TTL_MS });
+      setCategories(cats);
+      setFetched(true);
+      const firstNonEmpty = cats.find((c) => {
         if (c.items && c.items.length > 0) return true;
         if (c.groups && c.groups.some((g) => g.items.length > 0)) return true;
         return false;
@@ -206,16 +327,14 @@ export default function RecommendationsTab({ sessionId: propSessionId, subjectId
     } finally {
       setLoading(false);
     }
-  }, [sessionId, subjectId]);
+  }, [sessionId, subjectId, cacheKey]);
 
-  useEffect(() => { fetchRecommendations(); }, [fetchRecommendations]);
+  useEffect(() => { if (!fetched) fetchRecommendations(); }, [fetched, fetchRecommendations]);
 
-  // ── 无会话 ──
   if (!sessionId) {
     return <PageEmpty icon={<User className="w-8 h-8" />} title="请先进入学习会话" description="选择一个学习会话以获取个性化推荐" />;
   }
 
-  // ── 加载中 ──
   if (loading) {
     return (
       <div className="space-y-4">
@@ -229,14 +348,13 @@ export default function RecommendationsTab({ sessionId: propSessionId, subjectId
     );
   }
 
-  // ── 加载失败 ──
   if (error) {
     return (
       <div className="space-y-4">
         <ProfileSummaryCard />
         <div className="flex flex-col items-center justify-center py-16 text-surface-400">
           <p className="text-sm text-error-600 mb-3">{error}</p>
-          <button onClick={fetchRecommendations} className="inline-flex items-center gap-1.5 px-4 py-2 bg-primary-600 text-white text-sm rounded-xl hover:bg-primary-700 transition-colors">
+          <button onClick={() => fetchRecommendations(true)} disabled={loading} className="inline-flex items-center gap-1.5 px-3 py-2 bg-primary-600 text-white text-sm rounded-xl hover:bg-primary-700 transition-colors">
             <RefreshCw size={14} />重试
           </button>
         </div>
@@ -244,7 +362,6 @@ export default function RecommendationsTab({ sessionId: propSessionId, subjectId
     );
   }
 
-  // ── 无推荐 ──
   const hasAnyContent = categories.some((c) => {
     if (c.items && c.items.length > 0) return true;
     if (c.groups && c.groups.some((g) => g.items.length > 0)) return true;
@@ -264,7 +381,6 @@ export default function RecommendationsTab({ sessionId: propSessionId, subjectId
     );
   }
 
-  // ── 正常渲染 ──
   const activeCat = categories.find((c) => c.id === activeCategory);
   const badgeCount = (cat: RecommendCategory): number => {
     if (cat.items) return cat.items.length;
@@ -276,11 +392,10 @@ export default function RecommendationsTab({ sessionId: propSessionId, subjectId
     <div className="space-y-4 animate-fade-in">
       <ProfileSummaryCard />
 
-      {/* 顶栏 + 刷新 */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-surface-800">智能推荐</h2>
         <button
-          onClick={fetchRecommendations}
+          onClick={() => fetchRecommendations(true)}
           disabled={loading}
           className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-surface-500 hover:text-surface-700 hover:bg-surface-50 rounded-lg transition-colors"
         >
@@ -322,7 +437,7 @@ export default function RecommendationsTab({ sessionId: propSessionId, subjectId
 
           {/* 智能推荐：flat list */}
           {activeCat.id === 'recommended' && activeCat.items && (
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 gap-3">
               {activeCat.items.map((rec, i) => (
                 <RecommendationCardItem key={i} rec={rec} />
               ))}
@@ -358,37 +473,6 @@ export default function RecommendationsTab({ sessionId: propSessionId, subjectId
             </div>
           )}
         </div>
-      )}
-    </div>
-  );
-}
-
-// ── 智能推荐卡片（内联，简化为纯展示）──────────────────────────────
-
-function RecommendationCardItem({ rec }: { rec: any }) {
-  const nav = useNavigate();
-  const hasResource = Boolean(rec.target_resource_id);
-  const priorityLabel: Record<string, string> = { high: '优先', medium: '推荐', low: '参考' };
-
-  return (
-    <div
-      onClick={() => hasResource && nav(`/resources/${rec.target_resource_id}`)}
-      className={`bg-white rounded-xl border border-surface-200 p-4 ${
-        hasResource ? 'cursor-pointer group hover:border-surface-300 hover:shadow-sm' : 'opacity-60 cursor-default'
-      } transition-all`}
-    >
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-[10px] text-surface-400">{priorityLabel[rec.priority] || '推荐'}</span>
-        <span className="text-[10px] text-surface-300">{rec.source || 'db'}</span>
-      </div>
-      <h4 className={`text-sm font-medium text-surface-800 mb-1.5 line-clamp-2 ${hasResource ? 'group-hover:text-primary-600' : ''} transition-colors`}>
-        {rec.title}
-      </h4>
-      {rec.reason && (
-        <p className="text-xs text-surface-500 leading-relaxed line-clamp-2">{rec.reason}</p>
-      )}
-      {rec.confidence != null && (
-        <p className="text-[10px] text-surface-400 mt-2">置信 {Math.round(rec.confidence * 100)}%</p>
       )}
     </div>
   );

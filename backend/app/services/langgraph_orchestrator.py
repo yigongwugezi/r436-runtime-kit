@@ -353,7 +353,8 @@ def _is_likely_chat(msg: str, facts: dict) -> bool:
     gen_triggers = ["生成", "出题", "规划", "批改", "诊断", "路径", "资源", "导图",
                     "系统学", "专攻", "按章节", "每日学", "每日计划", "薄弱点", "强化",
                     "调整", "修改", "改一下", "加快", "放慢", "重新",
-                    "计划", "制定", "安排"]
+                    "计划", "制定", "安排",
+                    "开始", "想学", "我要学"]
     if any(t in compact for t in gen_triggers):
         return False
     # Everything else is probably chat

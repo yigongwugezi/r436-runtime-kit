@@ -223,6 +223,8 @@ export interface GeneratedResourceItem {
   difficulty: string;
   format: string;
   source: string;
+  estimated_minutes?: number;
+  estimatedMinutes?: number;
 }
 
 export interface RecommendGroup {

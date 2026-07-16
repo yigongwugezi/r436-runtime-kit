@@ -11,6 +11,7 @@ from typing import Any
 
 from app.agents.base import BaseAgent, register_agent
 from app.services.course_catalog import course_catalog
+from app.services.day_planner import build_day_plan
 from app.services.llm_client import LLMClientError
 from app.utils.id_factory import (
     make_chapter_id,
@@ -946,6 +947,8 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
             for c in s.get("chapters", [])
             for sec in c.get("sections", [])
         )
+        # ── 生成按天组织的学习计划 ──
+        day_plan = self._build_day_plan(stages_with_chapters, diag_meta)
         return {
             "learning_path": stages_with_chapters,
             "stages": stages_with_chapters,
@@ -957,10 +960,20 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
             "knowledge_point_count": total_kps,
             "plan_summary": f"{len(stages_with_chapters)}阶段{total_chapters}章{total_sections}节{total_kps}知识点",
             "summary": f"{len(stages_with_chapters)}阶段{total_chapters}章{total_sections}节",
+            "day_plan": day_plan,
             "diagnosis_used": diag_meta.get("diagnosis_used", False),
             "needs_more_diagnosis": diag_meta.get("needs_more_diagnosis", False),
             "agent_step": {"agent_id": self.agent_id, "agent_name": self.agent_name, "status": "completed"},
         }
+
+    @staticmethod
+    def _build_day_plan(stages: list[dict], diag_meta: dict) -> dict:
+        """从 stages 生成按天组织的学习计划。"""
+        try:
+            return build_day_plan(stages, daily_minutes=60)
+        except Exception:
+            logger.exception("build_day_plan failed")
+            return {}
 
     def _fallback_path(self, context, planning_points, total_days, profile, diag_meta):
         rule_path = self._build_rule_path(planning_points, profile, total_days, diag_meta)
