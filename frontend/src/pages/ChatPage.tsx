@@ -859,7 +859,7 @@ export default function ChatPage() {
               currentMode === 'planning' ? (
                 <div className="flex flex-col items-center justify-center min-h-[55vh] text-center px-4">
                   <div className="w-14 h-14 rounded-2xl bg-accent-50 flex items-center justify-center mb-5">
-                    <span className="text-2xl">📋</span>
+                    <Sparkles size={24} className="text-accent-500" />
                   </div>
                   <h2 className="text-xl font-semibold text-surface-800 mb-2">规划学习模式</h2>
                   <p className="text-surface-500 text-sm mb-6 max-w-md leading-relaxed">
