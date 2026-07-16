@@ -455,7 +455,7 @@ function MultimodalResultView({ result }: { result: ChatMessage['multimodalResul
   );
 }
 
-function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onClarificationSelect?: (prompt: string) => void }) {
+const MessageBubble = memo(function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onClarificationSelect?: (prompt: string) => void }) {
   const isUser = msg.role === 'user'; const [copied, setCopied] = useState(false);
   const [thinkingExpanded, setThinkingExpanded] = useState(true);
   const hasThinking = !isUser && msg.reasoningContent && msg.reasoningContent.trim().length > 0;
@@ -555,7 +555,7 @@ function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onCla
       </div>
     </div>
   );
-}
+});
 
 function AgentPipelineProgress({ progress, onRetry, onNavigate }: { progress: GenerationProgress; onRetry?: () => void; onNavigate?: (path: string) => void }) {
   const [elapsed, setElapsed] = useState(0); const isError = !!progress.error; const [doneV, setDoneV] = useState(false); const isDone = progress.done && !progress.error;
