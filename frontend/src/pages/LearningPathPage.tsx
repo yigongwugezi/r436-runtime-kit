@@ -17,46 +17,75 @@ import PathModeRouter from '../components/learning/PathModeViews';
 
 // ── 画像收集进度卡片 ──
 
-const PROFILE_DIMS = [
-  { key: 'background', label: '专业/年级', icon: '🎓' },
-  { key: 'target_course', label: '目标课程', icon: '📚' },
-  { key: 'knowledge_base', label: '已有基础', icon: '🧠' },
-  { key: 'weak_points', label: '薄弱点', icon: '🎯' },
-  { key: 'learning_goal', label: '学习目标', icon: '🏁' },
-  { key: 'time_budget', label: '时间安排', icon: '⏰' },
-  { key: 'preference', label: '学习偏好', icon: '⚙️' },
-];
-
-function ProfileInfoCard({ sessionId }: { sessionId: string }) {
+function ProfileInfoPanel({ sessionId }: { sessionId: string }) {
   const [facts, setFacts] = useState<Record<string, string>>({});
+  const nav = useNavigate();
+
   useEffect(() => {
     if (!sessionId) return;
     fetch(`/api/conversation-facts?sessionId=${sessionId}`).then(r => r.json()).then(d => {
       if (d.facts) setFacts(d.facts);
     }).catch(() => {});
   }, [sessionId]);
-  const filled = PROFILE_DIMS.filter(d => {
+
+  const DIMS = [
+    { key: 'background', label: '专业/年级', hint: '聊聊你的专业背景' },
+    { key: 'target_course', label: '目标课程', hint: '想学什么课程' },
+    { key: 'knowledge_base', label: '已有基础', hint: '说说你已有的基础' },
+    { key: 'weak_points', label: '薄弱点', hint: '聊聊哪里容易卡住' },
+    { key: 'learning_goal', label: '学习目标', hint: '你的目标是什么' },
+    { key: 'time_budget', label: '时间安排', hint: '每天能学多久' },
+    { key: 'preference', label: '学习偏好', hint: '喜欢什么学习方式' },
+  ];
+
+  const filled = DIMS.filter(d => {
     const v = facts[d.key] || '';
     return v && v !== '未提及' && v !== '待补充' && v !== '未知' && v !== '';
   }).length;
-  const total = PROFILE_DIMS.length;
+  const total = DIMS.length;
+  const pct = Math.round((filled / total) * 100);
+
+  const goChat = (prompt: string) => {
+    nav('/chat', { state: { initialMessage: prompt, chatMode: 'planning' } });
+  };
+
   return (
     <div className="bg-white rounded-2xl p-5 shadow-soft border border-surface-100">
       <div className="flex items-center justify-between mb-3">
-        <span className="text-xs font-medium text-surface-400 uppercase tracking-wide">画像信息</span>
-        <span className="text-xs text-surface-500">{filled}/{total} 项已收集</span>
+        <h3 className="font-display text-sm font-semibold text-surface-700 flex items-center gap-2">
+          <span>📋</span> 画像收集进度
+        </h3>
+        <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${pct >= 80 ? 'bg-success-50 text-success-600' : pct >= 40 ? 'bg-primary-50 text-primary-600' : 'bg-surface-100 text-surface-500'}`}>
+          {filled}/{total} 项
+        </span>
       </div>
-      <div className="relative h-1.5 bg-surface-100 rounded-full mb-3 overflow-hidden">
-        <div className="absolute inset-y-0 left-0 bg-gradient-to-r from-primary-400 to-accent-500 rounded-full transition-all" style={{ width: `${(filled / total) * 100}%` }} />
+
+      <div className="relative h-2 bg-surface-100 rounded-full mb-4 overflow-hidden">
+        <div className="absolute inset-y-0 left-0 bg-gradient-to-r from-primary-400 to-accent-500 rounded-full transition-all duration-500" style={{ width: `${pct}%` }} />
       </div>
-      <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-        {PROFILE_DIMS.map(d => {
+
+      <div className="space-y-3">
+        {DIMS.map(d => {
           const v = facts[d.key] || '';
           const has = v && v !== '未提及' && v !== '待补充' && v !== '未知' && v !== '';
           return (
-            <div key={d.key} className="flex items-center gap-2 text-xs">
-              <span>{has ? '✅' : '⬜'}</span>
-              <span className={has ? 'text-surface-700' : 'text-surface-400'}>{d.label}</span>
+            <div key={d.key} className={`rounded-xl p-3 border transition-all ${has ? 'bg-success-50/40 border-success-100' : 'bg-surface-50 border-surface-100'}`}>
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <span>{has ? '✅' : '⬜'}</span>
+                    <span className={`text-xs font-semibold ${has ? 'text-surface-700' : 'text-surface-400'}`}>{d.label}</span>
+                  </div>
+                  {has ? (
+                    <p className="text-xs text-surface-600 ml-6 leading-relaxed truncate">{v}</p>
+                  ) : (
+                    <button
+                      onClick={() => goChat(d.hint)}
+                      className="ml-6 text-xs text-primary-500 hover:text-primary-700 hover:underline transition-colors"
+                    >💬 {d.hint}</button>
+                  )}
+                </div>
+              </div>
             </div>
           );
         })}
@@ -363,132 +392,133 @@ export default function LearningPathPage() {
       return <div className="flex-1 flex items-center justify-center"><Loader2 size={24} className="animate-spin text-primary-500" /></div>;
     }
     return (
-      <div className="w-full max-w-3xl mx-auto flex-1 flex flex-col space-y-6 animate-fade-in py-8">
-        <div className="text-center space-y-2">
+      <div className="w-full max-w-5xl mx-auto flex-1 animate-fade-in py-8">
+        <div className="text-center space-y-2 mb-6">
           <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-primary-50 mb-2">
             <Target size={24} className="text-primary-500" />
           </div>
           <h2 className="font-display text-2xl font-bold text-surface-800">创建学习路径</h2>
-          <p className="text-surface-500 text-sm">设定偏好后，智能对话会帮你收集信息并生成专属学习计划</p>
+          <p className="text-surface-500 text-sm">设定偏好，对话收集信息后生成专属学习计划</p>
         </div>
 
-        <div className="bg-white rounded-2xl p-5 shadow-soft border border-surface-100">
-          <label className="text-xs font-medium text-surface-400 uppercase tracking-wide mb-2 block">目标课程</label>
-          <input
-            value={courseName}
-            onChange={e => handleValidateCourse(e.target.value)}
-            onBlur={e => handleValidateCourse(e.target.value)}
-            placeholder="输入课程名称，系统自动识别"
-            className={`w-full px-4 py-3 rounded-xl border text-surface-800 placeholder-surface-400 focus:outline-none focus:ring-2 transition-all text-lg font-medium ${courseName && courseValid ? 'border-green-300 focus:ring-green-400 bg-green-50/30' : courseName && !courseValid ? 'border-amber-300 focus:ring-amber-400' : 'border-surface-200 focus:ring-primary-400'}`}
-          />
-          {courseName && courseValid && <p className="mt-1.5 text-xs text-green-600 flex items-center gap-1"><CheckCircle2 size={12} />已识别课程</p>}
-          {courseSuggestions.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              <span className="text-xs text-surface-400 mt-0.5">推荐：</span>
-              {courseSuggestions.map((s: string) => (
-                <button key={s} onClick={() => handleValidateCourse(s)} className="text-xs px-2.5 py-1 bg-surface-100 hover:bg-primary-100 hover:text-primary-700 text-surface-600 rounded-full border border-surface-200 transition-all">{s}</button>
-              ))}
-            </div>
-          )}
-        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+          {/* ── 左栏：表单 ── */}
+          <div className="lg:col-span-3 space-y-5">
 
-        {/* ── 画像信息收集面板 ── */}
-        <ProfileInfoCard sessionId={useChatStore.getState().dataSessionId || sessionId || ''} />
-
-        <div className="bg-white rounded-2xl p-5 shadow-soft border border-surface-100 space-y-6">
-          <div>
-            <label className="text-xs font-medium text-surface-400 uppercase tracking-wide mb-3 block">规划模式</label>
-            <div className="grid grid-cols-3 gap-3">
-              {[
-                ['textbook', '教材式', '按章节系统推进', BookOpen],
-                ['daily', '日课式', '每日定量学习任务', Calendar],
-                ['focus', '精进式', '聚焦薄弱点突破', Zap],
-              ].map(([v, label, desc, Icon]) => (
-                <button key={v}
-                  onClick={() => setPlanMode(v)}
-                  className={`p-4 rounded-xl border-2 text-left transition-all ${planMode === v ? 'border-primary-400 bg-primary-50/50 shadow-sm' : 'border-surface-100 hover:border-surface-200 hover:bg-surface-50'}`}
-                >
-                  <Icon size={20} className={planMode === v ? 'text-primary-500' : 'text-surface-400'} />
-                  <div className="text-sm font-semibold text-surface-800 mt-2">{label}</div>
-                  <div className="text-[11px] text-surface-400 mt-1 leading-relaxed">{desc}</div>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="text-xs font-medium text-surface-400 mb-1.5 block">总天数</label>
-              <input type="number" min={1} max={365} value={initTotalDays}
-                onChange={e => setInitTotalDays(Math.max(1, Math.min(365, Number(e.target.value) || 30)))}
-                className="w-full px-4 py-2.5 rounded-xl border border-surface-200 text-surface-800 focus:outline-none focus:ring-2 focus:ring-primary-400"
+            <div className="bg-white rounded-2xl p-5 shadow-soft border border-surface-100">
+              <label className="text-xs font-medium text-surface-400 uppercase tracking-wide mb-2 block">目标课程</label>
+              <input
+                value={courseName}
+                onChange={e => handleValidateCourse(e.target.value)}
+                onBlur={e => handleValidateCourse(e.target.value)}
+                placeholder="输入课程名称，系统自动识别"
+                className={`w-full px-4 py-3 rounded-xl border text-surface-800 placeholder-surface-400 focus:outline-none focus:ring-2 transition-all text-lg font-medium ${courseName && courseValid ? 'border-green-300 focus:ring-green-400 bg-green-50/30' : courseName && !courseValid ? 'border-amber-300 focus:ring-amber-400' : 'border-surface-200 focus:ring-primary-400'}`}
               />
+              {courseName && courseValid && <p className="mt-1.5 text-xs text-green-600 flex items-center gap-1"><CheckCircle2 size={12} />已识别课程</p>}
+              {courseSuggestions.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  <span className="text-xs text-surface-400 mt-0.5">推荐：</span>
+                  {courseSuggestions.map((s: string) => (
+                    <button key={s} onClick={() => handleValidateCourse(s)} className="text-xs px-2.5 py-1 bg-surface-100 hover:bg-primary-100 hover:text-primary-700 text-surface-600 rounded-full border border-surface-200 transition-all">{s}</button>
+                  ))}
+                </div>
+              )}
             </div>
-            <div>
-              <label className="text-xs font-medium text-surface-400 mb-1.5 block">周末安排</label>
-              <div className="flex gap-2">
-                {[[true, '坚持学习'], [false, '休息']].map(([v, label]) => (
-                  <button key={label} onClick={() => setWeekends(v as boolean)}
-                    className={`flex-1 py-2.5 rounded-xl border text-sm transition-all ${weekends === v ? 'border-primary-400 bg-primary-50 text-primary-700 font-medium' : 'border-surface-200 text-surface-500'}`}
-                  >{label}</button>
-                ))}
-              </div>
-            </div>
-          </div>
 
-          <div className="flex flex-wrap gap-4">
-            <label className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-surface-50 border border-surface-100 cursor-pointer hover:bg-surface-100 transition-colors">
-              <input type="checkbox" checked={dynamicAdjust} onChange={e => setDynamicAdjust(e.target.checked)} className="sr-only" />
-              <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors ${dynamicAdjust ? 'bg-primary-500 border-primary-500' : 'border-surface-300'}`}>
-                {dynamicAdjust && <CheckCircle2 size={12} className="text-white" />}
-              </div>
-              <span className="text-sm text-surface-700">动态调整</span>
-            </label>
-            <label className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-surface-50 border border-surface-100 cursor-pointer hover:bg-surface-100 transition-colors">
-              <input type="checkbox" checked={reviewEnabled} onChange={e => setReviewEnabled(e.target.checked)} className="sr-only" />
-              <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors ${reviewEnabled ? 'bg-primary-500 border-primary-500' : 'border-surface-300'}`}>
-                {reviewEnabled && <CheckCircle2 size={12} className="text-white" />}
-              </div>
-              <span className="text-sm text-surface-700">含复习阶段</span>
-            </label>
-          </div>
-
-          <button onClick={() => setShowAdvanced(!showAdvanced)}
-            className="w-full text-left text-xs text-surface-400 hover:text-surface-600 flex items-center gap-1 transition-colors"
-          >
-            <span className="w-3 text-center">{showAdvanced ? '-' : '+'}</span> 高级设置
-          </button>
-          {showAdvanced && (
-            <div className="space-y-4 pt-1">
+            <div className="bg-white rounded-2xl p-5 shadow-soft border border-surface-100 space-y-5">
               <div>
-                <label className="text-xs font-medium text-surface-400 mb-1.5 block">路径粒度</label>
-                <div className="flex gap-2">
-                  {[['coarse', '按周'], ['standard', '标准'], ['fine', '按天']].map(([v, label]) => (
-                    <button key={v} onClick={() => setGranularity(v)}
-                      className={`flex-1 py-2 rounded-lg border text-xs transition-all ${granularity === v ? 'border-primary-400 bg-primary-50 text-primary-700 font-medium' : 'border-surface-200 text-surface-500'}`}
-                    >{label}</button>
+                <label className="text-xs font-medium text-surface-400 uppercase tracking-wide mb-3 block">规划模式</label>
+                <div className="grid grid-cols-3 gap-3">
+                  {[
+                    ['textbook', '教材式', '按章节系统推进', BookOpen],
+                    ['daily', '日课式', '每日定量学习任务', Calendar],
+                    ['focus', '精进式', '聚焦薄弱点突破', Zap],
+                  ].map(([v, label, desc, Icon]) => (
+                    <button key={v}
+                      onClick={() => setPlanMode(v)}
+                      className={`p-4 rounded-xl border-2 text-left transition-all ${planMode === v ? 'border-primary-400 bg-primary-50/50 shadow-sm' : 'border-surface-100 hover:border-surface-200 hover:bg-surface-50'}`}
+                    >
+                      <Icon size={20} className={planMode === v ? 'text-primary-500' : 'text-surface-400'} />
+                      <div className="text-sm font-semibold text-surface-800 mt-2">{label}</div>
+                      <div className="text-[11px] text-surface-400 mt-1 leading-relaxed">{desc}</div>
+                    </button>
                   ))}
                 </div>
               </div>
-              <label className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-surface-50 border border-surface-100 cursor-pointer hover:bg-surface-100 transition-colors">
-                <input type="checkbox" checked={textbookAligned} onChange={e => setTextbookAligned(e.target.checked)} className="sr-only" />
-                <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors ${textbookAligned ? 'bg-primary-500 border-primary-500' : 'border-surface-300'}`}>
-                  {textbookAligned && <CheckCircle2 size={12} className="text-white" />}
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs font-medium text-surface-400 mb-1.5 block">总天数</label>
+                  <input type="number" min={1} max={365} value={initTotalDays}
+                    onChange={e => setInitTotalDays(Math.max(1, Math.min(365, Number(e.target.value) || 30)))}
+                    className="w-full px-4 py-2.5 rounded-xl border border-surface-200 text-surface-800 focus:outline-none focus:ring-2 focus:ring-primary-400"
+                  />
                 </div>
-                <span className="text-sm text-surface-700">关联教材章节</span>
-              </label>
+                <div>
+                  <label className="text-xs font-medium text-surface-400 mb-1.5 block">周末安排</label>
+                  <div className="flex gap-2">
+                    {[[true, '坚持学习'], [false, '休息']].map(([v, label]) => (
+                      <button key={label} onClick={() => setWeekends(v as boolean)}
+                        className={`flex-1 py-2.5 rounded-xl border text-sm transition-all ${weekends === v ? 'border-primary-400 bg-primary-50 text-primary-700 font-medium' : 'border-surface-200 text-surface-500'}`}
+                      >{label}</button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-4">
+                <label className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-surface-50 border border-surface-100 cursor-pointer hover:bg-surface-100 transition-colors">
+                  <input type="checkbox" checked={dynamicAdjust} onChange={e => setDynamicAdjust(e.target.checked)} className="sr-only" />
+                  <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors ${dynamicAdjust ? 'bg-primary-500 border-primary-500' : 'border-surface-300'}`}>
+                    {dynamicAdjust && <CheckCircle2 size={12} className="text-white" />}
+                  </div>
+                  <span className="text-sm text-surface-700">动态调整</span>
+                </label>
+                <label className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-surface-50 border border-surface-100 cursor-pointer hover:bg-surface-100 transition-colors">
+                  <input type="checkbox" checked={reviewEnabled} onChange={e => setReviewEnabled(e.target.checked)} className="sr-only" />
+                  <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors ${reviewEnabled ? 'bg-primary-500 border-primary-500' : 'border-surface-300'}`}>
+                    {reviewEnabled && <CheckCircle2 size={12} className="text-white" />}
+                  </div>
+                  <span className="text-sm text-surface-700">含复习阶段</span>
+                </label>
+              </div>
+
+              <button onClick={() => setShowAdvanced(!showAdvanced)}
+                className="w-full text-left text-xs text-surface-400 hover:text-surface-600 flex items-center gap-1 transition-colors"
+              >
+                <span className="w-3 text-center">{showAdvanced ? '-' : '+'}</span> 高级设置
+              </button>
+              {showAdvanced && (
+                <div className="space-y-4 pt-1">
+                  <div>
+                    <label className="text-xs font-medium text-surface-400 mb-1.5 block">路径粒度</label>
+                    <div className="flex gap-2">
+                      {[['coarse', '按周'], ['standard', '标准'], ['fine', '按天']].map(([v, label]) => (
+                        <button key={v} onClick={() => setGranularity(v)}
+                          className={`flex-1 py-2 rounded-lg border text-xs transition-all ${granularity === v ? 'border-primary-400 bg-primary-50 text-primary-700 font-medium' : 'border-surface-200 text-surface-500'}`}
+                        >{label}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <label className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-surface-50 border border-surface-100 cursor-pointer hover:bg-surface-100 transition-colors">
+                    <input type="checkbox" checked={textbookAligned} onChange={e => setTextbookAligned(e.target.checked)} className="sr-only" />
+                    <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors ${textbookAligned ? 'bg-primary-500 border-primary-500' : 'border-surface-300'}`}>
+                      {textbookAligned && <CheckCircle2 size={12} className="text-white" />}
+                    </div>
+                    <span className="text-sm text-surface-700">关联教材章节</span>
+                  </label>
+                </div>
+              )}
             </div>
-          )}
-        </div>
 
-        {initError && (
-          <div className="px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-600 flex items-center gap-2">
-            <AlertCircle size={16} /> {initError}
-          </div>
-        )}
+            {initError && (
+              <div className="px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-600 flex items-center gap-2">
+                <AlertCircle size={16} /> {initError}
+              </div>
+            )}
 
-        <div className="flex gap-3">
-          <button onClick={async () => {
+            <div className="flex gap-3">
+              <button onClick={async () => {
             const sid = useChatStore.getState().dataSessionId || sessionId || '';
             try { await enableProfileExtraction(sid); } catch {}
             const msg = [
@@ -526,8 +556,15 @@ export default function LearningPathPage() {
           </button>
         </div>
       </div>
-    );
-  }
+
+      {/* ── 右栏：画像进度 ── */}
+      <div className="lg:col-span-2 space-y-5">
+        <ProfileInfoPanel sessionId={useChatStore.getState().dataSessionId || sessionId || ''} />
+      </div>
+    </div>
+  </div>
+  );
+}
   const isDetailView = !!activeStageId;
 
   // ── Daily/Focus modes → use PathModeRouter. Textbook → keep original UI ──
