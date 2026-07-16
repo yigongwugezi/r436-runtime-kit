@@ -529,31 +529,6 @@ function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onCla
               </div>
             )}
           </div>
-          {/* ── 资源入口卡片 ── */}
-          {!isUser && !msg.streaming && msg.resourceCards && msg.resourceCards.length > 0 && (
-            <div className="mt-3 space-y-2">
-              {msg.resourceCards.map((card, idx: number) => {
-                const iconMap: Record<string, string> = { lecture: '📖', mindmap: '🧠', quiz: '✏️', reading: '📚', video: '🎬', ppt: '📊', case_study: '🔍', textbook: '📕', multimodal: '🖼️' };
-                const icon = iconMap[card.type] || '📄';
-                const href = card.id ? `/resources/${card.id}` : '/resources';
-                return (
-                  <a key={idx} href={href} target="_blank" rel="noreferrer"
-                    className="flex items-center gap-3 p-3 rounded-xl border border-gray-200 bg-white hover:border-gray-300 hover:shadow-sm transition-all group/card">
-                    <div className="w-9 h-9 rounded-lg bg-gray-100 flex items-center justify-center text-lg flex-shrink-0 group-hover/card:bg-gray-200 transition-colors">
-                      {icon}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-medium text-gray-800 truncate">{card.title}</div>
-                      {card.description && <div className="text-xs text-gray-400 truncate mt-0.5">{card.description}</div>}
-                    </div>
-                    <svg className="w-4 h-4 text-gray-300 group-hover/card:text-gray-500 flex-shrink-0 transition-colors" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                    </svg>
-                  </a>
-                );
-              })}
-            </div>
-          )}
           {/* ── 推荐操作按钮 ── */}
           {!isUser && !msg.streaming && msg.suggestedActions && msg.suggestedActions.length > 0 && onClarificationSelect && (
             <div className="mt-3 flex flex-wrap gap-2">
@@ -590,7 +565,7 @@ function AgentPipelineProgress({ progress, onRetry, onNavigate }: { progress: Ge
   useEffect(() => { if (isDone) { const t = setTimeout(() => setDoneV(true), 1500); return () => clearTimeout(t); } setDoneV(false); }, [isDone]);
   useEffect(() => { if (isDone || isError) return; const t = setInterval(() => setElapsed(v => v + 1), 1000); return () => clearInterval(t); }, [isDone, isError]);
   if (isError) return <div className="px-4 py-4 bg-error-50 border border-error-100 rounded-2xl shadow-soft animate-fade-in-up space-y-3 max-w-[82%] ml-12"><div className="flex items-start gap-2.5"><div className="w-6 h-6 rounded-full bg-error-100 flex items-center justify-center"><XCircle className="w-4 h-4 text-error-500" /></div><div className="flex-1"><p className="text-sm font-semibold text-error-700">生成失败</p><p className="text-xs text-error-500 mt-1">{progress.error}</p>{onRetry && <button onClick={onRetry} className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 bg-error-100 hover:bg-error-200 rounded-lg text-xs font-medium text-error-700"><RefreshCw className="w-3.5 h-3.5" />重新生成</button>}</div></div></div>;
-  if (isDone) { const info = useChatStore.getState().lastDebugInfo || {}; const hasPath = info.learning_path_created; const hasRes = info.resources_created; const hasQ = info.questions_created; return <div className="px-4 py-4 bg-success-50/60 border border-success-100 rounded-2xl shadow-soft animate-fade-in-up space-y-3 max-w-[82%] ml-12"><div className="flex items-center gap-2.5"><div className="w-6 h-6 rounded-full bg-success-100 flex items-center justify-center"><Check className="w-4 h-4 text-success-600" /></div><span className="text-sm font-semibold text-success-700">生成完成</span></div>{onNavigate && doneV && <div className="flex flex-wrap gap-2 pt-1 animate-fade-in-up">{hasPath && <button onClick={() => onNavigate('/path')} className="px-3 py-1.5 bg-white border border-success-200 rounded-lg text-xs font-medium text-success-700 hover:bg-success-50">🗺️ 查看路径</button>}{hasRes && <button onClick={() => onNavigate('/resources')} className="px-3 py-1.5 bg-white border border-success-200 rounded-lg text-xs font-medium text-success-700 hover:bg-success-50">📚 查看资源</button>}{hasQ && <button onClick={() => onNavigate('/practice')} className="px-3 py-1.5 bg-white border border-success-200 rounded-lg text-xs font-medium text-success-700 hover:bg-success-50">✏️ 去练习</button>}</div>}</div>; }
+  if (isDone) { return <div className="flex items-center gap-2.5 px-4 py-2 text-sm text-success-700"><Check className="w-4 h-4 text-success-500" /><span>生成完成</span></div>; }
   // 无 pipeline 步骤时显示简单 spinner
   if (pipeline.length === 0) return <div className="px-4 py-4 bg-white border border-surface-200 rounded-2xl shadow-soft animate-fade-in-up max-w-[82%] ml-12"><div className="flex items-center gap-2.5"><div className="w-5 h-5 rounded-full border-2 border-primary-500 border-t-transparent animate-spin" /><span className="text-sm font-semibold text-surface-800">{progress.stage || '正在处理...'}</span><span className="text-xs text-primary-600 font-medium ml-auto tabular-nums">{Math.round(progress.progress)}%</span></div><div className="h-1.5 bg-surface-100 rounded-full overflow-hidden mt-3"><div className="h-full bg-gradient-to-r from-primary-500 to-accent-500 rounded-full transition-all duration-700 ease-out" style={{ width: `${Math.round(progress.progress)}%` }} /></div></div>;
   return <div className="px-4 py-4 bg-white border border-surface-200 rounded-2xl shadow-soft animate-fade-in-up space-y-3 max-w-[82%] ml-12"><div className="flex items-center gap-2.5"><div className="w-5 h-5 rounded-full border-2 border-primary-500 border-t-transparent animate-spin" /><span className="text-sm font-semibold text-surface-800">{progress.stage || '多智能体协同处理中'}</span><span className="text-xs text-primary-600 font-medium ml-auto tabular-nums">{Math.round(progress.progress)}%</span></div><div className="flex items-center gap-1">{pipeline.map((step, idx) => { const done = idx < currentIdx; const cur = idx === currentIdx; return <div key={step.key} className="flex items-center gap-1 flex-1 min-w-0"><div className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 transition-all ${done ? 'bg-success-100 ring-2 ring-success-200' : cur ? 'bg-primary-100 ring-2 ring-primary-300' : 'bg-surface-50 ring-2 ring-surface-100'}`}>{done ? <Check className="w-3 h-3 text-success-600" /> : cur ? <div className="w-2.5 h-2.5 rounded-full bg-primary-500 animate-pulse" /> : <div className="w-2 h-2 rounded-full bg-surface-300" />}</div>{idx < pipeline.length - 1 && <div className={`flex-1 h-0.5 rounded-full ${done ? 'bg-success-300' : cur ? 'bg-surface-200' : 'bg-surface-100'}`} />}</div>; })}</div><div className="h-1.5 bg-surface-100 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-primary-500 to-accent-500 rounded-full transition-all duration-700 ease-out" style={{ width: `${Math.round(progress.progress)}%` }} /></div></div>;
