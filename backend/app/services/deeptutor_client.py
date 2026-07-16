@@ -63,19 +63,24 @@ async def _chat_fallback(
 
 def _setup_config():
     from app.config import settings
-    api_key = os.environ.get("LLM_API_KEY") or settings.deepseek_api_key
-    if not api_key:
-        return False
-    base_url = os.environ.get("LLM_BASE_URL") or settings.deepseek_base_url
-    model = os.environ.get("LLM_MODEL") or settings.llm_model
+    from app.services.llm_factory import get_chat_client
+    import os as _os
+    client = get_chat_client()
+    if not client.is_available():
+        api_key = _os.environ.get("LLM_API_KEY") or settings.deepseek_api_key
+        if not api_key:
+            return False
+    api_key = _os.environ.get("LLM_API_KEY") or settings.deepseek_api_key
+    base_url = _os.environ.get("LLM_BASE_URL") or settings.deepseek_base_url
+    model = _os.environ.get("LLM_MODEL") or settings.llm_model
     try:
         from deeptutor.services.llm.config import LLMConfig, set_scoped_llm_config
         cfg = LLMConfig(model=model, api_key=api_key, base_url=base_url, effective_url=base_url,
                         binding="openai", provider_name="openai_compatible", provider_mode="cloud")
         set_scoped_llm_config(cfg)
-        os.environ["OPENAI_API_KEY"] = api_key
-        os.environ["OPENAI_BASE_URL"] = base_url
-        os.environ.setdefault("OPENAI_TIMEOUT", "120")
+        _os.environ["OPENAI_API_KEY"] = api_key
+        _os.environ["OPENAI_BASE_URL"] = base_url
+        _os.environ.setdefault("OPENAI_TIMEOUT", "120")
         return True
     except Exception as e:
         logger.debug("DT config: %s", e)
@@ -121,7 +126,7 @@ async def deeptutor_call_async(
             language="zh",
             memory_context=profile_context or "",
             persona_context=persona_context or "",
-            enabled_tools=["reason","brainstorm","read_memory","write_memory","ask_user"] if capability == "chat" else [],
+            enabled_tools=["reason","brainstorm","ask_user"] if capability == "chat" else [],
             config_overrides=config_overrides or {},
         )
         if capability and capability != "chat":

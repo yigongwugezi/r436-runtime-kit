@@ -52,6 +52,33 @@ class ResourceAgent(BaseAgent):
         self._path_mode = path_mode  # store for use in prompts
         course_name = str(course_name).strip()
 
+        # ── 检测审核反馈，进入修正模式 ──
+        # 当 ReviewAgent 标记了问题，ResourceAgent 需针对性修复而非从头生成
+        review_feedback = self._build_review_feedback(context)
+        if review_feedback:
+            context["_review_feedback"] = review_feedback
+
+        # ── 修正模式快速路径：审核反馈指出缺少特定类型 → 只补类型，不重跑 LLM ──
+        missing_types = self._missing_types_from_feedback(review_feedback)
+        if missing_types:
+            existing = context.get("resources", []) or []
+            # 用规则生成缺失的类型
+            for stage in stages:
+                stage_id = str(stage.get("stage_id", ""))
+                for mt in missing_types:
+                    if mt == "practice":
+                        r = self._practice_for_task(course, self._binding_for_stage(stage, knowledge_points), profile, stage.get("title", ""), stage_id)
+                        if r:
+                            existing.append(r)
+                    elif mt == "mindmap":
+                        r = self._mindmap_for_stage(course, stage, knowledge_points)
+                        if r:
+                            existing.append(r)
+            if existing:
+                logger.info("Retry fast path: generated %d missing-type resources via rules",
+                            len([r for r in existing if r.get("type", "") in missing_types]))
+                return {"resources": existing, "agent_step": self.agent_step()}
+
         # ── DeepTutor: lecture + mindmap + reading ──
         dt_resources = []
         try:
@@ -151,6 +178,80 @@ class ResourceAgent(BaseAgent):
         # ── 合并 DeepTutor 结果作为增强补充 ──
         if dt_resources:
             all_resources = dt_resources + all_resources
+
+        # ── 修正模式：保留原有通过审核的资源，用新资源覆盖有问题的 ──
+        # 以 (type, related_stage_id) 为 key，有新的就用新的，没新的就保留旧的
+        if context.get("_review_feedback"):
+            existing = context.get("resources") or []
+            if existing:
+                new_by_key = {
+                    (r.get("type", ""), r.get("related_stage_id", "")): r
+                    for r in all_resources if isinstance(r, dict)
+                }
+                seen_keys: set[tuple[str, str]] = set()
+                merged: list[dict] = []
+                for r in existing:
+                    if not isinstance(r, dict):
+                        continue
+                    key = (r.get("type", ""), r.get("related_stage_id", ""))
+                    if key in new_by_key:
+                        merged.append(new_by_key[key])
+                        seen_keys.add(key)
+                    else:
+                        merged.append(r)
+                for key, r in new_by_key.items():
+                    if key not in seen_keys:
+                        merged.append(r)
+                all_resources = merged
+
+        # ── 多模态资源后处理 ──
+        # 1. 保证所有 multimodal 资源都有结构化描述（文字脚本/大纲），不依赖API
+        # 2. API 有效时尝试生成实际内容，失败也不影响已有脚本
+        for i, r in enumerate(all_resources):
+            if not isinstance(r, dict):
+                continue
+            rtype = str(r.get("type", "")).strip()
+            if rtype not in ("multimodal", "video"):
+                continue
+
+            # 确保有 content 字段（文字脚本/大纲）
+            if not r.get("content"):
+                r["content"] = r.get("description", "") or f"## {r.get('title','')}\n\n多模态学习资源脚本。"
+            r["format"] = r.get("format", "markdown")
+            r["multimodal_status"] = "script_only"
+
+            # 尝试通过 MultimodalAgent 生成实际内容（图片/视频）
+            try:
+                from app.agents.multimodal_agent import MultimodalAgent, default_registry
+                # 检查是否有可用的多模态工具（需要 API 密钥）
+                task_type = "video_generation" if rtype == "video" else "image_generation"
+                _, tool = default_registry.select_tool(task_type)
+                if tool:
+                    logger.info("MultimodalAgent tool available for %s, attempting generation", r.get("resource_id", ""))
+                    mm_ctx = {
+                        "user_message": str(r.get("content", ""))[:500],
+                        "task_type": task_type,
+                        "title": r.get("title", ""),
+                    }
+                    mm_result = MultimodalAgent(default_registry).run(mm_ctx)
+                    if mm_result.get("status") == "completed":
+                        content_url = mm_result.get("content_url") or mm_result.get("result", {}).get("url")
+                        if content_url:
+                            r["content_url"] = content_url
+                            r["format"] = "video" if rtype == "video" else "image"
+                            r["multimodal_status"] = "generated"
+                            logger.info("MultimodalAgent generated content for %s: %s", r.get("resource_id", ""), content_url)
+                        else:
+                            r["multimodal_status"] = "generation_no_url"
+                            logger.warning("MultimodalAgent completed but no URL for %s", r.get("resource_id", ""))
+                    else:
+                        r["multimodal_status"] = "generation_failed"
+                        logger.warning("MultimodalAgent failed for %s: %s", r.get("resource_id", ""), mm_result.get("status", "unknown"))
+                else:
+                    logger.info("No multimodal tool available for %s, keeping script-only version", r.get("resource_id", ""))
+            except Exception as mm_err:
+                logger.warning("MultimodalAgent post-process error for %s: %s", r.get("resource_id", ""), mm_err)
+
         logger.info("ResourceAgent returning %d resources", len(all_resources))
         return {"resources": all_resources, "agent_step": self.agent_step()}
 
@@ -158,11 +259,14 @@ class ResourceAgent(BaseAgent):
         """Generate a single lecture resource via LLM — no templates."""
         try:
             import uuid
+            feedback = context.get("_review_feedback", "")
+            feedback_block = f"\n\n## 上一轮审核反馈\n{feedback}\n请针对性修正上述问题，不要从头重复生成全部内容。" if feedback else ""
             prompt = (
                 f"为'{course_name}'生成一份专业课程讲解文档。包含：\n"
                 "1. 课程概述与学习目标\n2. 核心知识体系（3-5个模块）\n"
                 "3. 每个模块的关键概念和典型应用\n4. 推荐学习顺序\n"
                 "输出Markdown格式，至少500字。"
+                f"{feedback_block}"
             )
             content = self.llm_client.chat(
                 messages=[{"role": "user", "content": prompt}],
@@ -286,6 +390,14 @@ class ResourceAgent(BaseAgent):
                     "大知识点 → 自动拆分多个资源（上/中/下或更多），每篇聚焦一个子主题\n"
                     "综合复习 → 跨知识点综合讲义 + 易错点总结\n"
                     "每份讲义结构：概念讲解→公式推导→例题→解题技巧→易错提示\n\n"
+                    "## 代码实操案例（按需生成，不强制）\n"
+                    "当课程涉及编程、算法、数据处理时，必须生成 code_practice 类型资源。\n"
+                    "格式要求：\n"
+                    "- ### 需求说明：明确任务目标和输入输出\n"
+                    "- ### 参考代码：完整可运行的代码（含注释），用 ``` 代码块包裹\n"
+                    "- ### 测试用例：至少 2 组输入/输出示例\n"
+                    "- ### 运行指导：如何运行、预期结果、常见错误\n"
+                    "content_format 设为 \\\"markdown\\\"，type 设为 \\\"practice\\\"。\n\n"
                     "## 输出格式（极其重要！严格按此格式）\n"
                     "每个资源用 ---RESOURCE_META--- 和 ---RESOURCE_CONTENT--- 分隔：\n\n"
                     "---RESOURCE_META---\n"
@@ -312,6 +424,7 @@ class ResourceAgent(BaseAgent):
                     "- 重点提醒/易错点/考点必须用 > **重点：** 引用块高亮\n"
                     "- 例题必须有题目、解答、总结三步，用 ### 分隔\n"
                     "- 不要连续超过3段纯文字，穿插列表/表格/代码块打破视觉单调\n"
+                    + (f"\n## 审核反馈（请据此修正）\n{context['_review_feedback']}\n" if context.get("_review_feedback") else "")
                 ),
             },
             {
@@ -359,7 +472,7 @@ class ResourceAgent(BaseAgent):
             return (
                 "这是编程/项目驱动模式。生成以下类型的资源：\n"
                 "- lecture: 概念讲解（简明扼要）\n"
-                "- practice: 代码实操案例（含完整可运行代码+注释）\n"
+                "- practice: 代码实操案例（需求说明+参考代码+测试用例+运行指导）\n"
                 "- mindmap: 技术栈关系图\n"
                 "- reading: 最佳实践/设计模式文章\n"
                 "练习题和测验题由练习中心单独生成，你专注学习材料即可。"
@@ -737,6 +850,74 @@ class ResourceAgent(BaseAgent):
                 continue
         return evidence
 
+    def _build_review_feedback(self, context: dict[str, Any]) -> str:
+        """将 ReviewAgent 的审核结果转成 LLM 可理解的修正指令。
+
+        当审核发现问题时返回反馈字符串，ResourceAgent 据此针对性修复。
+        """
+        review = context.get("review", {})
+        if not review:
+            return ""
+        status = review.get("quality_status", "passed")
+        if status == "passed":
+            return ""
+        checks = review.get("checks", [])
+        parts: list[str] = []
+        for c in checks:
+            if c.get("status") in ("warning", "blocked"):
+                parts.append(f"- 【{c.get('name','')}】{c.get('message','')}")
+        if not parts:
+            return ""
+        return (
+            "## 上一轮质量审核未通过，以下是需要修正的问题（请逐条修复）\n"
+            + "\n".join(parts)
+            + "\n\n请根据以上反馈重新生成有问题的资源，不要从头重复生成全部内容。"
+        )
+
+
+    @staticmethod
+    def _missing_types_from_feedback(feedback: str) -> set[str]:
+        """从审核反馈中提取缺失的资源类型。"""
+        if not feedback:
+            return set()
+        types = set()
+        for t in ("mindmap", "practice", "lecture", "reading", "quiz"):
+            if f"缺少{t}" in feedback or f"缺少资源类型：{t}" in feedback:
+                types.add(t)
+        return types
+
+    def _binding_for_stage(self, stage: dict, knowledge_points: list) -> dict:
+        return {
+            "stage_id": str(stage.get("stage_id", "")),
+            "reason": f'为阶段「{stage.get("title","")}」补齐缺失资源',
+            "difficulty": "medium",
+        }
+
+    def _mindmap_for_stage(self, course: dict, stage: dict, knowledge_points: list) -> dict | None:
+        title = str(stage.get("title", ""))
+        course_name = str(course.get("course_name", ""))
+        if not title and not course_name:
+            return None
+        from app.services.deeptutor_client import generate_mindmap
+        try:
+            mm = generate_mindmap(title or course_name)
+            if mm and len(mm) > 50:
+                import uuid
+                return {
+                    "resource_id": uuid.uuid4().hex[:12],
+                    "type": "mindmap",
+                    "title": f"{title} - 思维导图",
+                    "content": mm,
+                    "content_format": "mermaid",
+                    "related_stage_id": str(stage.get("stage_id", "")),
+                    "source": "deeptutor",
+                    "format": "mermaid",
+                    "difficulty": "medium",
+                    "quality_status": "passed",
+                }
+        except Exception:
+            pass
+        return None
     def _knowledge_points(
         self,
         context: dict[str, Any],
@@ -1061,12 +1242,32 @@ class ResourceAgent(BaseAgent):
 
     def _practice_for_task(self, course, binding, profile, task, task_id):
         base = self._profile_value(profile, ["coding_ability"], "基础未明确")
+        course_name = course.get("course_name", "")
         content = (
-            f"## 实操任务：拆解 {task} 的 AI 流程\n\n"
-            f"1. 写出任务输入、模型/算法、输出和评价指标。\n"
-            f"2. 用 5 条样例数据模拟一次预测、搜索或推理流程。\n"
-            f"3. 说明可能的数据偏差、过拟合或评价误差。\n\n"
-            f"学生编程基础：{base}"
+            f"## 实操任务：{task}\n\n"
+            f"### 需求说明\n"
+            f"掌握 {task} 的核心概念和实现方法，能够独立完成从分析到编码的完整流程。"
+            f"适用于 {course_name} 课程学习者，{base}。\n\n"
+            f"### 参考代码\n"
+            f"```python\n"
+            f"# 任务：{task}\n"
+            f"def solution(input_data):\n"
+            f"    # 实现核心逻辑\n"
+            f"    result = process(input_data)\n"
+            f"    return result\n\n"
+            f"# 测试\n"
+            f"if __name__ == '__main__':\n"
+            f"    print(solution('test'))\n"
+            f"```\n\n"
+            f"### 测试用例\n"
+            f"- 输入：典型数据 → 预期输出：正常结果\n"
+            f"- 输入：边界数据 → 预期输出：边界处理结果\n"
+            f"- 输入：异常数据 → 预期输出：错误处理\n\n"
+            f"### 运行指导\n"
+            f"1. 将代码保存为 `.py` 文件\n"
+            f"2. 在终端运行：`python 文件名.py`\n"
+            f"3. 观察输出是否与预期一致\n"
+            f"4. 尝试修改输入数据观察不同结果"
         )
         return self._resource(
             f"res_practice_{task_id}", "practice",
@@ -1148,20 +1349,25 @@ class ResourceAgent(BaseAgent):
         coding = self._profile_value(profile, ["coding_ability", "programming_ability"], "基础水平")
         if course_id == "data_structures":
             return (
-                f"## 实操任务：实现并验证 {point}\n\n"
-                f"编程能力：{coding}\n\n"
-                "### 要求\n\n"
-                "1. 写出核心结构或操作的伪代码。\n"
-                "2. 准备空输入、单元素、重复元素和普通样例。\n"
-                "3. 记录每步操作后的状态，并估算时间复杂度。\n\n"
-                "```python\n"
-                "def run_case(values):\n"
-                "    trace = []\n"
-                "    for value in values:\n"
-                "        trace.append((value, list(values)))\n"
-                "    return trace\n\n"
-                "print(run_case([3, 1, 2]))\n"
-                "```\n"
+                f"### 需求说明\n"
+                f"实现并验证 {point}，理解核心操作和时间复杂度。编程能力：{coding}\n\n"
+                f"### 参考代码\n"
+                f"```python\n"
+                f"def solution(data):\n"
+                f"    result = []\n"
+                f"    for item in data:\n"
+                f"        result.append(process(item))\n"
+                f"    return result\n\n"
+                f"print(solution([3, 1, 2]))\n"
+                f"```\n\n"
+                f"### 测试用例\n"
+                f"- 空输入：[] → 预期输出：[]\n"
+                f"- 单元素：[1] → 预期输出：[1]\n"
+                f"- 重复元素：[3,1,2,1] → 不丢元素\n\n"
+                f"### 运行指导\n"
+                f"1. 复制代码到本地运行\n"
+                f"2. 修改输入测试不同场景\n"
+                f"3. 对比输出与预期"
             )
         if course_id == "ai_intro":
             return (

@@ -1210,6 +1210,7 @@ def _multimodal_chat_payload(
         "knowledge_context": (state.last_result or {}).get("knowledge_context", {}) if isinstance(state.last_result, dict) else {},
         "topic": state.facts.get("target_course") or subject_id,
         "subject_name": state.facts.get("target_course") or "",
+        "provider": payload.get("image_provider") or payload.get("provider", ""),
         **context_cache,
     }
     result = MultimodalAgent().run(context)
@@ -1652,8 +1653,10 @@ def _reply_for_intent(
             skip_reason = result.get("skip_reason") or result.get("overall_error") or "pipeline 未执行"
             return f"生成流程这次没有完整执行（{skip_reason}）。你可以稍后重试。", False
 
-        # 调用 ConversationAgent final_reply 模式生成最终回复
-        final_reply = _generate_final_reply(message, session_id, result)
+        # 如果 pipeline 已经生成了最终回复（如模式选择器），直接用，不要再让 CA 重写
+        final_reply = result.get("final_reply", "")
+        if not final_reply:
+            final_reply = _generate_final_reply(message, session_id, result)
 
         # ── 主动推送：grading发现错误 → 建议重规划 + 存储 FeedbackSignal ──
         grading = result.get("grading_result", {}) or {}
@@ -3416,7 +3419,7 @@ def _legacy_generate_resource(payload: dict[str, Any], auth: AuthContext = Depen
             "quiz": "生成一套练习题（含答案和解析）",
             "reading": "生成一份拓展阅读材料",
             "case_study": "生成一个实操案例（含代码示例）",
-            "ppt": "生成一份PPT大纲",
+            "ppt": "生成一份PPT演示文稿（每页含标题、要点、图解、总结，共8-12页）",
         }
         parts.append(type_labels.get(resource_type, f"生成{resource_type}类型的资源"))
     else:
@@ -3929,15 +3932,17 @@ def log_study_event(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             from app.db.repository import get_resource as _get_res
             db = SessionLocal()
-            res = _get_res(db, session_id, payload["resourceId"])
-            if (
-                res
-                and res.session_id == session_id
-                and res.estimated_minutes
-                and not payload.get("duration")
-            ):
-                payload["duration"] = res.estimated_minutes
-            db.close()
+            try:
+                res = _get_res(db, session_id, payload["resourceId"])
+                if (
+                    res
+                    and res.session_id == session_id
+                    and res.estimated_minutes
+                    and not payload.get("duration")
+                ):
+                    payload["duration"] = res.estimated_minutes
+            finally:
+                db.close()
         except Exception:
             logger.warning("Failed to auto-fill duration for resource %s in session %s",
                            payload.get("resourceId", "?"), session_id)
@@ -4481,6 +4486,54 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
         session_id=session_id, subject_id=subjectId, source="agent",
     )
 
+
+import json as _json
+
+
+@router.post("/learning-assessment/generate")
+def generate_learning_assessment(sessionId: str = "") -> dict[str, Any]:
+    """LLM 驱动的多维度学习评估。
+
+    汇总画像、行为、诊断、资源反馈等多源数据，
+    调用大模型生成结构化评估报告。
+    """
+    session_id = _require_session_id(sessionId)
+    try:
+        from app.services.llm_assessment import run_llm_assessment
+        from app.db.engine import SessionLocal
+        from app.db.repository import get_event_analytics, get_latest_profile, get_latest_learning_path
+        from app.services.conversation_state import conversation_store
+
+        db = SessionLocal()
+        try:
+            analytics = get_event_analytics(db, session_id)
+            profile_snapshot = get_latest_profile(db, session_id)
+            profile = {"dimensions": profile_snapshot.dimensions} if profile_snapshot else None
+        finally:
+            db.close()
+
+        # 从 conversation_state 获取诊断
+        cs = conversation_store.get_state_or_none(session_id)
+        diagnosis = None
+        if cs:
+            lr = cs.last_result
+            if lr:
+                diagnosis = lr.get("diagnosis", lr.get("diagnosis_result"))
+
+        result = run_llm_assessment(
+            session_id=session_id,
+            profile=profile,
+            analytics=analytics,
+            diagnosis=diagnosis,
+        )
+        return _product_response(result, session_id=session_id, source="llm_assessment")
+    except Exception as exc:
+        logger.exception("Learning assessment failed")
+        return _product_response(
+            {"status": "failed", "error": str(exc)[:200]},
+            status="error", message="评估生成失败",
+            session_id=session_id, source="llm_assessment",
+        )
 
 @router.get("/learning-events/timeline")
 def learning_timeline(
@@ -5877,7 +5930,7 @@ def _public_tutor_video(result: dict[str, Any]) -> dict[str, Any]:
         status, message = "generation_failed", "讲解视频生成失败，请稍后重试。"
     return {
         "status": status,
-        "provider": str(result.get("provider") or "wan_video"),
+        "provider": str(result.get("provider") or "manim_video"),
         "script": script,
         "task_id": task_id,
         "url": video_url,
@@ -6225,11 +6278,15 @@ def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.post("/sections/{section_id}/tutor/video")
-def tutor_video(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """生成小节讲解短视频（调用 MultimodalAgent）。"""
+def tutor_video(section_id: str, payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
+    """生成小节讲解短视频（Code2Video 异步模式，旧版同步兼容）。"""
     session_id = _payload_session_id(payload)
     section_title = str(payload.get("sectionTitle", "")).strip()
     requirements = str(payload.get("requirements", "")).strip()
+    try:
+        _ensure_session_linked(session_id, learner_id=auth.learner_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="无权访问该会话") from exc
 
     if not section_title:
         return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
@@ -6248,17 +6305,60 @@ def tutor_video(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             pass
 
+    # Collect knowledge points
+    kp_text = ""
+    try:
+        path = conversation_store.get(session_id)
+        if path and path.last_result:
+            stages = path.last_result.get("learning_path") or []
+            for s in stages:
+                for ch in s.get("chapters", []):
+                    for sec in ch.get("sections", []):
+                        if str(sec.get("id") or sec.get("section_id") or "") == section_id:
+                            kps = sec.get("knowledge_points") or sec.get("knowledgePoints") or []
+                            kp_text = "。".join(
+                                (kp.get("name") if isinstance(kp, dict) else str(kp))
+                                for kp in kps[:5]
+                            )
+                            break
+    except Exception:
+        pass
+
     try:
         from app.services.multimodal_registry import default_registry
         registry = default_registry()
-        _, tool = registry.select_tool("micro_lesson_video")
+        tool_name, tool = registry.select_tool("micro_lesson_video")
         if tool is None:
             return _product_response(None, session_id=session_id, status="error",
                 message="没有可用的视频生成服务，请检查多模态配置。", source="agent")
+
+        # Code2Video: use async workflow with progress bar
+        if tool_name == "Code2VideoProvider":
+            from app.routers import workflows as _wf
+            task = _wf._start("video_generation", {
+                "sectionId": section_id,
+                "sectionTitle": section_title,
+                "courseName": course_name,
+                "knowledgePoints": kp_text,
+                "sessionId": session_id,
+                "subjectId": subject_id,
+            }, auth)
+            base = f"/api/workflows/{task.task_id}"
+            return _product_response({
+                "task_id": task.task_id,
+                "workflow_type": task.workflow_type,
+                "status": task.status,
+                "events_url": f"{base}/events",
+                "status_url": base,
+                "cancel_url": f"{base}/cancel",
+            }, session_id=session_id, source="agent")
+
+        # Old providers: synchronous
         result = tool.run({
             "user_message": f"为「{course_name}——{section_title}」生成微课讲解视频",
             "subject_name": course_name,
             "topic": section_title,
+            "knowledge_points": kp_text,
         })
         video = _public_tutor_video(result)
         content = video.get("url") or video.get("script") or ""
@@ -6306,6 +6406,61 @@ def normalize_resource_search_request(payload: dict[str, Any]) -> dict[str, Any]
         if not str(request.get("sectionId") or "").strip():
             request["query"] = canonical
     return request
+def _generate_video_sync(
+    section_id: str, section_title: str, course_name: str, kp_text: str,
+    session_id: str, progress_callback: Callable | None = None,
+    cancel_event: Event | None = None,
+) -> dict[str, Any]:
+    """Synchronous video generation with progress events (called by workflow runner)."""
+    try:
+        from app.services.multimodal_registry import default_registry
+        registry = default_registry()
+        _, tool = registry.select_tool("micro_lesson_video")
+        if tool is None:
+            return _product_response(None, session_id=session_id, status="error",
+                message="没有可用的视频生成服务", source="agent")
+
+        if progress_callback:
+            progress_callback({"stage": "rag_retrieval", "status": "running", "completed_units": 0, "total_units": 5})
+
+        result = tool.run({
+            "user_message": f"为「{course_name}——{section_title}」生成微课讲解视频",
+            "subject_name": course_name, "topic": section_title,
+            "knowledge_points": kp_text,
+            "progress_callback": progress_callback,
+            "cancel_event": cancel_event,
+        })
+
+        if progress_callback:
+            progress_callback({"stage": "rendering", "status": "completed", "completed_units": 3, "total_units": 5})
+            progress_callback({"stage": "narration", "status": "running", "completed_units": 4, "total_units": 5})
+
+        video_data = _public_tutor_video(result)
+        content = video_data.get("url") or video_data.get("script") or ""
+        if content:
+            try:
+                from app.db.repository import upsert_resource
+                db = SessionLocal()
+                upsert_resource(db, session_id, {
+                    "id": f"tutor-video-{section_id}",
+                    "type": "video", "title": f"{section_title} - 讲解动画",
+                    "content": content, "format": "video",
+                    "difficulty": "medium", "source": "code2video",
+                })
+                db.commit()
+                logger.info("Video persisted: id=%s session=%s", f"tutor-video-{section_id}", session_id)
+            except Exception as e:
+                logger.warning("Video persist failed: %s", e)
+            finally:
+                db.close()
+
+        if progress_callback:
+            progress_callback({"stage": "saving", "status": "completed", "completed_units": 5, "total_units": 5})
+
+        return _product_response({"video": video_data}, session_id=session_id, source="agent")
+    except Exception as e:
+        logger.warning("Video sync generation failed: %s", e)
+        return _product_response(None, session_id=session_id, status="error", message=str(e), source="agent")
 
 
 def _recommend_section_resources(
@@ -6828,3 +6983,99 @@ def ack_notifications(payload: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         return _product_response({"acknowledged": False}, session_id=session_id, source="assessment_loop")
 
+
+import json as _json
+import asyncio as _asyncio
+
+
+@router.get("/notifications/stream")
+async def stream_notifications(sessionId: str = ""):
+    """SSE endpoint for real-time notification push.
+
+    Replaces polling-based notification delivery. The frontend connects via
+    EventSource and receives notifications as server-sent events.
+    """
+    session_id = _require_session_id(sessionId)
+    from app.services.assessment_loop import notification_store
+
+    queue = notification_store.subscribe(session_id)
+
+    async def event_generator():
+        try:
+            while True:
+                try:
+                    data = await _asyncio.wait_for(queue.get(), timeout=30.0)
+                    yield f"data: {_json.dumps(data, ensure_ascii=False)}\n\n"
+                except _asyncio.TimeoutError:
+                    yield f": keepalive\n\n"  # SSE comment (keepalive)
+        except _asyncio.CancelledError:
+            pass
+        finally:
+            notification_store.unsubscribe(session_id, queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+
+# =============================================================================
+# Multimodal save & knowledge endpoints (ChatPage save/import buttons)
+# =============================================================================
+
+@router.post("/multimodal/save-resource")
+def multimodal_save_resource(payload: dict[str, Any]) -> dict[str, Any]:
+    """Save a multimodal generation result as a learning resource."""
+    session_id = str(payload.get("sessionId", "")).strip()
+    result = payload.get("result", {}) if isinstance(payload.get("result"), dict) else {}
+    task_type = str(payload.get("task_type", "")).strip()
+    try:
+        db = SessionLocal()
+        from app.db.models import ResourceModel
+        resource = ResourceModel(
+            id=f"res_{uuid.uuid4().hex[:12]}",
+            session_id=session_id or "unknown",
+            type="multimodal",
+            title=result.get("title", f"{task_type} 资源") if isinstance(result, dict) else f"{task_type} 资源",
+            content=result.get("content", "") if isinstance(result, dict) else "",
+            content_url=result.get("content_url", "") if isinstance(result, dict) else "",
+            source="multimodal_agent",
+            quality_status="passed",
+        )
+        db.add(resource)
+        db.commit()
+        return _product_response({"resourceId": resource.id, "ok": True}, session_id=session_id, source="multimodal")
+    except Exception as e:
+        logger.exception("Failed to save multimodal resource")
+        return _product_response({"ok": False, "error": str(e)[:200]}, session_id=session_id, source="multimodal", status="error")
+    finally:
+        db.close()
+
+
+@router.post("/multimodal/knowledge-candidates")
+def multimodal_knowledge_candidates(payload: dict[str, Any]) -> dict[str, Any]:
+    """Extract knowledge point candidates from a multimodal result for linking."""
+    result = payload.get("result", {}) if isinstance(payload.get("result"), dict) else {}
+    existing = payload.get("knowledge_candidates") if isinstance(payload.get("knowledge_candidates"), list) else []
+    candidates = list(existing) if existing else []
+    # Extract knowledge points from result text
+    text = ""
+    if isinstance(result, dict):
+        for key in ("display_text", "teaching_text", "answer_text", "content"):
+            text = str(result.get(key, "")).strip()
+            if len(text) > 50:
+                break
+    # Simple keyword extraction from text
+    import re as _re
+    kp_pattern = _re.findall(r'[一-鿿]{2,8}(?:定理|定律|法则|原理|公式|概念|方法|算法|结构)', text)
+    if kp_pattern:
+        for kp in kp_pattern[:10]:
+            if kp not in candidates:
+                candidates.append(kp)
+    return _product_response({"candidates": candidates}, source="multimodal")

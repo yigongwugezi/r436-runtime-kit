@@ -68,6 +68,9 @@ export default function Home() {
         try {
           setTextbookStatus('uploading');
           const tb = await uploadTextbook(s.id, textbookFile);
+          // Update the subject object with the textbook ID so setActive()
+          // below carries the correct textbookId for LecturePage detection.
+          s.textbookId = tb.id;
           setUseTextbook(false);
           setTextbookFile(null);
 

@@ -21,7 +21,9 @@ type TaskEntry = WorkflowState & { resourceType: GeneralResourceType; reusedExis
 
 const resourceTypes: Array<{ id: GeneralResourceType; label: string; icon: typeof FileText; description: string }> = [
   { id: 'lecture', label: '课程讲义', icon: FileText, description: '结构化的知识讲解' },
+  { id: 'video', label: '教学视频', icon: Clapperboard, description: '可视化教学讲解' },
   { id: 'mindmap', label: '思维导图', icon: BrainCircuit, description: '可渲染的知识结构图' },
+  { id: 'practice', label: '实操案例', icon: FileText, description: '含代码示例的实践任务' },
   { id: 'quiz', label: '练习题库', icon: FileQuestion, description: '含答案与解析的自测题' },
   { id: 'ppt', label: 'PPT 演示', icon: Presentation, description: '可下载的本地演示文稿' },
   { id: 'manim', label: 'Manim 动画', icon: Clapperboard, description: '需要本地 Manim 渲染环境' },

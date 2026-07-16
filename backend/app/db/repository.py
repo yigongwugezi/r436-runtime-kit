@@ -330,6 +330,98 @@ def get_latest_profile(db: Session, session_id: str) -> ProfileSnapshotModel | N
     )
 
 
+def get_latest_cross_session_profile(
+    db: Session,
+    session_id: str,
+) -> ProfileSnapshotModel | None:
+    """Get the latest profile_snapshot for the same (learner, subject) across sessions.
+
+    Falls back from the current session to sibling sessions belonging to the
+    same learner+subject pair, enabling cross-session profile persistence.
+    Returns None when no profile exists for any related session.
+    """
+    sibling_ids = _sibling_session_ids(db, session_id)
+    if sibling_ids is None:
+        return get_latest_profile(db, session_id)
+    if not sibling_ids:
+        return None
+    return (
+        db.query(ProfileSnapshotModel)
+        .filter(ProfileSnapshotModel.session_id.in_(sibling_ids))
+        .order_by(desc(ProfileSnapshotModel.created_at))
+        .first()
+    )
+
+
+def _sibling_session_ids(
+    db: Session, session_id: str
+) -> list[str] | None:
+    """Collect all session IDs sharing the same (learner, subject) as *session_id*.
+
+    Returns None when the session itself has no learner/subject linkage
+    (fall back to session-only lookup). Returns empty list when no sibling
+    sessions exist.
+    """
+    sess = db.get(SessionModel, session_id)
+    if not sess or not sess.learner_id or not sess.subject_id:
+        return None
+    return [
+        row[0]
+        for row in db.query(SessionModel.id)
+        .filter(
+            SessionModel.learner_id == sess.learner_id,
+            SessionModel.subject_id == sess.subject_id,
+        )
+        .all()
+    ]
+
+
+def get_cross_session_learning_path(
+    db: Session,
+    session_id: str,
+) -> LearningPathModel | None:
+    """Get the latest learning_path for the same (learner, subject) across sessions."""
+    sibling_ids = _sibling_session_ids(db, session_id)
+    if sibling_ids is None:
+        return get_latest_learning_path(db, session_id)
+    if not sibling_ids:
+        return None
+    return (
+        db.query(LearningPathModel)
+        .filter(LearningPathModel.session_id.in_(sibling_ids))
+        .order_by(desc(LearningPathModel.updated_at))
+        .first()
+    )
+
+
+def get_cross_session_resources(
+    db: Session,
+    session_id: str,
+) -> list[ResourceModel]:
+    """Get all resources for the same (learner, subject) across sessions.
+
+    Returns resources from all sibling sessions, ordered by creation time
+    descending. Deduplicates by resource ID.
+    """
+    sibling_ids = _sibling_session_ids(db, session_id)
+    if sibling_ids is None:
+        return get_resources(db, session_id)
+    if not sibling_ids:
+        return []
+    seen: set[str] = set()
+    results: list[ResourceModel] = []
+    for r in (
+        db.query(ResourceModel)
+        .filter(ResourceModel.session_id.in_(sibling_ids))
+        .order_by(desc(ResourceModel.created_at))
+        .all()
+    ):
+        if r.id not in seen:
+            seen.add(r.id)
+            results.append(r)
+    return results
+
+
 # ── Learning Paths ───────────────────────────────────────────────────────
 
 def upsert_learning_path(
@@ -983,6 +1075,59 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
         if event_counts.get(mode_evt, 0) > 0:
             mode_metrics[mode_evt] = event_counts[mode_evt]
 
+    # ── 知识点掌握趋势（按知识点分组的 quiz 结果序列）──
+    topic_trend: dict[str, list[dict[str, Any]]] = {}
+    for qr in daily_quiz:
+        t = qr.get("topic", "") or "general"
+        if t not in topic_trend:
+            topic_trend[t] = []
+        topic_trend[t].append({"date": qr["date"], "accuracy": qr["accuracy"]})
+    topic_mastery_trend = [
+        {"topic": t, "points": pts[-10:]}
+        for t, pts in topic_trend.items()
+        if len(pts) >= 2
+    ]
+
+    # ── 学习规律评分（根据每日学习间隔）──
+    import datetime as _dt2
+    active_days: list[_dt2.date] = []
+    for evt in events:
+        if evt.created_at:
+            d = evt.created_at.date()
+            if d not in active_days:
+                active_days.append(d)
+    active_days.sort()
+    regularity_score = 50  # 默认中等
+    if len(active_days) >= 3:
+        gaps = [(active_days[i+1] - active_days[i]).days for i in range(len(active_days)-1)]
+        if gaps:
+            import statistics
+            gap_std = statistics.stdev(gaps) if len(gaps) > 1 else 0
+            # std 越小越规律：std=0 → 100分，std=7 → 50分
+            regularity_score = max(0, min(100, round(100 - gap_std * 7)))
+
+    # ── 综合评估摘要 ──
+    assessment_parts = []
+    if total_minutes > 0:
+        assessment_parts.append(f"累计学习了 {total_minutes} 分钟")
+    if streak > 0:
+        assessment_parts.append(f"连续学习 {streak} 天")
+    if total_minutes > 0 and quiz_accuracy is not None:
+        if quiz_accuracy >= 80:
+            assessment_parts.append("掌握情况良好")
+        elif quiz_accuracy >= 60:
+            assessment_parts.append("掌握情况中等，有提升空间")
+        else:
+            assessment_parts.append("基础较薄弱，建议从核心概念开始复习")
+    if regularity_score >= 70:
+        assessment_parts.append("学习规律性强")
+    elif regularity_score <= 30 and len(active_days) >= 3:
+        assessment_parts.append("学习间隔不规律，建议固定每天的学习时间")
+    if weak_topics:
+        topics_str = "、".join([w["topic"] for w in weak_topics[:3]])
+        assessment_parts.append(f"重点关注：{topics_str}")
+    assessment_summary = "。".join(assessment_parts) + "。" if assessment_parts else "暂无足够数据生成评估。"
+
     return {
         "eventCount": len(events),
         "totalStudyMinutes": total_minutes,
@@ -1020,6 +1165,9 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
             }
             for evt in events[:5]
         ],
+        "assessmentSummary": assessment_summary,
+        "regularityScore": regularity_score,
+        "topicMasteryTrend": topic_mastery_trend,
     }
 
 
@@ -1475,3 +1623,57 @@ def get_attempt_answers(db: Session, attempt_id: str) -> list[AnswerRecordModel]
     return db.query(AnswerRecordModel).filter(
         AnswerRecordModel.attempt_id == attempt_id
     ).order_by(AnswerRecordModel.created_at).all()
+
+
+# ── Assessment State (closed-loop persistence) ─────────────────────────
+
+from app.db.models import AssessmentStateModel
+
+
+def get_assessment_state(db: Session, session_id: str) -> AssessmentStateModel | None:
+    """Get the persisted assessment tracking state for a session."""
+    return db.get(AssessmentStateModel, session_id)
+
+
+def upsert_assessment_state(
+    db: Session,
+    session_id: str,
+    *,
+    last_diagnosis_at: float | None = None,
+    last_mastery_snapshot: dict | None = None,
+    events_since_last_diagnosis: int | None = None,
+    resource_completions_since_diagnosis: int | None = None,
+) -> AssessmentStateModel:
+    """Create or update the assessment tracking state for a session."""
+    state = db.get(AssessmentStateModel, session_id)
+    if state is None:
+        state = AssessmentStateModel(session_id=session_id)
+        db.add(state)
+    if last_diagnosis_at is not None:
+        state.last_diagnosis_at = last_diagnosis_at
+    if last_mastery_snapshot is not None:
+        state.last_mastery_snapshot = last_mastery_snapshot
+    if events_since_last_diagnosis is not None:
+        state.events_since_last_diagnosis = events_since_last_diagnosis
+    if resource_completions_since_diagnosis is not None:
+        state.resource_completions_since_diagnosis = resource_completions_since_diagnosis
+    db.commit()
+    db.refresh(state)
+    return state
+
+
+def get_stale_assessment_sessions(db: Session, stale_seconds: float) -> list[str]:
+    """Return session_ids whose last diagnosis is older than *stale_seconds*
+    AND that have enough new events to warrant re-assessment."""
+    import time
+    cutoff = time.time() - stale_seconds
+    rows = (
+        db.query(AssessmentStateModel.session_id)
+        .filter(
+            AssessmentStateModel.last_diagnosis_at > 0,
+            AssessmentStateModel.last_diagnosis_at < cutoff,
+            AssessmentStateModel.events_since_last_diagnosis >= 3,
+        )
+        .all()
+    )
+    return [row[0] for row in rows]

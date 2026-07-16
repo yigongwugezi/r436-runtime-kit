@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.agents.base import BaseAgent, register_agent
 from app.services.multimodal_registry import ToolRegistry, default_registry
 
 
@@ -93,6 +94,12 @@ class MultimodalAgent:
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         task_type = _infer_task_type(context)
+        # ── 允许前端/上下文指定生图 Provider ──
+        _GEN_TASKS = {"image_generation", "teaching_diagram_generation", "concept_card_generation"}
+        if task_type in _GEN_TASKS:
+            provider = _text(context.get("provider") or context.get("image_provider"))
+            if provider and provider != "seedream":
+                task_type = f"{task_type}_{provider}"
         if task_type == "structured_learning_resource":
             from app.services.structured_multimodal_resources import build_structured_resource
 
@@ -170,3 +177,39 @@ class MultimodalAgent:
             "user_message": _text(context.get("user_message")),
             "warnings": warnings,
         }
+
+
+@register_agent
+class MultimodalAgentAdapter(BaseAgent):
+    """BaseAgent 适配器，让 MultimodalAgent 可以被 AgentFactory 管理和加入 pipeline。"""
+    agent_id = "multimodal_agent"
+    agent_name = "多模态资源生成智能体"
+
+    def run(self, context: dict[str, Any]) -> dict[str, Any]:
+        inner = MultimodalAgent(getattr(self, '_registry', None))
+        mm_result = inner.run(context)
+        status = mm_result.get("status", "generation_failed")
+        content = mm_result.get("content", "")
+        content_url = mm_result.get("content_url", "")
+        task_type = mm_result.get("task_type", "")
+        if status == "completed" and (content or content_url):
+            resources = [{
+                "type": "multimodal",
+                "title": mm_result.get("title", ""),
+                "content": content,
+                "content_url": content_url,
+                "format": "video" if "video" in task_type else "image",
+                "source": "multimodal_agent",
+                "multimodal_status": "generated" if content_url else "script_only",
+                "quality_status": "passed",
+            }]
+        else:
+            resources = [{
+                "type": "multimodal",
+                "title": mm_result.get("title", ""),
+                "content": content or mm_result.get("user_message", ""),
+                "source": "multimodal_agent",
+                "multimodal_status": "generation_failed" if status != "completed" else "script_only",
+                "quality_status": "fallback",
+            }]
+        return {"resources": resources, "agent_step": self.agent_step()}

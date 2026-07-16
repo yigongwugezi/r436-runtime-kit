@@ -74,7 +74,7 @@ class PlannerAgent(BaseAgent):
         else:
             textbook_chapters = None
 
-        # ── Mode B: Generate path with appropriate structure ──
+        # ── Mode B: Generate path with LLM pipeline ──
         chapters = None
         try:
             chapters = self._generate_chapters(
@@ -92,13 +92,7 @@ class PlannerAgent(BaseAgent):
             chapters = self._llm_pipeline_fallback(context, profile, planning_points, total_days, diag_meta)
 
         if not chapters:
-            # If textbook is available, use it as the fallback instead of generic rule-based path
-            if textbook_chapters:
-                chapters = self._build_path_from_textbook(
-                    textbook_chapters, profile, total_days, diag_meta,
-                )
-            if not chapters:
-                return self._fallback_path(context, planning_points, total_days, profile, diag_meta)
+            return self._fallback_path(context, planning_points, total_days, profile, diag_meta)
 
         # ── Step 4: Personalize with DeepTutor ──
         personalized = self._personalize_with_deeptutor(
@@ -211,18 +205,29 @@ class PlannerAgent(BaseAgent):
 
     @staticmethod
     def _build_textbook_context_prompt(textbook_chapters: list[dict]) -> str:
-        """Build a concise textbook structure summary for LLM prompt injection.
+        """Build a textbook structure summary for LLM prompt injection.
 
         Includes section_id and page ranges for each section so the LLM
         can output explicit textbook_section_ids in its response.
         """
-        lines = ["【教材参考】"]
+        lines = [
+            "【教材参考 — 你必须按照以下结构规划学习路径】",
+            "",
+            "你正在为一位使用指定教材的学生规划学习路径。以下是该教材的完整章节目录。",
+            "你的任务是：",
+            "1. 整体上严格遵循教材的章节顺序，不得跳过核心教学内容",
+            "2. 可以将多个简短的教材小节合并为一个学习小节（在 textbook_section_ids 中列出所有合并的ID）",
+            "3. 可以根据学生基础调整节奏（章间插入复习日、调整小节顺序等），但不能遗漏教材的核心知识点",
+            "4. 每个学习小节的输出中必须包含 textbook_section_ids 字段（字符串数组），填入对应的教材小节ID",
+            "5. 如果某个学习小节没有对应的教材小节（如复习日），textbook_section_ids 填 []",
+            "",
+        ]
         for ch in textbook_chapters:
             ch_title = ch.get("title", "")
             ch_start = ch.get("start_page", 0)
             ch_end = ch.get("end_page", 0)
-            page_info = f"({ch_start}-{ch_end}页)" if ch_start > 0 else ""
-            lines.append(f"\n- {ch_title} {page_info}")
+            page_info = f"（第{ch_start}-{ch_end}页）" if ch_start > 0 else ""
+            lines.append(f"## {ch_title} {page_info}")
             for sec in ch.get("sections", []):
                 sec_id = sec.get("section_id", "")
                 sec_title = sec.get("title", "")
@@ -230,16 +235,11 @@ class PlannerAgent(BaseAgent):
                 sec_end = sec.get("end_page", 0)
                 if sec_title:
                     lines.append(
-                        f"    [{sec_id}] {sec_title} (第{sec_start}-{sec_end}页)"
+                        f"  - [{sec_id}] {sec_title}（第{sec_start}-{sec_end}页）"
                     )
+            lines.append("")
         lines.append(
-            "\n请参考以上教材结构来规划学习路径。你可以：\n"
-            "- 只选择与学生目标相关的章节\n"
-            "- 调整章节学习顺序\n"
-            "- 跳过不相关的内容\n\n"
-            "重要：请在输出的每个 section 中指定 textbook_section_ids 字段（字符串数组），\n"
-            "填入该学习小节对应的教材小节ID（即上面方括号中的ID，如 sec_01_01）。\n"
-            "一个学习小节可以对应一个或多个教材小节。"
+            "以上方括号中的ID（如 sec_01_01）就是你要填入 textbook_section_ids 的值。"
         )
         return "\n".join(lines)
 
@@ -907,6 +907,9 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
         Each stage already contains chapters → sections → knowledge_points
         with canonical IDs from _rewrite_chapter_ids.
         """
+        # Normalize stage estimated_days to sum to total_days
+        stages_with_chapters = self._normalize_stage_days(stages_with_chapters, total_days)
+
         total_chapters = sum(len(s.get("chapters", [])) for s in stages_with_chapters)
         total_sections = sum(
             len(c.get("sections", []))
@@ -974,8 +977,34 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
                 continue
 
             stage_title = str(stage.get("title", ""))
+
+            # ── Format-agnostic task/duration extraction ──
+            # Flat format: tasks + duration at stage level
+            # Chapter format: chapters → sections → knowledge_points
             stage_tasks = list(stage.get("tasks", []))
             duration_str = str(stage.get("duration", ""))
+            chapters = stage.get("chapters", [])
+
+            # If chapter-structured, derive tasks and days from chapter data
+            if (not stage_tasks or not duration_str) and chapters:
+                if not stage_tasks:
+                    stage_tasks = []
+                    for ch in chapters:
+                        if isinstance(ch, dict):
+                            ch_title = str(ch.get("title", ""))
+                            sections = ch.get("sections", [])
+                            if isinstance(sections, list):
+                                for sec in sections:
+                                    if isinstance(sec, dict):
+                                        sec_title = str(sec.get("title", ""))
+                                        if sec_title:
+                                            stage_tasks.append(f"{ch_title} - {sec_title}")
+                if not duration_str:
+                    ch_count = len(chapters)
+                    sec_count = sum(len(ch.get("sections", [])) for ch in chapters if isinstance(ch, dict))
+                    est_days = max(1, sec_count) if sec_count > 0 else max(1, ch_count)
+                    duration_str = f"第{est_days}天"
+
             days = self._parse_duration_days(duration_str)
 
             # 匹配掌握度
@@ -1068,6 +1097,27 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
         result["consecutive_correct"] = consecutive_correct
         result["consecutive_wrong"] = consecutive_wrong
         return result
+
+    @staticmethod
+    def _normalize_stage_days(stages: list[dict], total_days: int) -> list[dict]:
+        """Ensure stage estimated_days sum to approximately total_days."""
+        if not stages:
+            return stages
+        raw_days = [s.get("estimated_days", s.get("estimatedDays", 0)) for s in stages]
+        raw_sum = sum(raw_days)
+        if raw_sum <= 0 or raw_sum == total_days:
+            return stages
+        ratio = total_days / raw_sum
+        cumulative = 0
+        for i, s in enumerate(stages):
+            if i == len(stages) - 1:
+                d = total_days - cumulative
+            else:
+                d = max(1, round(raw_days[i] * ratio))
+            cumulative += d
+            s["estimated_days"] = d
+            s["estimatedDays"] = d
+        return stages
 
     def _parse_duration_days(self, duration: str) -> int:
         """解析 duration 字符串中的天数。"""
@@ -1275,23 +1325,18 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
 
     def _llm_infer_days(self, time_text: str, profile: dict) -> int | None:
         profile_text = self._compact_profile_text(profile)
-        prompt = f"""从以下信息提取学生的学习时间（天数）：
+        prompt = f"""从以下信息提取学生的有效学习天数：
 
 用户消息和时间信息：{time_text}
 学习画像中的时间信息：{profile_text}
 
-常见时间表达参考：
-- "两个月" = 60天
-- "一个月" = 30天
-- "三周" = 21天
-- "两周" = 14天
-- "半年" = 180天
-- "一个半月" = 45天
-- "这学期" = 90天（默认一学期约3个月）
-- "每天2小时，持续1个月" = 30天（关注总周期而非每日时长）
+关键规则：
+- 如果学生说"周末休息"/"周末不学"，只算工作日(5/7)，例如"一个月，周末休息" ≈ 20天
+- "一个月" = 30天，"两个月" = 60天，"两周" = 14天
+- "每天X小时"是每日强度，不影响总天数
 - 如果没有明确时间 = 14天
 
-只返回一个整数，不要解释。"""
+只返回一个整数（有效学习天数），不要解释。"""
         try:
             raw = self.llm_client.chat(
                 messages=[
@@ -1321,15 +1366,15 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
 
         m = re.search(r"(\d+)\s*个?\s*月", combined)
         if m:
-            return max(1, min(365, int(m.group(1)) * 30))
+            return self._adjust_for_weekends(max(1, min(365, int(m.group(1)) * 30)), combined)
 
         m = re.search(r"(\d+)\s*个?\s*(?:周|星期)", combined)
         if m:
-            return max(1, min(365, int(m.group(1)) * 7))
+            return self._adjust_for_weekends(max(1, min(365, int(m.group(1)) * 7)), combined)
 
         m = re.search(r"(\d+)\s*(?:天|日)", combined)
         if m:
-            return max(1, min(365, int(m.group(1))))
+            return self._adjust_for_weekends(max(1, min(365, int(m.group(1)))), combined)
 
         m = re.search(r"(\d+)\s*个?\s*(?:小时|h)", combined)
         if m and "每天" not in combined:
@@ -1345,22 +1390,32 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
             total = tens + ones
             unit = m.group(3)
             if unit in ("周", "星期"):
-                return max(1, min(365, total * 7))
+                return self._adjust_for_weekends(max(1, min(365, total * 7)), combined)
             if unit == "月":
-                return max(1, min(365, total * 30))
-            return max(1, min(365, total))
+                return self._adjust_for_weekends(max(1, min(365, total * 30)), combined)
+            return self._adjust_for_weekends(max(1, min(365, total)), combined)
 
         m = re.search(r"([一二两三四五六七八九])\s*个?\s*(天|日|周|星期|月)", combined)
         if m:
             total = cn_map.get(m.group(1), 7)
             unit = m.group(2)
             if unit in ("周", "星期"):
-                return max(1, min(365, total * 7))
+                return self._adjust_for_weekends(max(1, min(365, total * 7)), combined)
             if unit == "月":
-                return max(1, min(365, total * 30))
-            return max(1, min(365, total))
+                return self._adjust_for_weekends(max(1, min(365, total * 30)), combined)
+            return self._adjust_for_weekends(max(1, min(365, total)), combined)
 
-        return 14
+        # ── No explicit time unit found ──
+        return self._adjust_for_weekends(14, combined)
+
+    def _adjust_for_weekends(self, raw_days: int, time_text: str) -> int:
+        """If user says weekends off, reduce to effective weekdays (~5/7)."""
+        weekend_off = re.search(r"周末(?:休息|不学|不?学习|放假)", time_text)
+        if weekend_off:
+            effective = max(1, round(raw_days * 5 / 7))
+            logger.info("Weekends off: %d raw -> %d effective days", raw_days, effective)
+            return effective
+        return raw_days
 
     def _normalize_cn_numbers(self, text: str) -> str:
         cn_digits = {"一": "1", "二": "2", "两": "2", "三": "3", "四": "4",
@@ -1759,6 +1814,7 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
         return " ".join(self._compact_profile(profile).values())
 
     def _make_result(self, path, total_days, diag_meta):
+        path = self._normalize_stage_days(path, total_days)
         plan_summary = self._summarize(path, diag_meta, total_days)
         return {
             "learning_path": path,

@@ -41,11 +41,76 @@ async def _extract_facts_after_chat(
     assistant_reply: str,
     existing_facts: dict,
 ) -> None:
-    """After a DeepTutor chat turn, extract any new facts about the student
-    and persist them to conversation_store so the profile accumulates over time.
+    """After a chat turn, extract facts with probe-aware extraction.
+
+    Unlike a simple fact-extractor, this understands that:
+    - A diagnostic quiz answer reveals knowledge_base (if correct) OR weak_points (if wrong)
+    - A concept explanation reveals depth of understanding, not just surface facts
+    - A preference choice made in context is more reliable than a self-report
+    - Evidence must be tagged: [探测], [学生自述], or [行为观察]
     """
     if not session_id or not user_msg or not assistant_reply:
         return
+
+    # ── Detect probe type from assistant message ──
+    _probe_type = ""
+    _diagnostic_markers = ["考你一下", "你觉得对吗", "下面哪个", "正确的是", "以下哪个", "判断", "测测", "摸底"]
+    _concept_markers = ["你能解释", "说说看", "用自己的话", "什么是", "的区别是"]
+    _preference_markers = ["文字解释还是", "画个图", "哪种方式", "你喜欢"]
+    _scenario_markers = ["如果", "你会怎么", "遇到", "试试看"]
+    _goal_markers = ["最想做到", "学完", "能自己", "目标"]
+    _time_markers = ["整块还是", "碎片", "周末也", "最少能"]
+
+    if any(m in assistant_reply for m in _diagnostic_markers):
+        _probe_type = "diagnostic_quiz"
+    elif any(m in assistant_reply for m in _concept_markers):
+        _probe_type = "concept_explanation"
+    elif any(m in assistant_reply for m in _preference_markers):
+        _probe_type = "preference_choice"
+    elif any(m in assistant_reply for m in _scenario_markers):
+        _probe_type = "scenario_test"
+    elif any(m in assistant_reply for m in _goal_markers):
+        _probe_type = "goal_probe"
+    elif any(m in assistant_reply for m in _time_markers):
+        _probe_type = "time_reality_check"
+
+    _probe_hints = {
+        "diagnostic_quiz": (
+            "上一轮AI出了一道诊断题。根据学生回答的对错和解释质量，提取画像：\n"
+            "- 学生答对且解释清楚 → 提取到 knowledge_base，例如'[探测]能正确判断XXX'\n"
+            "- 学生答错或回避 → 提取到 weak_points，例如'[探测]对YYY理解有误'\n"
+            "- 不要只看学生说了什么——要结合AI的分析来判断对错"
+        ),
+        "concept_explanation": (
+            "上一轮AI让学生解释了一个概念。根据解释的准确性和深度：\n"
+            "- 解释清晰准确 → 提取到 knowledge_base，附带掌握程度\n"
+            "- 解释模糊或错误 → 提取到 weak_points，标注概念混淆的具体点"
+        ),
+        "preference_choice": (
+            "上一轮AI给了学生一个学习方式的自然选择（文字vs图解等）。\n"
+            "从学生的选择中提取 preference，evidence标记为[行为观察]"
+        ),
+        "scenario_test": (
+            "上一轮用场景题探测了学生能力。从回答中提取 knowledge_base 或 weak_points。"
+        ),
+        "goal_probe": (
+            "上一轮深入探测了学习目标的真实动机和具体程度。\n"
+            "提取 learning_goal 为有深度的描述，区分'通过考试'和'想拿90分'。"
+        ),
+        "time_reality_check": (
+            "上一轮确认了时间安排的真实性（整块vs碎片，理想vs实际）。\n"
+            "提取 time_budget 为区分了工作日/周末/下限的具体描述。"
+        ),
+    }
+
+    probe_context = ""
+    if _probe_type:
+        probe_context = (
+            "\n## 本轮探测类型：" + _probe_type + "\n"
+            + _probe_hints.get(_probe_type, "")
+            + "\n- 提取的值必须带上 evidence 来源标记：[探测]、[学生自述]、或[行为观察]\n"
+            + "- 值要具体到可操作的程度，避免笼统描述\n"
+        )
 
     # Build a focused fact-extraction prompt with the conversation context
     label_map = {
@@ -70,17 +135,21 @@ async def _extract_facts_after_chat(
     unknown_block = "\n".join(unknown_lines) if unknown_lines else "（全部已知）"
 
     fact_prompt = (
-        "你是一个信息提取器。请从以下学生和AI助教的对话中，提取关于学生的任何新事实。\n\n"
+        "你是一个信息提取器。请从以下学生和AI助教的对话中，提取关于学生的任何新事实。\n"
+        "注意：你要同时看学生的回答和AI助教的回复——AI可能在分析中指出了学生的对错或理解深度。\n\n"
         "提取维度：专业/年级背景、想学的课程、已有基础、薄弱点、学习目标、时间安排、学习偏好。\n"
         "规则：\n"
-        "- 只提取学生在当前对话中明确说出的信息，不要编造\n"
+        "- 结合AI的分析来判断学生信息的质量和含义，不要只看学生表面说了什么\n"
+        "- 如果是诊断题/概念解释场景，答对→knowledge_base，答错→weak_points\n"
         "- 提取时尽量具体——'软件工程大二' 优于 '大学生'，'链式法则卡住了' 优于 '数学薄弱'\n"
-        "- 如果某个维度在对话中没有新的信息，就空着不填\n\n"
+        "- 每个值前面标注 evidence 来源：[探测]（通过诊断验证）、[学生自述]、[行为观察]\n"
+        "- 如果某个维度在对话中没有新的、有深度的信息，就空着不填\n"
+        + probe_context + "\n"
         f"## 当前已知\n{known_block}\n\n"
         f"## 尚未了解\n{unknown_block}\n\n"
         f"## 对话\n学生：{user_msg[:500]}\nAI：{assistant_reply[:600]}\n\n"
         "请输出JSON，只包含从本次对话中新发现的维度（skip已充分了解的维度）：\n"
-        '{"updates": {"background": "新值", "target_course": "新值", ...}}'
+        '{"updates": {"background": "[学生自述]软件工程大二", ...}}'
     )
 
     try:
@@ -256,7 +325,8 @@ def _is_likely_chat(msg: str, facts: dict) -> bool:
     compact = re.sub(r"\s+", "", msg)
     # Explicit generation triggers → need full classification
     gen_triggers = ["生成", "出题", "规划", "批改", "诊断", "路径", "资源", "导图",
-                    "系统学", "专攻", "按章节", "每日学", "每日计划", "薄弱点", "强化"]
+                    "系统学", "专攻", "按章节", "每日学", "每日计划", "薄弱点", "强化",
+                    "调整", "修改", "改一下", "加快", "放慢", "重新"]
     if any(t in compact for t in gen_triggers):
         return False
     # Everything else is probably chat
@@ -288,6 +358,27 @@ def _summarize_known_facts(facts: dict[str, str]) -> str:
     return "；".join(parts) if parts else "暂无"
 
 
+def _all_dims_deep(facts: dict[str, str]) -> bool:
+    """Check if all 7 core dimensions have deep (non-shallow) answers.
+
+    A dimension is shallow only if the entire value is essentially just a
+    shallow keyword — e.g. "零基础" alone is shallow, but "零基础未学过数字电路
+    和汇编但逻辑直觉不错" is not.
+    """
+    from app.services.conversation_state import _SHALLOW_PATTERNS
+
+    required = set(_LABEL_MAP.keys())
+    for dim in required:
+        val = str(facts.get(dim, "")).strip()
+        if not val or val in ("未提及", "待补充", "未知", "", "无"):
+            return False
+        # Only flag as shallow if the value is JUST the keyword (plus minor padding)
+        for p in _SHALLOW_PATTERNS:
+            if val == p or (len(val) <= len(p) + 4 and p in val):
+                return False
+    return True
+
+
 def _build_chat_persona(facts: dict[str, str]) -> str:
     """Build persona instructions that override DeepTutor's default tutor persona.
 
@@ -302,11 +393,19 @@ def _build_chat_persona(facts: dict[str, str]) -> str:
     total = len(_LABEL_MAP)
 
     # Detect shallow vs deep per dimension
+    # "微积分" is 3 chars but perfectly valid — don't flag short answers as shallow.
+    # Only flag as shallow if the value contains a known shallow/generic phrase.
     shallow_keys: set[str] = set()
     deep_keys: set[str] = set()
     for k in filled:
         val = str(facts.get(k, "")).strip()
-        if len(val) < 8 or any(p in val for p in _SHALLOW_PATTERNS if len(val) < len(p) + 8):
+        # Only flag as shallow if the value is essentially just the keyword
+        is_shallow = False
+        for p in _SHALLOW_PATTERNS:
+            if val == p or (len(val) <= len(p) + 4 and p in val):
+                is_shallow = True
+                break
+        if is_shallow:
             shallow_keys.add(k)
         else:
             deep_keys.add(k)
@@ -405,49 +504,67 @@ def _build_chat_persona(facts: dict[str, str]) -> str:
     if deep_pct < 0.4:
         stage_guidance = (
             "你正在逐步了解这个学生——目前还处于早期阶段，离生成方案还远。\n"
-            "每轮聚焦 1-2 个维度深入了解，不要急着跳到生成。把学生当一个真实的人来了解。"
+            "每轮聚焦 1 个维度深入了解，不要急着跳到生成。\n\n"
+            "*** 所有维度通用规则：学生的自述不可信，必须间接验证 ***\n"
+            "- background：不要只问专业名。追问具体方向、上过哪些课，从术语推断真实背景。\n"
+            "- target_course：不要只问想学什么。追问为什么、想到什么程度、有没有具体时间节点。\n"
+            "- knowledge_base：不要问'你基础怎么样'。出诊断题、让解释概念、抛判断题——从对错和解释质量打分。\n"
+            "- weak_points：不要问'你哪里薄弱'。从诊断题答错/解释不清的地方暴露，交叉验证。\n"
+            "- learning_goal：不要只问'考试还是做项目'。追问'学完最想做到什么'、'如果时间不够哪部分可跳过'。\n"
+            "- time_budget：不要只问一个数字。追问是整块还是碎片、周末能不能学、最少能挤出多少。\n"
+            "- preference：不要问'喜欢什么方式'。在对话中自然抛选择（'文字解释还是画图？'），从行为中观察。\n\n"
+            "任何维度只靠学生随口一说就算过了的，视为未探测。"
         )
     elif deep_pct < 0.7:
         stage_guidance = (
             "你对学生有了基本了解，但离真正的个性化规划还差得远。\n"
             "现在重点是：把模糊的回答变具体，把直接询问变为间接探测。\n"
-            "每个核心维度至少经过 1 轮追问才算真正了解。"
+            "每个维度的值必须具体、可验证、有证据来源（诊断结果/行为观察/交叉验证），\n"
+            "不能是学生随口说的笼统描述。\n"
+            "如果 knowledge_base 还没做过诊断题，这一轮必须补——\n"
+            "薄弱点只能从诊断中暴露，问是问不出来的。"
         )
     elif deep_pct < 1.0 or shallow_keys:
         stage_guidance = (
             "你对学生的了解已经比较全面了。现在要做的是：\n"
             "1. 回顾已了解的信息，用你自己的话总结并向学生确认\n"
             "2. 对仍然模糊的维度做最后一轮追问\n"
-            "3. 确认后，才可以提议生成"
+            "3. 确认后，用自然语气总结画像。系统会自动弹出模式选择器。\n\n"
+            "*** 确认前逐维度自查（任何一项不满足就继续探测）***\n"
+            "- background：是否具体到专业+年级+方向？\n"
+            "- target_course：是否有为什么学+想学到什么程度？\n"
+            "- knowledge_base：是否经过了诊断验证（出题/解释概念/判断）而非仅靠自述？\n"
+            "- weak_points：是否具体到题型或概念（不是'数学弱'这种笼统话）？\n"
+            "- learning_goal：是否有具体可衡量的目标（不是'想学好'这种）？\n"
+            "- time_budget：是否有每天多久+整块还是碎片+是否有例外情况？\n"
+            "- preference：是否通过行为观察验证（不是学生随口说的'喜欢看书'）？"
         )
     else:
-        course = str(facts.get("target_course", ""))
-        is_lang = any(w in course for w in ["英语", "日语", "韩语", "法语", "德语", "语言", "雅思", "托福"])
-        mode_hint = ""
-        if course:
-            mode_hint = (
-                "\n\n当你觉得学生对你的了解确认无误后，输出：\n"
-                "[[mode-pick:教材式,日课式,精进式|course:{course}|default:"
-                + ("日课式" if is_lang else "教材式") +
-                "]]\n"
-            )
-        return (
-            "你对学生的学习情况已经有了比较深入的了解。\n\n"
-            "1. 用自然对话的语气总结关键信息，向学生确认是否准确\n"
-            "2. 问学生还有什么补充\n"
-            "3. 确认后引出生成方案的提议"
-            + mode_hint
+        stage_guidance = (
+            "你对学生的了解已经非常深入了。\n"
+            "按顶部 🛑 指令操作——总结画像后直接输出模式选择标签，不要绕弯子。"
         )
 
     # ═══════════════════════════════════════════════════════════════════
     # Assemble the final persona
     # ═══════════════════════════════════════════════════════════════════
-    parts = [
-        stage_guidance,
-        "",
-        "━━━ 本轮聚焦探测的维度 ━━━",
-        probing_sections,
-    ]
+    parts = []
+
+    # Hard stop: if all dimensions are deep enough, force proposal NOW.
+    # This goes FIRST so the model can't miss it while in "teaching mode".
+    if not shallow_keys and not missing_keys:
+        parts.append(
+            "🛑 所有 7 个维度都已探测完毕。\n"
+            "用自然语气简单总结画像，告诉学生画像已经完整。\n"
+            "不要生成方案、不要出题、不要开始教学。总结完就停。\n"
+            "系统会自动弹出模式选择器。"
+        )
+        parts.append("")
+
+    parts.append(stage_guidance)
+    parts.append("")
+    parts.append("━━━ 本轮聚焦探测的维度 ━━━")
+    parts.append(probing_sections)
     if other_shallow:
         parts.append(f"\n⚠️ 以下维度回答太模糊，后续需要追问：{'、'.join(_LABEL_MAP.get(k, k) for k in other_shallow)}")
     if other_missing:
@@ -456,6 +573,13 @@ def _build_chat_persona(facts: dict[str, str]) -> str:
     parts.append(
         "\n⚠️ 一次只深入一个维度，问一个问题。绝对禁止用 | 分隔多个问题——"
         "那是填表式提问，不是自然对话。学生回答后再自然过渡到下一个维度。"
+    )
+    parts.append(
+        "\n🚫 绝对禁止在聊天中直接生成任何规划类内容——包括但不限于：学习方案、"
+        "时间表、周计划、日计划、章节安排、里程碑、学习路线图。你只负责了解和探测学生。"
+        "当你认为画像已经足够深入时，总结画像后系统会自动弹出模式选择器。"
+        "学生点击按钮后后端规划器会自动接管，你不要越俎代庖。"
+        "即使学生催促你'开始吧''直接给我方案'，在画像不完整时也必须继续探测。"
     )
 
     return "\n".join(parts)
@@ -497,7 +621,7 @@ def _resolve_retry_route(state: dict) -> str:
     """
     review = state.get("review", {})
     quality_status = review.get("quality_status", "passed")
-    if quality_status not in ("blocked", "failed"):
+    if quality_status not in ("blocked", "failed", "warning"):
         return "reply"
 
     checks = review.get("checks", [])
@@ -560,9 +684,11 @@ async def _run_conversation_agent(context: dict[str, Any], factory: AgentFactory
             "facts": result.get("facts", {}),
             "plan_mode": str(result.get("plan_mode", "")),
             "path_mode": str(result.get("path_mode", "")),
+            "_llm_proposal": str(result.get("_llm_proposal", "")),
+            "needs_clarification": bool(result.get("needs_clarification", False)),
         }
     except Exception:
-        return {"action": "none", "reply": "", "facts": {}, "plan_mode": "", "path_mode": ""}
+        return {"action": "none", "reply": "", "facts": {}, "plan_mode": "", "path_mode": "", "_llm_proposal": "", "needs_clarification": False}
 
 
 def _emit_feedback_signal(state: dict) -> dict[str, Any]:
@@ -667,6 +793,17 @@ async def _conversation_node(state: dict) -> dict:
             state["fallback_used"] = True
             state["reply_source"] = "chat_fallback"
     state["final_reply"] = reply
+
+    # ── Auto-inject mode picker when all dimensions are deep ──
+    profile_facts = state.get("profile_facts", {}) or {}
+    if reply and "[[mode-pick:" not in reply and _all_dims_deep(profile_facts):
+        course = str(profile_facts.get("target_course", "")).strip()
+        if course:
+            is_lang = any(w in course for w in ["英语","日语","韩语","法语","德语","语言","雅思","托福"])
+            default_mode = "日课式" if is_lang else "教材式"
+            state["final_reply"] = reply.rstrip() + (
+                f"\n\n[[mode-pick:教材式,日课式,精进式|course:{course}|default:{default_mode}]]"
+            )
     state.setdefault("agent_steps", []).append({"node": "conversation"})
     return state
 
@@ -706,6 +843,20 @@ async def _diagnosis_node(state: dict) -> dict:
     return await _run_agent("diagnosis", state, state["_factory"])
 
 async def _plan_node(state: dict) -> dict:
+    # ── Mode picker gate: if no mode selected yet, show picker first ──
+    if not state.get("plan_mode") and not state.get("path_mode"):
+        profile_facts = state.get("profile_facts", {}) or {}
+        course = str(profile_facts.get("target_course", ""))
+        if course:
+            is_lang = any(w in course for w in ["英语","日语","韩语","法语","德语","语言","雅思","托福"])
+            default_mode = "日课式" if is_lang else "教材式"
+            state["final_reply"] = (
+                f"好的！在生成学习路径之前，先选一下你想要的规划模式吧～\n\n"
+                f"[[mode-pick:教材式,日课式,精进式|course:{course}|default:{default_mode}]]"
+            )
+            state["pipeline_executed"] = True
+            state["overall_status"] = "completed"
+            return state
     return await _run_agent("planner", state, state["_factory"])
 
 async def _resource_node(state: dict) -> dict:
@@ -837,12 +988,19 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
     factory = AgentFactory()
     state: dict[str, Any] = dict(**kwargs, _retry_count=0, _factory=factory)
 
+    # ── 确保评估调度器在运行（延迟启动兜底）──
+    from app.services.assessment_loop import ensure_scheduler_running
+    ensure_scheduler_running()
+
     # ── Intent classification (if not already provided) ──
     intent = state.get("intent", "")
     if not intent:
-        # Quick keyword check — skip heavy ConversationAgent for obvious chat
+        # If there's a pending proposal (e.g. last round was <proposal>plan</proposal>),
+        # even a short reply like "可以" might be a confirmation — never skip CA.
+        from app.services.conversation_state import conversation_store
+        pending_proposal = conversation_store.get(state.get("session_id", "")).last_proposal
         msg = str(state.get("user_message", "")).strip()
-        if _is_likely_chat(msg, state.get("profile_facts", {})):
+        if not pending_proposal and _is_likely_chat(msg, state.get("profile_facts", {})):
             intent = "none"
         else:
             ca_result = await _run_conversation_agent({
@@ -886,6 +1044,19 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
                 state["reply_source"] = "chat_fallback"
         state["final_reply"] = reply
 
+        # ── Auto-inject mode picker when all dimensions are deep ──
+        # The model can't reliably output [[mode-pick:...]] — backend enforces it.
+        if reply and "[[mode-pick:" not in reply:
+            all_deep = _all_dims_deep(profile_facts)
+            if all_deep:
+                course = str(profile_facts.get("target_course", "")).strip()
+                if course:
+                    is_lang = any(w in course for w in ["英语","日语","韩语","法语","德语","语言","雅思","托福"])
+                    default_mode = "日课式" if is_lang else "教材式"
+                    state["final_reply"] = reply.rstrip() + (
+                        f"\n\n[[mode-pick:教材式,日课式,精进式|course:{course}|default:{default_mode}]]"
+                    )
+
         # ── Extract facts from the exchange and persist to conversation state ──
         if reply and user_msg:
             try:
@@ -897,6 +1068,36 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
                 )
             except Exception:
                 pass
+
+        # ── Rebuild profile dimensions if core facts changed ──
+        # 让"随学随新"真正落地：facts 有核心字段更新时，立即重建画像维度
+        try:
+            cs = conversation_store.get(state.get("session_id", ""))
+            if cs and cs.profile_dirty:
+                # 记录哪些 facts 变了，用于增量更新
+                updated_facts = list(cs.last_updated_fields)
+                existing_profile = state.get("profile", {}) or {}
+                profile_agent = factory.get("profile_agent")
+                if profile_agent:
+                    pr = profile_agent.run({
+                        "session_id": state.get("session_id", ""),
+                        "user_message": user_msg,
+                        "profile_facts": dict(cs.facts),
+                        "course": state.get("course"),
+                        "_profile_dirty": True,
+                        "_existing_profile": existing_profile,
+                        "_updated_facts": updated_facts,
+                    })
+                    if pr and pr.get("profile"):
+                        state["profile"] = pr["profile"]
+                        state["profile_v2"] = pr.get("profile_v2", {})
+                        # 关联到 conversation_state 使其持久化
+                        cs.last_result = dict(cs.last_result or {})
+                        cs.last_result["profile"] = pr["profile"]
+                        cs.last_result["profile_v2"] = pr.get("profile_v2", {})
+                        cs.profile_dirty = False
+        except Exception:
+            pass
 
         state["pipeline_executed"] = True
         state["overall_status"] = "completed"
@@ -951,6 +1152,81 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
             if factory.has(full_id):
                 await _run_agent(short_key, state, factory)
 
+        # ── 单 agent 路径的审核闭环 ──
+        # 跑了 resource_agent 后自动追加 review_agent，发现问题就重试修正
+        # 不依赖全量图（图很少被触发），确保所有资源生成都经过审核
+        if "resource_agent" in agent_ids:
+            """ResourceAgent 审核闭环：只关注资源相关的 check，不因 profile/path 等无关项重试。"""
+            resource_check_ids = {"resource_content_quality", "resource_coverage", "resource_type_match", "semantic_quality"}
+            retries = state.get("_retry_count", 0)
+            max_retries = 2
+            while retries <= max_retries:
+                await _run_agent("review", state, factory)
+                review = state.get("review", {})
+                checks = review.get("checks", [])
+                has_resource_issues = any(
+                    c.get("check_id") in resource_check_ids
+                    and c.get("status") in ("warning", "blocked", "failed")
+                    for c in checks
+                )
+                if not has_resource_issues:
+                    break
+                if retries >= max_retries:
+                    break
+                retries += 1
+                state["_retry_count"] = retries
+                logger.info(
+                    "Review flagged resource issues (retry %d/%d), re-running resource_agent",
+                    retries, max_retries,
+                )
+                await _run_agent("resource", state, factory)
+
+        # ── 资源推送：资源审核通过后，自动生成推荐并通知 ──
+        # 让用户知道有新的可用资源，无需手动刷新
+        if "resource_agent" in agent_ids:
+            resources = state.get("resources", []) or []
+            if resources:
+                try:
+                    from app.services.assessment_loop import notification_store
+                    from app.services.assessment_loop import AssessmentNotification
+                    titles = [r.get("title", "") for r in resources[:3] if r.get("title")]
+                    title_str = "、".join(titles)
+                    notification_store.push(state.get("session_id", ""), AssessmentNotification(
+                        type="recommendations_ready",
+                        title="新的学习资源已生成",
+                        message=f"已为你生成 {len(resources)} 个学习资源，包括：{title_str}" + ("等" if len(resources) > 3 else ""),
+                        session_id=state.get("session_id", ""),
+                    ))
+                except Exception:
+                    pass
+
+        # ── question_agent 审核闭环 ──
+        # 题目也经过 review 审核，有问题就重试修正
+        if "question_agent" in agent_ids:
+            """QuestionAgent 审核闭环：只关注题目相关的 check，不因 profile/path/resource 等无关项重试。"""
+            retries = state.get("_retry_count", 0)
+            max_retries = 2
+            while retries <= max_retries:
+                await _run_agent("review", state, factory)
+                review = state.get("review", {})
+                checks = review.get("checks", [])
+                has_question_issues = any(
+                    "question" in str(c.get("check_id", ""))
+                    and c.get("status") in ("warning", "blocked", "failed")
+                    for c in checks
+                )
+                if not has_question_issues:
+                    break
+                if retries >= max_retries:
+                    break
+                retries += 1
+                state["_retry_count"] = retries
+                logger.info(
+                    "Review flagged question issues (retry %d/%d), re-running question_agent",
+                    retries, max_retries,
+                )
+                await _run_agent("question", state, factory)
+
         state["pipeline_executed"] = True
         state["overall_status"] = "completed"
 
@@ -965,11 +1241,51 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
             summary_parts.append(f"配套{len(resources)}个学习资源")
         if questions:
             summary_parts.append(f"生成{len(questions)}道练习题")
-        diag_reply = _diagnosis_reply(state.get("diagnosis")) if "diagnosis" in intent else ""
-        if diag_reply:
-            state["final_reply"] = diag_reply
-        elif summary_parts:
-            state["final_reply"] = "、".join(summary_parts) + "。"
+        # ── Tutor intent: 生成对话式辅导回复，包含诊断分析和资源引用 ──
+        # ── Tutor intent: 先直接回答用户问题，再附上诊断分析和资源推荐 ──
+        if "tutor" in intent:
+            user_msg = str(state.get("user_message", "")).strip()
+            diagnosis = state.get("diagnosis", {})
+            resources = state.get("resources", []) or []
+            try:
+                # 构建带诊断上下文的辅导 prompt
+                profile_facts = state.get("profile_facts", {}) or {}
+                weak = diagnosis.get("weak_knowledge_points", []) or []
+                weak_str = "、".join([w.get("name", "") for w in weak[:3] if w.get("name")])
+                tutor_context = f"学生背景：{profile_facts.get('background','')}"
+                if profile_facts.get("knowledge_base"):
+                    tutor_context += f"，已有基础：{profile_facts['knowledge_base']}"
+                if profile_facts.get("learning_goal"):
+                    tutor_context += f"，学习目标：{profile_facts['learning_goal']}"
+                if weak_str:
+                    tutor_context += f"\n薄弱知识点：{weak_str}"
+                tutor_prompt = f"{user_msg}\n\n教学参考：{tutor_context}"
+                direct_answer = await deeptutor.chat(
+                    tutor_prompt,
+                    state.get("messages", []) or [],
+                )
+            except Exception:
+                direct_answer = ""
+            parts = []
+            if direct_answer and len(direct_answer) > 20:
+                parts.append(direct_answer.strip())
+            weak = diagnosis.get("weak_knowledge_points", []) or []
+            if weak:
+                names = [w.get("name", "") for w in weak[:3] if w.get("name")]
+                parts.append("💡 我注意到你对" + "、".join(names) + "还有一些模糊的地方，下方为你准备了针对性的学习资源。")
+            if resources:
+                titles = [r.get("title", "") for r in resources[:3] if r.get("title")]
+                parts.append("📚 推荐资源：" + "；".join(titles))
+            state["final_reply"] = "\n\n---\n\n".join(parts) if parts else (
+                str(diagnosis.get("diagnosis_summary") or diagnosis.get("summary", ""))
+                or "已经分析了你的问题，并为你准备了对应的学习资源，请查看下方。"
+            )
+        else:
+            diag_reply = _diagnosis_reply(state.get("diagnosis")) if "diagnosis" in intent else ""
+            if diag_reply:
+                state["final_reply"] = diag_reply
+            elif summary_parts:
+                state["final_reply"] = "、".join(summary_parts) + "。"
         fb = _emit_feedback_signal(state)
         if fb:
             state.update(fb)

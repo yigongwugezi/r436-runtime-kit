@@ -11,7 +11,10 @@ from sqlalchemy.orm import Session
 from app.db.engine import SessionLocal
 from app.db.repository import (
     delete_session,
+    get_cross_session_learning_path,
+    get_cross_session_resources,
     get_last_intent,
+    get_latest_cross_session_profile,
     get_messages,
     get_or_create_session,
     save_message,
@@ -38,6 +41,10 @@ PROFILE_FIELD_DEFS: dict[str, dict[str, Any]] = {
     "background": {
         "label": "身份/专业背景",
         "question": "你现在的年级、专业或身份是什么？",
+    },
+    "learning_history": {
+        "label": "学习历史",
+        "question": "你之前学过哪些相关的课程或内容？成绩怎么样？有什么印象深刻的学习经历？",
     },
     "target_course": {
         "label": "目标课程/知识方向",
@@ -95,6 +102,7 @@ _SHALLOW_MIN_LENGTH = 8  # 短于这个长度的回答几乎一定是浅层的
 # 当某个维度已有浅层回答时，用追问来获取更深入的信息
 _SHALLOW_FOLLOWUPS: dict[str, str] = {
     "background": "你具体是哪个学校、什么专业的？方便的话也可以说说年级～",
+    "learning_history": "你之前学过的这些课程里，有没有哪门学得特别好或者特别吃力的？能举个例子吗？",
     "target_course": "你想学这门课是为了应对什么？考试、考研、还是做项目？想学到什么程度？",
     "knowledge_base": "你刚才说基础比较泛，能具体说说学过哪些内容、哪个部分觉得比较熟？",
     "weak_points": "能举个例子说说具体哪个题型或知识点觉得比较难吗？",
@@ -158,6 +166,15 @@ class ConversationState:
     generating: bool = False
     current_progress: dict[str, Any] | None = None
     updated_at: float = field(default_factory=time.time)
+    # 标记核心 facts 是否有更新，用于触发画像维度增量重建
+    profile_dirty: bool = False
+
+
+# 核心画像事实字段——这些字段更新时会触发画像维度重建
+_PROFILE_CORE_FIELDS = frozenset({
+    "background", "target_course", "knowledge_base",
+    "weak_points", "learning_goal", "time_budget", "preference",
+})
 
 
 class ConversationStore:
@@ -187,9 +204,9 @@ class ConversationStore:
                 for m in db_messages
             ]
             state.last_intent = get_last_intent(db, state.session_id)
-            profile = get_latest_profile(db, state.session_id)
-            path = get_latest_learning_path(db, state.session_id)
-            db_resources = repo_get_resources(db, state.session_id)
+            profile = get_latest_cross_session_profile(db, state.session_id)
+            path = get_cross_session_learning_path(db, state.session_id)
+            db_resources = get_cross_session_resources(db, state.session_id)
             if profile or path or db_resources:
                 result: dict[str, Any] = {}
                 if profile:
@@ -232,6 +249,25 @@ class ConversationStore:
             for msg in state.messages:
                 if msg.get("role") == "user":
                     self.extract_facts(state, str(msg.get("content", "")))
+            # Populate missing facts from cross-session profile
+            if profile and profile.dimensions:
+                _dim_to_fact = {
+                    "major_background": "background",
+                    "knowledge_base": "knowledge_base",
+                    "learning_goal": "learning_goal",
+                    "cognitive_style": "preference",
+                    "error_patterns": "weak_points",
+                    "coding_ability": "knowledge_base",
+                    "interest_direction": "target_course",
+                    "learning_rhythm": "time_budget",
+                }
+                for dim in profile.dimensions:
+                    dim_key = dim.get("key", "") if isinstance(dim, dict) else ""
+                    fact_key = _dim_to_fact.get(dim_key, dim_key)
+                    if fact_key in PROFILE_FIELD_DEFS and fact_key not in state.facts:
+                        val = str(dim.get("value", "")).strip() if isinstance(dim, dict) else ""
+                        if val and val not in ("未知", "未提及", "暂无", "无", ""):
+                            state.facts[fact_key] = val
         finally:
             db.close()
 
@@ -939,6 +975,9 @@ class ConversationStore:
         state.facts[key] = cleaned
         if key not in state.last_updated_fields:
             state.last_updated_fields.append(key)
+        # 核心 facts 变化 → 下次需重建画像维度
+        if key in _PROFILE_CORE_FIELDS:
+            state.profile_dirty = True
 
     def _merge_time_budget(self, old_value: str, new_value: str) -> str:
         if not old_value:

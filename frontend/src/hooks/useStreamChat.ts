@@ -42,7 +42,7 @@ export function useStreamChat() {
   const userAbortedRef = useRef(false);  // distinguish user stop-click from page-unload abort
 
   const send = useCallback(
-    async (content: string, attachments: ChatAttachment[] = [], options: { ignoreImageContext?: boolean } = {}) => {
+    async (content: string, attachments: ChatAttachment[] = [], options: { ignoreImageContext?: boolean; imageProvider?: string } = {}) => {
       if (isStreaming || (!content.trim() && attachments.length === 0)) return;
       const text = content.trim() || '识别这张图片';
       const store = useChatStore.getState();
@@ -99,6 +99,7 @@ export function useStreamChat() {
           learnerId: getStableLearnerId(),
           attachments: requestAttachments,
           ignore_image_context: ignoreImageContext,
+          image_provider: options.imageProvider || '',
         }, controller.signal);
 
         const decoder = new TextDecoder();
@@ -207,6 +208,7 @@ export function useStreamChat() {
             learnerId: getStableLearnerId(),
             attachments: requestAttachments,
             ignore_image_context: ignoreImageContext,
+            image_provider: options.imageProvider || '',
           });
           log.info('非流式回退成功');
           setDebugInfoFromPayload(fallback as unknown as Record<string, unknown>);

@@ -25,6 +25,19 @@ class ProfileAgent(BaseAgent):
     profile_dimensions = PROFILE_DIMENSION_ORDER
     _MISSING_VALUES = {"", "未知", "未提及", "暂无", "无", "待补充", "无诊断数据", "暂无诊断数据", "unknown", "none", "待诊断", "未诊断"}
 
+    # fact 字段名 → profile dimension key 映射（用于增量更新）
+    _FACT_TO_DIMENSION: dict[str, str] = {
+        "background": "major_background",
+        "learning_history": "learning_history",
+        "knowledge_base": "knowledge_base",
+        "learning_goal": "learning_goal",
+        "preference": "cognitive_style",
+        "weak_points": "error_patterns",
+        "programming_ability": "coding_ability",
+        "target_course": "interest_direction",
+        "time_budget": "learning_rhythm",
+    }
+
     def _get_active_dimensions(self, context: dict[str, Any]) -> list[str]:
         """根据课程上下文返回应激活的画像维度。"""
         course_context = context.get("course") or {}
@@ -32,7 +45,17 @@ class ProfileAgent(BaseAgent):
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         active_dims = self._get_active_dimensions(context)
-        profile = self._build_profile(context, active_dims)
+
+        # ── 增量更新模式：facts 有变化且有已有画像 → 规则重算变化维度，不调 LLM ──
+        if context.get("_profile_dirty") and context.get("_existing_profile"):
+            profile = self._incremental_update_profile(
+                existing=context["_existing_profile"],
+                context=context,
+                active_dims=active_dims,
+            )
+        else:
+            profile = self._build_profile(context, active_dims)
+
         return {
             "profile": profile,
             "profile_v2": build_profile_v2(
@@ -180,6 +203,41 @@ class ProfileAgent(BaseAgent):
                 evidence=value,
             )
         return profile
+
+    def _incremental_update_profile(
+        self,
+        existing: dict[str, Any],
+        context: dict[str, Any],
+        active_dims: list[str],
+    ) -> dict[str, Any]:
+        """增量更新画像——只重算变化维度对应的规则值，不调 LLM。
+
+        适用于 chat-only 路径中 facts 核心字段更新后的轻量画像刷新。
+        """
+        # 1. 确定哪些 dimension 需要重算
+        updated_facts = context.get("_updated_facts", [])
+        changed_dims: set[str] = set()
+        for fact_key in updated_facts:
+            dim = self._FACT_TO_DIMENSION.get(fact_key)
+            if dim:
+                changed_dims.add(dim)
+        # 学习进度是复合维度，任何核心 facts 变化都需重算
+        if updated_facts:
+            changed_dims.add("learning_progress")
+
+        # 2. 用规则生成所有维度的新值（无 LLM 调用）
+        rule_profile = self._profile_from_context(context, active_dims)
+
+        # 3. 合并：只替换变化的维度，其他保持现有值
+        merged = dict(existing)
+        for dim in changed_dims:
+            if dim in rule_profile:
+                merged[dim] = rule_profile[dim]
+
+        # 4. facts 覆盖：确保最新 facts 反映到对应维度
+        merged = self._merge_profile_facts(merged, context)
+
+        return merged
 
     def _profile_from_context(self, context: dict[str, Any], active_dims: list[str] | None = None) -> dict[str, Any]:
         if active_dims is None:

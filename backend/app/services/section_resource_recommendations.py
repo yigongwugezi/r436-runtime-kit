@@ -323,8 +323,84 @@ def normalize_search_context(
             keywords.append(point)
     prior = " ".join(str(item) for item in profile_context.get("prior_experience") or [])
     beginner = any(token in prior for token in ("零基础", "没学过", "基础薄弱", "初学"))
+    # ── 学习历史精炼水平判断 ──
+    # 优先从 profile 维度读取，其次从 subject_context 读取
+    learning_history_raw = None
+    if isinstance(learner_profile, dict):
+        lh = learner_profile.get("learning_history")
+        if isinstance(lh, dict):
+            learning_history_raw = lh
+        elif isinstance(lh, str) and lh.strip():
+            learning_history_raw = {"value": lh}
+    if learning_history_raw is None:
+        lh_ctx = profile_context.get("learning_history", "")
+        learning_history_raw = {"value": str(lh_ctx)} if lh_ctx else {}
+    history_text = str(learning_history_raw.get("value", "") or "")
+    history_lower = history_text.lower()
+    # 判断学生过往学习经历的深度
+    has_strong_history = any(kw in history_lower for kw in (
+        "高分", "优秀", "掌握", "熟练", "精通", "90", "95", "100",
+        "passed", "grade a", "score 90", "completed with",
+    ))
+    has_prior_relevant = any(kw in history_lower for kw in (
+        "学过", "修过", "上过", "学过一些", "接触过", "及格", "成绩",
+        "taken", "studied", "learned", "passed", "grade", "score",
+    ))
+    # 三级水平：beginner → intermediate → advanced
+    if beginner:
+        level = "beginner"
+    elif has_strong_history:
+        level = "advanced"
+    elif has_prior_relevant:
+        level = "intermediate"
+    else:
+        level = "general"
     preferences = profile_context.get("content_preferences") if isinstance(profile_context.get("content_preferences"), list) else []
     resource_preferences = profile_context.get("resource_preferences") if isinstance(profile_context.get("resource_preferences"), list) else []
+    # ── 认知风格提取：映射到资源类型偏好权重 ──
+    cognitive_style: dict[str, float] = {}
+    raw_style: dict | None = None
+    if isinstance(learner_profile, dict):
+        cs = learner_profile.get("cognitive_style")
+        if isinstance(cs, dict):
+            raw_style = cs
+        elif isinstance(cs, str) and cs.strip():
+            raw_style = {"value": cs}
+    if raw_style is None and isinstance(learner_profile, dict):
+        for state in (learner_profile.get("general_states") or []):
+            if isinstance(state, dict) and state.get("key") == "cognitive_style":
+                raw_style = {"value": str(state.get("label", "") or state.get("value", ""))}
+                break
+    if raw_style is None:
+        cs_ctx = profile_context.get("cognitive_style", "")
+        if cs_ctx:
+            raw_style = {"value": str(cs_ctx)}
+    style_value = str(raw_style.get("value", "") or "").lower() if isinstance(raw_style, dict) else ""
+    # 认知风格 → 资源类型偏好映射
+    _style_map: dict[str, dict[str, float]] = {
+        "visual_explanation": {"video": 0.10, "document": -0.03},
+        "图解": {"video": 0.10, "document": -0.03},
+        "definition_first": {"article": 0.08, "document": 0.08, "video": -0.04},
+        "先讲定义": {"article": 0.08, "document": 0.08, "video": -0.04},
+        "example_first": {"article": 0.06, "video": 0.06, "course": 0.04},
+        "先看例题": {"article": 0.06, "video": 0.06, "course": 0.04},
+        "practice_after_explanation": {"document": 0.06},
+        "理解讲解后练习": {"document": 0.06},
+        "step_by_step": {"article": 0.06, "document": 0.06, "course": 0.04},
+        "分步讲解": {"article": 0.06, "document": 0.06, "course": 0.04},
+        "concise_explanation": {"video": 0.04},
+        "简洁讲解": {"video": 0.04},
+    }
+    cognitive_style = _style_map.get(style_value, {})
+    # 综合弱项掌握度：用于提升弱项相关资源权重
+    weak_mastery_map: dict[str, float] = {}
+    for item in _profile_mastery(learner_profile):
+        name = str(item.get("label") or item.get("knowledge_id") or "").strip()
+        status = str(item.get("status") or "").strip().lower()
+        if name and status in ("weak", "薄弱", "learning", "学习中"):
+            weak_mastery_map[name] = 0.15  # 弱项相关资源大幅提权
+        elif name and status in ("partial", "部分掌握", "developing", "发展中"):
+            weak_mastery_map[name] = 0.08
     return {
         "course_name": course,
         "primary_topic": primary_topic,
@@ -332,16 +408,63 @@ def normalize_search_context(
         "english_keywords": english_keywords[:7],
         "preferences": preferences,
         "resource_preferences": resource_preferences,
-        "level": "beginner" if beginner else "general",
+        "level": level,
+        "learning_history_text": history_text[:200] if history_text else "",
         "relevant_weak_points": relevant_weak[:4],
+        "cognitive_style": cognitive_style,
+        "weak_mastery_map": weak_mastery_map,
     }
 
 
+def _split_compound_keyword(keyword: str) -> list[str]:
+    """Split a compound Chinese keyword into individual sub-words for partial matching.
+
+    e.g. "计算机发展简史与分类" → ["计算机发展简史与分类", "计算机发展简史", "分类"]
+    """
+    parts = [keyword]
+    for sep in ("与", "和", "及", "、", "的", "之"):
+        if sep in keyword:
+            parts.extend(p for p in keyword.split(sep) if len(p) >= 2)
+    return list(dict.fromkeys(parts))
+
+
+def _keyword_matches(text: str, context: dict[str, Any]) -> list[str]:
+    """Check which context keywords appear in text, splitting compound keywords."""
+    matched: list[str] = []
+    matched_original: set[str] = set()
+    for term in context["keywords"]:
+        term_lower = term.lower()
+        if term_lower in text:
+            matched.append(term)
+            matched_original.add(term_lower)
+        else:
+            for sub in _split_compound_keyword(term_lower):
+                if sub in text and sub not in matched_original:
+                    matched.append(term)
+                    matched_original.add(term_lower)
+                    break
+    for term in context["english_keywords"]:
+        term_lower = term.lower()
+        if term_lower in text and term not in {m for m in matched}:
+            matched.append(term)
+    return list(dict.fromkeys(matched))
+
+
 def score_relevance(title: str, snippet: str, context: dict[str, Any], resource_type: str, match_level: str, trust_level: str) -> tuple[float, list[str]]:
+    """画像驱动的多维度相关性评分。
+
+    评分维度（按权重）：
+    1. 关键词匹配 (0.26 base + 0.10/keyword)
+    2. 主题词命中 (+0.20)
+    3. 薄弱知识点匹配 (+0.15/weak_point) ← 画像驱动
+    4. 信任度 (official +0.16 / educational +0.11 / general +0.03)
+    5. 认知风格匹配 (+0.08~0.12) ← 画像驱动
+    6. 内容偏好匹配 (+0.08) ← 画像驱动
+    7. 资源类型偏好 (+0.08~0.10) ← 画像驱动
+    8. 水平匹配 (+0.08) ← 画像驱动
+    """
     text = f"{title} {snippet}".lower()
-    matched = [term for term in context["keywords"] if term.lower() in text]
-    matched += [term for term in context["english_keywords"] if term.lower() in text]
-    matched = list(dict.fromkeys(matched))
+    matched = _keyword_matches(text, context)
     score = 0.26 + min(0.50, len(matched) * 0.10)
     if matched:
         score += 0.1
@@ -349,7 +472,6 @@ def score_relevance(title: str, snippet: str, context: dict[str, Any], resource_
         score += 0.2
     if context["course_name"] and context["course_name"].lower() in text:
         score += 0.12
-    # For video results, course name match alone is a strong signal
     if resource_type == "video" and context["course_name"]:
         for cn_char in context["course_name"]:
             if cn_char in text:
@@ -360,12 +482,37 @@ def score_relevance(title: str, snippet: str, context: dict[str, Any], resource_
     if match_level == "expanded_research":
         score -= 0.05
     score += {"official": 0.16, "educational": 0.11, "general": 0.03}[trust_level]
+    # ── 画像驱动：薄弱点匹配（大幅提权）──
+    weak_mastery_map = context.get("weak_mastery_map", {})
+    weak_hits = 0
+    weak_names: list[str] = []
+    for wname, wboost in weak_mastery_map.items():
+        if wname.lower() in text:
+            score += wboost
+            weak_hits += 1
+            weak_names.append(wname)
+    if weak_hits >= 2:
+        score += 0.05  # 多弱项命中额外奖励
+    # ── 画像驱动：认知风格匹配 ──
+    cog_style = context.get("cognitive_style", {})
+    if isinstance(cog_style, dict) and resource_type in cog_style:
+        score += cog_style[resource_type]
+    # ── 画像驱动：内容偏好匹配 ──
     if "example_first" in context["preferences"] and any(token in text for token in ("示例", "例题", "example", "walkthrough")):
-        score += 0.05
+        score += 0.08
+    if "definition_first" in context["preferences"] and any(token in text for token in ("定义", "概念", "原理", "definition", "concept")):
+        score += 0.08
+    if "step_by_step" in context["preferences"] and any(token in text for token in ("步骤", "教程", "tutorial", "step", "guide")):
+        score += 0.08
+    # ── 画像驱动：水平匹配 ──
     if context["level"] == "beginner" and any(token in text for token in ("入门", "基础", "beginner", "basics")):
-        score += 0.05
-    if resource_type == "video" and any("视频" in str(item) for item in context["resource_preferences"]):
-        score += 0.06
+        score += 0.08
+    # ── 画像驱动：资源类型偏好 ──
+    res_prefs = context.get("resource_preferences", [])
+    if resource_type == "video" and any("视频" in str(item) for item in res_prefs):
+        score += 0.10
+    if resource_type in ("document", "article") and any("文档" in str(item) or "讲义" in str(item) for item in res_prefs):
+        score += 0.08
     return min(0.98, score), matched
 
 
@@ -384,7 +531,7 @@ class SectionResourceRecommendationService:
     """Adapt real search results for the lecture workspace without persistence."""
 
     def __init__(self, client: Any | None = None) -> None:
-        self._client = client or get_search_client("duckduckgo")
+        self._client = client or get_search_client(settings.search_provider if settings.search_provider != "mock" else "duckduckgo")
         self._use_cache = client is None
 
     _normal_url = staticmethod(normalize_url)
@@ -412,10 +559,10 @@ class SectionResourceRecommendationService:
 
     @staticmethod
     def _query_layers(context: dict[str, Any], resource_type: str, language: str) -> list[tuple[str, str]]:
-        course = context["course_name"] or "数据结构"
+        course = context["course_name"] or ""
         topic = context["primary_topic"]
         keywords = " ".join(context["keywords"][:3]) or topic
-        english = " ".join(context["english_keywords"][:3]) or "recursion call stack"
+        english = " ".join(context["english_keywords"][:3]) or ""
         cn_hints = []
         en_hints = []
         if "example_first" in context["preferences"]:
@@ -425,21 +572,37 @@ class SectionResourceRecommendationService:
         hint = " ".join(cn_hints)
         english_hint = " ".join(en_hints)
         if resource_type == "article":
-            return [(f"{course} {keywords} 教程 {hint}".strip(), "exact_topic"), (f"{topic} 示例 {hint}".strip(), "exact_topic"), (f"{english} tutorial {english_hint}".strip(), "chapter_level"), (f"{course} {topic} 教学", "course_level")]
+            base = [(f"{course} {topic} {hint}".strip(), "exact_topic"),
+                    (f"{keywords} 教程 {hint}".strip(), "exact_topic")]
+            if english:
+                base.append((f"{english} tutorial {english_hint}".strip(), "chapter_level"))
+            if course and course not in {q for q, _ in base}:
+                base.append((f"{course} {topic} 教学".strip(), "course_level"))
+            return [q for q in base if q[0]][:3]
         if resource_type == "video":
-            return [
-                (f"{course} {topic} 视频".strip(), "exact_topic"),
-                (f"{course} {keywords} 教学视频".strip(), "exact_topic"),
-                (f"{topic} 视频教程 bilibili".strip(), "chapter_level"),
-                (f"{course} {topic} 视频教程".strip(), "chapter_level"),
-                (f"{english} calculus video tutorial".strip(), "course_level"),
-            ]
+            base = [(f"{course} {topic} 视频教程".strip(), "exact_topic"),
+                    (f"{topic} 视频教程 bilibili".strip(), "chapter_level"),
+                    (f"{course} {topic} 视频".strip(), "chapter_level")]
+            if english:
+                base.append((f"{english} video tutorial".strip(), "course_level"))
+            return [q for q in base if q[0]][:3]
         if resource_type == "course":
-            return [(f"{course} {topic} {hint}".strip(), "exact_topic"), (f"{course} {topic} 课程".strip(), "chapter_level"), (f"{course} {topic} mooc".strip(), "chapter_level"), (f"{course} 在线课程".strip(), "course_level")]
+            base = [(f"{course} {topic} 课程".strip(), "exact_topic"),
+                    (f"{course} {topic} mooc".strip(), "chapter_level"),
+                    (f"{course} 在线课程".strip(), "course_level")]
+            return [q for q in base if q[0]][:3]
         if resource_type == "document":
-            return [(f"{topic} {hint}".strip(), "exact_topic"), (f"{topic} 课件".strip(), "exact_topic"), (f"{course} {topic} 讲义".strip(), "chapter_level"), (f"{english} lecture notes {english_hint}".strip(), "course_level")]
-        expanded = "tail recursion" if "recursion" in english else english
-        return [(f"{english} paper".strip(), "exact_topic"), (f"{english} research".strip(), "exact_topic"), (f"{expanded} optimization paper".strip(), "expanded_research"), (f"{english} design paper".strip(), "expanded_research")]
+            base = [(f"{topic} {hint}".strip(), "exact_topic"),
+                    (f"{topic} 课件 讲义".strip(), "exact_topic")]
+            if english:
+                base.append((f"{english} lecture notes {english_hint}".strip(), "chapter_level"))
+            return [q for q in base if q[0]][:3]
+        if not english:
+            return [(f"{topic} paper".strip(), "exact_topic"),
+                    (f"{topic} 论文".strip(), "expanded_research")]
+        return [(f"{english} paper".strip(), "exact_topic"),
+                (f"{english} research paper".strip(), "expanded_research"),
+                (f"{topic} paper".strip(), "chapter_level")][:3]
 
     def _rank(
         self,
@@ -493,24 +656,42 @@ class SectionResourceRecommendationService:
                 score -= 0.14
             elif feedback in {"too_hard", "too_easy"}:
                 score -= 0.04
-            if score < 0.25 or (not matched and match_level == "exact_topic"):
+            primary_topic_hit = context["primary_topic"].lower() in text if context.get("primary_topic") else False
+            if score < 0.25 or (not matched and match_level == "exact_topic" and not primary_topic_hit):
                 diagnostics["filtered"]["low_relevance"] += 1
                 continue
             diagnostics["relevant_count"] += 1
             platform = classify_platform(url)
             relation = {"exact_topic": "精确对应当前知识点", "chapter_level": "对应相关章节", "course_level": "课程级拓展", "expanded_research": "拓展论文"}[match_level]
-            reason = f"{relation}：覆盖「{context['primary_topic']}」"
+            reason_parts: list[str] = [f"{relation}：覆盖「{context['primary_topic']}」"]
             if matched:
-                reason += f"及「{'、'.join(matched[:2])}」"
+                reason_parts.append(f"及「{'、'.join(matched[:2])}」")
+            # ── 画像驱动：认知风格匹配说明 ──
+            cog_style = context.get("cognitive_style", {})
+            if isinstance(cog_style, dict) and expected in cog_style and cog_style[expected] > 0:
+                reason_parts.append("契合你的学习风格偏好")
+            # ── 画像驱动：薄弱点命中 ──
+            weak_mastery_map = context.get("weak_mastery_map", {})
+            hit_weak = [wname for wname in weak_mastery_map if wname.lower() in text]
+            if hit_weak:
+                reason_parts.append(f"针对你的薄弱点「{'、'.join(hit_weak[:2])}」")
+            # ── 画像驱动：内容偏好说明 ──
             if "example_first" in context["preferences"]:
-                reason += "，按先看例题偏好补充了示例导向搜索"
+                reason_parts.append("按先看例题偏好补充了示例导向搜索")
+            if "definition_first" in context["preferences"]:
+                reason_parts.append("按概念优先偏好强化了定义与原理关键词")
+            if "step_by_step" in context["preferences"]:
+                reason_parts.append("按分步讲解偏好匹配了教程类资源")
+            # ── 画像驱动：水平匹配说明 ──
             if context["level"] == "beginner":
-                reason += "，按当前基础阶段加入了入门与基础查询词"
-            if expected == "video" and any("视频" in str(item) for item in context["resource_preferences"]):
-                reason += "，匹配视频资源偏好"
-            related_weak = [point for point in context["relevant_weak_points"] if point.lower() in {term.lower() for term in matched}]
-            if related_weak:
-                reason += f"，命中当前小节薄弱点「{'、'.join(related_weak[:2])}」"
+                reason_parts.append("匹配当前入门阶段")
+            # ── 画像驱动：资源类型偏好说明 ──
+            res_prefs = context.get("resource_preferences", [])
+            if expected == "video" and any("视频" in str(item) for item in res_prefs):
+                reason_parts.append("匹配你的视频资源偏好")
+            if expected in ("document", "article") and any("文档" in str(item) or "讲义" in str(item) for item in res_prefs):
+                reason_parts.append("匹配你的文档阅读偏好")
+            reason = "，".join(reason_parts)
             resources.append({
                 "title": title, "url": url, "source": source, "resource_type": expected,
                 "platform": platform, "snippet": snippet, "reason": reason + "。",
@@ -620,7 +801,10 @@ class SectionResourceRecommendationService:
             candidates.extend({"item": item, "resource_type": resource_type, "match_level": match_level} for item in items)
 
         try:
+            # Fire the first two queries in parallel — double coverage without double wall-clock.
             submit(0)
+            if len(layers) > 1:
+                submit(1)
             while pending and time.monotonic() - started < total_budget:
                 if cancel_event and cancel_event.is_set():
                     raise SearchCancelled()
@@ -640,7 +824,8 @@ class SectionResourceRecommendationService:
                         add_response(query, match_level, future.result(timeout=0))
                     except SearchCancelled:
                         raise
-                    except Exception:
+                    except Exception as exc:
+                        logger.warning("Search layer failed for query=%r type=%r: %s", query, resource_type, exc)
                         warnings.append("外部资源搜索暂不可用，请稍后重试。")
                 ranked = self._rank(candidates, context, language, {**diagnostics, "filtered": Counter()}, feedback_by_url)
                 if len([item for item in ranked if item["resource_type"] == resource_type]) >= target_count:
@@ -698,9 +883,12 @@ class SectionResourceRecommendationService:
             self._emit(progress_callback, "primary_search", "running")
 
         try:
-            for resource_type in search_requested:
+            for idx, resource_type in enumerate(search_requested):
                 if cancel_event and cancel_event.is_set():
                     raise SearchCancelled()
+                # Small stagger between types reduces search-engine rate-limiting.
+                if idx > 0 and len(search_requested) > 1:
+                    time.sleep(0.6)
                 self._search_layers(
                     resource_type=resource_type,
                     layers=self._query_layers(context, resource_type, language),

@@ -46,7 +46,7 @@ class AgentPlan:
 INTENT_REGISTRY: dict[str, AgentPlan] = {
     # ── Chat-only intents (no agents executed) ──
     "none":      AgentPlan(agent_ids=[],  node_route="conversation",  should_run_agents=False),
-    "tutoring":  AgentPlan(agent_ids=[],  node_route="conversation",  should_run_agents=False),
+    "tutoring":  AgentPlan(agent_ids=["profile_agent", "diagnosis_agent", "resource_agent"], node_route="profile", should_run_agents=True),
     "unsafe":    AgentPlan(agent_ids=[],  node_route="conversation",  should_run_agents=False),
     "":           AgentPlan(agent_ids=[],  node_route="conversation",  should_run_agents=False),
 
@@ -66,12 +66,16 @@ INTENT_REGISTRY: dict[str, AgentPlan] = {
         should_run_agents=True,
     ),
     "tutor": AgentPlan(
-        agent_ids=["profile_agent", "diagnosis_agent", "resource_agent"],
+        agent_ids=["profile_agent", "diagnosis_agent", "resource_agent", "multimodal_agent"],
         node_route="profile",
         should_run_agents=True,
     ),
 
-    # ── Full workflow ──
+    "tutoring": AgentPlan(
+        agent_ids=["profile_agent", "diagnosis_agent", "resource_agent", "multimodal_agent"],
+        node_route="profile",
+        should_run_agents=True,
+    ),
     "full_workflow": AgentPlan(
         agent_ids=None,
         node_route="pipeline_start",

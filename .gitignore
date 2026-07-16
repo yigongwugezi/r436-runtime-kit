@@ -52,3 +52,4 @@ outputs/
 playwright-report/
 test-results/
 screenshots/
+.reasonix/

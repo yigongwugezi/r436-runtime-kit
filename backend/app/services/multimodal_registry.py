@@ -9,13 +9,14 @@ from app.services.multimodal_provider import (
     MindMapTool,
     QwenImageProvider,
     QwenVisionProvider,
+    SeedreamImageProvider,
     WanVideoProvider,
 )
 from app.services.spark_provider import (
     SparkImageProvider,
-    SparkVideoProvider,
 )
 from app.services.multimodal_provider import SparkVisionProvider
+from app.services.code2video_provider import Code2VideoProvider
 
 
 class ToolRegistry:
@@ -37,21 +38,23 @@ class ToolRegistry:
             "image_to_learning_plan": "QwenVisionProvider",
             "image_to_variant_questions": "QwenVisionProvider",
             "image_to_resource_bundle": "QwenVisionProvider",
-            "image_generation": "SparkImageProvider",      # 科大讯飞星火绘画
-            "concept_card_generation": "SparkImageProvider",
-            "teaching_diagram_generation": "SparkImageProvider",
-            "video_generation": "ManimVideoProvider",
-            "micro_lesson_video": "ManimVideoProvider",
-            "video_script_generation": "ManimVideoProvider",
-            # Spark vision as alternative to Qwen VL
+            # ── 生成类 ──
+            "image_generation": "SeedreamImageProvider",
+            "concept_card_generation": "SeedreamImageProvider",
+            "teaching_diagram_generation": "SeedreamImageProvider",
+            "image_generation_qwen": "QwenImageProvider",
+            "concept_card_generation_qwen": "QwenImageProvider",
+            "teaching_diagram_generation_qwen": "QwenImageProvider",
+            "video_generation": "Code2VideoProvider",
+            "micro_lesson_video": "Code2VideoProvider",
+            "video_script_generation": "Code2VideoProvider",
+            # ── 备用 / 直连 ──
             "image_understanding_spark": "SparkVisionProvider",
             "image_to_mindmap_spark": "SparkVisionProvider",
-            # Fallback / direct access entries
-            "image_generation_qwen": "QwenImageProvider",
             "image_generation_spark": "SparkImageProvider",
             "video_generation_wan": "WanVideoProvider",
-            "video_generation_spark": "SparkVideoProvider",
             "video_generation_manim": "ManimVideoProvider",
+            "video_generation_code2video": "Code2VideoProvider",
         }
 
     def register_tool(self, name: str, tool: Any) -> None:
@@ -102,10 +105,11 @@ def default_registry() -> ToolRegistry:
     registry = ToolRegistry()
     registry.register_tool("MindMapTool", MindMapTool())
     registry.register_tool("QwenVisionProvider", QwenVisionProvider())
+    registry.register_tool("SeedreamImageProvider", SeedreamImageProvider())
     registry.register_tool("QwenImageProvider", QwenImageProvider())
     registry.register_tool("WanVideoProvider", WanVideoProvider())
     registry.register_tool("ManimVideoProvider", ManimVideoProvider())
+    registry.register_tool("Code2VideoProvider", Code2VideoProvider())
     registry.register_tool("SparkImageProvider", SparkImageProvider())
-    registry.register_tool("SparkVideoProvider", SparkVideoProvider())
     registry.register_tool("SparkVisionProvider", SparkVisionProvider())
     return registry

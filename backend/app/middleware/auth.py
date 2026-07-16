@@ -84,16 +84,18 @@ async def get_auth(
 
     # Optionally load full learner record
     learner = None
+    db = None
     try:
         db = SessionLocal()
         learner = db.get(LearnerModel, learner_id)
     except Exception:
         logger.warning("Failed to load learner %s", learner_id)
     finally:
-        try:
-            db.close()
-        except Exception:
-            pass
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
 
     return AuthContext(learner_id=learner_id, role=role, learner=learner)
 

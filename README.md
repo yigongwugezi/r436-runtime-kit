@@ -136,6 +136,78 @@ LLM_PROVIDER=mock
 
 注意：真实 `.env` 不要提交到 GitHub。
 
+## 开源依赖与协议声明
+
+本系统在开发过程中使用了以下开源项目及 AI 工具/框架，在此列出名称、来源及相关协议要求。
+
+### 前端依赖
+
+| 名称 | 来源 | 协议 |
+|------|------|------|
+| React | https://react.dev | MIT |
+| TypeScript | https://www.typescriptlang.org | Apache-2.0 |
+| Vite | https://vitejs.dev | MIT |
+| React Router | https://reactrouter.com | MIT |
+| Zustand | https://zustand.docs.pmnd.rs | MIT |
+| Axios | https://axios-http.com | MIT |
+| Tailwind CSS | https://tailwindcss.com | MIT |
+| @tailwindcss/typography | https://github.com/tailwindlabs/tailwindcss-typography | MIT |
+| Mermaid | https://mermaid.js.org | MIT |
+| react-markdown | https://github.com/remarkjs/react-markdown | MIT |
+| remark-gfm | https://github.com/remarkjs/remark-gfm | MIT |
+| remark-math | https://github.com/remarkjs/remark-math | MIT |
+| rehype-katex | https://github.com/remarkjs/remark-math | MIT |
+| KaTeX | https://katex.org | MIT |
+| ECharts | https://echarts.apache.org | Apache-2.0 |
+| echarts-for-react | https://github.com/hustcc/echarts-for-react | MIT |
+| markmap-lib / markmap-view | https://markmap.js.org | MIT |
+| react-syntax-highlighter | https://github.com/react-syntax-highlighter/react-syntax-highlighter | MIT |
+| lucide-react | https://lucide.dev | ISC |
+
+### 后端依赖
+
+| 名称 | 来源 | 协议 |
+|------|------|------|
+| Python | https://www.python.org | PSF |
+| FastAPI | https://fastapi.tiangolo.com | MIT |
+| Uvicorn | https://www.uvicorn.org | BSD-3-Clause |
+| Pydantic | https://docs.pydantic.dev | MIT |
+| SQLAlchemy | https://www.sqlalchemy.org | MIT |
+| httpx | https://www.python-httpx.org | BSD-3-Clause |
+| LangGraph | https://langchain-ai.github.io/langgraph | MIT |
+| LlamaIndex (llama-index-core) | https://www.llamaindex.ai | MIT |
+| llama-index-vector-stores-faiss | https://github.com/run-llama/llama_index | MIT |
+| FAISS (faiss-cpu) | https://github.com/facebookresearch/faiss | MIT |
+| llama-index-embeddings-huggingface | https://github.com/run-llama/llama_index | MIT |
+| sentence-transformers | https://www.sbert.net | Apache-2.0 |
+| PyMuPDF (pymupdf4llm) | https://github.com/pymupdf/PyMuPDF | **AGPL-3.0** ⚠️ |
+| ddgs (DuckDuckGo Search) | https://github.com/ivandabella/ddgs | MIT |
+| python-multipart | https://github.com/Kludex/python-multipart | Apache-2.0 |
+
+### AI 模型与外部服务
+
+| 名称 | 来源 | 说明 |
+|------|------|------|
+| DeepSeek | https://www.deepseek.com | 默认 LLM Provider（deepseek-chat）|
+| 科大讯飞 星火 | https://www.xfyun.cn | 图像/语音多模态 Provider（可选）|
+| 阿里云 DashScope / Qwen | https://dashscope.aliyun.com | 多模态生成与 VLM 评审（可选）|
+| Wan Video | https://github.com/Wan-Video/Wan2.1 | 视频生成 Provider（可选）|
+| HuggingFace Embedding Models | https://huggingface.co | RAG Embedding 模型 |
+
+### 外部智能体项目
+
+| 名称 | 来源 | 说明 |
+|------|------|------|
+| DeepTutor | https://github.com/HKUDS/DeepTutor (推断) | 终身个性化辅导系统 v1.5.0 |
+| OpenMAIC | 独立前端子项目 | 开源多智能体教练 |
+
+### ⚠️ 重要协议提示
+
+- **PyMuPDF** 使用 **AGPL-3.0** 协议，属于强 Copyleft 许可证。若将本项目用于商业目的或作为 SaaS 服务提供，需特别注意 AGPL 协议的合规义务——包括但不限于向用户公开完整的源代码。如无法满足 AGPL 要求，建议替换为其他 PDF 解析库（如 pdfplumber、PyPDF2 等 MIT/BSD 协议的替代品）。
+- 其余依赖大多使用 MIT、Apache-2.0、BSD 等宽松协议，商业使用友好，仅需保留版权声明。
+
+---
+
 ## 团队协作规则
 
 - 当前前端路线统一为 React + TypeScript + Vite。

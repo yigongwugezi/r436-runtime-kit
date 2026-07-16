@@ -10,6 +10,7 @@ Provides:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import ssl
 import time
@@ -19,6 +20,7 @@ from urllib import error, request
 
 from app.config import settings
 
+logger = logging.getLogger(__name__)
 
 # ── Exceptions ─────────────────────────────────────────────────────────────
 
@@ -286,30 +288,13 @@ _llm_client_cache: dict[str, BaseLLMClient] = {}
 
 
 def get_llm_client(provider: str | None = None) -> BaseLLMClient:
-    """Return a cached LLM client instance for the given provider.
+    """Return a cached LLM client for agents.
 
-    When *provider* is ``None`` (default), reads ``settings.llm_provider``
-    so callers that omit the argument automatically get the configured
-    provider instead of silently falling back to mock.
-
-    Env vars LLM_API_KEY / LLM_BASE_URL / LLM_MODEL override settings,
-    so you can switch between Spark / Qwen / DeepSeek without code changes.
-
-    Args:
-        provider: ``"mock"``, ``"deepseek"``, or ``None`` (auto-detect).
-
-    Returns:
-        A cached BaseLLMClient subclass instance.
+    Now delegates to llm_factory.UnifiedChatClient which reads
+    LLM_API_KEY / LLM_BASE_URL / LLM_MODEL from .env.
     """
     if provider is None:
         provider = settings.llm_provider
-
-    # ── Auto-upgrade from mock when a real API key is available ──
-    if provider == "mock":
-        api_key = os.environ.get("LLM_API_KEY") or settings.deepseek_api_key
-        if api_key:
-            logger.info("LLM provider auto-upgraded from mock to deepseek (API key found)")
-            provider = "deepseek"
 
     if provider in _llm_client_cache:
         return _llm_client_cache[provider]
@@ -317,17 +302,11 @@ def get_llm_client(provider: str | None = None) -> BaseLLMClient:
     if provider == "mock":
         client: BaseLLMClient = MockLLMClient()
     else:
-        api_key = os.environ.get("LLM_API_KEY") or settings.deepseek_api_key
-        base_url = os.environ.get("LLM_BASE_URL") or settings.deepseek_base_url
-        model = os.environ.get("LLM_MODEL") or settings.llm_model
-
-        if not api_key:
+        from app.services.llm_factory import get_chat_client
+        client = get_chat_client()
+        if not client.is_available():
+            logger.warning("No LLM API key configured, falling back to mock")
             client = MockLLMClient()
-        else:
-            client = DeepSeekLLMClient(
-                api_key=api_key, base_url=base_url, model=model,
-                temperature=settings.llm_temperature,
-            )
 
     _llm_client_cache[provider] = client
     return client

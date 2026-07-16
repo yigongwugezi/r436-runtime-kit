@@ -161,8 +161,34 @@ async def _run_chat(message: str, session_id: str) -> tuple[str, dict[str, Any]]
         session_id, len(filled), 7,
         {k: str(v)[:40] for k, v in filled.items()},
     )
+
+    # ── 检查评估闭环通知：路径/画像是否在后台被更新了 ──
+    assessment_context = ""
+    try:
+        from app.services.assessment_loop import notification_store
+        pending = notification_store.pop_all(session_id)
+        if pending:
+            path_adjusted = any(n["type"] == "plan_adjusted" for n in pending)
+            diagnosis_updated = any(n["type"] == "diagnosis_updated" for n in pending)
+            resource_ready = any(n["type"] == "recommendations_ready" for n in pending)
+            if path_adjusted or diagnosis_updated:
+                parts = ["【系统通知：上次学习后发生了以下变化，请在回复中自然地提及】"]
+                for n in pending:
+                    parts.append(f"- {n['title']}：{n['message']}")
+                assessment_context = "\n".join(parts)
+                logger.info(
+                    "Injecting assessment context for session=%s: path_adj=%s diag=%s res=%s",
+                    session_id, path_adjusted, diagnosis_updated, resource_ready,
+                )
+    except Exception:
+        pass
+
+    messages_raw = [{"role": m["role"], "content": m["content"]} for m in state_obj.messages[-20:]]
+    if assessment_context:
+        messages_raw.append({"role": "system", "content": assessment_context})
+
     state = {
-        "messages": [{"role": m["role"], "content": m["content"]} for m in state_obj.messages[-20:]],
+        "messages": messages_raw,
         "session_id": session_id,
         "user_message": message,
         "course_id": state_obj.facts.get("target_course"),
@@ -174,6 +200,17 @@ async def _run_chat(message: str, session_id: str) -> tuple[str, dict[str, Any]]
         state["profile_v2"] = _profile_v2(session_id)
     except Exception:
         state["profile_v2"] = {}
+
+    # ── 注入后台评估闭环更新的完整结构化画像 ──
+    last = state_obj.last_result or {}
+    if isinstance(last.get("profile"), dict) and last["profile"]:
+        state["profile"] = last["profile"]
+    if isinstance(last.get("diagnosis"), dict) and last["diagnosis"]:
+        state["diagnosis"] = last["diagnosis"]
+    # 如果后台调整了路径，注入最新的（避免聊天流程用旧数据）
+    if isinstance(last.get("learning_path"), list) and last["learning_path"]:
+        state["learning_path"] = last["learning_path"]
+        state["existing_path"] = {"stages": last["learning_path"]}
 
     result = await run_pipeline(**state)
     reply = result.get("final_reply", "") or result.get("_conversation_reply", "") or "处理完成"
@@ -211,6 +248,7 @@ def _done_event(session_id: str, result: dict[str, Any], error: str | None = Non
         "current_agent": result.get("current_agent") or "",
         "progress": result.get("progress") or {},
         "learning_path_created": bool(result.get("learning_path")),
+        "learning_path_adjusted": bool(result.get("path_adjusted")),
         "resources_created": bool(result.get("resources")),
         "questions_created": bool(result.get("questions")),
         "multimodal_result": result.get("multimodal_result") or {},

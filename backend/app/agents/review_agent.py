@@ -1,8 +1,12 @@
+import logging
 import re
 from typing import Any
 
 from app.agents.base import BaseAgent, register_agent
+from app.services.content_safety import safety_engine
 from app.services.course_catalog import course_catalog
+
+logger = logging.getLogger(__name__)
 
 
 @register_agent
@@ -11,15 +15,6 @@ class ReviewAgent(BaseAgent):
     agent_name = "质量审核智能体"
 
     required_resource_types = {"lecture", "mindmap", "quiz", "reading", "practice"}
-    blocked_terms = {
-        "代写作业",
-        "考试作弊",
-        "泄题",
-        "绕过监考",
-        "违法",
-        "攻击系统",
-        "窃取",
-    }
     trusted_resource_sources = {"llm_generated", "rule_based_fallback"}
     trusted_source_types = {"course_knowledge_base", "agent_generated"}
     resource_quality_statuses = {"passed", "warning", "fallback", "insufficient_context", "fallback_passed"}
@@ -33,6 +28,7 @@ class ReviewAgent(BaseAgent):
             self._check_learning_path(context),
             self._check_resource_coverage(context),
             self._check_resource_content_quality(context),
+            self._check_questions(context),
         ]
 
         # ── LLM 驱动的深度语义质量审核 ──
@@ -279,6 +275,41 @@ class ReviewAgent(BaseAgent):
             "资源均包含与类型相符的可用正文、结构或题目。",
         )
 
+    def _check_questions(self, context: dict[str, Any]) -> dict[str, Any]:
+        """检查 QuestionAgent 生成的题目质量。"""
+        questions = context.get("questions", []) or []
+        if not questions:
+            return self._check("questions", "题目质量检查", "passed", "暂无题目需要审核。")
+
+        valid = 0
+        issues: list[str] = []
+        for i, q in enumerate(questions):
+            if not isinstance(q, dict):
+                issues.append(f"第{i+1}题格式异常")
+                continue
+            stem = str(q.get("stem") or q.get("question") or "").strip()
+            if not stem or len(stem) < 5:
+                issues.append(f"第{i+1}题缺少题干")
+                continue
+            qtype = str(q.get("type") or "").strip()
+            if qtype in ("choice", "truefalse") and not q.get("options"):
+                issues.append(f"第{i+1}题缺少选项")
+                continue
+            if not q.get("answer"):
+                issues.append(f"第{i+1}题缺少答案")
+                continue
+            valid += 1
+
+        if issues:
+            msg = f"共{len(questions)}题，{len(issues)}个问题：" + "；".join(issues[:5])
+            if len(issues) > len(questions) / 2:
+                return self._check("questions", "题目质量检查", "warning", msg)
+            return self._check("questions", "题目质量检查", "passed", msg + "（少量问题不影响使用）")
+        return self._check(
+            "questions", "题目质量检查", "passed",
+            f"{len(questions)}道题目均通过审核，题干、选项和答案完整。",
+        )
+
     def _check_resource_type_match(self, context: dict[str, Any]) -> dict[str, Any]:
         mismatches: list[str] = []
         for resource in self._dict_items(context.get("resources")):
@@ -413,6 +444,7 @@ class ReviewAgent(BaseAgent):
         )
 
     def _check_content_safety(self, context: dict[str, Any]) -> dict[str, Any]:
+        """Delegates to the centralized 4-layer ContentSafetyEngine."""
         text = " ".join(
             [
                 str(context.get("diagnosis", {}).get("summary", "")),
@@ -423,19 +455,27 @@ class ReviewAgent(BaseAgent):
                 ),
             ]
         )
-        hits = sorted(term for term in self.blocked_terms if term in text)
-        if hits:
+        result = safety_engine.check_output(text)
+        if result.blocked:
+            logger.warning("ReviewAgent content safety blocked: %s", result.summary)
             return self._check(
                 "content_safety",
                 "内容安全检查",
                 "blocked",
-                f"发现不适合教育场景的内容：{', '.join(hits)}。",
+                f"内容安全引擎检测到违规：{result.summary}",
+            )
+        if result.violations:
+            return self._check(
+                "content_safety",
+                "内容安全检查",
+                "warning",
+                f"内容安全引擎发现低危问题：{result.summary}",
             )
         return self._check(
             "content_safety",
             "内容安全检查",
             "passed",
-            "未发现明显违规或不适合教育场景的内容。",
+            "4层安全引擎检测通过。",
         )
 
     def _course_chapters(self, context: dict[str, Any]) -> list[dict[str, str]]:
@@ -488,7 +528,10 @@ class ReviewAgent(BaseAgent):
         markers = ("实操", "练习", "步骤", "任务", "代码", "伪代码", "实现", "运行", "step", "exercise", "task", "code")
         has_marker = any(marker in lowered for marker in markers)
         has_sequence = bool(re.search(r"(^|\n)\s*(?:\d+[.、)]|[-*])\s*\S+", content))
-        return has_marker and (has_sequence or len(self._normalize_text(content)) >= 60)
+        # 检查是否有结构化章节（代码实操案例的格式要求）
+        structure_markers = ("需求说明", "参考代码", "测试用例", "运行指导", "### 需求", "### 参考", "### 测试", "### 运行")
+        has_structure = any(marker in content for marker in structure_markers)
+        return (has_marker and has_sequence) or has_structure or len(self._normalize_text(content)) >= 80
 
     def _duration_range(self, value: Any) -> tuple[int, int] | None:
         text = str(value or "").strip()

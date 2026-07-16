@@ -19,10 +19,11 @@ router = APIRouter(prefix="/workflows", tags=["workflows"])
 
 SUPPORTED_WORKFLOWS = {
     "resource_search", "generated_resource", "generated_resource_regeneration",
-    "profile_sync", "profile_rebuild", "learning_path_generation", "lecture_generation", "general_resource_generation",
+    "profile_sync", "profile_rebuild", "learning_path_generation", "lecture_generation", "general_resource_generation", "video_generation",
 }
 CANCELLABLE_WORKFLOWS = {
-    "resource_search", "generated_resource", "generated_resource_regeneration", "lecture_generation", "general_resource_generation",
+    "resource_search", "generated_resource", "generated_resource_regeneration", "lecture_generation", "general_resource_generation", "video_generation",
+}
 }
 
 
@@ -74,6 +75,43 @@ def _runner(workflow_type: str, payload: dict[str, Any], auth: AuthContext):
             result = product._recommend_section_resources(section_id, payload, progress, task.cancel_event)
             workflow_task_manager.check_cancelled(task)
             return product._product_response({"recommendations": result}, session_id=task.session_scope, source="search")
+
+        if workflow_type == "video_generation":
+            section_id = str(payload.get("sectionId") or "").strip()
+            if not section_id:
+                raise ValueError("sectionId required")
+            labels = {
+                "rag_retrieval": "检索知识内容", "outline": "生成教学大纲",
+                "storyboard": "设计分镜脚本", "rendering": "生成动画视频",
+                "critic": "评审优化画面", "narration": "生成讲解配音",
+                "saving": "保存到资源库", "completed": "视频生成完成",
+            }
+            def progress(event):
+                workflow_task_manager.check_cancelled(task)
+                stage = str(event.get("stage") or "video")
+                status = str(event.get("status") or "running")
+                completed = int(event.get("completed_units") or 0)
+                total = int(event.get("total_units") or 5)
+                workflow_task_manager.emit(
+                    task, "stage_completed" if status == "completed" else "stage_progress",
+                    stage, status, label=labels.get(stage, "生成视频"),
+                    completed_units=completed, total_units=total,
+                )
+            section_title = str(payload.get("sectionTitle") or "").strip()
+            course_name = str(payload.get("courseName") or section_title)
+            kp_text = str(payload.get("knowledgePoints") or "")
+            result = product._generate_video_sync(
+                section_id, section_title, course_name, kp_text,
+                task.session_scope, progress, task.cancel_event
+            )
+            workflow_task_manager.check_cancelled(task)
+            if result.get("status") == "error":
+                raise RuntimeError(result.get("message", "视频生成失败"))
+            video_url = str(((result.get("data") or {}).get("video") or {}).get("url") or "")
+            if video_url:
+                workflow_task_manager.emit(task, "preview_updated", "saving", "completed",
+                    label="视频已生成", text_delta=video_url)
+            return result
 
         _emit_stage(task, "input_validation", "检查任务输入", "completed")
         _emit_stage(task, "execution", {

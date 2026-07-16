@@ -62,6 +62,12 @@ class Settings(BaseSettings):
     # Learning event deduplication
     event_dedup_view_window_seconds: int = 300  # 5-minute window for resource_view dedup
 
+    # ── 学习评估动态阈值 ──────────────────────────────────────────
+    mastery_threshold_low: int = 5    # 低分段（<30）调整阈值
+    mastery_threshold_mid: int = 8    # 中分段（30-60）
+    mastery_threshold_high: int = 12  # 高分段（60-80）
+    mastery_threshold_top: int = 15   # 优秀段（>=80）
+
     # ── 科大讯飞 星火多模态 ──────────────────────────────────────────
     spark_app_id: str = ""
     spark_api_key: str = ""
@@ -75,6 +81,7 @@ class Settings(BaseSettings):
     qwen_base_url: str = ""
     qwen_vl_model: str = ""
     qwen_image_model: str = ""
+    qwen_coder_model: str = ""  # qwen-coder-plus for code generation
     # Wan Video
     wan_api_key: str = ""
     wan_video_model: str = ""
@@ -92,9 +99,9 @@ class Settings(BaseSettings):
     search_total_timeout_seconds: int = 12
     search_max_provider_calls: int = 8
     search_primary_grace_seconds: float = 1.5
-    search_provider_hard_timeout_seconds: float = 3.5
-    search_total_timeout_single_seconds: float = 8.0
-    search_total_timeout_all_seconds: float = 10.0
+    search_provider_hard_timeout_seconds: float = 8.0
+    search_total_timeout_single_seconds: float = 12.0
+    search_total_timeout_all_seconds: float = 22.0
     search_max_concurrent_providers: int = 2
     search_min_results_single_type: int = 6
     search_max_results_single_type: int = 8
@@ -135,7 +142,7 @@ class Settings(BaseSettings):
     # ── Textbook Import ──────────────────────────────────────────────
     textbook_storage_path: str = "./data/textbooks"
     textbook_max_upload_size: int = 100 * 1024 * 1024  # 100 MB
-    textbook_max_parse_chars: int = 80000  # max chars sent to LLM for chapter recognition
+    textbook_max_parse_chars: int = 320000  # max chars sent to LLM for chapter recognition
 
     model_config = SettingsConfigDict(
         env_file=None if _skip_env_file else ".env",

@@ -26,3 +26,6 @@ sentence-transformers>=3.0.0,<4.0.0
 pymupdf4llm>=0.0.15,<1.0.0
 python-multipart>=0.0.9,<1.0.0
 python-pptx>=1.0.2,<2.0.0
+
+# ── Content Safety Engine ─────────────────────────────────────────────
+pyahocorasick>=2.0,<3.0

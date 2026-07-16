@@ -959,31 +959,149 @@ class QwenImageProvider:
     @staticmethod
     def is_configured() -> bool:
         api_key = _env("DASHSCOPE_API_KEY", "QWEN_API_KEY")
-        model = _env("QWEN_IMAGE_MODEL", default="qwen-image")
-        return bool(api_key) and bool(model)
+        return bool(api_key)
 
     def __init__(self, post_json: Any | None = None) -> None:
         self.post_json = post_json or _json_post
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         api_key = _env("DASHSCOPE_API_KEY", "QWEN_API_KEY")
-        model = _env("QWEN_IMAGE_MODEL", default="qwen-image")
-        endpoint = _env("QWEN_IMAGE_ENDPOINT") or f"{_env('QWEN_IMAGE_BASE_URL', 'QWEN_BASE_URL', default='https://dashscope.aliyuncs.com/compatible-mode/v1').rstrip('/')}/images/generations"
-        if not api_key or not model or not endpoint:
-            return _response(status="provider_not_configured", provider=self.provider, warnings=["Qwen image provider is not configured."], trace={"required_env": ["DASHSCOPE_API_KEY or QWEN_API_KEY", "QWEN_IMAGE_MODEL", "QWEN_IMAGE_ENDPOINT or QWEN_IMAGE_BASE_URL"]})
+        model = _env("QWEN_IMAGE_MODEL", default="qwen-image-2.0")
+        endpoint = _env("QWEN_IMAGE_ENDPOINT") or "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+        if not api_key:
+            return _response(status="provider_not_configured", provider=self.provider,
+                warnings=["Qwen image provider is not configured."],
+                trace={"required_env": ["DASHSCOPE_API_KEY or QWEN_API_KEY"]})
         prompt = _text(context.get("prompt") or context.get("user_message") or context.get("topic"))
         if not prompt:
             return _response(status="needs_input", provider=self.provider, warnings=["missing image prompt"])
         try:
-            body = self.post_json(endpoint, {"model": model, "prompt": prompt, "n": 1, "size": "1024x1024"}, api_key, int(os.getenv("QWEN_TIMEOUT", "60")))
-            urls = []
-            for item in body.get("data") or body.get("output", {}).get("results") or []:
+            body = self.post_json(endpoint, {
+                "model": model,
+                "input": {"messages": [{"role": "user", "content": [{"text": prompt}]}]},
+                "parameters": {"size": "1024*1024", "n": 1}
+            }, api_key, int(os.getenv("QWEN_TIMEOUT", "60")))
+            urls: list[str] = []
+            for choice in body.get("output", {}).get("choices") or []:
+                for content_item in choice.get("message", {}).get("content") or []:
+                    img_url = _text(content_item.get("image"))
+                    if img_url:
+                        urls.append(img_url)
+            result = {"image_urls": urls, "remote_result": body}
+            return _response(
+                status="success" if urls else "partial_success", provider=self.provider,
+                result=result, trace={"model": model, "endpoint": endpoint})
+        except Exception as exc:
+            return _response(status="failed", provider=self.provider,
+                warnings=[str(exc)], trace={"model": model, "endpoint": endpoint})
+
+# ── Seedream Image Provider (DeepSeek prompt optimisation → Seedream 5.0 Lite) ──
+
+_SEEDREAM_SYSTEM_PROMPT = """You are a bilingual image description assistant that works with an image generation bot.
+You will be prompted by people looking to create detailed, amazing educational and technical images.
+Take their short prompts and make them extremely detailed and descriptive.
+Rules:
+- Input can be in Chinese or English. If input is in Chinese, output in Chinese. If input is in English, output in English.
+- Output a single image description per request — no explanation, no process, just the description.
+- Include: subject, composition, medium, style, color palette, lighting, and specific visual details.
+- For educational/technical diagrams: specify layout (left/right, top/bottom), colors for each element, label positions, arrow directions.
+- Focus on tangible visual elements, not abstract emotions.
+- Descriptions should be 80-200 words."""
+
+_SEEDREAM_FEWSHOT: list[dict[str, str]] = [
+    {"role": "user", "content": 'Create an imaginative image descriptive caption for the user input : "画一个白发、神情忧郁的动漫女孩，手里拿着一支香烟"'},
+    {"role": "assistant", "content": "这幅图像是一幅动漫风格的插画，画中描绘了一位长发飘逸的白发女孩。她神情忧郁，双眼低垂，脸上带着微微的愁容。女孩穿着浅色外套，里面搭配深色衬衫和领带，增添了她沉静却时尚的外表。背景描绘了一个冬季的城市场景，地面和建筑物上覆盖着积雪，街边停着一辆车，增强了场景的荒凉氛围。整幅作品细致精美，典型的现代动漫插画风格。"},
+    {"role": "user", "content": 'Create an imaginative image descriptive caption for the user input : "画一张CNN卷积神经网络的工作流程图"'},
+    {"role": "assistant", "content": "A clear technical diagram showing a 3x3 convolution kernel sliding across a 5x5 input feature map. The kernel is highlighted in blue, the input grid in orange, positioned on a light gray background. Curved arrows trace the sliding path from left to right, top to bottom. Mathematical annotations appear below: F(i,j) = sum(W*X) + b. Clean academic textbook illustration style, isometric or flat 2D layout, labeled axes and dimension markers."},
+]
+
+def _optimize_prompt_with_deepseek(raw_prompt: str) -> str:
+    """Use DeepSeek to expand a short prompt into a detailed image description."""
+    ds_key = _env("DEEPSEEK_API_KEY")
+    ds_url = _env("DEEPSEEK_BASE_URL", default="https://api.deepseek.com/v1")
+    ds_model = _env("DEEPSEEK_MODEL", default="deepseek-chat")
+    if not ds_key:
+        raise RuntimeError("DEEPSEEK_API_KEY not configured for prompt optimisation")
+    messages: list[dict[str, str]] = [{"role": "system", "content": _SEEDREAM_SYSTEM_PROMPT}]
+    messages.extend(_SEEDREAM_FEWSHOT)
+    messages.append({"role": "user", "content": f'Create an imaginative image descriptive caption for the user input : "{raw_prompt}"'})
+    body = _json_post(
+        f"{ds_url}/chat/completions",
+        {"model": ds_model, "messages": messages, "temperature": 0.01, "max_tokens": 1024},
+        ds_key,
+        timeout=60,
+    )
+    enhanced = _text(body["choices"][0]["message"]["content"])
+    return enhanced
+
+
+class SeedreamImageProvider:
+    name = "SeedreamImageProvider"
+    provider = "seedream"
+
+    @staticmethod
+    def is_configured() -> bool:
+        ark_key = _env("ARK_API_KEY")
+        ds_key = _env("DEEPSEEK_API_KEY")
+        return bool(ark_key) and bool(ds_key)
+
+    def __init__(self, post_json: Any | None = None) -> None:
+        self.post_json = post_json or _json_post
+
+    def run(self, context: dict[str, Any]) -> dict[str, Any]:
+        ark_key = _env("ARK_API_KEY")
+        ds_key = _env("DEEPSEEK_API_KEY")
+        endpoint = _env("SEEDREAM_ENDPOINT") or "https://ark.cn-beijing.volces.com/api/v3/images/generations"
+        model = _env("SEEDREAM_MODEL", default="doubao-seedream-5-0-lite-260128")
+        size = _env("SEEDREAM_SIZE", default="1920x1920")
+
+        if not ark_key:
+            return _response(status="provider_not_configured", provider=self.provider,
+                warnings=["ARK_API_KEY not configured for Seedream image generation."],
+                trace={"required_env": ["ARK_API_KEY"]})
+        if not ds_key:
+            return _response(status="provider_not_configured", provider=self.provider,
+                warnings=["DEEPSEEK_API_KEY not configured for prompt optimisation."],
+                trace={"required_env": ["DEEPSEEK_API_KEY"]})
+
+        raw_prompt = _text(context.get("prompt") or context.get("user_message") or context.get("topic"))
+        if not raw_prompt:
+            return _response(status="needs_input", provider=self.provider,
+                warnings=["missing image prompt"])
+
+        try:
+            # Step 1 — DeepSeek prompt optimisation
+            enhanced_prompt = _optimize_prompt_with_deepseek(raw_prompt)
+            logger.info("Seedream prompt enhanced: %d → %d chars", len(raw_prompt), len(enhanced_prompt))
+        except Exception as exc:
+            logger.warning("Prompt optimisation failed, using raw prompt: %s", exc)
+            enhanced_prompt = raw_prompt
+
+        try:
+            # Step 2 — Seedream image generation
+            body = self.post_json(endpoint,
+                {"model": model, "prompt": enhanced_prompt, "n": 1, "size": size},
+                ark_key,
+                timeout=int(os.getenv("SEEDREAM_TIMEOUT", "120")))
+            urls: list[str] = []
+            for item in body.get("data") or []:
                 if isinstance(item, dict) and _text(item.get("url")):
                     urls.append(_text(item.get("url")))
-            result = {"image_urls": urls, "task_id": _text(body.get("task_id") or body.get("output", {}).get("task_id")), "remote_result": body}
-            return _response(status="success" if urls or result["task_id"] else "partial_success", provider=self.provider, result=result, trace={"model": model, "endpoint": endpoint})
+            result = {
+                "image_urls": urls,
+                "raw_prompt": raw_prompt,
+                "enhanced_prompt": enhanced_prompt,
+                "model": model,
+            }
+            return _response(
+                status="success" if urls else "partial_success",
+                provider=self.provider,
+                result=result,
+                trace={"model": model, "endpoint": endpoint, "prompt_chars": len(enhanced_prompt)})
         except Exception as exc:
-            return _response(status="failed", provider=self.provider, warnings=[str(exc)], trace={"model": model, "endpoint": endpoint})
+            return _response(status="failed", provider=self.provider,
+                warnings=[str(exc)],
+                trace={"model": model, "endpoint": endpoint})
 
 
 def _micro_lesson_script(context: dict[str, Any]) -> dict[str, Any]:
@@ -1118,21 +1236,17 @@ class ManimVideoProvider:
         audio_path = ""
         audio_url = ""
 
-        # Use Qwen for code generation (better at Manim than DeepSeek)
+        # Use factory for code generation (respects LLM_CODER_PROVIDER from .env)
         code_llm = llm
         try:
-            qwen_key = _env("DASHSCOPE_API_KEY", "QWEN_API_KEY")
-            if qwen_key:
-                from app.services.llm_client import DeepSeekLLMClient
-                code_llm = DeepSeekLLMClient(
-                    api_key=qwen_key,
-                    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-                    model="qwen-plus",
-                    temperature=0.3,
-                )
-                logger.info("Using Qwen for Manim code generation")
+            from app.services.llm_factory import get_chat_client as _coder_client
+            import os as _os
+            coder_prov = _os.getenv("LLM_CODER_PROVIDER", "")
+            if coder_prov:
+                code_llm = _coder_client()
+                logger.info("Using factory coder (%s) for Manim code", coder_prov)
         except Exception as e:
-            logger.warning("Qwen init failed, using default: %s", e)
+            logger.warning("Factory coder init failed, using default: %s", e)
 
         # ── Step 2a: Generate narration FIRST, get its duration ──
         _tmp_audio = ""
@@ -1141,6 +1255,7 @@ class ManimVideoProvider:
         if narration_text and len(narration_text) > 20:
             self.output_dir.mkdir(parents=True, exist_ok=True)
             _tmp_job = uuid.uuid4().hex
+            narration_text = self._clean_markdown(narration_text)
             _tmp_audio = self._generate_narration(narration_text, _tmp_job)
             if _tmp_audio:
                 narrative_duration = self._get_video_duration(_tmp_audio)
@@ -1185,13 +1300,18 @@ class ManimVideoProvider:
         for attempt in range(MAX_RETRIES + 1):
             import subprocess
             logger.info("Render attempt %d/%d, code len=%d", attempt + 1, MAX_RETRIES + 1, len(manim_code))
-            result = subprocess.run(
-                ["manim", "-ql", "--format", "mp4", str(script_path), scene_name],
-                capture_output=True, text=True, timeout=300,
-                cwd=str(self.output_dir), env=_manim_env,
-            )
+            try:
+                result = subprocess.run(
+                    ["manim", "-ql", "--format", "mp4", str(script_path), scene_name],
+                    capture_output=True, text=True, timeout=300,
+                    cwd=str(self.output_dir), env=_manim_env,
+                )
+            except subprocess.TimeoutExpired:
+                logger.error("Render attempt %d TIMED OUT after 300s", attempt + 1)
+                # Don't retry on timeout — the animation is too complex
+                break
             if result.returncode == 0:
-                logger.info("Manim render SUCCESS on attempt %d", attempt + 1)
+                logger.info("Manim render SUCCESS on attempt %d (rc=%d)", attempt + 1, result.returncode)
                 video_files = list(self.output_dir.glob(f"**/{scene_name}.mp4"))
                 if not video_files:
                     video_files = list(self.output_dir.rglob("*.mp4"))
@@ -1200,15 +1320,12 @@ class ManimVideoProvider:
                     break
 
             # Failed — log full error, let LLM fix the code
+            logger.error("Manim render attempt %d FAILED. stderr tail: %s", attempt + 1,
+                (result.stderr or "")[-500:] if result.stderr else "(no stderr)")
             if attempt < MAX_RETRIES:
-                # Extract actual LaTeX error from full output
-                full_output = (result.stderr or "") + (result.stdout or "")
-                # Find the meaningful error line
-                errors = [l for l in full_output.splitlines() if l.startswith("!") or "Error:" in l or "error:" in l]
-                logger.warning("Manim render attempt %d failed. LaTeX errors: %s", attempt + 1, errors[:3] if errors else ["unknown"])
                 fixed = self._fix_script(code_llm, manim_code, result.stderr or "", result.stdout or "", topic, subject, kb_context)
                 if fixed and len(fixed) > 30:
-                    manim_code = fixed
+                    manim_code = self._scrub_code(fixed)  # re-scrub to catch any re-introduced issues
                     script_path.write_text(manim_code, encoding="utf-8")
                 else:
                     break  # LLM couldn't fix it, give up
@@ -1315,6 +1432,7 @@ Fix ALL bugs then output the COMPLETE corrected code. DeepSeek common mistakes:
 - All Tex() → Text() (Manim CE v0.20)
 - Add `import numpy as np` if using np
 - Scene class must be "EduScene"
+- ⚠️ Remove ALL SVGMobject() and ImageMobject() calls — those asset files do not exist in the project
 
 Only output corrected code, no explanation."""
 
@@ -1355,6 +1473,7 @@ Only output corrected code, no explanation."""
 - MathTex 公式，Text 中文
 - 围绕知识点逐步展开：概念→推导→例题→总结
 - 每个重要元素后 self.wait() 停顿
+- ⚠️ 禁止使用 SVGMobject、ImageMobject 等需要外部资源文件的 API（项目没有这些资源文件）
 
 只输出 JSON。"""
 
@@ -1394,12 +1513,40 @@ Only output corrected code, no explanation."""
             code = code.replace(key, value)
         # 4. Fix Tex() → Text() (any surviving Tex calls)
         code = _re.sub(r'(?<!Math)Tex\(', 'Text(', code)
-        # 5. Ensure imports
+        # 5. Strip SVGMobject/ImageMobject calls — no external assets exist
+        code = _re.sub(r'SVGMobject\s*\([^)]*\)', 'Square()', code)
+        code = _re.sub(r'ImageMobject\s*\([^)]*\)', 'Square()', code)
+        # 6. Ensure imports
         if "from manim import" not in code:
             code = "from manim import *\n" + code
         if "import numpy as np" not in code:
             code = code.replace("from manim import *", "from manim import *\nimport numpy as np")
         return code
+
+    @staticmethod
+    def _clean_markdown(text: str) -> str:
+        """Strip Markdown formatting that TTS would read aloud (**, *, `, #, etc.)."""
+        import re as _re
+        # Remove bold/italic markers
+        text = _re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+        text = _re.sub(r'\*(.+?)\*', r'\1', text)
+        text = _re.sub(r'__(.+?)__', r'\1', text)
+        text = _re.sub(r'_(.+?)_', r'\1', text)
+        # Remove inline code and code blocks
+        text = _re.sub(r'`{1,3}[^`]*`{1,3}', '', text)
+        # Remove heading markers
+        text = _re.sub(r'^#{1,6}\s+', '', text, flags=_re.MULTILINE)
+        # Remove strikethrough
+        text = _re.sub(r'~~(.+?)~~', r'\1', text)
+        # Remove link labels but keep text [text](url)
+        text = _re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+        # Remove image markup ![alt](url)
+        text = _re.sub(r'!\[([^\]]*)\]\([^)]+\)', r'\1', text)
+        # Remove horizontal rules
+        text = _re.sub(r'^---+\s*$', '', text, flags=_re.MULTILINE)
+        # Collapse multiple blank lines
+        text = _re.sub(r'\n{3,}', '\n\n', text)
+        return text.strip()
 
     def _get_video_duration(self, video_path: str) -> float:
         """Get video duration in seconds using FFmpeg."""
@@ -1421,7 +1568,7 @@ Only output corrected code, no explanation."""
     def _generate_narration_only(self, llm, topic: str, subject: str, kb_context: str) -> str:
         """Generate natural Chinese narration (used BEFORE Manim code)."""
         kb_block = f"\n知识点参考：{kb_context[:800]}" if kb_context else ""
-        prompt = f"为知识点写中文旁白稿。像老师正常讲课。引入→概念→推导→例子→总结。自然口语，不要重复。\n课程: {subject}\n节: {topic}{kb_block}\n只输出旁白。"
+        prompt = f"为知识点写中文旁白稿。像老师正常讲课。引入→概念→推导→例子→总结。自然口语，不要重复。\n课程: {subject}\n节: {topic}{kb_block}\n只输出旁白，不要用 Markdown 标记（如 **、*、`、# 等）。"
         try:
             raw = llm.chat(messages=[
                 {"role": "system", "content": "你是数学老师。写中文旁白，自然口语，不要重复。"},

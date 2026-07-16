@@ -83,6 +83,7 @@ COURSE_CATEGORIES: dict[str, dict[str, Any]] = {
 # ── 通用维度（所有课程都激活）──────────────────────────
 UNIVERSAL_DIMENSIONS = [
     "major_background",
+    "learning_history",
     "knowledge_base",
     "learning_goal",
     "cognitive_style",
@@ -96,6 +97,7 @@ PROFILE_DIMENSION_ORDER = UNIVERSAL_DIMENSIONS + ["coding_ability"]
 
 PROFILE_DIMENSION_LABELS: dict[str, str] = {
     "major_background": "专业背景",
+    "learning_history": "学习历史",
     "knowledge_base": "知识基础",
     "learning_goal": "学习目标",
     "cognitive_style": "认知风格",
@@ -145,7 +147,7 @@ def clamp_confidence(value: Any, default: float = 0.5) -> float:
 def normalize_profile_dimensions(
     dimensions: list[dict[str, Any]] | dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
-    """Normalize dimensions to the stable 9-dimension schema."""
+    """Normalize dimensions to the stable 10-dimension schema."""
     if dimensions is None:
         dimensions = []
 
