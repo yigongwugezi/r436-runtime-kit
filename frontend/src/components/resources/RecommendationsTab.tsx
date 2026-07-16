@@ -153,7 +153,7 @@ export default function RecommendationsTab({ localResources = [] }: Recommendati
     setLoading(true);
     setError(null);
     try {
-      const data = await getProfileRecommendations(sessionId);
+      const data = await getProfileRecommendations({ sessionId });
       setRecommendations(data.recommendations || []);
       setDismissedIds(new Set());
     } catch (e) {
