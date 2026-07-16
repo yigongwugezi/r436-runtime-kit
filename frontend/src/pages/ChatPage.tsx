@@ -614,6 +614,7 @@ export default function ChatPage() {
     );
   }
   const initialMessage = (loc.state as any)?.initialMessage;
+  const initialChatMode = (loc.state as any)?.chatMode;
   const {
     messages,
     isStreaming,
@@ -683,6 +684,7 @@ export default function ChatPage() {
   });
   useEffect(() => { if (useChatStore.getState().messages.length > 0) { setMessagesLoaded(true); setLoading(false); return; } setMessagesLoaded(false); let cancelled = false; (async () => { setLoading(true); try { const res = await getSessionMessages(currentSessionId); if (!cancelled && res.messages?.length) useChatStore.setState({ messages: res.messages }); } catch {} finally { if (!cancelled) { setMessagesLoaded(true); setLoading(false); } } })(); return () => { cancelled = true; }; }, [currentSessionId]);
   useEffect(() => { if (initialMessage && messages.length === 0 && messagesLoaded) send(initialMessage); }, [initialMessage, messagesLoaded]);
+  useEffect(() => { if (initialChatMode) useChatStore.getState().setChatMode(initialChatMode); }, [initialChatMode]);
 
   // Recovery: check for orphaned streaming messages on mount (Bug 3 fix)
   useEffect(() => {
@@ -823,11 +825,37 @@ export default function ChatPage() {
         </div>
       </div>
 
+      {/* ── 模式切换栏 ── */}
+      <div className="flex-shrink-0 px-4 pt-2 pb-1">
+        <div className="max-w-[48rem] mx-auto flex items-center gap-1.5 rounded-xl bg-surface-100 p-1 w-fit">
+          <button
+            onClick={() => useChatStore.getState().setChatMode('free')}
+            className={`rounded-lg px-4 py-1.5 text-xs font-medium transition-colors ${
+              useChatStore.getState().chatMode === 'free'
+                ? 'bg-white text-surface-800 shadow-sm'
+                : 'text-surface-500 hover:text-surface-700'
+            }`}
+          >📖 自由学习</button>
+          <button
+            onClick={() => useChatStore.getState().setChatMode('planning')}
+            className={`rounded-lg px-4 py-1.5 text-xs font-medium transition-colors ${
+              useChatStore.getState().chatMode === 'planning'
+                ? 'bg-white text-surface-800 shadow-sm'
+                : 'text-surface-500 hover:text-surface-700'
+            }`}
+          >📋 规划学习</button>
+        </div>
+      </div>
+
       {/* ── Messages area ── */}
       <div className="flex-1 overflow-hidden flex flex-col">
         <div ref={scrollRef} className="flex-1 overflow-y-auto" style={{ overflowAnchor: 'none' }}>
           <div className="max-w-[48rem] mx-auto px-4 py-4 space-y-6">
-            {messages.length === 0 && !isStreaming ? (
+            {(() => {
+              const currentMode = useChatStore.getState().chatMode;
+              const filtered = messages.filter((m: ChatMessage) => !m.mode || m.mode === currentMode);
+              return <>
+              {filtered.length === 0 && !isStreaming ? (
               /* ── Empty state: ChatGPT style ── */
               <div className="flex flex-col items-center justify-center min-h-[55vh] text-center">
                 <div className="w-16 h-16 rounded-full bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center mb-6 shadow-lg shadow-emerald-200">
@@ -849,7 +877,7 @@ export default function ChatPage() {
               </div>
             ) : (
               <>
-                {messages.map((msg: ChatMessage) => <MessageBubble key={msg.id} msg={msg} onClarificationSelect={send} />)}
+                {filtered.map((msg: ChatMessage) => <MessageBubble key={msg.id} msg={msg} onClarificationSelect={send} />)}
                 {agentProgress && (
                   <div className="max-w-[85%] ml-10">
                     <AgentPipelineProgress
@@ -877,7 +905,9 @@ export default function ChatPage() {
                 })()}
               </>
             )}
-            <div ref={bottomRef} />
+          </>
+        })()}
+        <div ref={bottomRef} />
           </div>
         </div>
 

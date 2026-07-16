@@ -181,7 +181,7 @@ def _bind_current_subject_from_message(state_obj: Any) -> dict[str, Any] | None:
         db.close()
 
 
-async def _run_chat(message: str, session_id: str, search_enabled: bool = False, deep_think_enabled: bool = False) -> tuple[str, str, dict[str, Any]]:
+async def _run_chat(message: str, session_id: str, search_enabled: bool = False, deep_think_enabled: bool = False, chat_mode: str = "free") -> tuple[str, str, dict[str, Any]]:
     conversation_store.append_message(session_id, "user", message)
     state_obj = conversation_store.get(session_id)
     # ── Log extracted facts for debugging profile capture ──
@@ -246,7 +246,7 @@ async def _run_chat(message: str, session_id: str, search_enabled: bool = False,
         state["existing_path"] = {"stages": last["learning_path"]}
 
     # ── 普通对话快速通道：跳过 run_pipeline 全套 Agent 开销 ──
-    _chat_quick = _is_chat_quick(message, state_obj, deep_think_enabled)
+    _chat_quick = _is_chat_quick(message, state_obj, deep_think_enabled, chat_mode)
     if _chat_quick:
         reply, thinking = await _quick_chat(message, session_id, state_obj, assessment_context)
         # ── Auto-persist profile snapshot after every message ──
@@ -328,10 +328,13 @@ _GEN_TRIGGERS = frozenset({
 })
 
 
-def _is_chat_quick(message: str, state_obj: Any, deep_think_enabled: bool = False) -> bool:
+def _is_chat_quick(message: str, state_obj: Any, deep_think_enabled: bool = False, chat_mode: str = "free") -> bool:
     """判断是否为纯闲聊——只需 DeepTutor，不需要跑任何 Agent。"""
     if not message:
         return False
+    # 自由学习模式：永远不走 Agent
+    if chat_mode == "free":
+        return True
     # 深度思考模式需要走完整链路（切换 deepseek-reasoner 模型）
     if deep_think_enabled:
         return False
@@ -438,7 +441,8 @@ async def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_a
 
             search_enabled = bool(payload.get("search_enabled", False))
             deep_think_enabled = bool(payload.get("deep_think_enabled", False))
-            reply, thinking, result = await _run_chat(message, session_id, search_enabled=search_enabled, deep_think_enabled=deep_think_enabled)
+            chat_mode = str(payload.get("chat_mode", "free"))
+            reply, thinking, result = await _run_chat(message, session_id, search_enabled=search_enabled, deep_think_enabled=deep_think_enabled, chat_mode=chat_mode)
             if thinking:
                 yield f"data: {json.dumps({'reasoning': thinking}, ensure_ascii=False)}\n\n"
             for chunk in reply.splitlines(keepends=True):
@@ -489,7 +493,8 @@ async def send_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_aut
 
         search_enabled = bool(payload.get("search_enabled", False))
         deep_think_enabled = bool(payload.get("deep_think_enabled", False))
-        reply, thinking, result = await _run_chat(message, session_id, search_enabled=search_enabled, deep_think_enabled=deep_think_enabled)
+        chat_mode = str(payload.get("chat_mode", "free"))
+        reply, thinking, result = await _run_chat(message, session_id, search_enabled=search_enabled, deep_think_enabled=deep_think_enabled, chat_mode=chat_mode)
         return {
             "sessionId": session_id,
             "reply": {

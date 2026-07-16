@@ -86,6 +86,8 @@ interface ChatStore {
   /** 动态进度条步骤（根据实际运行的 Agent 构建，替代硬编码 GEN_PIPELINE） */
   progressPipelineSteps: import('../types/chat').ProgressStep[];
   dataVersion: number;
+  /** 聊天模式：自由学习 / 规划学习 */
+  chatMode: 'free' | 'planning';
   /** 联网搜索开关 */
   searchEnabled: boolean;
   /** 深度思考开关 */
@@ -98,6 +100,7 @@ interface ChatStore {
   appendReasoningToLastAssistant: (chunk: string) => void;
   setSearchEnabled: (v: boolean) => void;
   setDeepThinkEnabled: (v: boolean) => void;
+  setChatMode: (mode: 'free' | 'planning') => void;
   setStreaming: (v: boolean) => void;
   setAgentProgress: (p: GenerationProgress | null) => void;
   setLastImageAttachment: (attachment: import('../types/chat').ChatAttachment | null) => void;
@@ -141,6 +144,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   dataVersion: 0,
   searchEnabled: false,
   deepThinkEnabled: false,
+  chatMode: 'free',
   dataSessionId: loadSessionId(),
 
   setCurrentSession: (id) => {
@@ -237,6 +241,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   setStreaming: (v) => set({ isStreaming: v }),
   setSearchEnabled: (v) => set({ searchEnabled: v }),
   setDeepThinkEnabled: (v) => set({ deepThinkEnabled: v }),
+  setChatMode: (mode) => set({ chatMode: mode }),
   setAgentProgress: (p) => set({ agentProgress: p }),
   setLastImageAttachment: (attachment) => set({ lastImageAttachment: attachment, selectedImageAttachmentId: imageAttachmentKey(attachment) || null }),
   addImageAttachment: (attachment) =>

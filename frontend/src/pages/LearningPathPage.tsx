@@ -3,11 +3,12 @@ import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useChatPanel } from '../components/layout/AppLayout';
 import { useLearningPath } from '../hooks/useLearningPath';
-import { PlayCircle, BookOpen, Code2, FileCheck, Lock, CheckCircle2, Circle, Loader2, ChevronRight, Zap, Target, ArrowLeft, FileText, Brain, Calendar, ExternalLink, Clock, ClipboardList, Plus, AlertCircle } from 'lucide-react';
+import { PlayCircle, BookOpen, Code2, FileCheck, Lock, CheckCircle2, Circle, Loader2, ChevronRight, Zap, Target, ArrowLeft, FileText, Brain, Calendar, ExternalLink, Clock, ClipboardList, Plus, AlertCircle, LayoutGrid } from 'lucide-react';
 import { listExamSets, generateExamSet } from '../api/assessment';
 import { generateLearningPath, validateCourse, enableProfileExtraction, planningChat, listPlanningDrafts, type PlanningDraft } from '../api/learningPath';
 import { useProfile } from '../hooks/useProfile';
 import { useChatStore } from '../store/chatStore';
+import DayDistributionView from '../components/learning/DayDistributionView';
 import type { ExamSet } from '../types/assessment';
 import PlanningWizard from '../components/learning/PlanningWizard';
 import { PageLoading, PageEmpty, PageError } from '../components/common/PageState';
@@ -93,6 +94,8 @@ export default function LearningPathPage() {
   // Draft state (returning from chat)
   const [existingDraft, setExistingDraft] = useState<any>(null);
   const [draftLoading, setDraftLoading] = useState(true);
+  // View mode: 'graph' | 'day'
+  const [viewMode, setViewMode] = useState<'graph' | 'day'>('graph');
 
   const stages = path?.stages || [];
   const allNodes = stages.flatMap(s => s.nodes || []);
@@ -444,7 +447,7 @@ export default function LearningPathPage() {
               dynamicAdjust && '需要动态调整',
               !reviewEnabled && '不需要复习阶段',
             ].filter(Boolean).join('，') + '。请先问我几个问题了解我的具体情况吧。';
-            nav('/chat', { state: { initialMessage: msg } });
+            nav('/chat', { state: { initialMessage: msg, chatMode: 'planning' } });
           }}
             className="flex-1 py-3 border-2 border-primary-200 text-primary-700 rounded-xl font-medium hover:bg-primary-50 transition-colors text-sm"
           >
@@ -649,7 +652,48 @@ export default function LearningPathPage() {
         </div>
       )}
 
-      {/* Main content - 两栏，撑满剩余高度 */}
+      {/* ── View mode tab bar ── */}
+      {!isDetailView && (
+        <div className="flex items-center gap-1 mb-4">
+          <button
+            onClick={() => setViewMode('graph')}
+            className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
+              viewMode === 'graph'
+                ? 'bg-primary-100 text-primary-700 shadow-sm'
+                : 'text-surface-500 hover:text-surface-700 hover:bg-surface-50'
+            }`}
+          >
+            <LayoutGrid size={16} className="inline mr-1.5" />
+            节点图
+          </button>
+          <button
+            onClick={() => setViewMode('day')}
+            className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
+              viewMode === 'day'
+                ? 'bg-primary-100 text-primary-700 shadow-sm'
+                : 'text-surface-500 hover:text-surface-700 hover:bg-surface-50'
+            }`}
+          >
+            <Calendar size={16} className="inline mr-1.5" />
+            日视图
+          </button>
+        </div>
+      )}
+
+      {viewMode === 'day' && !isDetailView ? (
+        /* ── 日视图（全宽） ── */
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <DayDistributionView
+            stages={stages}
+            estimatedMinutesTotal={(path as any)?.estimated_minutes_total}
+            dailyMinutes={60}
+            onSectionClick={(sectionId) => {
+              if (sectionId) nav(`/lecture/section/${encodeURIComponent(sectionId)}`);
+            }}
+          />
+        </div>
+      ) : (
+      /* Main content - 两栏，撑满剩余高度 */
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 flex-1 min-h-0">
         {/* 左侧：学习节点图 */}
         <div className="lg:col-span-2 bg-white rounded-2xl p-6 shadow-soft flex flex-col">
@@ -959,6 +1003,7 @@ export default function LearningPathPage() {
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }

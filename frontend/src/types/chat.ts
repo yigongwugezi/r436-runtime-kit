@@ -6,6 +6,8 @@ export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
+  /** 所属模式（自由/规划），用于模式切换时过滤 */
+  mode?: 'free' | 'planning';
   /** 深度思考过程文本 */
   reasoningContent?: string;
   timestamp: number;

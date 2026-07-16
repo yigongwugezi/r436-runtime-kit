@@ -79,7 +79,8 @@ export function useStreamChat() {
         content: text,
         timestamp: Date.now(),
         attachments: requestAttachments,
-      };
+	mode: store.chatMode,
+	      };
       addMessage(userMsg);
 
       const aiMsg: ChatMessage = {
@@ -88,6 +89,7 @@ export function useStreamChat() {
         content: '',
         reasoningContent: '',
         timestamp: Date.now(),
+        mode: store.chatMode,
         streaming: true,
       };
       addMessage(aiMsg);
@@ -115,10 +117,11 @@ export function useStreamChat() {
           sessionId: useChatStore.getState().currentSessionId,
           learnerId: getStableLearnerId(),
           attachments: requestAttachments,
-          ignore_image_context: ignoreImageContext,
+	          ignore_image_context: ignoreImageContext,
           image_provider: options.imageProvider || '',
           search_enabled: store.searchEnabled,
           deep_think_enabled: store.deepThinkEnabled,
+          chat_mode: store.chatMode,
         }, controller.signal);
 
         const decoder = new TextDecoder();
@@ -236,10 +239,11 @@ export function useStreamChat() {
             sessionId: useChatStore.getState().currentSessionId,
             learnerId: getStableLearnerId(),
             attachments: requestAttachments,
-            ignore_image_context: ignoreImageContext,
+	            ignore_image_context: ignoreImageContext,
             image_provider: options.imageProvider || '',
             search_enabled: store.searchEnabled,
             deep_think_enabled: store.deepThinkEnabled,
+            chat_mode: store.chatMode,
           });
           log.info('非流式回退成功');
           setDebugInfoFromPayload(fallback as unknown as Record<string, unknown>);
