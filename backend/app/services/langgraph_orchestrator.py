@@ -772,14 +772,15 @@ async def _conversation_node(state: dict) -> dict:
     # pre-generated reply is kept as a fallback.
     try:
         profile_facts = state.get("profile_facts", {}) or {}
-        profile_context = _build_profile_context(profile_facts)
 
         # ── 普通对话不注入画像收集探针，只有路径规划入口才追问 ──
+        profile_context = ""
         persona_context = ""
         try:
             from app.services.conversation_state import conversation_store as _cs
             _s = _cs.get(state.get("session_id", ""))
             if _s and (_s.path_planning_info_mode or _s.profile_extraction_enabled):
+                profile_context = _build_profile_context(profile_facts)
                 persona_context = _build_chat_persona(profile_facts)
         except Exception:
             pass
@@ -1020,14 +1021,16 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
     # ── Chat-only intents — go straight to DeepTutor, no agent overhead ──
     if intent in chat_only_intents():
         profile_facts = state.get("profile_facts", {}) or {}
-        profile_context = _build_profile_context(profile_facts)
-        # ── 普通对话不注入画像收集探针 ──
+        profile_context = ""
+        persona_context = ""
         try:
             from app.services.conversation_state import conversation_store as _cs2
             _s2 = _cs2.get(state.get("session_id", ""))
-            persona_context = _build_chat_persona(profile_facts) if (_s2 and (_s2.path_planning_info_mode or _s2.profile_extraction_enabled)) else ""
+            if _s2 and (_s2.path_planning_info_mode or _s2.profile_extraction_enabled):
+                profile_context = _build_profile_context(profile_facts)
+                persona_context = _build_chat_persona(profile_facts)
         except Exception:
-            persona_context = ""
+            pass
         user_msg = state.get("user_message", "")
         reply = ""
         try:
