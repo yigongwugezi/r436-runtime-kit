@@ -835,7 +835,7 @@ export default function ChatPage() {
                 ? 'bg-white text-surface-800 shadow-sm'
                 : 'text-surface-500 hover:text-surface-700'
             }`}
-          >📖 自由学习</button>
+          >自由学习</button>
           <button
             onClick={() => useChatStore.getState().setChatMode('planning')}
             className={`rounded-lg px-4 py-1.5 text-xs font-medium transition-colors ${
@@ -843,7 +843,7 @@ export default function ChatPage() {
                 ? 'bg-white text-surface-800 shadow-sm'
                 : 'text-surface-500 hover:text-surface-700'
             }`}
-          >📋 规划学习</button>
+          >规划学习</button>
         </div>
       </div>
 
@@ -856,13 +856,37 @@ export default function ChatPage() {
               const filtered = messages.filter((m: ChatMessage) => !m.mode || m.mode === currentMode);
               return <>
               {filtered.length === 0 && !isStreaming ? (
-              /* ── Empty state: ChatGPT style ── */
+              currentMode === 'planning' ? (
+                <div className="flex flex-col items-center justify-center min-h-[55vh] text-center px-4">
+                  <div className="w-14 h-14 rounded-2xl bg-accent-50 flex items-center justify-center mb-5">
+                    <span className="text-2xl">📋</span>
+                  </div>
+                  <h2 className="text-xl font-semibold text-surface-800 mb-2">规划学习模式</h2>
+                  <p className="text-surface-500 text-sm mb-6 max-w-md leading-relaxed">
+                    我会逐步了解你的背景和目标，收集足够信息后帮你生成个性化学习路径。
+                  </p>
+                  <div className="flex flex-wrap justify-center gap-2 max-w-md">
+                    {[
+                      { label: '我想制定学习计划', key: 'plan' },
+                      { label: '帮我规划数据结构', key: 'plan' },
+                      { label: '我要学微积分', key: 'plan' },
+                      { label: '两个月搞定英语四级', key: 'plan' },
+                    ].map((cmd, i) => (
+                      <button key={i}
+                        onClick={() => { setInput(cmd.label); inputRef.current?.focus(); }}
+                        className="px-4 py-2.5 bg-primary-50 border border-primary-200 rounded-xl text-sm text-primary-700 hover:bg-primary-100 transition-all"
+                      >{cmd.label}</button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+              /* ── Empty state: default free mode ── */
               <div className="flex flex-col items-center justify-center min-h-[55vh] text-center">
                 <div className="w-16 h-16 rounded-full bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center mb-6 shadow-lg shadow-emerald-200">
                   <Sparkles className="w-8 h-8 text-white" />
                 </div>
                 <h2 className="text-2xl font-semibold text-gray-800 mb-2">今天有什么可以帮你的？</h2>
-                <p className="text-gray-400 text-sm mb-8">告诉我你的学习目标，我帮你规划</p>
+                <p className="text-gray-400 text-sm mb-8">随时问我任何学习问题</p>
                 <div className="flex flex-wrap justify-center gap-2 max-w-md">
                   {quickCommands.slice(0, 4).map(cmd => (
                     <button
@@ -875,6 +899,7 @@ export default function ChatPage() {
                   ))}
                 </div>
               </div>
+              )
             ) : (
               <>
                 {filtered.map((msg: ChatMessage) => <MessageBubble key={msg.id} msg={msg} onClarificationSelect={send} />)}

@@ -447,6 +447,7 @@ export default function LearningPathPage() {
               dynamicAdjust && '需要动态调整',
               !reviewEnabled && '不需要复习阶段',
             ].filter(Boolean).join('，') + '。请先问我几个问题了解我的具体情况吧。';
+            useChatStore.getState().newSession();
             nav('/chat', { state: { initialMessage: msg, chatMode: 'planning' } });
           }}
             className="flex-1 py-3 border-2 border-primary-200 text-primary-700 rounded-xl font-medium hover:bg-primary-50 transition-colors text-sm"
