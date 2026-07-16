@@ -14,7 +14,7 @@ export async function buildProfile(params: BuildProfileParams): Promise<{ profil
 }
 
 export async function getProfile(params: { sessionId: string; subjectId?: string }): Promise<{ profile: StudentProfile }> {
-  const { data } = await client.get('/api/profile', { params: { ...params, learnerId: getStableLearnerId() } });
+  const { data } = await client.get('/api/profile', { params });
   return { ...data, profile: { ...data.profile, profileV2: data.profileV2 } };
 }
 
