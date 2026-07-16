@@ -1,5 +1,7 @@
 # 用户报告功能问题关闭矩阵
 
+> 2026-07-16 更新：以下矩阵已纳入 `7e6bdc9`、`c6dbc39`、`498d95c` 与 `00eccf4` 的隔离验证。所有新增提交仍为 **FIXED_LOCAL / BLOCKED_BY_NETWORK**：GitHub fetch 连接被重置，尚未推送；不应将其当作远端已发布状态。
+
 验证对象为候选分支 integrate/maf-refactor-31613f2。所有浏览器验证均使用隔离 SQLite、假 Provider 和可见的 Edge 自动化；没有读取真实用户内容、凭据或调用外部 LLM／搜索服务。
 
 状态含义：
@@ -9,19 +11,19 @@
 
 | issue_id | 用户可见现象与原根因 | 修复 commit | 自动测试 | Edge E2E | 当前状态与剩余边界 |
 |---|---|---|---|---|---|
-| F01 | 新对话新建了逻辑用户；缺失稳定 learner 标识时后端会新建 learner。 | cfa0ad2 | learner_session_profile_test.py | browser-smoke.test.mjs | **CLOSED** |
-| F02 | 长期 explicit 画像只在原对话可见；读取未按 learner 聚合。 | cfa0ad2 | learner_session_profile_test.py, profile_v2_test.py | browser-smoke.test.mjs | **CLOSED** |
+| F01 | 新对话新建了逻辑用户；缺失稳定 learner 标识时后端会新建 learner。 | cfa0ad2, c6dbc39 | learner_session_profile_test.py, current_subject_scope_test.py | browser-smoke.test.mjs | **CLOSED**：新 session 复用匿名 learner，且不再携带历史 subject。 |
+| F02 | 长期 explicit 画像只在原对话可见；读取未按 learner 聚合。 | cfa0ad2, c6dbc39 | learner_session_profile_test.py, profile_v2_test.py, current_subject_scope_test.py | browser-smoke.test.mjs | **CLOSED**：无主题 session 读取 learner-global explicit 事实，subject 局部事实不泄漏。 |
 | F03 | 年级被过度泛化为大学生；explicit 原值未保留。 | cfa0ad2 | learner_session_profile_test.py | browser-smoke.test.mjs | **CLOSED** |
-| F04 | 同主题重复建学科；无 canonical upsert。 | d8b1d24 | subject_identity_test.py | browser-smoke.test.mjs | **CLOSED** |
-| F05 | 尾随中文／英文标点创建重复学科。 | d8b1d24 | subject_identity_test.py | browser-smoke.test.mjs | **CLOSED** |
+| F04 | 同主题重复建学科；无 canonical upsert。 | d8b1d24, c6dbc39 | subject_identity_test.py, current_subject_scope_test.py | browser-smoke.test.mjs | **CLOSED**：只有当前消息明确声明主题时才绑定／复用 subject。 |
+| F05 | 尾随中文／英文标点创建重复学科。 | d8b1d24, c6dbc39 | subject_identity_test.py | browser-smoke.test.mjs | **CLOSED** |
 | F06 | 多选生成类型在持久化或展示中退化为讲义。 | 9aa9dd1, a71f523 | general_resource_generation_test.py | general-resource-generation.test.mjs | **CLOSED** |
 | F07 | 同资源生成出现重复条目；任务和资源没有共同去重边界。 | 9aa9dd1, a71f523, ec21157 | general_resource_generation_test.py | general-resource-generation.test.mjs | **CLOSED** |
 | F08 | 删除后的资源会由内存 last_result 回填。 | 6a58272（回归覆盖） | general_resource_generation_test.py | 资源生成旅程刷新／删除回归 | **CLOSED** |
 | F09 | 快捷模板只更新内存输入框。 | 8c32463 | 前端构建 | browser-smoke.test.mjs | **CLOSED** |
 | F10 | 刷新后模板和类型选择丢失。 | 8c32463 | workflowTaskRecovery.test.ts | general-resource-generation.test.mjs | **CLOSED** |
-| F11 | 资源库没有通用联网搜索入口。 | e9efe7e | general_resource_search_test.py, 资源搜索回归 | online-resource-search.test.mjs | **PARTIAL**：真实 Provider 未调用。 |
+| F11 | 资源库没有通用联网搜索入口。 | e9efe7e, 498d95c, 00eccf4 | general_resource_search_test.py, section_resource_recommendations_test.py, section_resource_search_cascade_test.py, search_client_test.py | online-resource-search.test.mjs | **PARTIAL**：通用入口、SSE、缓存与所有类型的预算覆盖已验证；真实 Provider 未调用。 |
 | F12 | 顶部搜索只写入本地筛选参数。 | e9efe7e | general_resource_search_test.py | online-resource-search.test.mjs | **CLOSED** |
-| F13 | 复合主题被压缩为首词。 | 027280e, e9efe7e | general_resource_search_test.py, section_resource_recommendations_test.py | online-resource-search.test.mjs | **CLOSED** |
+| F13 | 复合主题被压缩为首词。 | 027280e, e9efe7e, 498d95c | general_resource_search_test.py, section_resource_recommendations_test.py | online-resource-search.test.mjs | **CLOSED**：预算修复不改变 canonical query、缓存 key 或任务 key。 |
 | F14 | 通用资源生成没有接入 P6。 | a71f523 | general_resource_generation_test.py, workflowTaskRecovery.test.ts | general-resource-generation.test.mjs | **CLOSED** |
 | F15 | 静态“就绪／在线待命”被当作运行状态。 | 8ccd6bd | 前端构建 | browser-smoke.test.mjs | **CLOSED** |
 | F16 | 刷新可能重新创建任务。 | 56f7b5e, 8c32463, e9efe7e | workflowTaskRecovery.test.ts | 通用生成与联网搜索刷新旅程 | **CLOSED** |
