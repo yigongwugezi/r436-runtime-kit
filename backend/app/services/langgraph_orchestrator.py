@@ -844,9 +844,15 @@ async def _diagnosis_node(state: dict) -> dict:
     return await _run_agent("diagnosis", state, state["_factory"])
 
 async def _plan_node(state: dict) -> dict:
-    # ── 硬门槛：不自动触发 Planner，引导用户到路径规划页面 ──
-    # 只有从路径页面过来（plan_mode/path_mode 已设置）才执行规划
-    if state.get("plan_mode") or state.get("path_mode"):
+    # ── 硬门槛：只有从路径页确认按钮来的才执行 Planner ──
+    # 对话里即便说了"帮我规划"也不运行，只引导到路径页
+    try:
+        from app.services.conversation_state import conversation_store as _cs5
+        _s5 = _cs5.get(state.get("session_id", ""))
+        _planning = _s5 and _s5.path_planning_info_mode
+    except Exception:
+        _planning = False
+    if _planning and (state.get("plan_mode") or state.get("path_mode")):
         return await _run_agent("planner", state, state["_factory"])
     state["final_reply"] = (
         "好的！请到「学习路径」页面进行设置和生成，那里可以：\n"
