@@ -145,7 +145,7 @@ def _ensure_session(session_id: str, learner_id: str = "", subject_id: str = "")
         raise MissingSessionIdError()
     db = SessionLocal()
     try:
-        get_or_create_session(db, session_id, learner_id=learner_id or None, subject_id=subject_id or None, require_learner=True)
+        get_or_create_session(db, session_id, learner_id=learner_id or None, subject_id=subject_id or None, require_learner=False)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail="session belongs to another learner") from exc
     finally:
