@@ -6,15 +6,15 @@ export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
+  /** 深度思考过程文本 */
+  reasoningContent?: string;
   timestamp: number;
   /** 流式生成中标记 */
   streaming?: boolean;
-  /** 深度思考过程内容（DeepSeek 风格） */
-  reasoningContent?: string;
-  /** AI 推荐的下步操作 */
-  suggestedActions?: Array<{ label: string; prompt: string }>;
   /** 关联的资源卡片 */
   resourceCards?: ResourceCardData[];
+  /** 推荐操作按钮 */
+  suggestedActions?: { label: string; prompt: string }[];
   /** 消息类型 */
   type?: MessageType;
   /** 进度信息 */

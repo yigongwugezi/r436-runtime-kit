@@ -65,6 +65,7 @@ export function useLearningPath() {
   const [error, setError] = useState<string | null>(null);
   const [generationWorkflow, setGenerationWorkflow] = useState<WorkflowState | null>(null);
   const lastVersionRef = useRef<number>(0);
+  const pathVersionRef = useRef<number>(0);
   const hasDataRef = useRef(false);
   const initialLoadRef = useRef(true);
 
