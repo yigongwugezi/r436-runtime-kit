@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import ssl
 import time
 from abc import ABC, abstractmethod
 from typing import Any
@@ -187,7 +186,7 @@ class DeepSeekLLMClient(BaseLLMClient):
             raise LLMClientError("DEEPSEEK_API_KEY is not configured.")
 
         timeout = kwargs.pop("timeout", settings.llm_request_timeout)
-        max_retries = min(1, int(kwargs.get("retry_count", settings.llm_retry_count)))
+        max_retries = kwargs.get("retry_count", settings.llm_retry_count)
         retry_delay = kwargs.get("retry_delay", settings.llm_retry_delay)
 
         last_error: Exception | None = None
@@ -207,11 +206,7 @@ class DeepSeekLLMClient(BaseLLMClient):
                     time.sleep(retry_delay * (attempt + 1))
             except (error.URLError, TimeoutError, OSError) as exc:
                 last_error = exc
-                cause = exc.reason if isinstance(exc, error.URLError) else exc
-                is_tls_error = isinstance(cause, ssl.SSLError) or "SSL" in type(cause).__name__.upper()
-                if is_tls_error:
-                    raise LLMClientError("DeepSeek TLS handshake failed.", cause=exc) from exc
-                if attempt < max_retries and not is_tls_error:
+                if attempt < max_retries:
                     time.sleep(retry_delay * (attempt + 1))
             except json.JSONDecodeError as exc:
                 last_error = exc
@@ -247,14 +242,25 @@ class DeepSeekLLMClient(BaseLLMClient):
         timeout: int,
         **kwargs,
     ) -> str:
+        use_reasoning = kwargs.pop("reasoning", False)
+        use_search = kwargs.pop("search", False)
+
+        model = kwargs.get("model", self.model)
+        if use_reasoning:
+            model = getattr(settings, "llm_reasoner_model", "deepseek-reasoner")
+
         payload: dict[str, Any] = {
-            "model": kwargs.get("model", self.model),
+            "model": model,
             "messages": messages,
             "temperature": kwargs.get("temperature", self.temperature),
         }
         for key in ("max_tokens", "top_p", "stop", "stream"):
             if key in kwargs:
                 payload[key] = kwargs[key]
+
+        # DeepSeek web search
+        if use_search and settings.llm_enable_search:
+            payload["search"] = True
 
         req = request.Request(
             url=f"{self.base_url}/chat/completions",

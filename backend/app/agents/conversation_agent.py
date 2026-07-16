@@ -178,6 +178,9 @@ class ConversationAgent(BaseAgent):
         # ── Store session_id + profile_facts for _try_deeptutor_reply ──
         self._current_session_id = str(context.get("session_id", ""))
         self._current_profile_facts = dict(profile_facts) if isinstance(profile_facts, dict) else {}
+        self._search_enabled = bool(context.get("search_enabled", False))
+        self._deep_think_enabled = bool(context.get("deep_think_enabled", False))
+        logger.info("ConversationAgent: search_enabled=%s deep_think_enabled=%s", self._search_enabled, self._deep_think_enabled)
 
         if not user_message:
             return self._make_result(
@@ -230,7 +233,12 @@ class ConversationAgent(BaseAgent):
 
         if action in ("none", "tutoring", "", "deep_tutor_chat"):
             dt_capability = rule_result.get("capability", "chat")
-            dt = self._try_deeptutor_reply(user_message, self._history, capability=dt_capability)
+            # ── 深度思考模式：跳过 DeepTutor，直接用 LLM ──
+            if self._deep_think_enabled:
+                logger.info("DeepThink enabled, skipping DeepTutor, using LLM directly")
+                dt = None
+            else:
+                dt = self._try_deeptutor_reply(user_message, self._history, capability=dt_capability)
             if dt and len(dt) > 5:
                 # Extract <proposal> before stripping all tags (otherwise lost)
                 prop_match = re.search(r'<proposal>(.*?)</proposal>', dt, re.DOTALL)
@@ -253,7 +261,12 @@ class ConversationAgent(BaseAgent):
                     try:
                         messages = self._build_reply_messages(user_message, context, action)
                         raw_response = self._call_llm(messages)
-                        llm_reply, facts, exec_action, proposal = self._extract_reply_and_facts(raw_response)
+                        llm_reply, facts, exec_action, proposal, thinking, suggestions = self._extract_reply_and_facts(raw_response)
+                        if thinking:
+                            logger.info("DeepThink: extracted thinking (%d chars)", len(thinking))
+                            context["_llm_thinking"] = thinking
+                        if suggestions:
+                            context["_llm_suggestions"] = suggestions
                         if proposal:
                             context["_llm_proposal"] = proposal
                         if llm_reply:
@@ -303,6 +316,10 @@ class ConversationAgent(BaseAgent):
         result["llm_retry_count"] = llm_retry_count
         if context.get("_llm_proposal"):
             result["_llm_proposal"] = context["_llm_proposal"]
+        if context.get("_llm_thinking"):
+            result["_conversation_thinking"] = context["_llm_thinking"]
+        if context.get("_llm_suggestions"):
+            result["_conversation_suggestions"] = context["_llm_suggestions"]
         if needs_clarification:
             result["needs_clarification"] = True
         return result
@@ -450,7 +467,26 @@ class ConversationAgent(BaseAgent):
 
     def _build_reply_messages(self, user_message: str, context: dict, action: str) -> list[dict]:
         """构建 LLM 回复消息。LLM 自己决定用 <execute> 或 <proposal>。"""
-        msgs = [{"role": "system", "content": self.SYSTEM_PROMPT}]
+        system_content = self.SYSTEM_PROMPT
+
+        # 统一要求输出推荐操作
+        system_content += (
+            "\n\n【重要：每次回复末尾必须输出推荐操作】"
+            "\n请根据当前对话内容和学生需求，输出2-3个最合适的下一步操作建议，格式如下："
+            "\n<suggestions>"
+            "\n{\"label\": \"按钮文字(6字内)\", \"prompt\": \"点此按钮后发送的完整消息\"}"
+            "\n{\"label\": \"按钮文字2\", \"prompt\": \"消息2\"}"
+            "\n</suggestions>"
+            "\n建议应紧扣当前对话——如果刚生成了资源，建议查看/练习；如果刚做了诊断，建议针对性学习；如果是普通聊天，建议制定计划或深入学习。"
+        )
+        if getattr(self, '_deep_think_enabled', False):
+            system_content += (
+                "\n\n【深度思考模式已激活】请按以下格式回复："
+                "\n<thinking>在此简短分析学生的需求、推理出最佳回答策略（50-100字）</thinking>"
+                "\n然后输出你的正式回复。"
+            )
+
+        msgs = [{"role": "system", "content": system_content}]
         for m in self._history[-20:]:
             msgs.append(m)
         ctx_text = self._format_context(context)
@@ -465,12 +501,34 @@ class ConversationAgent(BaseAgent):
         return msgs
 
     @staticmethod
-    def _extract_reply_and_facts(raw: str) -> tuple[str, dict, str, str]:
-        """从 LLM 回复中提取文本、画像、execute action、proposal。"""
+    def _extract_reply_and_facts(raw: str) -> tuple[str, dict, str, str, str, list]:
+        """从 LLM 回复中提取文本、画像、execute action、proposal、thinking、suggestions。"""
         text = raw.strip()
         facts = {}
         execute_action = ""
         proposal = ""
+        thinking = ""
+        suggestions = []
+
+        # 提取 thinking（在剥离之前）
+        thinking_match = re.search(r'<thinking>(.*?)</thinking>', text, re.DOTALL)
+        if thinking_match:
+            thinking = thinking_match.group(1).strip()
+            text = re.sub(r'<thinking>.*?</thinking>', '', text, flags=re.DOTALL)
+
+        # 提取 suggestions
+        suggestions_match = re.search(r'<suggestions>(.*?)</suggestions>', text, re.DOTALL)
+        if suggestions_match:
+            raw_suggestions = suggestions_match.group(1).strip()
+            text = re.sub(r'<suggestions>.*?</suggestions>', '', text, flags=re.DOTALL)
+            # Parse each line as JSON
+            for line in raw_suggestions.split('\n'):
+                line = line.strip()
+                if line.startswith('{'):
+                    try:
+                        suggestions.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
 
         # 提取 proposal（在剥离之前，比 execute 先提取避免混淆）
         prop_match = re.search(r'<proposal>(.*?)</proposal>', text, re.DOTALL)
@@ -493,7 +551,7 @@ class ConversationAgent(BaseAgent):
                 pass
             text = re.sub(r'<facts>.*?</facts>', '', text, flags=re.DOTALL)
 
-        return text.strip(), facts, execute_action, proposal
+        return text.strip(), facts, execute_action, proposal, thinking, suggestions
 
     def _llm_classify_action(self, user_message: str, context: dict) -> str | None:
         """LLM 优先判 action。理解用户的各种口语表达，返回标准 action 名。"""

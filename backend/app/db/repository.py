@@ -23,6 +23,7 @@ from app.db.models import (
     LearningEventModel,
     LearningPathModel,
     MessageModel,
+    PlanningDraftModel,
     PracticeQuestionModel,
     ProfileSnapshotModel,
     QuizModel,
@@ -1677,3 +1678,75 @@ def get_stale_assessment_sessions(db: Session, stale_seconds: float) -> list[str
         .all()
     )
     return [row[0] for row in rows]
+
+
+# ── Planning Drafts ───────────────────────────────────────────────────────
+
+
+def upsert_planning_draft(
+    db: Session,
+    draft_id: str,
+    learner_id: str,
+    session_id: str,
+    subject_id: str = "",
+    **fields,
+) -> PlanningDraftModel:
+    """Create or update a planning draft."""
+    sess = get_or_create_session(db, session_id, learner_id=learner_id, subject_id=subject_id)
+    draft = db.get(PlanningDraftModel, draft_id)
+    if draft is None:
+        draft = PlanningDraftModel(
+            id=draft_id,
+            learner_id=learner_id,
+            session_id=session_id,
+            subject_id=subject_id,
+        )
+        db.add(draft)
+    for key in ("topic", "goal", "current_level", "daily_time", "target_duration", "status"):
+        if key in fields and fields[key] is not None:
+            setattr(draft, key, fields[key])
+    if "resource_preferences" in fields:
+        draft.resource_preferences = fields["resource_preferences"]
+    db.commit()
+    db.refresh(draft)
+    return draft
+
+
+def get_planning_draft(db: Session, draft_id: str) -> PlanningDraftModel | None:
+    """Get a single planning draft by ID."""
+    return db.get(PlanningDraftModel, draft_id)
+
+
+def get_planning_draft_by_session(
+    db: Session, session_id: str, subject_id: str = ""
+) -> PlanningDraftModel | None:
+    """Get the latest planning draft for a session."""
+    return (
+        db.query(PlanningDraftModel)
+        .filter(PlanningDraftModel.session_id == session_id)
+        .filter(PlanningDraftModel.subject_id == subject_id)
+        .order_by(PlanningDraftModel.updated_at.desc())
+        .first()
+    )
+
+
+def get_planning_drafts_for_learner(
+    db: Session, learner_id: str
+) -> list[PlanningDraftModel]:
+    """Get all planning drafts for a learner."""
+    return (
+        db.query(PlanningDraftModel)
+        .filter(PlanningDraftModel.learner_id == learner_id)
+        .order_by(PlanningDraftModel.updated_at.desc())
+        .all()
+    )
+
+
+def delete_planning_draft(db: Session, draft_id: str) -> bool:
+    """Delete a planning draft by ID. Returns True if deleted."""
+    draft = db.get(PlanningDraftModel, draft_id)
+    if draft is None:
+        return False
+    db.delete(draft)
+    db.commit()
+    return True

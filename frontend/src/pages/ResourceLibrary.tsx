@@ -19,6 +19,7 @@ import SourceBadge from '../components/common/SourceBadge';
 import Markdown from '../utils/markdown';
 import MermaidDiagram from '../utils/mermaid';
 import OnlineResourceSearch from '../components/resources/OnlineResourceSearch';
+import RecommendationsTab from '../components/resources/RecommendationsTab';
 
 const icons: Record<string, React.ReactNode> = {
   lecture: <BookOpen className="w-5 h-5 text-blue-500" />, mindmap: <Brain className="w-5 h-5 text-purple-500" />,
@@ -558,12 +559,13 @@ export default function ResourceLibrary() {
   const { resources, total, loading, error, applyFilter, toggleBookmark, refetch, sessionId } = useResources(initialFilter);
   const isParent = getCurrentLearner()?.role === 'parent';
   const activeSubject = useSubjectStore((s) => s.activeSubject);
-  const onlineMode = searchParams.get('mode') === 'online';
+  const onlineMode: 'mine' | 'online' | 'recommend' = searchParams.get('mode') === 'online' ? 'online' : searchParams.get('mode') === 'recommend' ? 'recommend' : 'mine';
   const onlineQuery = searchParams.get('query') || '';
 
-  const setResourceMode = (mode: 'mine' | 'online') => {
+  const setResourceMode = (mode: 'mine' | 'online' | 'recommend') => {
     const next = new URLSearchParams(searchParams);
     if (mode === 'online') next.set('mode', 'online');
+    else if (mode === 'recommend') next.set('mode', 'recommend');
     else { next.delete('mode'); next.delete('query'); }
     setSearchParams(next, { replace: true });
   };
@@ -699,9 +701,11 @@ export default function ResourceLibrary() {
     <div>
       <div className="mb-5 flex flex-wrap gap-2 rounded-xl bg-surface-100 p-1.5">
         <button onClick={() => setResourceMode('mine')} className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${!onlineMode ? 'bg-white text-surface-800 shadow-soft' : 'text-surface-500 hover:text-surface-700'}`}>搜索我的资源</button>
-        <button onClick={() => setResourceMode('online')} className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${onlineMode ? 'bg-primary-600 text-white shadow-soft' : 'text-surface-500 hover:text-surface-700'}`}>联网搜索学习资源</button>
+        <button onClick={() => setResourceMode('recommend')} className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${onlineMode === 'recommend' ? 'bg-primary-600 text-white shadow-soft' : 'text-surface-500 hover:text-surface-700'}`}>推荐资源</button>
+        <button onClick={() => setResourceMode('online')} className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${onlineMode === 'online' ? 'bg-primary-600 text-white shadow-soft' : 'text-surface-500 hover:text-surface-700'}`}>联网搜索学习资源</button>
       </div>
-      {onlineMode ? <OnlineResourceSearch sessionId={sessionId} subjectId={activeSubject?.id} query={onlineQuery} onQueryChange={setOnlineQuery} /> : <>
+      {onlineMode === 'online' ? <OnlineResourceSearch sessionId={sessionId} subjectId={activeSubject?.id} query={onlineQuery} onQueryChange={setOnlineQuery} /> :
+       onlineMode === 'recommend' ? <RecommendationsTab sessionId={sessionId} subjectId={activeSubject?.id} /> : <>
       {/* Textbook card (shown when textbook exists for active subject) */}
       {textbook && textbook.status === 'ready' && (
         <div className="mb-4">

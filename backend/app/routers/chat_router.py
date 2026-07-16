@@ -181,7 +181,7 @@ def _bind_current_subject_from_message(state_obj: Any) -> dict[str, Any] | None:
         db.close()
 
 
-async def _run_chat(message: str, session_id: str) -> tuple[str, dict[str, Any]]:
+async def _run_chat(message: str, session_id: str, search_enabled: bool = False, deep_think_enabled: bool = False) -> tuple[str, str, dict[str, Any]]:
     conversation_store.append_message(session_id, "user", message)
     state_obj = conversation_store.get(session_id)
     # ── Log extracted facts for debugging profile capture ──
@@ -225,6 +225,8 @@ async def _run_chat(message: str, session_id: str) -> tuple[str, dict[str, Any]]
         "course_id": state_obj.facts.get("target_course"),
         "profile_facts": dict(state_obj.facts),
         "feedback_signal": state_obj.feedback_signal,
+        "search_enabled": search_enabled,
+        "deep_think_enabled": deep_think_enabled,
     }
     try:
         from app.routers.product import _profile_v2
@@ -245,6 +247,7 @@ async def _run_chat(message: str, session_id: str) -> tuple[str, dict[str, Any]]
 
     result = await run_pipeline(**state)
     reply = result.get("final_reply", "") or result.get("_conversation_reply", "") or "处理完成"
+    thinking = result.get("_conversation_thinking", "") or ""
     conversation_store.append_message(session_id, "assistant", reply)
     # ── 随学随新：每轮对话自动提取facts并更新画像 ──
     facts = result.get("_conversation_facts", {}) or {}
@@ -268,7 +271,13 @@ async def _run_chat(message: str, session_id: str) -> tuple[str, dict[str, Any]]
         state_obj.feedback_signal = new_signal
     if result:
         conversation_store.set_result(session_id, result)
-    return reply, result
+    # ── Sync to planning draft for path page confirmation flow ──
+    try:
+        from app.routers.product import _sync_planning_draft
+        _sync_planning_draft(session_id, state_obj)
+    except Exception:
+        pass
+    return reply, thinking, result
 
 
 def _done_event(session_id: str, result: dict[str, Any], error: str | None = None) -> dict[str, Any]:
@@ -291,6 +300,12 @@ def _done_event(session_id: str, result: dict[str, Any], error: str | None = Non
         "warnings": result.get("warnings") or [],
         "fallback_used": bool(result.get("fallback_used")),
         "current_subject": result.get("current_subject") or None,
+        "resources_summary": [
+            {"id": r.get("id", r.get("resource_id", "")), "type": r.get("type", "lecture"), "title": r["title"],
+             "description": r.get("description", r.get("content", ""))[:120]}
+            for r in (result.get("resources") or []) if isinstance(r, dict) and r.get("title")
+        ],
+        "suggested_actions": result.get("_conversation_suggestions") or [],
     }
     if error:
         event["error"] = error
@@ -376,7 +391,11 @@ async def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_a
                 yield f"data: {json.dumps(_done_event(session_id, result), ensure_ascii=False)}\n\n"
                 return
 
-            reply, result = await _run_chat(message, session_id)
+            search_enabled = bool(payload.get("search_enabled", False))
+            deep_think_enabled = bool(payload.get("deep_think_enabled", False))
+            reply, thinking, result = await _run_chat(message, session_id, search_enabled=search_enabled, deep_think_enabled=deep_think_enabled)
+            if thinking:
+                yield f"data: {json.dumps({'reasoning': thinking}, ensure_ascii=False)}\n\n"
             for chunk in reply.splitlines(keepends=True):
                 yield f"data: {json.dumps({'type': 'messages', 'content': chunk}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps(_done_event(session_id, result), ensure_ascii=False)}\n\n"
@@ -423,13 +442,16 @@ async def send_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_aut
                 **_done_event(session_id, result),
             }
 
-        reply, result = await _run_chat(message, session_id)
+        search_enabled = bool(payload.get("search_enabled", False))
+        deep_think_enabled = bool(payload.get("deep_think_enabled", False))
+        reply, thinking, result = await _run_chat(message, session_id, search_enabled=search_enabled, deep_think_enabled=deep_think_enabled)
         return {
             "sessionId": session_id,
             "reply": {
                 "id": f"assistant_{int(time.time() * 1000)}",
                 "role": "assistant",
                 "content": reply,
+                "reasoningContent": thinking,
                 "timestamp": int(time.time() * 1000),
             },
             **_done_event(session_id, result),

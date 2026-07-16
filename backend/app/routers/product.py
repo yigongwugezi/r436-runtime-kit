@@ -797,6 +797,8 @@ def _to_learning_path(result: dict[str, Any]) -> dict[str, Any]:
         "overallProgress": result.get("overallProgress", 0),
         "estimatedDays": estimated_days,
         "source": "agent_generated",
+        "adjustments": result.get("adjustments", []),
+        "pathVersion": int(time.time() * 1000),
     }
 
 
@@ -819,6 +821,8 @@ def _empty_profile(session_id: str) -> dict[str, Any]:
         },
         "history": {"totalStudyMinutes": 0, "completedTopics": [], "quizAccuracy": None, "streak": 0, "lastStudyDate": 0},
         "source": "none",
+        "adjustments": [],
+        "pathVersion": 0,
         "readiness": readiness,
     }
 
@@ -1279,6 +1283,36 @@ def _learning_plan_reply(result: dict[str, Any], intent: dict[str, Any]) -> str:
     ).strip()
 
 
+
+def _sync_planning_draft(session_id: str, state: Any) -> None:
+    try:
+        from app.db.engine import SessionLocal
+        from app.db.repository import upsert_planning_draft, get_planning_draft_by_session
+        db = SessionLocal()
+        try:
+            facts = state.facts
+            goal = str(facts.get("learning_goal", "")).strip()
+            time_budget = str(facts.get("time_budget", "")).strip()
+            background = str(facts.get("background", "")).strip()
+            current_level = str(facts.get("knowledge_base", "")).strip()
+            target_course = str(facts.get("target_course", "")).strip()
+            filled = sum(1 for v in [goal, time_budget, background, current_level, target_course] if v)
+            if filled < 2:
+                return
+            existing = get_planning_draft_by_session(db, session_id, "")
+            draft_id = existing.draft_id if existing else f"draft_{session_id}"
+            learner_id = existing.learner_id if existing else (getattr(state, "learner_id", "") or "")
+            upsert_planning_draft(
+                db, draft_id=draft_id, learner_id=learner_id, session_id=session_id, subject_id="",
+                topic=target_course or "", goal=goal or "",
+                currentLevel=current_level or background or "",
+                dailyTime=time_budget or "", targetDuration="", resourcePreferences=[],
+            )
+        finally:
+            db.close()
+    except Exception:
+        pass
+
 def _learning_subject(state) -> str:
     return str(state.facts.get("target_course") or "").strip()
 
@@ -1590,6 +1624,9 @@ def _reply_for_intent(
         if extra_facts:
             state.facts["_extra"] = _json.dumps(extra_facts, ensure_ascii=False)
 
+        # ── Sync to planning draft (for path page confirmation flow) ──
+        _sync_planning_draft(session_id, state)
+
     llm_reply = intent.get("reply", "")
     action = intent.get("action", "none")
 
@@ -1609,6 +1646,28 @@ def _reply_for_intent(
     # ── action 需要执行 Agent ──
     agent_actions = ("full_workflow", "diagnose", "plan", "resources", "profile", "knowledge", "generate_questions", "grade_answer")
     if action in agent_actions:
+
+        # 路径规划信息收集模式：不触发 Planner
+        if action in ("full_workflow", "plan"):
+            st = conversation_store.get(session_id)
+            if getattr(st, "path_planning_info_mode", False):
+                return llm_reply or "好的，我先了解一下你的情况～", False
+            # 普通聊天：仅明确规划关键词才引导，避免 LLM 误判
+            plan_keywords = ["制定学习计划", "制定学习路径", "生成学习路径", "生成学习计划",
+                           "帮我规划", "学习方案", "规划学习", "安排学习"]
+            if any(kw in str(message) for kw in plan_keywords):
+                return (
+                    "好的！建议到「学习路径」页面进行设置和生成，那里可以：
+"
+                    "• 选择规划模式（教材式/日课式/精进式）
+"
+                    "• 设定总天数和周末安排
+"
+                    "• 到智能对话中收集你的学习信息
+
+"
+                    "点击左侧菜单的「学习路径」进入吧～"
+                ), False
         # 硬条件检查：如果连学习对象都不知道，必须先问（§2.3）
         if action in ("full_workflow", "plan"):
             state = conversation_store.get(session_id)
@@ -3445,25 +3504,48 @@ def _legacy_generate_resource(payload: dict[str, Any], auth: AuthContext = Depen
 
     if resource_type == "ppt":
         from app.services.ppt_generator import generate_pptx
-        pptx_path = generate_pptx(topic, difficulty or "medium", session_id)
-        if pptx_path:
-            rel_path = pptx_path.replace(str(settings.project_root), "").replace("\\", "/").lstrip("/")
-            resource = {
-                "id": f"ppt_{uuid.uuid4().hex}",
-                "type": "ppt",
-                "title": f"{topic} - PPT演示",
-                "content": f"/api/multimodal/file/{rel_path}",
-                "format": "pptx",
-                "difficulty": difficulty or "medium",
-                "source": "agent_generated",
-            }
-            db = SessionLocal()
-            try:
-                from app.db.repository import upsert_resource
-                upsert_resource(db, session_id, resource)
-            finally:
-                db.close()
-            return _product_response({"resource": resource}, session_id=session_id, source="agent")
+        import logging
+        _logger = logging.getLogger("ppt_generate")
+        pptx_path = None
+        try:
+            pptx_path = generate_pptx(topic, difficulty or "medium", session_id)
+        except Exception as exc:
+            _logger.exception("PPT 文件生成失败: %s", exc)
+            return _product_response(
+                {"error": f"PPT 生成失败: {str(exc)}", "resource": None},
+                session_id=session_id, source="agent",
+            )
+
+        if not pptx_path:
+            return _product_response(
+                {"error": "PPT 生成失败：未能创建文件", "resource": None},
+                session_id=session_id, source="agent",
+            )
+
+        rel_path = pptx_path.replace(str(settings.project_root), "").replace("\\", "/").lstrip("/")
+        resource = {
+            "id": f"ppt_{uuid.uuid4().hex}",
+            "type": "ppt",
+            "title": f"{topic} - PPT演示",
+            "content": f"/api/multimodal/file/{rel_path}",
+            "format": "pptx",
+            "difficulty": difficulty or "medium",
+            "source": "agent_generated",
+        }
+
+        db = SessionLocal()
+        try:
+            from app.db.repository import upsert_resource
+            upsert_resource(db, session_id, resource)
+            db.commit()
+            _logger.info("PPT 资源已入库: id=%s", resource["id"])
+        except Exception as exc:
+            db.rollback()
+            _logger.exception("PPT 入库失败（文件已生成）: %s", exc)
+        finally:
+            db.close()
+
+        return _product_response({"resource": resource}, session_id=session_id, source="agent")
 
     result = _run_agents(message, session_id=session_id)
     resources = [
@@ -3786,84 +3868,99 @@ def _apply_node_progress(stages: list[dict[str, Any]], session_id: str = "") -> 
 
 @router.get("/learning-path")
 def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
-    session_id = _resolve_session_id(sessionId, subjectId)
-    subject_id = str(subjectId).strip()
-    _ensure_session_linked(session_id, subject_id=subject_id)
+    try:
+        session_id = _resolve_session_id(sessionId, subjectId)
+        subject_id = str(subjectId).strip()
+        _ensure_session_linked(session_id, subject_id=subject_id)
 
-    def _build_path(stages: list[dict[str, Any]], base: dict[str, Any]) -> dict[str, Any]:
-        stages = _apply_node_progress(stages, session_id)
-        all_nodes = [n for s in stages for n in s.get("nodes", [])]
-        mastered = sum(1 for n in all_nodes if n.get("status") == "mastered")
-        overall = round(mastered / len(all_nodes) * 100) if all_nodes else 0
+        def _build_path(stages: list[dict[str, Any]], base: dict[str, Any]) -> dict[str, Any]:
+            stages = _apply_node_progress(stages, session_id)
+            all_nodes = [n for s in stages for n in s.get("nodes", [])]
+            mastered = sum(1 for n in all_nodes if n.get("status") == "mastered")
+            overall = round(mastered / len(all_nodes) * 100) if all_nodes else 0
 
-        stage_resource_stats: dict[str, dict[str, int]] = {}
-        stage_ids = [s.get("id", "") for s in stages]
-        try:
-            db_res = ag_get_resources(session_id)
-            for r in db_res:
-                sid = r.get("related_stage_id", "") or r.get("relatedStageId", "")
-                if not sid:
-                    continue
-                matched = next((s for s in stage_ids if sid in s or s in sid), None)
-                if not matched:
-                    continue
-                if matched not in stage_resource_stats:
-                    stage_resource_stats[matched] = {"total": 0, "completed": 0}
-                stage_resource_stats[matched]["total"] += 1
-                if r.get("study_status") == "completed":
-                    stage_resource_stats[matched]["completed"] += 1
-        except Exception:
-            logger.warning("Failed to compute resource stats for stages")
+            stage_resource_stats: dict[str, dict[str, int]] = {}
+            stage_ids = [s.get("id", "") for s in stages]
+            try:
+                db_res = ag_get_resources(session_id)
+                for r in db_res:
+                    sid = r.get("related_stage_id", "") or r.get("relatedStageId", "")
+                    if not sid:
+                        continue
+                    matched = next((s for s in stage_ids if sid in s or s in sid), None)
+                    if not matched:
+                        continue
+                    if matched not in stage_resource_stats:
+                        stage_resource_stats[matched] = {"total": 0, "completed": 0}
+                    stage_resource_stats[matched]["total"] += 1
+                    if r.get("study_status") == "completed":
+                        stage_resource_stats[matched]["completed"] += 1
+            except Exception:
+                logger.warning("Failed to compute resource stats for stages")
 
-        return {
-            "id": base.get("id", f"path_{session_id}"),
-            "title": base.get("title", "个性化学习路径"),
-            "description": base.get("description", ""),
-            "courseName": base.get("courseName", ""),
-            "courseId": base.get("courseId", ""),
-            "stages": stages,
-            "stageResourceStats": stage_resource_stats,
-            "createdAt": base.get("createdAt", int(time.time() * 1000)),
-            "overallProgress": overall,
-            "estimatedDays": base.get("estimatedDays", 14),
-            "source": "agent_generated",
-        }
+            return {
+                "id": base.get("id", f"path_{session_id}"),
+                "title": base.get("title", "个性化学习路径"),
+                "description": base.get("description", ""),
+                "courseName": base.get("courseName", ""),
+                "courseId": base.get("courseId", ""),
+                "stages": stages,
+                "stageResourceStats": stage_resource_stats,
+                "createdAt": base.get("createdAt", int(time.time() * 1000)),
+                "overallProgress": overall,
+                "estimatedDays": base.get("estimatedDays", 14),
+                "source": "agent_generated",
+                "adjustments": base.get("adjustments", []),
+                "pathVersion": base.get("pathVersion", int(time.time() * 1000)),
+            }
 
-    db_path = ag_get_learning_path(session_id)
-    if db_path:
-        raw_stages = db_path.get("stages", [])
-        if isinstance(raw_stages, list):
-            stages = _raw_stages_to_nodes(raw_stages)
-        else:
-            stages = []
-        if not stages:
-            return _product_response({"path": _empty_learning_path(session_id)}, session_id=session_id, subject_id=subjectId, source="none")
-        return _product_response(
-            {"path": _build_path(stages, {
-                "id": db_path.get("id", f"path_{session_id}"),
-                "title": f"{db_path.get('course_name', '')}个性化学习路径",
-                "description": db_path.get("description", ""),
-                "courseName": db_path.get("course_name", ""),
-                "courseId": db_path.get("course_id", ""),
-                "createdAt": _datetime_to_ms(db_path.get("created_at")),
-                "estimatedDays": db_path.get("estimated_days", 14),
-            })},
-            session_id=session_id, subject_id=subjectId, source="db",
+        db_path = ag_get_learning_path(session_id)
+        if db_path:
+            raw_stages = db_path.get("stages", [])
+            if isinstance(raw_stages, list):
+                stages = _raw_stages_to_nodes(raw_stages)
+            else:
+                stages = []
+            if not stages:
+                return _product_response({"path": _empty_learning_path(session_id)}, session_id=session_id, subject_id=subjectId, source="none")
+            return _product_response(
+                {"path": _build_path(stages, {
+                    "id": db_path.get("id", f"path_{session_id}"),
+                    "title": f"{db_path.get('course_name', '')}个性化学习路径",
+                    "description": db_path.get("description", ""),
+                    "courseName": db_path.get("course_name", ""),
+                    "courseId": db_path.get("course_id", ""),
+                    "createdAt": _datetime_to_ms(db_path.get("created_at")),
+                    "estimatedDays": db_path.get("estimated_days", 14),
+                    "adjustments": [],
+                    "pathVersion": _datetime_to_ms(db_path.get("updated_at")),
+                })},
+                session_id=session_id, subject_id=subjectId, source="db",
+            )
+
+        state = conversation_store.get(session_id)
+        if state.last_result:
+            path = _to_learning_path(state.last_result)
+            if not path.get("stages"):
+                return _product_response({"path": _empty_learning_path(session_id)}, session_id=session_id, subject_id=subjectId, source="none")
+            path["source"] = "agent_generated"
+            path["stages"] = _apply_node_progress(path["stages"], session_id)
+            all_nodes = [n for s in path["stages"] for n in s.get("nodes", [])]
+            mastered = sum(1 for n in all_nodes if n.get("status") == "mastered")
+            path["overallProgress"] = round(mastered / len(all_nodes) * 100) if all_nodes else 0
+            return _product_response({"path": path}, session_id=session_id, subject_id=subjectId, source="agent")
+
+        return _product_response({"path": _empty_learning_path(session_id)}, session_id=session_id, subject_id=subjectId, source="none")
+
+    except Exception:
+        logger.warning(
+            "get_learning_path failed for sessionId=%s subjectId=%s",
+            sessionId, subjectId, exc_info=True,
         )
-
-    state = conversation_store.get(session_id)
-    if state.last_result:
-        path = _to_learning_path(state.last_result)
-        if not path.get("stages"):
-            return _product_response({"path": _empty_learning_path(session_id)}, session_id=session_id, subject_id=subjectId, source="none")
-        path["source"] = "agent_generated"
-        path["stages"] = _apply_node_progress(path["stages"], session_id)
-        all_nodes = [n for s in path["stages"] for n in s.get("nodes", [])]
-        mastered = sum(1 for n in all_nodes if n.get("status") == "mastered")
-        path["overallProgress"] = round(mastered / len(all_nodes) * 100) if all_nodes else 0
-        return _product_response({"path": path}, session_id=session_id, subject_id=subjectId, source="agent")
-
-    return _product_response({"path": _empty_learning_path(session_id)}, session_id=session_id, subject_id=subjectId, source="none")
+        return _product_response(
+            {"path": _empty_learning_path(sessionId or "")},
+            session_id=sessionId or "", subject_id=subjectId or "", source="none",
+        )
 
 
 @router.post("/learning-path/generate")

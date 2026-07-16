@@ -270,7 +270,7 @@ class ResourceAgent(BaseAgent):
             )
             content = self.llm_client.chat(
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.5, max_tokens=2000,
+                temperature=0.5, search=True, reasoning=True, max_tokens=2000,
             )
             if content and len(content) > 100:
                 return {
@@ -390,6 +390,14 @@ class ResourceAgent(BaseAgent):
                     "大知识点 → 自动拆分多个资源（上/中/下或更多），每篇聚焦一个子主题\n"
                     "综合复习 → 跨知识点综合讲义 + 易错点总结\n"
                     "每份讲义结构：概念讲解→公式推导→例题→解题技巧→易错提示\n\n"
+                    "## 拓展阅读材料（reading 类型）\n"
+                    "阅读材料是独立的深度文章，不是讲义或大纲。格式要求：\n"
+                    "- 用引人入胜的问题或场景开篇\n"
+                    "- 正文分3-4个小节，每节有小标题，每节内容充实\n"
+                    "- 必须包含至少1个实际案例或应用场景的深入分析\n"
+                    "- 结尾给出2-3个思考题引导进一步探索\n"
+                    "- 总字数不少于800字，语言通俗但不失专业\n"
+                    "- content_format 设为 \"markdown\"，type 设为 \"reading\"\n\n"
                     "## 代码实操案例（按需生成，不强制）\n"
                     "当课程涉及编程、算法、数据处理时，必须生成 code_practice 类型资源。\n"
                     "格式要求：\n"
@@ -434,7 +442,7 @@ class ResourceAgent(BaseAgent):
         ]
 
         try:
-            raw = self.llm_client.chat(messages, temperature=0.2, max_tokens=8000)
+            raw = self.llm_client.chat(messages, temperature=0.2, search=True, reasoning=True, max_tokens=8000)
             logger.info(f"ResourceAgent LLM raw response (first 500 chars): {raw[:500]}")
             resources = self._parse_delimited(raw)
             # 分隔符解析失败时回退到旧 JSON 格式
@@ -1220,16 +1228,69 @@ class ResourceAgent(BaseAgent):
 
     def _reading_for_task(self, course, binding, task, stage_id, task_id=""):
         label = task or stage_id
+        course_name = course.get("course_name", "")
         res_id = f"res_reading_{task_id}" if task_id else f"res_reading_{stage_id}"
+
+        # ── LLM 生成真实阅读材料 ──
+        if self.llm_client:
+            try:
+                prompt = (
+                    f"你是一位{label}领域的资深教育者。请撰写一篇约800-1500字的拓展阅读文章。\n\n"
+                    f"主题：{label}\n"
+                    f"课程：{course_name}\n\n"
+                    f"要求：\n"
+                    f"1. 开篇用一个引人入胜的问题或场景引入主题\n"
+                    f"2. 正文分3-4个小节，每节有一个小标题，内容要有深度，不只是罗列定义\n"
+                    f"3. 包含至少1个实际案例或应用场景的分析\n"
+                    f"4. 语言通俗但不失专业，适合自学者阅读\n"
+                    f"5. 结尾给出2-3个思考题引导读者进一步探索\n\n"
+                    f"输出纯Markdown格式，不要用代码块包裹。"
+                )
+                llm_content = self.llm_client.chat(
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.7, search=True, reasoning=True,
+                )
+                llm_content = str(llm_content or "").strip()
+                # Strip ```markdown ... ``` wrapper if present
+                if llm_content.startswith("```"):
+                    llm_content = re.sub(r"^```[a-z]*\n", "", llm_content)
+                    llm_content = re.sub(r"\n```$", "", llm_content)
+                if len(llm_content) > 100:
+                    content = f"## {label} 拓展阅读\n\n{llm_content}"
+                    return self._resource(
+                        res_id, "reading",
+                        f"{label}拓展阅读", f"与学习任务「{label}」相关的拓展阅读材料。",
+                        "markdown", binding,
+                        content=content,
+                        reason=f"拓展{label}的深度和广度",
+                        task_id=task_id,
+                    )
+            except Exception:
+                pass
+
+        # ── LLM 不可用时的有意义兜底 ──
         content = (
             f"## {label} 拓展阅读\n\n"
-            f"### 阅读重点\n\n"
-            f"1. {label}的核心概念与定义\n"
-            f"2. 经典算法与实现思路\n"
-            f"3. 实际应用案例分析\n"
-            f"4. 前沿进展与扩展方向\n\n"
-            f"### 阅读建议\n\n"
-            f"先阅读讲义掌握基础概念，再通过拓展阅读加深理解。"
+            f"### 为什么需要深入理解{label}？\n\n"
+            f"{label}是{course_name}中的关键知识点，掌握它不仅有助于理解后续章节，"
+            f"更能在实际应用中发挥重要作用。本阅读材料将帮助你从多个角度深入理解这个主题。\n\n"
+            f"### 核心概念解析\n\n"
+            f"要真正理解{label}，建议从以下几个方面入手：\n\n"
+            f"1. **概念本质**：{label}的数学/逻辑定义是什么？它解决了什么问题？\n"
+            f"2. **经典方法**：处理{label}相关问题时，有哪些被广泛验证的方法和技巧？\n"
+            f"3. **常见误区**：学习者在理解{label}时容易犯哪些错误？如何避免？\n"
+            f"4. **实际应用**：{label}在哪些真实场景中被使用？找一个具体例子深入分析。\n\n"
+            f"### 推荐学习路径\n\n"
+            f"1. 先用讲义理解{label}的基本概念和公式\n"
+            f"2. 然后阅读本文，从不同视角加深理解\n"
+            f"3. 最后通过练习题检验掌握程度，查漏补缺\n\n"
+            f"### 延伸思考\n\n"
+            f"- {label}和你已经学过的其他知识点有什么联系？\n"
+            f"- 如果让你向别人讲解{label}，你会怎么组织思路？\n"
+            f"- {label}在未来的学习中还会以什么形式出现？\n\n"
+            f"---\n"
+            f"💡 **提示**：本材料由系统自动生成框架。"
+            f"在对话中输入「详细讲解{label}」可以让AI为你生成更深入的阅读内容。"
         )
         return self._resource(
             res_id, "reading",

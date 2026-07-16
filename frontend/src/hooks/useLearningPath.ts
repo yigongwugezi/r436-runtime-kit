@@ -75,7 +75,17 @@ export function useLearningPath() {
     try {
       const res = await learningPathApi.getLearningPath({ sessionId, subjectId });
       const p = normalizeLearningPathForClient(res?.path ?? null);
-      setPath(p);
+      // Merge path: only update if pathVersion changed (structural change)
+      // or if force (initial load / explicit refresh)
+      if (p) {
+        const newVersion = p.pathVersion ?? 0;
+        if (force || newVersion !== pathVersionRef.current) {
+          pathVersionRef.current = newVersion;
+          setPath(p);
+        }
+      } else {
+        setPath(p);
+      }
       hasDataRef.current = !!p;
       if (!p && !hasDataRef.current) setError('学习路径数据为空');
     } catch (e) {

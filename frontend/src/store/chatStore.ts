@@ -86,11 +86,18 @@ interface ChatStore {
   /** 动态进度条步骤（根据实际运行的 Agent 构建，替代硬编码 GEN_PIPELINE） */
   progressPipelineSteps: import('../types/chat').ProgressStep[];
   dataVersion: number;
+  /** 联网搜索开关 */
+  searchEnabled: boolean;
+  /** 深度思考开关 */
+  deepThinkEnabled: boolean;
 
   setCurrentSession: (id: string) => void;
   addMessage: (msg: ChatMessage) => void;
   updateLastAssistant: (updater: (msg: ChatMessage) => ChatMessage) => void;
   appendToLastAssistant: (chunk: string) => void;
+  appendReasoningToLastAssistant: (chunk: string) => void;
+  setSearchEnabled: (v: boolean) => void;
+  setDeepThinkEnabled: (v: boolean) => void;
   setStreaming: (v: boolean) => void;
   setAgentProgress: (p: GenerationProgress | null) => void;
   setLastImageAttachment: (attachment: import('../types/chat').ChatAttachment | null) => void;
@@ -132,6 +139,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   lastDebugInfo: null,
   progressPipelineSteps: [],
   dataVersion: 0,
+  searchEnabled: false,
+  deepThinkEnabled: false,
   dataSessionId: loadSessionId(),
 
   setCurrentSession: (id) => {
@@ -207,12 +216,27 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       if (last?.role === 'assistant') {
         msgs[msgs.length - 1] = { ...last, content: last.content + chunk };
       }
-      // 同步缓存
+      syncMessagesToSession(s.currentSessionId, msgs);
+      return { messages: msgs };
+    }),
+
+  appendReasoningToLastAssistant: (chunk) =>
+    set((s) => {
+      const msgs = [...s.messages];
+      const last = msgs[msgs.length - 1];
+      if (last?.role === 'assistant') {
+        msgs[msgs.length - 1] = {
+          ...last,
+          reasoningContent: (last.reasoningContent || '') + chunk,
+        };
+      }
       syncMessagesToSession(s.currentSessionId, msgs);
       return { messages: msgs };
     }),
 
   setStreaming: (v) => set({ isStreaming: v }),
+  setSearchEnabled: (v) => set({ searchEnabled: v }),
+  setDeepThinkEnabled: (v) => set({ deepThinkEnabled: v }),
   setAgentProgress: (p) => set({ agentProgress: p }),
   setLastImageAttachment: (attachment) => set({ lastImageAttachment: attachment, selectedImageAttachmentId: imageAttachmentKey(attachment) || null }),
   addImageAttachment: (attachment) =>

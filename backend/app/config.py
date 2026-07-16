@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.2
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
+    llm_enable_search: bool = True
+    llm_reasoner_model: str = "deepseek-reasoner"
 
     database_url: str = "sqlite:///./data/r436_runtime.db"
 

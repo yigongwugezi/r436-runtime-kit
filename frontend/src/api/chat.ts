@@ -12,6 +12,10 @@ export interface SendMessageParams {
   image_base64?: string;
   ignore_image_context?: boolean;
   image_provider?: string;
+  /** 联网搜索开关 */
+  search_enabled?: boolean;
+  /** 深度思考开关 */
+  deep_think_enabled?: boolean;
 }
 
 export interface ChatResponse {

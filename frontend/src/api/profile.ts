@@ -47,3 +47,29 @@ export async function syncProfileFromConversation(subjectId: string, sessionId: 
   const { data } = await client.post(`/api/profiles/${encodeURIComponent(subjectId)}/sync-from-conversation`, { sessionId, preview });
   return data;
 }
+
+// ── 画像驱动的资源推荐 ────────────────────────────────────────────────
+export interface ProfileRecommendation {
+  recommendation_type: string;
+  title: string;
+  reason: string;
+  resource_id: string;
+  stage_id?: string;
+}
+
+export async function getProfileRecommendations(params: {
+  sessionId: string;
+  subjectId?: string;
+  limit?: number;
+}): Promise<{ recommendations: ProfileRecommendation[] }> {
+  const { data } = await client.get('/api/profile/recommendations', { params });
+  return data;
+}
+
+export async function dismissProfileRecommendation(
+  recommendationId: string,
+  sessionId: string,
+): Promise<{ ok: boolean }> {
+  const { data } = await client.post(`/api/profile/recommendations/${encodeURIComponent(recommendationId)}/dismiss`, { sessionId });
+  return data;
+}

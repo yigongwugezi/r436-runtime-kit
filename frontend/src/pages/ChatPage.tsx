@@ -3,13 +3,12 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { imageAttachmentKey, useChatStore, detectOrphanedStreaming } from '../store/chatStore';
 import { useStreamChat } from '../hooks/useStreamChat';
 import { useNotificationPoller } from '../hooks/useNotificationPoller';
-import { getSessionMessages, getQuickCommands, getAgents, recoverGeneration, uploadMultimodalImage, saveMultimodalResource, prepareKnowledgeCandidates } from '../api/chat';
-import type { AgentInfo } from '../api/chat';
+import { getSessionMessages, getQuickCommands, recoverGeneration, uploadMultimodalImage, saveMultimodalResource, prepareKnowledgeCandidates } from '../api/chat';
 import { DEFAULT_QUICK_COMMANDS } from '../utils/constants';
 import { timeAgo } from '../utils/format';
 import { runtimeStorageKeys, writeStorageItem } from '../utils/storageKeys';
 import type { ChatAttachment, ChatMessage, GenerationProgress, ProgressStep, QuickCommand } from '../types/chat';
-import { Send, Sparkles, Square, Copy, Check, AlertCircle, Bot, User, RefreshCw, ChevronDown, XCircle, History, Brain, Loader2, BrainCircuit, FileText, Video, Menu, ImagePlus, Trash2, MessageCircle } from 'lucide-react';
+import { Send, Sparkles, Square, Copy, Check, AlertCircle, Bot, RefreshCw, ChevronDown, XCircle, Loader2, BrainCircuit, ImagePlus, Trash2, MessageCircle, Globe } from 'lucide-react';
 import { getCurrentLearner } from '../store/authStore';
 import Markdown from '../utils/markdown';
 import MarkmapDiagram from '../utils/markmap';
@@ -458,44 +457,126 @@ function MultimodalResultView({ result }: { result: ChatMessage['multimodalResul
 
 function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onClarificationSelect?: (prompt: string) => void }) {
   const isUser = msg.role === 'user'; const [copied, setCopied] = useState(false);
+  const [thinkingExpanded, setThinkingExpanded] = useState(true);
+  const hasThinking = !isUser && msg.reasoningContent && msg.reasoningContent.trim().length > 0;
   return (
-    <div className={`flex items-start gap-3 ${isUser ? 'flex-row-reverse' : ''} group`}>
-      <div className={`w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 ${isUser ? 'bg-primary-600' : 'bg-gradient-to-br from-primary-500 to-accent-500'}`}>{isUser ? <User size={16} className="text-white" /> : <Bot size={16} className="text-white" />}</div>
-      <div className={`max-w-2xl ${isUser ? '' : ''}`}>
-        <div className={`rounded-2xl px-4 py-3 relative ${isUser ? 'bg-primary-600 text-white' : 'bg-surface-100 text-surface-700'}`}>
-          {isUser ? (
-            <div>
-              <p className="whitespace-pre-wrap text-sm leading-relaxed">{msg.content}</p>
-              {msg.attachments?.map((item: ChatAttachment) => <ImageAttachmentPreview key={item.file_id || attachmentUrl(item)} item={item} />)}
+    <div className={`flex w-full ${isUser ? 'justify-end' : 'justify-start'}`}>
+      <div className={`flex gap-3 max-w-[85%] ${isUser ? 'flex-row-reverse' : ''}`}>
+        {!isUser && (
+          <div className="w-7 h-7 rounded-full bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center flex-shrink-0 mt-0.5">
+            <Sparkles size={13} className="text-white" />
+          </div>
+        )}
+        <div className={`min-w-0 group ${isUser ? 'flex flex-col items-end' : ''}`}>
+          {/* ── DeepSeek-style thinking section ── */}
+          {hasThinking && (
+            <div className="mb-2">
+              <button
+                onClick={() => setThinkingExpanded(!thinkingExpanded)}
+                className="flex items-center gap-2 text-xs text-gray-500 hover:text-gray-700 transition-colors mb-1"
+              >
+                <svg className={`w-3 h-3 transition-transform ${thinkingExpanded ? 'rotate-90' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                </svg>
+                <span>{msg.streaming ? '正在思考...' : '思考过程'}</span>
+                {msg.streaming && <Loader2 size={10} className="animate-spin" />}
+              </button>
+              {thinkingExpanded && (
+                <div className="border-l-2 border-gray-300 pl-3 py-1 text-xs text-gray-500 leading-relaxed whitespace-pre-wrap">
+                  {msg.reasoningContent}
+                  {msg.streaming && <span className="inline-block w-1.5 h-3 bg-gray-400 animate-pulse rounded ml-0.5 align-text-bottom" />}
+                </div>
+              )}
             </div>
-          ) : (
-            <div className="text-sm leading-relaxed">
-              {(() => {
-                const content = msg.content || '';
-                const modePick = parseModePickTag(content);
-                const cleanContent = stripModePickTag(content);
+          )}
+          {/* ── Main content bubble ── */}
+          <div className={`text-sm leading-relaxed ${
+            isUser
+              ? 'bg-[#2f2f2f] text-white px-4 py-2.5 rounded-3xl'
+              : 'text-gray-700 px-0.5'
+          }`}>
+            {isUser ? (
+              <div>
+                <p className="whitespace-pre-wrap">{msg.content}</p>
+                {msg.attachments?.map((item: ChatAttachment) => <ImageAttachmentPreview key={item.file_id || attachmentUrl(item)} item={item} />)}
+              </div>
+            ) : (
+              <div className="prose prose-sm max-w-none [&_p]:mb-2 [&_p:last-child]:mb-0 [&_ul]:pl-4 [&_ol]:pl-4 [&_li]:mb-1 [&_pre]:text-xs [&_code]:text-xs [&_h1]:text-base [&_h2]:text-sm [&_h3]:text-sm [&_table]:text-xs [&_th]:border [&_th]:border-gray-300 [&_th]:px-2 [&_th]:py-1 [&_td]:border [&_td]:border-gray-300 [&_td]:px-2 [&_td]:py-1">
+                {(() => {
+                  const content = msg.content || '';
+                  const modePick = parseModePickTag(content);
+                  const cleanContent = stripModePickTag(content);
+                  return (
+                    <>
+                      {cleanContent ? <Markdown content={cleanContent} /> : msg.streaming ? <span className="text-gray-400 italic">...</span> : null}
+                      {modePick && !msg.streaming && (
+                        <ModePicker options={modePick.options} course={modePick.course} defaultMode={modePick.defaultMode} />
+                      )}
+                    </>
+                  );
+                })()}
+                {msg.multimodalResult && <MultimodalResultView result={msg.multimodalResult} />}
+                {msg.streaming && msg.content && (
+                  <span className="inline-block w-1.5 h-4 bg-gray-400 animate-pulse rounded ml-0.5 align-text-bottom" />
+                )}
+                {msg.error && (
+                  <div className="mt-2 p-3 bg-red-50 border border-red-100 rounded-xl flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+                    <div><p className="text-xs text-red-600 font-medium">生成失败</p><p className="text-xs text-red-400 mt-0.5">{msg.error}</p></div>
+                  </div>
+                )}
+                {msg.isClarification && onClarificationSelect && <ChatClarification onSelect={onClarificationSelect} />}
+              </div>
+            )}
+          </div>
+          {/* ── 资源入口卡片 ── */}
+          {!isUser && !msg.streaming && msg.resourceCards && msg.resourceCards.length > 0 && (
+            <div className="mt-3 space-y-2">
+              {msg.resourceCards.map((card, idx: number) => {
+                const iconMap: Record<string, string> = { lecture: '📖', mindmap: '🧠', quiz: '✏️', reading: '📚', video: '🎬', ppt: '📊', case_study: '🔍', textbook: '📕', multimodal: '🖼️' };
+                const icon = iconMap[card.type] || '📄';
+                const href = card.id ? `/resources/${card.id}` : '/resources';
                 return (
-                  <>
-                    {cleanContent ? <Markdown content={cleanContent} /> : msg.streaming ? <span className="text-surface-400">思考中…</span> : null}
-                    {modePick && !msg.streaming && (
-                      <ModePicker options={modePick.options} course={modePick.course} defaultMode={modePick.defaultMode} />
-                    )}
-                  </>
+                  <a key={idx} href={href} target="_blank" rel="noreferrer"
+                    className="flex items-center gap-3 p-3 rounded-xl border border-gray-200 bg-white hover:border-gray-300 hover:shadow-sm transition-all group/card">
+                    <div className="w-9 h-9 rounded-lg bg-gray-100 flex items-center justify-center text-lg flex-shrink-0 group-hover/card:bg-gray-200 transition-colors">
+                      {icon}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium text-gray-800 truncate">{card.title}</div>
+                      {card.description && <div className="text-xs text-gray-400 truncate mt-0.5">{card.description}</div>}
+                    </div>
+                    <svg className="w-4 h-4 text-gray-300 group-hover/card:text-gray-500 flex-shrink-0 transition-colors" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                    </svg>
+                  </a>
                 );
-              })()}
-              {msg.multimodalResult && <MultimodalResultView result={msg.multimodalResult} />}
-              {msg.streaming && msg.content && <span className="inline-block w-1.5 h-4 bg-primary-400 animate-pulse rounded ml-0.5 align-text-bottom" />}
-              {msg.error && <div className="mt-2 p-3 bg-error-50 rounded-xl flex items-start gap-2"><AlertCircle className="w-4 h-4 text-error-400 flex-shrink-0 mt-0.5" /><div><p className="text-xs text-error-600 font-medium">生成失败</p><p className="text-xs text-error-400 mt-0.5">{msg.error}</p></div></div>}
-              {msg.isClarification && onClarificationSelect && <ChatClarification onSelect={onClarificationSelect} />}
+              })}
+            </div>
+          )}
+          {/* ── 推荐操作按钮 ── */}
+          {!isUser && !msg.streaming && msg.suggestedActions && msg.suggestedActions.length > 0 && onClarificationSelect && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {msg.suggestedActions.map((action, idx: number) => (
+                <button
+                  key={idx}
+                  onClick={() => onClarificationSelect(action.prompt)}
+                  className="px-3 py-1.5 rounded-full text-xs font-medium border border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:bg-gray-50 hover:text-gray-800 transition-all"
+                >
+                  {action.label}
+                </button>
+              ))}
             </div>
           )}
           {!isUser && msg.content && !msg.streaming && (
-            <button onClick={() => { navigator.clipboard.writeText(msg.content); setCopied(true); setTimeout(() => setCopied(false), 2000); }} className="absolute -bottom-1 right-2 translate-y-full opacity-0 group-hover:opacity-100 transition-opacity p-1 bg-white rounded-lg hover:bg-surface-50 shadow-soft border border-surface-200">
-              {copied ? <Check className="w-3 h-3 text-success-500" /> : <Copy className="w-3 h-3 text-surface-400" />}
+            <button
+              onClick={() => { navigator.clipboard.writeText(msg.content); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+              className="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded-md text-[10px] text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+            >
+              {copied ? <><Check className="w-3 h-3" />已复制</> : <><Copy className="w-3 h-3" />复制</>}
             </button>
           )}
         </div>
-        <div className={`mt-1 text-xs ${isUser ? 'text-right' : ''} text-surface-400`}>{new Date(msg.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</div>
       </div>
     </div>
   );
@@ -544,8 +625,12 @@ export default function ChatPage() {
     imageAttachmentHistory,
     selectedImageAttachmentId,
     selectImageAttachment,
+    searchEnabled,
+    deepThinkEnabled,
   } = useChatStore() as any;
   const { send, abort } = useStreamChat();
+  const setSearchEnabled = (v: boolean) => useChatStore.getState().setSearchEnabled(v);
+  const setDeepThinkEnabled = (v: boolean) => useChatStore.getState().setDeepThinkEnabled(v);
   // Closed-loop assessment notifications — poll every 30s, pause during streaming
   useNotificationPoller(currentSessionId || '', !isStreaming);
   const [input, setInput] = useState(''); const [showScrollBtn, setShowScrollBtn] = useState(false);
@@ -554,14 +639,12 @@ export default function ChatPage() {
   const [imageContextDisabled, setImageContextDisabled] = useState(false);
   const [imagePickerOpen, setImagePickerOpen] = useState(false);
   const [quickCommands, setQuickCommands] = useState<QuickCommand[]>(DEFAULT_QUICK_COMMANDS);
-  const [agents, setAgents] = useState<AgentInfo[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null); const inputRef = useRef<HTMLTextAreaElement>(null); const bottomRef = useRef<HTMLDivElement>(null); const fileRef = useRef<HTMLInputElement>(null);
   const userScrolledUpRef = useRef(false);
 
   // Fetch dynamic quick commands and agents on mount
   useEffect(() => {
     getQuickCommands().then(res => { if (res.commands?.length) setQuickCommands(res.commands); }).catch(() => {});
-    getAgents().then(res => { if (res.agents?.length) setAgents(res.agents); }).catch(() => {});
   }, []);
   useEffect(() => () => { if (selectedImage) URL.revokeObjectURL(selectedImage.preview); }, [selectedImage]);
   const selectedReferenceAttachment = (imageAttachmentHistory || []).find((item: ChatAttachment) => imageAttachmentKey(item) === selectedImageAttachmentId) || lastImageAttachment;
@@ -684,183 +767,245 @@ export default function ChatPage() {
   const handleKeyDown = (e: React.KeyboardEvent) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } };
 
   return (
-    <div className="h-[calc(100vh-160px)] flex flex-col animate-fade-in">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-4">
-          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-primary-500 to-accent-500 flex items-center justify-center shadow-lg"><Brain className="w-6 h-6 text-white" /></div>
-          <div>
-            <div className="flex items-center gap-3">
-              <h2 className="font-display text-xl font-bold text-surface-800">智能学习助手</h2>
-              <div className="relative">
-                <button
-                  onClick={() => setMenuOpen(v => !v)}
-                  className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all ${menuOpen ? 'bg-primary-100 text-primary-600' : 'text-surface-400 hover:text-surface-600 hover:bg-surface-100'}`}
-                  title="对话记录"
-                >
-                  <Menu size={16} />
-                </button>
-                {menuOpen && (
-                  <HistoryPopover
-                    sessions={useChatStore.getState().sessions}
-                    currentSessionId={currentSessionId}
-                    onSelect={async (id: string) => {
-                      setMenuOpen(false);
-                      useChatStore.getState().setCurrentSession(id);
-                      try {
-                        const res = await getSessionMessages(id);
-                        if (res?.messages) useChatStore.setState({ messages: res.messages });
-                      } catch { /* ignore */ }
-                    }}
-                    onDelete={(id: string) => useChatStore.getState().removeSession(id)}
-                    onRename={(id: string, title: string) => useChatStore.getState().renameSession(id, title)}
-                    onNew={() => { useChatStore.getState().newSession(); setMenuOpen(false); }}
-                    onClose={() => setMenuOpen(false)}
-                  />
-                )}
-              </div>
-            </div>
-            <div className="flex items-center gap-2 mt-1"><span className="w-2 h-2 bg-success-500 rounded-full animate-pulse" /><span className="text-sm text-surface-500">在线 · 可通过对话构建学习画像</span></div>
-          </div>
-        </div>
+    <div className="h-[calc(100vh-160px)] flex flex-col bg-white">
+      {/* ── ChatGPT-style top bar ── */}
+      <div className="flex items-center justify-between px-4 py-2 flex-shrink-0">
         <div className="flex items-center gap-2">
-          <button onClick={() => setHistoryOpen(true)} className="w-10 h-10 rounded-xl bg-surface-100 text-surface-500 hover:bg-surface-200 hover:text-surface-700 flex items-center justify-center transition-colors" title="历史记录">
-            <History size={20} />
+          <div className="relative">
+            <button
+              onClick={() => setMenuOpen(v => !v)}
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+              title="对话记录"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" />
+                <line x1="9" y1="3" x2="9" y2="21" />
+              </svg>
+            </button>
+            {menuOpen && (
+              <HistoryPopover
+                sessions={useChatStore.getState().sessions}
+                currentSessionId={currentSessionId}
+                onSelect={async (id: string) => {
+                  setMenuOpen(false);
+                  useChatStore.getState().setCurrentSession(id);
+                  try {
+                    const res = await getSessionMessages(id);
+                    if (res?.messages) useChatStore.setState({ messages: res.messages });
+                  } catch { /* ignore */ }
+                }}
+                onDelete={(id: string) => useChatStore.getState().removeSession(id)}
+                onRename={(id: string, title: string) => useChatStore.getState().renameSession(id, title)}
+                onNew={() => { useChatStore.getState().newSession(); setMenuOpen(false); }}
+                onClose={() => setMenuOpen(false)}
+              />
+            )}
+          </div>
+          <span className="text-sm font-semibold text-gray-700">智能学习助手</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setHistoryOpen(true)}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+            title="当前对话记录"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <circle cx="12" cy="12" r="10" />
+              <polyline points="12 6 12 12 16 14" />
+            </svg>
           </button>
-          <button onClick={() => { useChatStore.getState().newSession(); }} className="flex items-center gap-2 px-4 py-2.5 bg-primary-50 text-primary-600 rounded-xl font-medium hover:bg-primary-100 transition-colors"><Sparkles size={18} />新对话</button>
+          <button
+            onClick={() => { useChatStore.getState().newSession(); }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+          >
+            <Square size={12} className="rotate-45" />新对话
+          </button>
         </div>
       </div>
 
-      <div className="flex-1 flex overflow-hidden">
-        <div className="flex-1 flex flex-col bg-white rounded-2xl shadow-soft overflow-hidden">
-          <div ref={scrollRef} className="flex-1 overflow-y-auto p-6 space-y-4" style={{ overflowAnchor: 'none' }}>
+      {/* ── Messages area ── */}
+      <div className="flex-1 overflow-hidden flex flex-col">
+        <div ref={scrollRef} className="flex-1 overflow-y-auto" style={{ overflowAnchor: 'none' }}>
+          <div className="max-w-[48rem] mx-auto px-4 py-4 space-y-6">
             {messages.length === 0 && !isStreaming ? (
-              <div className="flex flex-col items-center justify-center h-full text-center px-4">
-                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary-100 to-accent-100 flex items-center justify-center mb-4"><Bot className="w-8 h-8 text-primary-600" /></div>
-                <h3 className="font-display text-lg font-semibold text-surface-800 mb-2">开始你的学习之旅</h3>
-                <p className="text-surface-500 text-sm max-w-sm mb-6">告诉系统你的专业、基础和目标，多智能体将为你定制学习方案</p>
-                <div className="flex flex-wrap gap-2">{quickCommands.map(cmd => <button key={cmd.id} onClick={() => { setInput(cmd.prompt); inputRef.current?.focus(); }} className="px-3 py-2 bg-surface-100 border border-surface-200 rounded-xl text-xs text-surface-600 hover:border-primary-300 hover:text-primary-600 transition-all">{cmd.icon} {cmd.label}</button>)}</div>
+              /* ── Empty state: ChatGPT style ── */
+              <div className="flex flex-col items-center justify-center min-h-[55vh] text-center">
+                <div className="w-16 h-16 rounded-full bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center mb-6 shadow-lg shadow-emerald-200">
+                  <Sparkles className="w-8 h-8 text-white" />
+                </div>
+                <h2 className="text-2xl font-semibold text-gray-800 mb-2">今天有什么可以帮你的？</h2>
+                <p className="text-gray-400 text-sm mb-8">告诉我你的学习目标，我帮你规划</p>
+                <div className="flex flex-wrap justify-center gap-2 max-w-md">
+                  {quickCommands.slice(0, 4).map(cmd => (
+                    <button
+                      key={cmd.id}
+                      onClick={() => { setInput(cmd.prompt); inputRef.current?.focus(); }}
+                      className="px-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm text-gray-600 hover:border-gray-300 hover:bg-gray-50 transition-all"
+                    >
+                      {cmd.label}
+                    </button>
+                  ))}
+                </div>
               </div>
             ) : (
               <>
                 {messages.map((msg: ChatMessage) => <MessageBubble key={msg.id} msg={msg} onClarificationSelect={send} />)}
-                {agentProgress && <AgentPipelineProgress progress={agentProgress} onRetry={() => { const lastUser = [...messages].reverse().find(m => m.role === 'user'); if (lastUser) send(lastUser.content); }} onNavigate={(p: string) => nav(p)} />}
-                {!isStreaming && <AgentExecutionDetails info={lastDebugInfo} />}
-                {isStreaming && !agentProgress && (
-                  <div className="flex items-start gap-3 animate-fade-in"><div className="w-8 h-8 rounded-xl bg-gradient-to-br from-primary-500 to-accent-500 flex items-center justify-center flex-shrink-0"><Bot size={16} className="text-white" /></div><div className="bg-surface-100 rounded-2xl px-4 py-3"><div className="flex items-center gap-2 text-surface-500"><Loader2 size={14} className="animate-spin" />正在思考...</div></div></div>
+                {agentProgress && (
+                  <div className="max-w-[85%] ml-10">
+                    <AgentPipelineProgress
+                      progress={agentProgress}
+                      onRetry={() => { const lastUser = [...messages].reverse().find(m => m.role === 'user'); if (lastUser) send(lastUser.content); }}
+                      onNavigate={(p: string) => nav(p)}
+                    />
+                  </div>
                 )}
+                {!isStreaming && <AgentExecutionDetails info={lastDebugInfo} />}
+                {isStreaming && !agentProgress && (() => {
+                  const lastMsg = messages[messages.length - 1];
+                  const hasContent = lastMsg?.role === 'assistant' && (lastMsg.content || lastMsg.reasoningContent);
+                  if (hasContent) return null;
+                  return (
+                    <div className="flex items-start gap-3">
+                      <div className="w-7 h-7 rounded-full bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center flex-shrink-0">
+                        <Sparkles size={13} className="text-white" />
+                      </div>
+                      <div className="flex items-center gap-2 text-gray-400 text-sm py-1">
+                        <Loader2 size={14} className="animate-spin" />思考中...
+                      </div>
+                    </div>
+                  );
+                })()}
               </>
             )}
             <div ref={bottomRef} />
           </div>
-
-          <div className="border-t border-surface-100 p-4">
-            {messages.length > 0 && !isStreaming && <PromptTemplates onSelect={(prompt: string) => { setInput(prompt); inputRef.current?.focus(); }} />}
-            {selectedImage && (
-              <div className="mb-3 flex items-center gap-3 rounded-xl border border-surface-200 bg-surface-50 p-2">
-                <img src={selectedImage.preview} className="h-14 w-14 rounded-lg object-cover" />
-                <div className="min-w-0 flex-1 text-xs text-surface-500 truncate">{selectedImage.file.name}</div>
-                <button onClick={() => { URL.revokeObjectURL(selectedImage.preview); setSelectedImage(null); if (fileRef.current) fileRef.current.value = ''; }} className="p-2 rounded-lg text-surface-400 hover:bg-white hover:text-error-500">
-                  <Trash2 size={16} />
-                </button>
-              </div>
-            )}
-            {referencesLastImage && (
-              <div className={`relative mb-3 flex items-center gap-3 rounded-2xl border-2 p-3 text-sm shadow-soft ${willUseLastImage ? 'border-primary-300 bg-primary-50 text-primary-800' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
-                {attachmentUrl(selectedReferenceAttachment) && <img src={attachmentUrl(selectedReferenceAttachment)} className="h-14 w-14 rounded-xl object-cover border border-white" />}
-                <div className="flex-1">
-                  <div className="font-semibold">{willUseLastImage ? '正在引用图片' : '已取消引用图片'}</div>
-                  <div className="text-xs opacity-80">{willUseLastImage ? '本条消息将使用当前选中的图片上下文' : '本条消息不会带图，也不会复用旧图'}</div>
-                </div>
-                {willUseLastImage && (imageAttachmentHistory || []).length > 1 && (
-                  <button onClick={() => setImagePickerOpen(v => !v)} className="rounded-xl bg-white px-3 py-2 text-primary-600 border border-primary-100 font-medium">更换</button>
-                )}
-                {willUseLastImage ? (
-                  <button onClick={() => setImageContextDisabled(true)} className="rounded-xl bg-white px-3 py-2 text-error-600 border border-error-100 font-medium">取消引用</button>
-                ) : (
-                  <button onClick={() => setImageContextDisabled(false)} className="rounded-xl bg-white px-3 py-2 text-primary-600 border border-primary-100 font-medium">重新使用</button>
-                )}
-                {imagePickerOpen && (
-                  <div className="absolute bottom-full left-3 z-30 mb-2 grid max-w-[360px] grid-cols-4 gap-2 rounded-2xl border border-surface-200 bg-white p-3 shadow-elevated">
-                    {(imageAttachmentHistory || []).map((item: ChatAttachment) => {
-                      const id = imageAttachmentKey(item);
-                      const active = id === selectedImageAttachmentId;
-                      return (
-                        <button
-                          key={id}
-                          onClick={() => { selectImageAttachment(id); setImagePickerOpen(false); setImageContextDisabled(false); }}
-                          className={`rounded-xl border-2 p-1 ${active ? 'border-primary-500' : 'border-surface-100 hover:border-primary-200'}`}
-                          title="选择这张图片"
-                        >
-                          <img src={attachmentUrl(item)} className="h-14 w-14 rounded-lg object-cover" />
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
-            <div className="flex items-end gap-3">
-              <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => handleImageChange(e.target.files?.[0])} />
-              <button onClick={() => fileRef.current?.click()} disabled={isStreaming} className="p-3 rounded-xl bg-surface-100 text-surface-500 hover:bg-surface-200 disabled:opacity-50" title="上传图片">
-                <ImagePlus size={20} />
-              </button>
-              <div className="flex-1 relative">
-                <textarea ref={inputRef} value={input} onChange={e => setInput(e.target.value)} onKeyDown={handleKeyDown} placeholder={isStreaming ? '生成中…' : '输入你的问题，或描述你的学习需求...'} rows={1} disabled={isStreaming} className="w-full px-4 py-3 bg-surface-50 border border-surface-200 rounded-xl text-surface-800 placeholder:text-surface-400 focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-400 resize-none transition-all disabled:opacity-50" style={{ minHeight: '48px', maxHeight: '120px' }} />
-              </div>
-              {isStreaming ? (
-                <button onClick={abort} className="p-3 rounded-xl bg-error-500 text-white hover:bg-error-600 transition-all"><Square size={20} /></button>
-              ) : (
-                <button onClick={handleSend} disabled={!input.trim() && !selectedImage} className={`p-3 rounded-xl transition-all ${input.trim() || selectedImage ? 'bg-gradient-to-r from-primary-600 to-accent-600 text-white hover:shadow-lg' : 'bg-surface-100 text-surface-300 cursor-not-allowed'}`}><Send size={20} /></button>
-              )}
-            </div>
-            <div className="flex items-center gap-4 mt-3 text-xs text-surface-400"><span>按 Enter 发送，Shift + Enter 换行</span></div>
-          </div>
         </div>
 
-        <div className="w-72 space-y-4 overflow-y-auto hidden xl:block ml-5">
-          <div className="bg-white rounded-2xl p-5 shadow-soft">
-            <div className="flex items-center gap-2 mb-4"><Bot size={18} className="text-primary-600" /><h3 className="font-semibold text-surface-800">可用协作能力</h3></div>
-            <div className="space-y-3">
-              {(agents.length > 0 ? agents : [
-                { id: 'profile_agent', name: '画像分析', icon: '🧠', description: '分析学习背景，构建多维学习画像', stage: 'profiling' },
-                { id: 'knowledge_agent', name: '知识检索', icon: '📚', description: '从课程知识库检索相关知识点', stage: 'profiling' },
-                { id: 'diagnosis_agent', name: '诊断分析', icon: '🎯', description: '诊断薄弱环节和知识缺口', stage: 'profiling' },
-                { id: 'planner_agent', name: '路径规划', icon: '📊', description: '规划个性化学习阶段', stage: 'planning' },
-                { id: 'resource_agent', name: '资源生成', icon: '📝', description: '生成讲义、思维导图等资源', stage: 'generating' },
-                { id: 'review_agent', name: '质量审查', icon: '✅', description: '审查资源准确性和完整性', stage: 'generating' },
-              ]).map((agent) => (
-                <div key={agent.id} className="flex items-center gap-3 p-2 rounded-xl hover:bg-surface-50 transition-colors">
-                  <div className="w-9 h-9 rounded-xl bg-primary-50 flex items-center justify-center text-sm">{agent.icon}</div>
-                  <div className="flex-1 min-w-0"><p className="text-sm font-medium text-surface-800">{agent.name}</p><p className="text-xs text-surface-400 truncate">{agent.description}</p></div>
-                  <span aria-label="可用能力，不表示运行状态" className="w-2 h-2 rounded-full bg-surface-300" />
-                </div>
-              ))}
+        {/* ── Input area: exact ChatGPT + DeepSeek layout ── */}
+        <div className="flex-shrink-0 px-4 pb-4 pt-1">
+          <div className="max-w-[48rem] mx-auto">
+            {/* DeepSeek-style mode toggles — centered above input */}
+            <div className="flex items-center justify-center gap-2 mb-3">
+              <button
+                onClick={() => setSearchEnabled(!searchEnabled)}
+                disabled={isStreaming}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${
+                  searchEnabled
+                    ? 'bg-blue-50 border-blue-200 text-blue-600'
+                    : 'bg-white border-gray-200 text-gray-400 hover:text-gray-500 hover:border-gray-300'
+                } disabled:opacity-50`}
+              >
+                <Globe size={13} />
+                联网搜索
+              </button>
+              <button
+                onClick={() => setDeepThinkEnabled(!deepThinkEnabled)}
+                disabled={isStreaming}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${
+                  deepThinkEnabled
+                    ? 'bg-purple-50 border-purple-200 text-purple-600'
+                    : 'bg-white border-gray-200 text-gray-400 hover:text-gray-500 hover:border-gray-300'
+                } disabled:opacity-50`}
+              >
+                <BrainCircuit size={13} />
+                深度思考
+              </button>
             </div>
-          </div>
-          <div className="bg-white rounded-2xl p-5 shadow-soft">
-            <div className="flex items-center gap-2 mb-4"><Sparkles size={18} className="text-warning-600" /><h3 className="font-semibold text-surface-800">推荐话题</h3></div>
-            <div className="space-y-2">
-              {['如何制定学习计划？', '推荐CNN学习路径', '生成深度学习思维导图', 'Python项目实践案例'].map((topic, idx) => (
-                <button key={idx} onClick={() => setInput(topic)} className="w-full text-left px-3 py-2 rounded-lg text-sm text-surface-600 hover:bg-primary-50 hover:text-primary-600 transition-colors">{topic}</button>
-              ))}
-            </div>
-          </div>
-          <div className="bg-white rounded-2xl p-5 shadow-soft">
-            <div className="flex items-center gap-2 mb-4"><FileText size={18} className="text-accent-600" /><h3 className="font-semibold text-surface-800">生成内容</h3></div>
-            <div className="space-y-2">
-              {[{ icon: BrainCircuit, title: '知识图谱', to: '/resources?type=mindmap' },{ icon: Video, title: '动画演示', to: '/resources?type=video' },{ icon: FileText, title: '课程文档', to: '/resources?type=lecture' }].map((item, idx) => (
-                <button key={idx} onClick={() => nav(item.to)} className="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-surface-50 transition-colors">
-                  <div className="w-8 h-8 rounded-lg bg-accent-50 flex items-center justify-center"><item.icon size={16} className="text-accent-600" /></div>
-                  <div className="flex-1 min-w-0 text-left"><p className="text-sm font-medium text-surface-800 truncate">{item.title}</p><p className="text-xs text-surface-400">跳转资源库</p></div>
+
+            {/* Image preview */}
+            {selectedImage && (
+              <div className="mb-2 flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 p-2 max-w-lg mx-auto">
+                <img src={selectedImage.preview} className="h-10 w-10 rounded-lg object-cover" alt="preview" />
+                <div className="min-w-0 flex-1 text-xs text-gray-500 truncate">{selectedImage.file.name}</div>
+                <button
+                  onClick={() => { URL.revokeObjectURL(selectedImage.preview); setSelectedImage(null); if (fileRef.current) fileRef.current.value = ''; }}
+                  className="p-1 rounded-lg text-gray-400 hover:bg-white hover:text-red-500 transition-colors"
+                >
+                  <XCircle size={14} />
                 </button>
-              ))}
+              </div>
+            )}
+
+            {/* Image reference banner */}
+            {referencesLastImage && (
+              <div className={`relative mb-2 flex items-center gap-2 rounded-xl border-2 p-2 text-xs max-w-lg mx-auto ${willUseLastImage ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
+                <span>{willUseLastImage ? '📎 引用图片中' : '已取消引用'}</span>
+                {willUseLastImage ? (
+                  <button onClick={() => setImageContextDisabled(true)} className="ml-auto px-2 py-0.5 rounded-md bg-white text-red-600 border border-red-100 text-[11px]">取消</button>
+                ) : (
+                  <button onClick={() => setImageContextDisabled(false)} className="ml-auto px-2 py-0.5 rounded-md bg-white text-blue-600 border border-blue-100 text-[11px]">恢复</button>
+                )}
+              </div>
+            )}
+
+            {/* Prompt templates */}
+            {messages.length > 0 && !isStreaming && (
+              <div className="mb-2">
+                <PromptTemplates onSelect={(prompt: string) => { setInput(prompt); inputRef.current?.focus(); }} />
+              </div>
+            )}
+
+            {/* ChatGPT-style pill input */}
+            <div className="flex items-center gap-2 bg-[#f4f4f4] rounded-full border border-gray-200 px-3 py-2 shadow-sm focus-within:border-gray-300 focus-within:shadow-md focus-within:bg-white transition-all">
+              <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => handleImageChange(e.target.files?.[0])} />
+              <button
+                onClick={() => fileRef.current?.click()}
+                disabled={isStreaming}
+                className="p-1.5 rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-200/60 disabled:opacity-50 transition-colors flex-shrink-0"
+                title="上传图片"
+              >
+                <ImagePlus size={18} />
+              </button>
+              <textarea
+                ref={inputRef}
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="输入消息..."
+                rows={1}
+                disabled={isStreaming}
+                className="flex-1 resize-none bg-transparent text-sm text-gray-800 placeholder:text-gray-400 outline-none py-1 disabled:opacity-50"
+                style={{ minHeight: '24px', maxHeight: '160px' }}
+              />
+              {isStreaming ? (
+                <button onClick={abort} className="p-1.5 rounded-full bg-gray-800 text-white hover:bg-gray-700 transition-all flex-shrink-0">
+                  <Square size={14} />
+                </button>
+              ) : (
+                <button
+                  onClick={handleSend}
+                  disabled={!input.trim() && !selectedImage}
+                  className={`p-1.5 rounded-full transition-all flex-shrink-0 ${
+                    input.trim() || selectedImage
+                      ? 'bg-gray-800 text-white hover:bg-gray-700'
+                      : 'bg-gray-300 text-gray-400 cursor-not-allowed'
+                  }`}
+                >
+                  <Send size={14} />
+                </button>
+              )}
             </div>
+            <p className="mt-2.5 text-center text-[10px] text-gray-300">
+              内容由AI生成，请查阅教材确认
+            </p>
           </div>
         </div>
       </div>
 
-      {showScrollBtn && <button onClick={() => scrollToBottom(true)} className="absolute bottom-24 left-1/2 -translate-x-1/2 w-8 h-8 bg-white border border-surface-200 rounded-full flex items-center justify-center shadow-soft hover:shadow-elevated transition-all z-10"><ChevronDown className="w-4 h-4 text-surface-500" /></button>}
-      <ChatHistorySidebar open={historyOpen} onClose={() => setHistoryOpen(false)} onJump={() => { setHistoryOpen(false); scrollToBottom(true); }} />
+      {showScrollBtn && (
+        <button
+          onClick={() => scrollToBottom(true)}
+          className="absolute bottom-32 left-1/2 -translate-x-1/2 w-8 h-8 bg-white border border-gray-200 rounded-full flex items-center justify-center shadow-md hover:shadow-lg transition-all z-10"
+        >
+          <ChevronDown className="w-4 h-4 text-gray-500" />
+        </button>
+      )}
+
+      <ChatHistorySidebar
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        onJump={() => { setHistoryOpen(false); scrollToBottom(true); }}
+      />
     </div>
   );
 }

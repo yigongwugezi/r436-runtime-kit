@@ -180,6 +180,7 @@ def extract_profile_facts(message: str) -> ExtractedProfileFacts:
     _extract_goal(text, result)
     _extract_time_budget(text, result)
     _extract_preference(text, result)
+    _extract_learning_history(text, result)
     _extract_supplemental(text, result)
     return result
 
@@ -414,3 +415,38 @@ def _extract_supplemental(text: str, result: ExtractedProfileFacts) -> None:
     for value in (MALE, FEMALE, zh("8fd0 52a8 5458")):
         if value in text:
             _add_supplemental(result, "personal_background", value)
+
+
+def _extract_learning_history(text: str, result: ExtractedProfileFacts) -> None:
+    """Extract past educational experience — courses taken, grades, prior study."""
+    clues: list[str] = []
+
+    # Pattern 1: "高中学过/学过XX" → past study
+    for m in re.finditer(
+        r"(?:高中|初中|大学|以前|之前|过去|曾经|上学期|去年)\s*(?:学过|上过|修过|考过|接触过|了解过|学过一些)\s*([^，。；,!！?\n]{2,30})",
+        text,
+    ):
+        clues.append(m.group(0).strip())
+
+    # Pattern 2: "XX课程拿了XX分/成绩XX"
+    for m in re.finditer(
+        r"([^，。；,!！?\n]{2,20}(?:课|考试|科目))\s*(?:拿了|得了|考了|成绩|分数)\s*([^，。；,!！?\n]{2,15})",
+        text,
+    ):
+        clues.append(m.group(0).strip())
+
+    # Pattern 3: "理科/文科" + educational context
+    if re.search(r"(?:理科|文科|工科)\s*(?:数学|生|背景|底子)", text):
+        for m in re.finditer(r"(?:理科|文科|工科)\s*(?:数学|生|背景|底子)[^，。；,!！?\n]{0,15}", text):
+            clues.append(m.group(0).strip())
+
+    # Pattern 4: Explicit "学习经历/教育背景" mentions
+    for m in re.finditer(r"(?:我的学习经历|教育背景|学过的东西|之前的基础)[：:是]?\s*([^。\n]{3,60})", text):
+        clues.append(m.group(1).strip() if m.group(1) else m.group(0).strip())
+
+    # Pattern 5: "XX学得(好/差/一般)/XX是强项/弱项"
+    for m in re.finditer(r"([^，。；,!！?\n]{2,15})\s*(?:学得|学的不|一直是)\s*(?:好|差|一般|不错|很好|不好|强项|弱项)", text):
+        clues.append(m.group(0).strip())
+
+    if clues:
+        _put_fact(result, "learning_history", "；".join(dict.fromkeys(clues[:6])))

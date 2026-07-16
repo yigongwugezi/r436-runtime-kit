@@ -22,7 +22,9 @@ SUPPORTED_WORKFLOWS = {
     "profile_sync", "profile_rebuild", "learning_path_generation", "lecture_generation", "general_resource_generation", "video_generation",
 }
 CANCELLABLE_WORKFLOWS = {
-    "resource_search", "generated_resource", "generated_resource_regeneration", "lecture_generation", "general_resource_generation", "video_generation",
+    "resource_search", "generated_resource", "generated_resource_regeneration",
+    "lecture_generation", "general_resource_generation",
+    "video_generation", "learning_path_generation",
 }
 
 

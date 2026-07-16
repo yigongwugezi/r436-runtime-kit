@@ -168,6 +168,9 @@ class ConversationState:
     updated_at: float = field(default_factory=time.time)
     # 标记核心 facts 是否有更新，用于触发画像维度增量重建
     profile_dirty: bool = False
+    # 是否启用对话文字自动画像提取（默认关闭，仅在路径规划专用对话中开启）
+    profile_extraction_enabled: bool = True
+    path_planning_info_mode: bool = False  # 路径规划信息收集模式（不触发Planner）
 
 
 # 核心画像事实字段——这些字段更新时会触发画像维度重建
