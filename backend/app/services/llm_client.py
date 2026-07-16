@@ -302,14 +302,15 @@ class DeepSeekLLMClient(BaseLLMClient):
             method="POST",
         )
         with request.urlopen(req, timeout=kwargs.get("timeout", 30)) as response:
-            buffer = ""
+            buf = ""
             while True:
-                chunk = response.read(1)
+                chunk = response.read(4096)
                 if not chunk:
                     break
-                buffer += chunk.decode("utf-8", errors="replace")
-                if buffer.endswith("\n\n"):
-                    for line in buffer.strip().split("\n"):
+                buf += chunk.decode("utf-8", errors="replace")
+                while "\n\n" in buf:
+                    part, buf = buf.split("\n\n", 1)
+                    for line in part.split("\n"):
                         if line.startswith("data: ") and line != "data: [DONE]":
                             try:
                                 d = json.loads(line[6:])
@@ -322,7 +323,6 @@ class DeepSeekLLMClient(BaseLLMClient):
                                     yield ct
                             except (json.JSONDecodeError, IndexError):
                                 pass
-                    buffer = ""
                     buffer = ""
 
     @staticmethod
