@@ -13,8 +13,6 @@ export async function generateLearningPath(params: {
   subjectId?: string;
   courseId?: string;
   userMessage?: string;
-  planMode?: string;
-  pathMode?: string;
 }): Promise<{ path: LearningPath }> {
   const { data } = await client.post('/api/learning-path/generate', params);
   return data;
