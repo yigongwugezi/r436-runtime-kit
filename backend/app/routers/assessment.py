@@ -44,6 +44,11 @@ from app.services.assessment_access import (
     require_owned_session,
     require_parent_attempt,
 )
+from app.services.knowledge_point_service import (
+    compute_all_results,
+    get_highest_weight_label,
+    resolve_mappings,
+)
 from app.utils.llm_json import parse_safe
 
 # Module-level shared instances — one LLM client + one GradingAgent per process
@@ -375,11 +380,17 @@ def _build_idempotent_response(
     db,
     attempt: AttemptModel,
     quiz_title: str = "",
+    quiz_id: str = "",
+    exam_set_id: str = "",
+    session_id: str = "",
+    subject_id: str | None = None,
+    assessment_eligible: bool = True,
 ) -> dict:
     """Reconstruct the post-submit response from a previously-graded attempt.
 
     Reads existing AnswerRecords from the database rather than re-grading,
     so the response is identical to what the original submission returned.
+    Also recomputes knowledge-point results from stored answer records.
     """
     answer_records = (
         db.query(AnswerRecordModel)
@@ -388,7 +399,9 @@ def _build_idempotent_response(
         .all()
     )
     results = []
+    answer_records_by_qid: dict[str, AnswerRecordModel] = {}
     for ar in answer_records:
+        answer_records_by_qid[ar.question_id] = ar
         results.append({
             "questionId": ar.question_id,
             "studentAnswer": ar.student_answer,
@@ -411,6 +424,30 @@ def _build_idempotent_response(
     else:
         suggestion = "needs_review"
 
+    # ── Compute knowledge-point results ──────────────────────────
+    kp_results: list[dict] = []
+    qset_id = quiz_id or exam_set_id
+    if qset_id and session_id:
+        linked = (
+            db.query(PracticeQuestionModel)
+            .filter(
+                PracticeQuestionModel.question_set_id == qset_id,
+                PracticeQuestionModel.session_id == session_id,
+            )
+            .all()
+        )
+        if linked:
+            kp_results = compute_all_results(
+                db, linked, answer_records_by_qid,
+                attempt.attempt_id, subject_id,
+                assessment_eligible,
+            )
+            for r in results:
+                pq = next((q for q in linked if q.question_id == r["questionId"]), None)
+                if pq is not None:
+                    mappings = resolve_mappings(db, pq, subject_id=subject_id)
+                    r["knowledgePoint"] = get_highest_weight_label(mappings, fallback="")
+
     return {
         "status": "success",
         "data": {
@@ -421,6 +458,7 @@ def _build_idempotent_response(
             "sectionStatusSuggestion": suggestion,
             "weakPoints": [],
             "idempotentReplay": True,
+            "knowledgePointResults": kp_results,
         },
     }
 
@@ -799,7 +837,11 @@ def submit_quiz(
         )
         if existing is not None:
             if existing.status == "graded" and _answers_match(existing.answers, body.answers):
-                return _build_idempotent_response(db, existing, quiz_title=quiz.title)
+                return _build_idempotent_response(
+                    db, existing, quiz_title=quiz.title,
+                    quiz_id=quiz_id, session_id=session_id,
+                    subject_id=None, assessment_eligible=not body.answers_revealed,
+                )
             raise HTTPException(
                 status_code=409,
                 detail="该 idempotencyKey 已用于不同的答案内容，请检查是否重复提交",
@@ -854,7 +896,11 @@ def submit_quiz(
                 db, auth.learner_id, body.idempotency_key, quiz_id=quiz_id,
             )
             if existing2 is not None and existing2.status == "graded" and _answers_match(existing2.answers, body.answers):
-                return _build_idempotent_response(db, existing2, quiz_title=quiz.title)
+                return _build_idempotent_response(
+                    db, existing2, quiz_title=quiz.title,
+                    quiz_id=quiz_id, session_id=session_id,
+                    subject_id=None, assessment_eligible=not body.answers_revealed,
+                )
             raise HTTPException(
                 status_code=409,
                 detail="检测到重复提交，与已有答案不一致",
@@ -864,6 +910,7 @@ def submit_quiz(
         results = []
         total_score = 0
         max_possible = 0
+        answer_records_by_qid: dict[str, AnswerRecordModel] = {}
 
         for ans in body.answers:
             qid = ans.get("questionId", "")
@@ -968,6 +1015,7 @@ def submit_quiz(
 
             db.add(ar)
             total_score += score
+            answer_records_by_qid[qid] = ar
 
             results.append({
                 "questionId": qid,
@@ -991,6 +1039,21 @@ def submit_quiz(
             "status": "graded",
         })
         db.commit()
+
+        # ── Compute knowledge-point results ────────────────────
+        kp_results = compute_all_results(
+            db, linked, answer_records_by_qid,
+            attempt.attempt_id, subject_id,
+            not body.answers_revealed,
+        )
+        db.commit()  # persist any fallback mappings created
+
+        # Update per-result knowledgePoint to highest-weight label
+        for i, r in enumerate(results):
+            pq = questions_by_id.get(r["questionId"])
+            if pq is not None:
+                mappings = resolve_mappings(db, pq, subject_id=subject_id)
+                r["knowledgePoint"] = get_highest_weight_label(mappings, fallback="")
 
         # ── Compute section status suggestion ───────────────────
         if avg_score >= 80:
@@ -1023,6 +1086,7 @@ def submit_quiz(
                 "maxScore": 100,
                 "sectionStatusSuggestion": suggestion,
                 "weakPoints": weak_points,
+                "knowledgePointResults": kp_results,
             },
         }
     finally:
@@ -1497,7 +1561,11 @@ def submit_exam_set(
         )
         if existing is not None:
             if existing.status == "graded" and _answers_match(existing.answers, body.answers):
-                return _build_idempotent_response(db, existing, quiz_title=exam_set.title)
+                return _build_idempotent_response(
+                    db, existing, quiz_title=exam_set.title,
+                    exam_set_id=exam_set_id, session_id=session_id,
+                    subject_id=None, assessment_eligible=not body.answers_revealed,
+                )
             raise HTTPException(
                 status_code=409,
                 detail="该 idempotencyKey 已用于不同的答案内容，请检查是否重复提交",
@@ -1549,7 +1617,11 @@ def submit_exam_set(
                 db, auth.learner_id, body.idempotency_key, exam_set_id=exam_set_id,
             )
             if existing2 is not None and existing2.status == "graded" and _answers_match(existing2.answers, body.answers):
-                return _build_idempotent_response(db, existing2, quiz_title=exam_set.title)
+                return _build_idempotent_response(
+                    db, existing2, quiz_title=exam_set.title,
+                    exam_set_id=exam_set_id, session_id=session_id,
+                    subject_id=None, assessment_eligible=not body.answers_revealed,
+                )
             raise HTTPException(
                 status_code=409,
                 detail="检测到重复提交，与已有答案不一致",
@@ -1557,6 +1629,7 @@ def submit_exam_set(
 
         results = []
         total_score = 0
+        answer_records_by_qid: dict[str, AnswerRecordModel] = {}
 
         for ans in body.answers:
             qid = ans.get("questionId", "")
@@ -1651,6 +1724,7 @@ def submit_exam_set(
             )
             db.add(ar)
             total_score += score
+            answer_records_by_qid[qid] = ar
 
             results.append({
                 "questionId": qid,
@@ -1675,6 +1749,21 @@ def submit_exam_set(
         update_exam_set(db, exam_set_id, {"status": "completed"})
         db.commit()
 
+        # ── Compute knowledge-point results ────────────────────
+        kp_results = compute_all_results(
+            db, linked, answer_records_by_qid,
+            attempt.attempt_id, subject_id,
+            not body.answers_revealed,
+        )
+        db.commit()  # persist any fallback mappings created
+
+        # Update per-result knowledgePoint to highest-weight label
+        for i, r in enumerate(results):
+            pq = questions_by_id.get(r["questionId"])
+            if pq is not None:
+                mappings = resolve_mappings(db, pq, subject_id=subject_id)
+                r["knowledgePoint"] = get_highest_weight_label(mappings, fallback="")
+
         weak_points = _record_quiz_weaknesses(
             db, session_id, linked, results, quiz_title=exam_set.title,
         )
@@ -1698,6 +1787,7 @@ def submit_exam_set(
                 "maxScore": 100,
                 "sectionStatusSuggestion": suggestion,
                 "weakPoints": weak_points,
+                "knowledgePointResults": kp_results,
             },
         }
     finally:

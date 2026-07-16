@@ -26,6 +26,7 @@ from app.db.models import (
     PlanningDraftModel,
     PracticeQuestionModel,
     ProfileSnapshotModel,
+    QuestionKnowledgePointMappingModel,
     QuizModel,
     ResourceModel,
     SessionModel,
@@ -1801,3 +1802,143 @@ def delete_planning_draft(db: Session, draft_id: str) -> bool:
     db.delete(draft)
     db.commit()
     return True
+
+
+# ── Question–Knowledge Point Mappings ──────────────────────────────────────
+
+
+def get_mappings_for_question(
+    db: Session, question_id: str,
+) -> list[QuestionKnowledgePointMappingModel]:
+    """Get all KP mappings for a question, ordered by weight descending."""
+    return (
+        db.query(QuestionKnowledgePointMappingModel)
+        .filter(QuestionKnowledgePointMappingModel.question_id == question_id)
+        .order_by(QuestionKnowledgePointMappingModel.weight.desc())
+        .all()
+    )
+
+
+def get_mappings_for_questions(
+    db: Session, question_ids: list[str],
+) -> dict[str, list[QuestionKnowledgePointMappingModel]]:
+    """Batch lookup: question_id → list of mappings."""
+    if not question_ids:
+        return {}
+    rows = (
+        db.query(QuestionKnowledgePointMappingModel)
+        .filter(QuestionKnowledgePointMappingModel.question_id.in_(question_ids))
+        .order_by(QuestionKnowledgePointMappingModel.weight.desc())
+        .all()
+    )
+    result: dict[str, list[QuestionKnowledgePointMappingModel]] = {qid: [] for qid in question_ids}
+    for row in rows:
+        result.setdefault(row.question_id, []).append(row)
+    return result
+
+
+def create_question_kp_mapping(
+    db: Session,
+    *,
+    mapping_id: str,
+    question_id: str,
+    knowledge_point_key: str,
+    knowledge_point_label: str = "",
+    weight: float = 1.0,
+    confidence: float = 1.0,
+    source: str = "explicit",
+    subject_id: str | None = None,
+    mapping_version: int = 1,
+) -> QuestionKnowledgePointMappingModel:
+    """Create a single question→knowledge-point mapping."""
+    mapping = QuestionKnowledgePointMappingModel(
+        mapping_id=mapping_id,
+        question_id=question_id,
+        subject_id=subject_id,
+        knowledge_point_key=knowledge_point_key,
+        knowledge_point_label=knowledge_point_label or knowledge_point_key,
+        weight=weight,
+        confidence=confidence,
+        source=source,
+        mapping_version=mapping_version,
+    )
+    db.add(mapping)
+    return mapping
+
+
+def get_or_create_fallback_mappings(
+    db: Session,
+    question_id: str,
+    subject_id: str | None,
+    kp_strings: list[str],
+) -> list[QuestionKnowledgePointMappingModel]:
+    """Create equal-weight fallback mappings from old string-list knowledge_points.
+
+    Only creates new mappings if no rows exist for this question yet.
+    Returns existing mappings if they already exist.
+    """
+    existing = get_mappings_for_question(db, question_id)
+    if existing:
+        return existing
+
+    if not kp_strings:
+        return []
+
+    weight = 1.0 / len(kp_strings)
+    mappings: list[QuestionKnowledgePointMappingModel] = []
+    for kp_str in kp_strings:
+        kp_str = kp_str.strip()
+        if not kp_str:
+            continue
+        m = create_question_kp_mapping(
+            db,
+            mapping_id=f"fb_{question_id}_{kp_str[:48]}"[:64],
+            question_id=question_id,
+            knowledge_point_key=kp_str,
+            knowledge_point_label=kp_str,
+            weight=weight,
+            confidence=0.5,
+            source="fallback",
+            subject_id=subject_id,
+            mapping_version=1,
+        )
+        mappings.append(m)
+    if mappings:
+        db.flush()
+    return mappings
+
+
+def ensure_question_kp_mappings(
+    db: Session,
+    question: PracticeQuestionModel,
+    subject_id: str | None = None,
+) -> list[QuestionKnowledgePointMappingModel]:
+    """Resolve KP mappings for a question, creating fallbacks from legacy data.
+
+    Priority:
+    1. Existing explicit / generated / fallback mappings in DB
+    2. Create fallback from question.knowledge_points (JSON string list)
+    3. Return empty list when nothing is available (unmapped)
+    """
+    existing = get_mappings_for_question(db, question.question_id)
+    if existing:
+        return existing
+
+    # Try to create fallback mappings from legacy knowledge_points JSON
+    raw_kps: list[str] = []
+    kp_data = question.knowledge_points
+    if isinstance(kp_data, list):
+        raw_kps = [str(k) for k in kp_data if k and str(k).strip()]
+    elif isinstance(kp_data, dict):
+        # Handle dict form: {"name": "..."} or {"kp_name": ...}
+        raw_kps = [str(v) for v in kp_data.values() if v and str(v).strip()]
+
+    if raw_kps:
+        mappings = get_or_create_fallback_mappings(
+            db, question.question_id, subject_id, raw_kps,
+        )
+        if mappings:
+            return mappings
+
+    # Unmapped — no knowledge point data available
+    return []

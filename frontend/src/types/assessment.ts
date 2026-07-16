@@ -160,6 +160,26 @@ export interface QuizSubmitResponse {
   weakPoints?: WeakPoint[];
   /** True when this response is a replay of a previously-submitted attempt. */
   idempotentReplay?: boolean;
+  /** Per-knowledge-point results, one per mapping per question. */
+  knowledgePointResults?: KnowledgePointResult[];
+}
+
+/** Per-knowledge-point result computed from a graded answer. */
+export interface KnowledgePointResult {
+  knowledgePointKey: string;
+  knowledgePointLabel: string;
+  questionId: string;
+  attemptId: string;
+  rawScore: number;
+  maxScore: number;
+  normalizedScore: number;
+  weight: number;
+  weightedScore: number;
+  mappingConfidence: number;
+  gradingConfidence: number;
+  isCorrect: boolean;
+  errorType: string | null;
+  assessmentEligible: boolean;
 }
 
 /** A knowledge-point-level weakness summary. */

@@ -376,6 +376,42 @@ class KnowledgePointModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
+# ── Question–Knowledge Point Mapping ────────────────────────────────────────
+
+class QuestionKnowledgePointMappingModel(Base):
+    """Weighted mapping from a question to a knowledge point.
+
+    Each question can map to multiple knowledge points with different
+    weights.  Weights for a single question must sum to 1.0.
+
+    ``knowledge_point_key`` may reference ``KnowledgePointModel.id``
+    when the KP exists in the knowledge graph, or a plain string label
+    when it does not.  ``knowledge_point_label`` always holds the
+    human-readable display name.
+
+    source values:
+      explicit   – manually assigned by an instructor / admin
+      generated  – produced by an LLM during question creation
+      fallback   – auto-created from legacy knowledge_points JSON strings
+      migrated   – imported from an external question bank
+    """
+
+    __tablename__ = "question_knowledge_point_mappings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    mapping_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    question_id: Mapped[str] = mapped_column(String(64), index=True)
+    subject_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    knowledge_point_key: Mapped[str] = mapped_column(String(128), index=True)
+    knowledge_point_label: Mapped[str] = mapped_column(String(256), default="")
+    weight: Mapped[float] = mapped_column(default=1.0)
+    confidence: Mapped[float] = mapped_column(default=1.0)
+    source: Mapped[str] = mapped_column(String(16), default="explicit")
+    # explicit | generated | fallback | migrated
+    mapping_version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
 # ── Student Questions ──────────────────────────────────────────────────────
 
 class StudentQuestionModel(Base):

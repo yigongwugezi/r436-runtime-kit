@@ -176,6 +176,17 @@ def init_db() -> None:
             "processing_task_id": "VARCHAR(64)",
             "diagnosis_task_id": "VARCHAR(64)",
         },
+        "question_knowledge_point_mappings": {
+            "mapping_id": "VARCHAR(64)",
+            "question_id": "VARCHAR(64)",
+            "subject_id": "VARCHAR(64)",
+            "knowledge_point_key": "VARCHAR(128)",
+            "knowledge_point_label": "VARCHAR(256)",
+            "weight": "FLOAT DEFAULT 1.0",
+            "confidence": "FLOAT DEFAULT 1.0",
+            "source": "VARCHAR(16) DEFAULT 'explicit'",
+            "mapping_version": "INTEGER DEFAULT 1",
+        },
     }
     for table, columns in migrations.items():
         for column, definition in columns.items():
