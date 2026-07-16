@@ -15,6 +15,56 @@ import { PageLoading, PageEmpty, PageError } from '../components/common/PageStat
 import { getCurrentLearner } from '../store/authStore';
 import PathModeRouter from '../components/learning/PathModeViews';
 
+// ── 画像收集进度卡片 ──
+
+const PROFILE_DIMS = [
+  { key: 'background', label: '专业/年级', icon: '🎓' },
+  { key: 'target_course', label: '目标课程', icon: '📚' },
+  { key: 'knowledge_base', label: '已有基础', icon: '🧠' },
+  { key: 'weak_points', label: '薄弱点', icon: '🎯' },
+  { key: 'learning_goal', label: '学习目标', icon: '🏁' },
+  { key: 'time_budget', label: '时间安排', icon: '⏰' },
+  { key: 'preference', label: '学习偏好', icon: '⚙️' },
+];
+
+function ProfileInfoCard({ sessionId }: { sessionId: string }) {
+  const [facts, setFacts] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!sessionId) return;
+    fetch(`/api/conversation-facts?sessionId=${sessionId}`).then(r => r.json()).then(d => {
+      if (d.facts) setFacts(d.facts);
+    }).catch(() => {});
+  }, [sessionId]);
+  const filled = PROFILE_DIMS.filter(d => {
+    const v = facts[d.key] || '';
+    return v && v !== '未提及' && v !== '待补充' && v !== '未知' && v !== '';
+  }).length;
+  const total = PROFILE_DIMS.length;
+  return (
+    <div className="bg-white rounded-2xl p-5 shadow-soft border border-surface-100">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-xs font-medium text-surface-400 uppercase tracking-wide">画像信息</span>
+        <span className="text-xs text-surface-500">{filled}/{total} 项已收集</span>
+      </div>
+      <div className="relative h-1.5 bg-surface-100 rounded-full mb-3 overflow-hidden">
+        <div className="absolute inset-y-0 left-0 bg-gradient-to-r from-primary-400 to-accent-500 rounded-full transition-all" style={{ width: `${(filled / total) * 100}%` }} />
+      </div>
+      <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+        {PROFILE_DIMS.map(d => {
+          const v = facts[d.key] || '';
+          const has = v && v !== '未提及' && v !== '待补充' && v !== '未知' && v !== '';
+          return (
+            <div key={d.key} className="flex items-center gap-2 text-xs">
+              <span>{has ? '✅' : '⬜'}</span>
+              <span className={has ? 'text-surface-700' : 'text-surface-400'}>{d.label}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 const statusStyle: Record<string, { bg: string; border: string; text: string; icon: string }> = {
   mastered: { bg: 'bg-success-50', border: 'border-success-200', text: 'text-success-700', icon: 'text-success-500' },
   completed: { bg: 'bg-success-50', border: 'border-success-200', text: 'text-success-700', icon: 'text-success-500' },
@@ -341,6 +391,9 @@ export default function LearningPathPage() {
             </div>
           )}
         </div>
+
+        {/* ── 画像信息收集面板 ── */}
+        <ProfileInfoCard sessionId={useChatStore.getState().dataSessionId || sessionId || ''} />
 
         <div className="bg-white rounded-2xl p-5 shadow-soft border border-surface-100 space-y-6">
           <div>

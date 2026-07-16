@@ -7178,3 +7178,13 @@ def multimodal_knowledge_candidates(payload: dict[str, Any]) -> dict[str, Any]:
             if kp not in candidates:
                 candidates.append(kp)
     return _product_response({"candidates": candidates}, source="multimodal")
+
+
+@router.get("/conversation-facts")
+def get_conversation_facts(sessionId: str = "") -> dict[str, Any]:
+    """Return the raw conversation facts (profile info) for a session."""
+    from app.services.conversation_state import conversation_store
+    state = conversation_store.get(sessionId) if sessionId else None
+    if state is None:
+        return {"facts": {}}
+    return {"facts": dict(state.facts)}
