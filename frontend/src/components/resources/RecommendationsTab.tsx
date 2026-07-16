@@ -129,7 +129,7 @@ export interface RecommendationsTabProps {
   localResources: Resource[];
 }
 
-export default function RecommendationsTab({ localResources }: RecommendationsTabProps) {
+export default function RecommendationsTab({ localResources = [] }: RecommendationsTabProps) {
   const nav = useNavigate();
   const sessionId = useChatStore((s) => s.dataSessionId);
   const { profileV2 } = useProfile();
