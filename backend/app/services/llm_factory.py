@@ -304,29 +304,14 @@ class UnifiedChatClient:
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
-            # deepseek-reasoner: reasoning_content 没有 OpenAI 标准字段
             if _is_reasoner:
-                # 从 chunk 原始响应中提取 reasoning_content
-                rc = None
-                try:
-                    # 方法 1: model_dump (Pydantic v2)
-                    raw = chunk.model_dump()
-                    rc = raw.get("choices", [{}])[0].get("delta", {}).get("reasoning_content", "") or rc
-                except Exception:
-                    pass
-                try:
-                    # 方法 2: model_extra (额外字段)
-                    if not rc and chunk.choices[0].model_extra:
-                        extra = chunk.choices[0].model_extra
-                        rc = extra.get("delta", {}) if isinstance(extra, dict) else None
-                        if isinstance(rc, dict):
-                            rc = rc.get("reasoning_content", "")
-                except Exception:
-                    pass
-                if rc:
-                    yield f"<thinking>{rc}</thinking>"
-            if delta and delta.content:
+                # deepseek-reasoner: 跳过 reasoning 阶段（无内容），等实际内容
+                if not delta or not delta.content:
+                    continue
                 yield delta.content
+            else:
+                if delta and delta.content:
+                    yield delta.content
 
 
 def get_chat_client() -> UnifiedChatClient:
