@@ -24,7 +24,6 @@ SUPPORTED_WORKFLOWS = {
 CANCELLABLE_WORKFLOWS = {
     "resource_search", "generated_resource", "generated_resource_regeneration", "lecture_generation", "general_resource_generation", "video_generation",
 }
-}
 
 
 def _session(payload: dict[str, Any], auth: AuthContext) -> tuple[str, str]:
