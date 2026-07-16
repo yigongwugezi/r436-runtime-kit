@@ -27,7 +27,7 @@ from app.db.repository import (
     update_exam_set,
 )
 from app.db.repository import save_profile_snapshot
-from app.middleware.auth import AuthContext, require_auth
+from app.middleware.auth import AuthContext, get_auth, require_auth
 from app.agents.grading_agent import GradingAgent
 from app.services.agent_factory import AgentFactory
 from app.services.llm_client import get_llm_client
@@ -1012,12 +1012,13 @@ def submit_attempt_endpoint(
 @router.post("/exam-sets")
 def create_exam_set_endpoint(
     body: ExamSetCreateRequest,
-    auth: AuthContext = Depends(require_auth),
+    auth: AuthContext = Depends(get_auth),
 ) -> dict:
     """Create a new exam set."""
     db = SessionLocal()
     try:
-        require_owned_session(db, body.session_id, auth.learner_id)
+        if auth.is_authenticated:
+            require_owned_session(db, body.session_id, auth.learner_id)
         exam = save_exam_set(db, {
             "id": f"exam_{uuid.uuid4().hex[:12]}",
             "title": body.title,
@@ -1044,7 +1045,7 @@ def create_exam_set_endpoint(
 
 @router.get("/exam-sets")
 def list_exam_sets_endpoint(
-    auth: AuthContext = Depends(require_auth),
+    auth: AuthContext = Depends(get_auth),
     session_id: str = Query(default="", alias="sessionId"),
     scope_type: str = Query(default="", alias="scopeType"),
     status: str = Query(default=""),
@@ -1052,9 +1053,14 @@ def list_exam_sets_endpoint(
     """List exam sets, optionally filtered."""
     db = SessionLocal()
     try:
-        exam_sets = list_owned_exam_sets(
-            db, auth.learner_id, session_id=session_id, scope_type=scope_type, status=status,
-        )
+        if auth.is_authenticated:
+            exam_sets = list_owned_exam_sets(
+                db, auth.learner_id, session_id=session_id, scope_type=scope_type, status=status,
+            )
+        else:
+            exam_sets = list_owned_exam_sets(
+                db, "", session_id=session_id, scope_type=scope_type, status=status,
+            )
         return {
             "status": "success",
             "data": {"examSets": [_exam_set_dict(e) for e in exam_sets]},

@@ -2372,7 +2372,10 @@ def get_profile(sessionId: str = "", subjectId: str = "", learnerId: str = "", a
     session_id = _resolve_session_id(sessionId, subjectId)
     subject_id = str(subjectId).strip()
     try:
-        _ensure_session_linked(session_id, subject_id=subject_id, learner_id=_request_learner_id(auth, learnerId))
+        _ensure_session_linked(
+            session_id, subject_id=subject_id,
+            learner_id=_request_learner_id(auth, learnerId) if auth.is_authenticated else None,
+        )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail="session belongs to another learner") from exc
 
