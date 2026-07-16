@@ -1873,11 +1873,11 @@ def create_chat_session(payload: dict[str, Any], auth: AuthContext = Depends(get
     """Persist an empty chat session before its first message is sent."""
     session_id = _payload_session_id(payload)
     subject_id = _payload_subject_id(payload)
-    learner_id = _request_learner_id(auth, str(payload.get("learnerId", "")))
+    learner_id = _request_learner_id(auth, str(payload.get("learnerId", ""))) if auth.is_authenticated else None
     try:
         db = SessionLocal()
         try:
-            session = get_or_create_session(db, session_id, learner_id=learner_id, subject_id=subject_id, require_learner=True)
+            session = get_or_create_session(db, session_id, learner_id=learner_id, subject_id=subject_id, require_learner=auth.is_authenticated)
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail="session belongs to another learner") from exc
         conversation_store.get(session.id)
