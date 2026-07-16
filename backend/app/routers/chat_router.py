@@ -245,6 +245,14 @@ async def _run_chat(message: str, session_id: str, search_enabled: bool = False,
         state["learning_path"] = last["learning_path"]
         state["existing_path"] = {"stages": last["learning_path"]}
 
+    # ── 普通对话快速通道：跳过 run_pipeline 全套 Agent 开销 ──
+    _chat_quick = _is_chat_quick(message, state_obj)
+    if _chat_quick:
+        reply, thinking = await _quick_chat(message, session_id, state_obj, assessment_context)
+        # ── Auto-persist profile snapshot after every message ──
+        _auto_save_profile(state_obj)
+        return reply, thinking, {}
+
     result = await run_pipeline(**state)
     reply = result.get("final_reply", "") or result.get("_conversation_reply", "") or "处理完成"
     thinking = result.get("_conversation_thinking", "") or ""
@@ -308,6 +316,45 @@ def _done_event(session_id: str, result: dict[str, Any], error: str | None = Non
 
 def _subject_id(payload: dict[str, Any]) -> str:
     return str(payload.get("subjectId") or payload.get("subject_id") or "").strip()
+
+
+# ── 聊天快速通道 ──────────────────────────────────────────────────────
+
+_GEN_TRIGGERS = frozenset({
+    "生成", "出题", "规划", "批改", "诊断", "路径", "资源", "导图",
+    "系统学", "专攻", "按章节", "每日学", "每日计划", "薄弱点", "强化",
+    "调整", "修改", "改一下", "加快", "放慢", "重新",
+})
+
+
+def _is_chat_quick(message: str, state_obj: Any) -> bool:
+    """判断是否为纯闲聊——只需 DeepTutor，不需要跑任何 Agent。"""
+    if not message:
+        return False
+    compact = re.sub(r"\s+", "", message)
+    if any(t in compact for t in _GEN_TRIGGERS):
+        return False
+    # 有 Agent 待办提案时不能走捷径（例如 "可以" 需要确认提案）
+    if getattr(state_obj, "last_proposal", None):
+        return False
+    return True
+
+
+async def _quick_chat(message: str, session_id: str, state_obj: Any, assessment_context: str = "") -> tuple[str, str]:
+    """极简聊天回复——只调 DeepTutor，零 Agent 开销。"""
+    from app.services.deeptutor_facade import deeptutor
+
+    messages_raw = [{"role": m["role"], "content": m["content"]} for m in state_obj.messages[-20:]]
+    if assessment_context:
+        messages_raw.append({"role": "system", "content": assessment_context})
+    try:
+        reply = await deeptutor.chat(message, messages_raw, profile_context="", persona_context="")
+        if not reply:
+            reply = "你好！我是EduAgent，有什么可以帮你的？"
+    except Exception:
+        reply = "你好！我是EduAgent，有什么可以帮你的？"
+    conversation_store.append_message(session_id, "assistant", reply)
+    return reply, ""
 
 
 def _learner_id(payload: dict[str, Any], auth: AuthContext) -> str:
