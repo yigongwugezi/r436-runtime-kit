@@ -801,7 +801,7 @@ export default function ChatPage() {
       </div>
 
       {/* ── 模式切换栏 ── */}
-      <div className="flex-shrink-0 px-4 pt-2 pb-1">
+      <div className="flex-shrink-0 px-4 pt-2 pb-1 w-full min-w-0">
         <div className="max-w-[48rem] mx-auto flex items-center gap-1.5 rounded-xl bg-surface-100 p-1 w-fit">
           <button
             onClick={() => useChatStore.getState().setChatMode('free')}
@@ -823,9 +823,9 @@ export default function ChatPage() {
       </div>
 
       {/* ── Messages area ── */}
-      <div className="flex-1 overflow-hidden flex flex-col">
-        <div ref={scrollRef} className="flex-1 overflow-y-auto" style={{ overflowAnchor: 'none' }}>
-          <div className="max-w-[48rem] mx-auto px-4 py-4 space-y-6">
+      <div className="flex-1 overflow-hidden flex flex-col w-full min-w-0">
+        <div ref={scrollRef} className="flex-1 overflow-y-scroll w-full min-w-0" style={{ overflowAnchor: 'auto' }}>
+          <div className="max-w-[48rem] mx-auto w-full px-4 py-4 space-y-6">
             {(() => {
               const filtered = messages.filter((m: ChatMessage) => !m.mode || m.mode === chatMode);
               return <>
@@ -911,7 +911,7 @@ export default function ChatPage() {
         </div>
 
         {/* ── Input area: exact ChatGPT + DeepSeek layout ── */}
-        <div className="flex-shrink-0 px-4 pb-4 pt-1">
+        <div className="flex-shrink-0 px-4 pb-4 pt-1 w-full min-w-0">
           <div className="max-w-[48rem] mx-auto">
             {/* DeepSeek-style mode toggles — centered above input */}
             <div className="flex items-center justify-center gap-2 mb-3">
