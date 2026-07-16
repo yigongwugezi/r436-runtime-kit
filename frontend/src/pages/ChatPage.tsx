@@ -536,7 +536,7 @@ function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onCla
                 <button
                   key={idx}
                   onClick={() => onClarificationSelect(action.prompt)}
-                  className="px-3 py-1.5 rounded-full text-xs font-medium border border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:bg-gray-50 hover:text-gray-800 transition-all"
+                  className="w-full text-left px-3 py-2 rounded-lg text-xs font-medium border border-gray-200 bg-white text-gray-600 hover:border-primary-300 hover:bg-primary-50 hover:text-primary-700 transition-all"
                 >
                   {action.label}
                 </button>
