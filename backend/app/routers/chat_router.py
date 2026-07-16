@@ -420,9 +420,14 @@ async def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_a
                 deep_think = bool(payload.get("deep_think_enabled", False))
                 if deep_think:
                     # 深度思考走非流式（原生支持 reasoning_content 提取）
+                    from app.services.llm_client import DeepSeekLLMClient
                     from app.config import settings as _st
-                    from app.services.llm_client import get_llm_client as _glc
-                    raw = _glc(_st.llm_provider).chat(messages=[{"role": "user", "content": message}], temperature=0.7, reasoning=True)
+                    raw = DeepSeekLLMClient(
+                        api_key=_st.deepseek_api_key,
+                        base_url=_st.deepseek_base_url,
+                        model=_st.llm_model,
+                        temperature=0.7,
+                    ).chat(messages=[{"role": "user", "content": message}], reasoning=True)
                     reply = raw
                     thinking = ""
                     s = raw.find("<thinking>")
