@@ -7018,6 +7018,204 @@ def get_profile_recommendations(sessionId: str = "") -> dict[str, Any]:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Recommend-v2 — 联网搜索 + AI 生成 + DB 推荐，三路并行，分类展示
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@router.post("/resources/recommend-v2")
+def recommend_and_generate_v2(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
+    """Three-way parallel: DB recommendations + online search + AI generation, categorized."""
+    session_id = _payload_session_id(payload)
+    subject_id = _payload_subject_id(payload)
+    _ensure_session_linked(session_id, subject_id=subject_id)
+    result = _recommend_and_generate_v2(session_id, subject_id)
+    return _product_response(result, session_id=session_id, subject_id=subject_id, source="hybrid")
+
+
+def _recommend_and_generate_v2(session_id: str, subject_id: str = "") -> dict[str, Any]:
+    """Fan-out: DB recommendations, online search, AI generation — then categorize."""
+    # ── 1. Load data ──
+    from app.services.agent_service import get_profile as ag_profile
+    from app.db.repository import get_resources as repo_resources, get_latest_learning_path, get_event_analytics
+    from app.services.recommendation_engine import generate_recommendations
+
+    db = SessionLocal()
+    try:
+        profile = ag_profile(session_id) or {}
+        resources = repo_resources(db, session_id) or []
+        path = get_latest_learning_path(db, session_id)
+        analytics = get_event_analytics(db, session_id) or {}
+        weak_topics_raw = analytics.get("weakTopics") or []
+        subject_context = profile.get("subject_context") or {}
+        course_name = str(subject_context.get("subject_name") or subject_context.get("course_name") or subject_id or "")
+    finally:
+        db.close()
+
+    # Extract weak topic names
+    weak_topic_names = []
+    for wt in weak_topics_raw:
+        name = str(wt.get("topic") or wt.get("name") or "").strip()
+        if name and len(name) >= 2:
+            weak_topic_names.append(name)
+    if not weak_topic_names:
+        for w in (profile.get("weaknesses") or []):
+            name = str(w.get("topic") or w.get("name") or "").strip()
+            if name and len(name) >= 2:
+                weak_topic_names.append(name)
+    weak_topic_names = list(dict.fromkeys(weak_topic_names))[:5]
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures: dict[str, Any] = {}
+
+        # Task 1: DB recommendations (existing engine)
+        futures["db"] = executor.submit(
+            generate_recommendations,
+            session_id=session_id, weak_topics=weak_topics_raw,
+            resources=resources, learning_path=path, profile=profile, db=None,
+        )
+
+        # Task 2: Online search (transient external links)
+        if weak_topic_names:
+            futures["search"] = executor.submit(
+                _search_topics_online, weak_topic_names, course_name,
+            )
+
+        # Task 3: AI generation (template-based resources for each weak topic)
+        if weak_topic_names:
+            futures["generate"] = executor.submit(
+                _generate_for_weak_topics, weak_topic_names, session_id, subject_id,
+            )
+
+        results = {}
+        for key, fut in futures.items():
+            try:
+                results[key] = fut.result(timeout=120)
+            except Exception as exc:
+                logger.warning("recommend-v2 task %s failed: %s", key, exc)
+                results[key] = None
+
+    db_recs = results.get("db") or []
+    web_results = results.get("search") or []
+    gen_results = results.get("generate") or []
+
+    # ── 3. Categorize ──
+    categories: list[dict[str, Any]] = []
+
+    # Category A: DB recommendations
+    if db_recs:
+        items = db_recs if isinstance(db_recs, list) else db_recs.get("recommendations", [])
+        if items:
+            categories.append({
+                "id": "recommended",
+                "label": "智能推荐",
+                "description": "基于学习进度和画像分析推荐的已有资源",
+                "items": items,
+            })
+
+    # Category B: Web search results — group by resource type
+    if web_results:
+        type_groups: dict[str, list[dict]] = {}
+        type_labels = {"article": "文章", "video": "视频", "course": "课程", "document": "文档", "paper": "论文"}
+        for item in web_results:
+            rtype = item.get("resource_type", "article")
+            type_groups.setdefault(rtype, []).append(item)
+        groups = [
+            {"label": type_labels.get(t, t), "type": t, "items": items}
+            for t, items in type_groups.items()
+        ]
+        categories.append({
+            "id": "web_results",
+            "label": "联网资源",
+            "description": "从互联网搜索到的相关学习资源（外部链接）",
+            "groups": groups,
+        })
+
+    # Category C: AI generated resources — group by resource type
+    if gen_results:
+        type_groups: dict[str, list[dict]] = {}
+        gen_labels = {"lecture": "课程讲义", "mindmap": "思维导图", "quiz": "练习题库", "reading": "拓展阅读", "practice": "实操案例"}
+        for item in gen_results:
+            rtype = item.get("type", "lecture")
+            type_groups.setdefault(rtype, []).append(item)
+        groups = [
+            {"label": gen_labels.get(t, t), "type": t, "items": items}
+            for t, items in type_groups.items()
+        ]
+        categories.append({
+            "id": "ai_generated",
+            "label": "AI 生成",
+            "description": "为薄弱知识点自动生成的学习资源",
+            "groups": groups,
+        })
+
+    return {"categories": categories}
+
+
+def _search_topics_online(
+    weak_topic_names: list[str],
+    course_name: str = "",
+) -> list[dict[str, Any]]:
+    """Search online for weak topics and collect external results."""
+    from app.services.section_resource_recommendations import SectionResourceRecommendationService, RESOURCE_TYPES
+
+    primary_topic = weak_topic_names[0]
+    service = SectionResourceRecommendationService()
+    try:
+        result = service.recommend(
+            session_id="", section_id="",
+            section_title=primary_topic,
+            knowledge_points=weak_topic_names,
+            weak_points=weak_topic_names,
+            resource_types=list(RESOURCE_TYPES),
+            language="zh-CN",
+            course_name=course_name,
+        )
+    except Exception as exc:
+        logger.warning("_search_topics_online failed: %s", exc)
+        return []
+    resources = result.get("resources") or []
+    normalized = []
+    for r in resources:
+        item = r.get("item") or {}
+        normalized.append({
+            "title": str(item.get("title") or ""),
+            "url": str(item.get("url") or ""),
+            "snippet": str(item.get("snippet") or item.get("description") or ""),
+            "source": str(item.get("source") or item.get("publisher") or ""),
+            "resource_type": r.get("resource_type", "article"),
+        })
+    return normalized
+
+
+def _generate_for_weak_topics(
+    weak_topic_names: list[str],
+    session_id: str,
+    subject_id: str = "",
+) -> list[dict[str, Any]]:
+    """Generate lecture + mindmap resources for each weak topic."""
+    results: list[dict[str, Any]] = []
+    for topic in weak_topic_names:
+        for resource_type in ("lecture", "mindmap"):
+            request = {
+                "sessionId": session_id, "subjectId": subject_id,
+                "topic": topic, "resourceType": resource_type,
+                "difficulty": "medium", "operation": "generate",
+                "mode": "general_resource_generation",
+                "pathId": "", "stageId": "", "chapterId": "", "sectionId": "",
+                "learnerId": "", "profileSnapshotVersion": "", "generationOptions": {},
+            }
+            try:
+                resource = _general_resource_payload(request)
+                results.append(resource)
+            except Exception as exc:
+                logger.debug("_generate_for_weak_topics skip %s/%s: %s", topic, resource_type, exc)
+                continue
+    return results
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Notification endpoints — closed-loop assessment notifications
 # ═══════════════════════════════════════════════════════════════════════
 

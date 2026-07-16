@@ -203,3 +203,53 @@ export async function importResourcesFromKb(params: {
   const { data } = await client.post('/api/resources/import-from-kb', params);
   return data;
 }
+
+// ── Recommend-v2: 联网搜索 + AI 生成 + DB 推荐，三路并行 ─────────────
+
+export interface WebSearchResultItem {
+  title: string;
+  url: string;
+  snippet: string;
+  source: string;
+  resource_type: string;
+}
+
+export interface GeneratedResourceItem {
+  id: string;
+  type: string;
+  title: string;
+  description: string;
+  content: string;
+  difficulty: string;
+  format: string;
+  source: string;
+}
+
+export interface RecommendGroup {
+  label: string;
+  type: string;
+  items: WebSearchResultItem[] | GeneratedResourceItem[];
+}
+
+export interface RecommendCategory {
+  id: string;
+  label: string;
+  description: string;
+  /** flat items for DB recommendations */
+  items?: any[];
+  /** grouped items for web/AI results */
+  groups?: RecommendGroup[];
+}
+
+export interface RecommendV2Response {
+  categories: RecommendCategory[];
+}
+
+/** 三路并行推荐：DB 推荐 + 联网搜索 + AI 生成 */
+export async function recommendV2(params: {
+  sessionId: string;
+  subjectId?: string;
+}): Promise<RecommendV2Response> {
+  const { data } = await client.post('/api/resources/recommend-v2', params);
+  return data;
+}

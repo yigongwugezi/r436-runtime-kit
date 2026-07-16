@@ -11,9 +11,9 @@ import {
   clearWorkflowTask,
   isActiveWorkflowStatus,
   isTerminalWorkflowStatus,
-  readWorkflowTask,
   saveWorkflowTask,
   workflowStateFromEvent,
+  type WorkflowTaskRecoveryRecord,
   type WorkflowTaskScope,
 } from '../utils/workflowTaskRecovery';
 
@@ -31,6 +31,8 @@ const resourceTypes: Array<{ id: GeneralResourceType; label: string; icon: typeo
 
 const labels = Object.fromEntries(resourceTypes.map((item) => [item.id, item.label])) as Record<GeneralResourceType, string>;
 
+const POLL_INTERVAL_MS = 3000;
+
 function normalizeTypes(value: string | null): GeneralResourceType[] {
   const aliases: Record<string, GeneralResourceType> = { 'mind-map': 'mindmap', mind_map: 'mindmap', case_study: 'practice' };
   const known = new Set<GeneralResourceType>(['lecture', 'mindmap', 'quiz', 'ppt', 'video', 'animation', 'manim', 'reading', 'practice']);
@@ -46,6 +48,16 @@ function fingerprint(topic: string): string {
 
 function elapsed(milliseconds = 0): string {
   return `${Math.max(0, Math.floor(milliseconds / 1000))}s`;
+}
+
+/** Extract the latest stage label from workflow events for human-readable progress. */
+function latestStageLabel(events: WorkflowState['events']): string | null {
+  // Walk backwards and find the first event with a meaningful label
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.label && e.event !== 'heartbeat') return e.label;
+  }
+  return null;
 }
 
 export default function ResourceGenerationPage() {
@@ -65,8 +77,21 @@ export default function ResourceGenerationPage() {
   const [genError, setGenError] = useState('');
   const [progressExpanded, setProgressExpanded] = useState(true);
   const controllers = useRef(new Map<string, AbortController>());
+  const pollingTimers = useRef(new Map<string, ReturnType<typeof setInterval>>());
   const restoring = useRef(new Set<string>());
   const topicFingerprint = useMemo(() => fingerprint(prompt), [prompt]);
+
+  const completedResources = useMemo(() => {
+    return Object.values(workflows)
+      .filter((task) => task.status === 'completed' && task.result?.data?.resource)
+      .map((task) => ({
+        id: task.result.data.resource.id,
+        type: task.result.data.resource.type,
+        title: task.result.data.resource.title,
+        description: task.result.data.resource.description,
+        difficulty: task.result.data.resource.difficulty,
+      }));
+  }, [workflows]);
 
   const updateUrl = useCallback((nextPrompt: string, nextTypes: GeneralResourceType[]) => {
     const next = new URLSearchParams();
@@ -84,10 +109,44 @@ export default function ResourceGenerationPage() {
     setWorkflows((current) => ({ ...current, [resourceType]: { ...state, resourceType, reusedExisting } }));
   }, []);
 
+  /** Poll readWorkflow every POLL_INTERVAL_MS until terminal state. */
+  const startPolling = useCallback((resourceType: GeneralResourceType, taskId: string, sessionId: string, scope: WorkflowTaskScope, reusedExisting: boolean) => {
+    // Clear any existing poll timer for this resource type
+    const existing = pollingTimers.current.get(resourceType);
+    if (existing !== undefined) clearInterval(existing);
+
+    const timerId = setInterval(async () => {
+      try {
+        const latest = await readWorkflow(taskId, sessionId);
+        if (!latest) return;
+        const terminal = isTerminalWorkflowStatus(latest.status);
+        putTask(resourceType, {
+          taskId, workflowType: latest.workflow_type, status: latest.status,
+          events: [], preview: '', elapsedMs: latest.elapsed_ms || 0, result: latest.result,
+          errorMessage: latest.safe_error_message || '',
+        }, reusedExisting);
+        if (latest.status === 'completed') bumpDataVersion();
+        if (terminal) {
+          clearWorkflowTask(scope);
+          clearInterval(timerId);
+          pollingTimers.current.delete(resourceType);
+        } else {
+          // Keep record fresh so it doesn't expire
+          saveWorkflowTask({ ...scope, taskId, createdAt: Date.now(), resourceType, mode: 'general_resource_generation' });
+        }
+      } catch {
+        // poll failure is silent — keep trying
+      }
+    }, POLL_INTERVAL_MS);
+    pollingTimers.current.set(resourceType, timerId);
+  }, [bumpDataVersion, putTask]);
+
+  /** Monitor workflow via SSE, falling back to polling on disconnect. */
   const monitor = useCallback(async (resourceType: GeneralResourceType, taskId: string, reusedExisting = false, initial?: WorkflowState) => {
     const scope = scopeFor(resourceType);
+    // If already monitoring, don't start another
+    if (controllers.current.has(resourceType) || pollingTimers.current.has(resourceType)) return;
     const controller = new AbortController();
-    controllers.current.get(resourceType)?.abort();
     controllers.current.set(resourceType, controller);
     try {
       const base = initial || { taskId, workflowType: scope.workflowType, status: 'queued' as const, events: [], preview: '', elapsedMs: 0 };
@@ -102,55 +161,118 @@ export default function ResourceGenerationPage() {
         });
       }, controller.signal);
     } catch (error) {
-      if (!(error instanceof DOMException && error.name === 'AbortError')) setGenError('资源任务连接失败，请重试该类型。');
-    } finally {
-      const latest = await readWorkflow(taskId, sessionId).catch(() => null);
-      if (latest) {
-        putTask(resourceType, {
-          taskId, workflowType: latest.workflow_type, status: latest.status, events: [], preview: '', elapsedMs: latest.elapsed_ms || 0, result: latest.result,
-          errorMessage: latest.safe_error_message || '',
-        }, reusedExisting);
-        if (latest.status === 'completed') bumpDataVersion();
-        if (isTerminalWorkflowStatus(latest.status)) clearWorkflowTask(scope);
-      } else {
-        clearWorkflowTask(scope);
+      // On abort (component unmount), silently stop — don't clear saved task
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        controllers.current.delete(resourceType);
+        return;
       }
+      // Non-abort error: SSE disconnected unexpectedly — silently fall to polling
+    } finally {
       controllers.current.delete(resourceType);
+      // Check final status via REST; if still active, start polling
+      try {
+        const latest = await readWorkflow(taskId, sessionId);
+        if (latest && isActiveWorkflowStatus(latest.status)) {
+          putTask(resourceType, {
+            taskId, workflowType: latest.workflow_type, status: latest.status,
+            events: [], preview: '', elapsedMs: latest.elapsed_ms || 0, result: latest.result,
+            errorMessage: latest.safe_error_message || '',
+          }, reusedExisting);
+          startPolling(resourceType, taskId, sessionId, scope, reusedExisting);
+        } else if (latest && isTerminalWorkflowStatus(latest.status)) {
+          putTask(resourceType, {
+            taskId, workflowType: latest.workflow_type, status: latest.status,
+            events: [], preview: '', elapsedMs: latest.elapsed_ms || 0, result: latest.result,
+            errorMessage: latest.safe_error_message || '',
+          }, reusedExisting);
+          if (latest.status === 'completed') bumpDataVersion();
+          clearWorkflowTask(scope);
+        }
+        // if latest is null (readWorkflow failed), keep saved task for future recovery
+      } catch {
+        // readWorkflow failed — keep saved task for future recovery
+      }
     }
-  }, [bumpDataVersion, putTask, scopeFor, sessionId]);
+  }, [bumpDataVersion, putTask, scopeFor, sessionId, startPolling]);
 
+  /** Cleanup polling timers on unmount. */
   useEffect(() => {
-    if (!sessionId || !prompt.trim()) return undefined;
+    return () => {
+      pollingTimers.current.forEach((timerId) => clearInterval(timerId));
+      pollingTimers.current.clear();
+      controllers.current.forEach((controller) => controller.abort());
+      controllers.current.clear();
+    };
+  }, []);
+
+  /**
+   * Recovery: on mount, find ALL saved general_resource_generation workflow tasks
+   * in sessionStorage and restore their monitoring, regardless of current prompt/types.
+   */
+  useEffect(() => {
+    if (!sessionId) return;
     let active = true;
-    for (const resourceType of selectedTypes) {
-      const scope = scopeFor(resourceType);
-      const record = readWorkflowTask(scope);
-      if (!record || restoring.current.has(record.taskId)) continue;
+
+    const storage = (() => { try { return window.sessionStorage; } catch { return null; } })();
+    if (!storage) return;
+
+    const PREFIX = 'eduagent.workflow-task.v1:general_resource_generation:';
+    const now = Date.now();
+    const found: WorkflowTaskRecoveryRecord[] = [];
+
+    for (let i = 0; i < storage.length; i++) {
+      const key = storage.key(i);
+      if (!key || !key.startsWith(PREFIX)) continue;
+      try {
+        const raw = storage.getItem(key);
+        if (!raw) continue;
+        const record = JSON.parse(raw) as WorkflowTaskRecoveryRecord;
+        if (!record.taskId || !Number.isFinite(record.createdAt) || now - record.createdAt > 30 * 60 * 1000) {
+          storage.removeItem(key);
+          continue;
+        }
+        found.push(record);
+      } catch {
+        storage.removeItem(key);
+      }
+    }
+
+    for (const record of found) {
+      if (restoring.current.has(record.taskId)) continue;
       restoring.current.add(record.taskId);
       void (async () => {
         try {
           const task = await readWorkflow(record.taskId, sessionId);
-          if (!active || task.workflow_type !== scope.workflowType) { clearWorkflowTask(scope); return; }
+          if (!active) return;
+          const rt = record.resourceType as GeneralResourceType;
           const restored: WorkflowState = {
             taskId: record.taskId, workflowType: task.workflow_type, status: task.status,
             events: [], preview: '', elapsedMs: task.elapsed_ms || 0, result: task.result,
             errorMessage: task.safe_error_message || '',
           };
-          putTask(resourceType, restored);
-          if (isActiveWorkflowStatus(task.status)) await monitor(resourceType, record.taskId, false, restored);
-          else {
+          putTask(rt, restored);
+          if (isActiveWorkflowStatus(task.status)) {
+            await monitor(rt, record.taskId, false, restored);
+          } else {
             if (task.status === 'completed') bumpDataVersion();
-            if (isTerminalWorkflowStatus(task.status)) clearWorkflowTask(scope);
+            if (isTerminalWorkflowStatus(task.status)) {
+              const baseScope: WorkflowTaskScope = {
+                workflowType: 'general_resource_generation', sessionId, subjectId, pathId: path?.id || '',
+                resourceType: rt, operation: 'generate', topicFingerprint: '', recoveryKey: '',
+              };
+              clearWorkflowTask(baseScope);
+            }
           }
         } catch {
-          if (active) clearWorkflowTask(scope);
-        } finally { restoring.current.delete(record.taskId); }
+          // recovery failure is silent — task will be picked up again on next visit
+        } finally {
+          restoring.current.delete(record.taskId);
+        }
       })();
     }
-    return () => { active = false; };
-  }, [bumpDataVersion, monitor, prompt, putTask, scopeFor, selectedTypes, sessionId]);
 
-  useEffect(() => () => controllers.current.forEach((controller) => controller.abort()), []);
+    return () => { active = false; };
+  }, [bumpDataVersion, monitor, path?.id, putTask, sessionId, subjectId]);
 
   if (isParent) return <div className="h-[calc(100vh-300px)] flex items-center justify-center text-surface-500">家长账户只能查看已生成资源。</div>;
 
@@ -212,8 +334,79 @@ export default function ResourceGenerationPage() {
           <button onClick={handleGenerate} disabled={!prompt.trim() || !selectedTypes.length || activeTasks.length > 0} className="w-full flex items-center justify-center gap-3 px-6 py-4 rounded-xl font-semibold text-lg bg-gradient-to-r from-primary-600 to-accent-600 text-white disabled:bg-surface-100 disabled:text-surface-400 disabled:cursor-not-allowed"><Sparkles size={22} />{activeTasks.length ? '任务进行中…' : `开始生成（${selectedTypes.length} 种资源）`}</button>
         </div>
         <div className="space-y-4">
-          <div className="bg-white rounded-2xl p-5 shadow-soft"><div className="flex justify-between items-center"><h3 className="font-semibold text-surface-700">生成任务</h3>{Object.keys(workflows).length > 0 && <button className="text-xs text-primary-600" onClick={() => setProgressExpanded((value) => !value)}>{progressExpanded ? '收起' : '展开'}</button>}</div>{!Object.keys(workflows).length ? <p className="text-sm text-surface-400 mt-3">提交后显示后端工作流状态。</p> : progressExpanded && <div className="space-y-3 mt-4">{Object.values(workflows).map((task) => <div key={task.resourceType} className="rounded-xl border border-surface-200 p-3"><div className="flex items-center justify-between"><span className="text-sm font-medium">{labels[task.resourceType]}</span><span className="text-xs text-surface-500">{elapsed(task.elapsedMs)}</span></div><div className="mt-2 flex items-center gap-2 text-xs">{isActiveWorkflowStatus(task.status) ? <Loader2 size={14} className="animate-spin text-primary-500" /> : task.status === 'completed' ? <CheckCircle2 size={14} className="text-success-500" /> : <XCircle size={14} className="text-error-500" />}<span>{task.status === 'completed' ? '已完成' : task.status === 'failed' ? '失败' : task.status === 'cancelled' ? '已取消' : task.status === 'queued' ? '排队中' : '生成中'}</span>{task.reusedExisting && <span className="text-surface-400">复用进行中的任务</span>}</div>{task.errorMessage && <p className="mt-2 text-xs text-error-600">{task.errorMessage}</p>}{isActiveWorkflowStatus(task.status) && <button onClick={() => cancel(task)} className="mt-2 text-xs text-error-600">取消</button>}{['failed', 'cancelled', 'expired'].includes(task.status) && <button onClick={() => retry(task)} className="mt-2 text-xs text-primary-600">重试</button>}</div>)}</div>}</div>
-          <div className="bg-surface-50 rounded-2xl p-5"><h4 className="text-sm font-medium text-surface-700 mb-3">快捷模板</h4>{['CNN 原理学习', 'Transformer 架构', 'Python 项目实战'].map((template) => <button key={template} onClick={() => updatePrompt(`${template}相关知识点和代码示例`)} className="w-full flex justify-between px-3 py-2 bg-white rounded-lg text-sm text-surface-600 mb-2">{template}<ChevronRight size={14} /></button>)}</div>
+          <div className="bg-white rounded-2xl p-5 shadow-soft">
+            <div className="flex justify-between items-center">
+              <h3 className="font-semibold text-surface-700">生成任务</h3>
+              {Object.keys(workflows).length > 0 && <button className="text-xs text-primary-600" onClick={() => setProgressExpanded((value) => !value)}>{progressExpanded ? '收起' : '展开'}</button>}
+            </div>
+            {!Object.keys(workflows).length ? (
+              <p className="text-sm text-surface-400 mt-3">提交后显示后端工作流状态。</p>
+            ) : progressExpanded && (
+              <div className="space-y-3 mt-4">
+                {Object.values(workflows).map((task) => {
+                  const stageLabel = latestStageLabel(task.events);
+                  return (
+                    <div key={task.resourceType} className="rounded-xl border border-surface-200 p-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-medium">{labels[task.resourceType]}</span>
+                        <span className="text-xs text-surface-500">{elapsed(task.elapsedMs)}</span>
+                      </div>
+                      <div className="mt-2 flex items-center gap-2 text-xs">
+                        {isActiveWorkflowStatus(task.status) ? <Loader2 size={14} className="animate-spin text-primary-500" /> : task.status === 'completed' ? <CheckCircle2 size={14} className="text-success-500" /> : <XCircle size={14} className="text-error-500" />}
+                        <span>
+                          {task.status === 'completed' ? '已完成' : task.status === 'failed' ? '失败' : task.status === 'cancelled' ? '已取消' : task.status === 'queued' ? '排队中' : stageLabel || '生成中'}
+                        </span>
+                        {task.reusedExisting && <span className="text-surface-400">复用进行中的任务</span>}
+                      </div>
+                      {task.errorMessage && <p className="mt-2 text-xs text-error-600">{task.errorMessage}</p>}
+                      {isActiveWorkflowStatus(task.status) && <button onClick={() => cancel(task)} className="mt-2 text-xs text-error-600">取消</button>}
+                      {['failed', 'cancelled', 'expired'].includes(task.status) && <button onClick={() => retry(task)} className="mt-2 text-xs text-primary-600">重试</button>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <div className="bg-surface-50 rounded-2xl p-5">
+            <h4 className="text-sm font-medium text-surface-700 mb-3">生成记录</h4>
+            {completedResources.length > 0 ? (
+              <div className="grid grid-cols-1 gap-3">
+                {completedResources.map((resource) => {
+                  const typeMeta = resourceTypes.find((t) => t.id === resource.type);
+                  const Icon = typeMeta?.icon || FileText;
+                  const diffLabel: Record<string, string> = { easy: '基础', medium: '进阶', hard: '挑战' };
+                  const diffBadge: Record<string, string> = { easy: 'bg-success-100 text-success-700', medium: 'bg-warning-100 text-warning-700', hard: 'bg-error-100 text-error-700' };
+                  return (
+                    <div
+                      key={resource.id}
+                      onClick={() => navigate(`/resources/${resource.id}`)}
+                      className="bg-white rounded-xl p-3 cursor-pointer hover:shadow-md transition-shadow border border-surface-100"
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-primary-50 flex items-center justify-center flex-shrink-0">
+                          <Icon size={18} className="text-primary-600" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-surface-800 truncate">{resource.title}</p>
+                          <div className="flex items-center gap-2 mt-1">
+                            <span className="text-[11px] text-surface-400">{typeMeta?.label || resource.type}</span>
+                            {resource.difficulty && (
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded ${diffBadge[resource.difficulty] || 'bg-surface-100 text-surface-500'}`}>
+                                {diffLabel[resource.difficulty] || resource.difficulty}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <ChevronRight size={14} className="text-surface-300 flex-shrink-0 mt-2" />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="text-sm text-surface-400">暂无生成记录，提交后自动展示</p>
+            )}
+          </div>
           {Object.values(workflows).some((task) => task.status === 'completed') && <button onClick={() => navigate('/resources')} className="w-full px-4 py-3 rounded-xl bg-success-50 text-success-700 text-sm font-medium">查看已生成资源</button>}
           {genError && <p className="p-3 rounded-xl bg-error-50 text-error-600 text-sm">{genError}</p>}
         </div>

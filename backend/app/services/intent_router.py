@@ -52,7 +52,7 @@ INTENT_REGISTRY: dict[str, AgentPlan] = {
 
     # ── Single-agent intents ──
     "profile":            AgentPlan(agent_ids=["profile_agent"],     node_route="profile",     should_run_agents=True),
-    "plan":               AgentPlan(agent_ids=["planner_agent"],     node_route="planner",     should_run_agents=True),
+    "plan":               AgentPlan(agent_ids=["profile_agent", "planner_agent"], node_route="planner", should_run_agents=True),
     "resources":          AgentPlan(agent_ids=["resource_agent"],    node_route="resource",    should_run_agents=True),
     "generate_questions": AgentPlan(agent_ids=["question_agent"],    node_route="question",    should_run_agents=True),
     "diagnose":           AgentPlan(agent_ids=["diagnosis_agent"],   node_route="diagnosis",   should_run_agents=True),

@@ -5,6 +5,7 @@
 import json
 import logging
 import re
+import time
 from math import ceil
 from typing import Any
 
@@ -37,6 +38,23 @@ class PlannerAgent(BaseAgent):
         existing = context.get("existing_path")
 
         if mode == "adjust":
+            # 检测是否需要实质性重构（薄弱点超过阈值）
+            if self._adjustment_needs_restructure(context, diagnosis):
+                logger.info(
+                    "adjustment_needs_restructure=True → re-entering planner "
+                    "with diagnosis weak_points injected"
+                )
+                ctx = dict(context)
+                ctx["mode"] = "plan"
+                ctx["_from_adjustment"] = True
+                # 已有路径作为 LLM 参考上下文（不做严格约束，仅提示）
+                if existing:
+                    ctx["_existing_context"] = (
+                        f"学生已有学习路径，请参考已有阶段，重点针对诊断发现的薄弱点重新规划："
+                        f"{diagnosis.get('diagnosis_summary', '')}"
+                    )
+                return self.run(ctx)
+            # 轻量微调（时长、type）
             return self._run_adjustment(context, diagnosis, profile)
 
         weak_points = self._extract_weak_points(diagnosis)
@@ -922,11 +940,19 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
             for c in s.get("chapters", [])
             for sec in c.get("sections", [])
         )
+        estimated_minutes_total = sum(
+            sec.get("estimated_minutes", 45)
+            for s in stages_with_chapters
+            for c in s.get("chapters", [])
+            for sec in c.get("sections", [])
+        )
         return {
             "learning_path": stages_with_chapters,
             "stages": stages_with_chapters,
             "chapters": stages_with_chapters,
             "estimatedDays": total_days,
+            "estimated_minutes_total": estimated_minutes_total,
+            "version": int(time.time() * 1000),
             "section_count": total_sections,
             "knowledge_point_count": total_kps,
             "plan_summary": f"{len(stages_with_chapters)}阶段{total_chapters}章{total_sections}节{total_kps}知识点",
@@ -944,17 +970,32 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
         return result
 
     def _run_adjustment(self, context: dict, diagnosis: dict, profile: dict) -> dict:
-        """基于诊断结果动态调整已有学习路径。"""
+        """基于诊断结果动态调整已有学习路径 —— section/KP 级别。
+
+        不再只改 stage duration 字符串，而是深入到 section 和 knowledge_point 粒度：
+        - 某知识点评分≥95（精通） → 对应 section 标记 mastered，缩短学时
+        - 某知识点评分≤40（未掌握） → 对应 section 标记 needs_review，延长学时+插入前置回顾
+        - 掌握度变化 → 反映到 section 的 estimated_minutes 和 content_type
+        """
         existing_path = list(context.get("existing_path", []) or [])
         mastery_levels = diagnosis.get("mastery_levels", []) or []
         grading_results = context.get("grading_results", []) or []
+        adjustments: list[str] = []
 
         if not existing_path:
             return self._make_result([], 14, {"diagnosis_used": False, "needs_more_diagnosis": True,
                                               "weak_topic_names": [], "evidence_sources": [], "risk_flags": ["no_existing_path"],
                                               "total_days": 14, "time_basis": {"has_time_budget": False}})
 
-        # 统计连续作答表现
+        # ── Build mastery lookup: kp_name → {score, level} ──
+        mastery_map: dict[str, dict] = {}
+        for m in mastery_levels:
+            if isinstance(m, dict):
+                name = str(m.get("name", "")).strip()
+                if name:
+                    mastery_map[name] = {"score": float(m.get("score", 50)), "level": str(m.get("level", ""))}
+
+        # ── 统计连续作答表现 ──
         consecutive_correct = 0
         consecutive_wrong = 0
         for g in reversed(grading_results[-10:]):
@@ -968,132 +1009,231 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
                 consecutive_wrong += 1
                 consecutive_correct = 0
 
-        adjustments = []
-        adjusted_path = []
+        def _adjust_section(sec: dict, stage_title: str) -> dict:
+            """调整单个 section：匹配 mastery_map，返回带调整标记的 section。"""
+            sec = dict(sec)
+            kps = sec.get("knowledge_points", [])
+            if not kps or not isinstance(kps, list):
+                kps = [{"name": sec.get("title", ""), "type": "concept"}]
 
+            kp_statuses: list[str] = []  # "mastered" | "weak" | "unknown"
+            total_kp_score = 0
+            matched_kp_count = 0
+
+            for kp in kps:
+                kp_name = str(kp.get("name", "")).strip()
+                km = mastery_map.get(kp_name)
+                if km:
+                    matched_kp_count += 1
+                    score = km["score"]
+                    total_kp_score += score
+                    if score >= 95:
+                        kp_statuses.append("mastered")
+                    elif score <= 40:
+                        kp_statuses.append("weak")
+                    else:
+                        kp_statuses.append("progress")
+                else:
+                    kp_statuses.append("unknown")
+
+            if matched_kp_count == 0:
+                # 无诊断数据：保持原样
+                return sec
+
+            avg_score = total_kp_score / matched_kp_count if matched_kp_count > 0 else 50
+            base_minutes = sec.get("estimated_minutes", 45)
+
+            # ── 根据 KP 掌握情况决策 ──
+            all_mastered = all(s == "mastered" for s in kp_statuses)
+            any_weak = any(s == "weak" for s in kp_statuses)
+            has_progress = any(s == "progress" for s in kp_statuses)
+
+            if all_mastered:
+                # 全部精通 → 极速回顾
+                sec["estimated_minutes"] = max(10, base_minutes // 3)
+                sec["_adjustment"] = "accelerated"
+                sec["_adjustment_reason"] = f"知识点均已达精通（avg={avg_score:.0f}分），仅需快速回顾"
+                sec["content_type"] = "review"
+            elif any_weak and not has_progress:
+                # 全部或多数薄弱 → 大幅强化
+                sec["estimated_minutes"] = min(120, base_minutes * 2)
+                sec["_adjustment"] = "strengthened"
+                sec["_adjustment_reason"] = f"知识点掌握度较低（avg={avg_score:.0f}分），需强化学习"
+                # 改为分步推导+练习模式
+                if sec.get("content_type") in ("lecture", "memory_drill"):
+                    sec["content_type"] = "step_through"
+            elif any_weak and has_progress:
+                # 既有薄弱又有进展 → 标注薄弱KP，增加练习
+                sec["estimated_minutes"] = int(base_minutes * 1.3)
+                sec["_adjustment"] = "mixed"
+                weak_kps = [kp["name"] for kp in kps if mastery_map.get(str(kp.get("name", "")), {}).get("score", 50) <= 40]
+                sec["_adjustment_reason"] = f"部分知识点需重点突破：{'、'.join(weak_kps)}"
+                sec["_weak_kps"] = weak_kps
+            else:
+                # 正常进展
+                sec["estimated_minutes"] = max(20, int(base_minutes * (1 - (avg_score - 50) / 200)))
+                sec["_adjustment"] = "normal"
+
+            return sec
+
+        # ── 对每个 stage 的每个 section 应用调整 ──
+        adjusted_path = []
         for stage in existing_path:
             if not isinstance(stage, dict):
                 adjusted_path.append(stage)
                 continue
 
+            stage = dict(stage)
+            chapters = stage.get("chapters", [])
             stage_title = str(stage.get("title", ""))
 
-            # ── Format-agnostic task/duration extraction ──
-            # Flat format: tasks + duration at stage level
-            # Chapter format: chapters → sections → knowledge_points
-            stage_tasks = list(stage.get("tasks", []))
-            duration_str = str(stage.get("duration", ""))
-            chapters = stage.get("chapters", [])
+            if chapters and isinstance(chapters, list):
+                # ── 新版：chapters → sections 结构 ──
+                new_chapters = []
+                for ch in chapters:
+                    ch = dict(ch)
+                    sections = ch.get("sections", [])
+                    new_sections = [_adjust_section(s, stage_title) for s in sections]
+                    ch["sections"] = new_sections
 
-            # If chapter-structured, derive tasks and days from chapter data
-            if (not stage_tasks or not duration_str) and chapters:
-                if not stage_tasks:
-                    stage_tasks = []
-                    for ch in chapters:
-                        if isinstance(ch, dict):
-                            ch_title = str(ch.get("title", ""))
-                            sections = ch.get("sections", [])
-                            if isinstance(sections, list):
-                                for sec in sections:
-                                    if isinstance(sec, dict):
-                                        sec_title = str(sec.get("title", ""))
-                                        if sec_title:
-                                            stage_tasks.append(f"{ch_title} - {sec_title}")
-                if not duration_str:
-                    ch_count = len(chapters)
-                    sec_count = sum(len(ch.get("sections", [])) for ch in chapters if isinstance(ch, dict))
-                    est_days = max(1, sec_count) if sec_count > 0 else max(1, ch_count)
-                    duration_str = f"第{est_days}天"
+                    # 汇总 chapter 层级的调整标记
+                    sec_adjustments = [s.get("_adjustment", "") for s in new_sections]
+                    if "strengthened" in sec_adjustments:
+                        ch["_adjustment"] = "strengthened"
+                    elif "mixed" in sec_adjustments:
+                        ch["_adjustment"] = "mixed"
+                    elif all(a == "accelerated" for a in sec_adjustments if a):
+                        ch["_adjustment"] = "accelerated"
 
-            days = self._parse_duration_days(duration_str)
+                    new_chapters.append(ch)
 
-            # 匹配掌握度
-            mastery = next((m for m in mastery_levels if isinstance(m, dict) and
-                           m.get("name", "") in stage_title), None)
+                stage["chapters"] = new_chapters
 
-            adj = dict(stage)
-            if mastery:
-                level = mastery.get("level", "初步")
-                score = mastery.get("score", 50)
+                # ── 从 section 级重新估算 stage 天数 ──
+                total_sec_minutes = sum(
+                    s.get("estimated_minutes", 45)
+                    for ch in new_chapters
+                    for s in ch.get("sections", [])
+                )
+                # 假设每天有效学习 90 分钟
+                new_days = max(1, round(total_sec_minutes / 90))
+                old_days = self._parse_duration_days(str(stage.get("duration", "")))
+                if new_days != old_days:
+                    stage["estimated_days"] = new_days
+                    stage["_days_adjustment"] = f"{old_days}→{new_days}天"
+                    adjustments.append(f"调整 {stage_title}：{old_days}天→{new_days}天（基于section级掌握度）")
 
-                if level == "精通" and score >= 95:
-                    # 加速/跳过：>95% 标记为已精通，减少该知识点出现频率
-                    new_days = max(1, days // 3)
-                    adj["duration"] = f"第{days}-{new_days}天（加速）"
-                    adj["reason"] = f"诊断显示{stage_title}已精通（{score}分），大幅缩短学习时间。"
-                    adj["mastered"] = True
-                    adjustments.append(f"加速 {stage_title}：{days}天→{new_days}天")
-                elif level == "精通" and score >= 90:
-                    # 接近精通：适度加速
-                    new_days = max(1, days // 2)
-                    adj["duration"] = f"第{days}-{new_days}天（加速）"
-                    adj["reason"] = f"诊断显示{stage_title}接近精通（{score}分），缩短学习时间。"
-                    adjustments.append(f"加速 {stage_title}：{days}天→{new_days}天")
-                elif level == "未学" and score < 40:
-                    # 强化：增加天数，插入前置知识
-                    new_days = min(days + 3, 14)
-                    adj["duration"] = f"第{days}-{new_days}天（强化）"
-                    adj["tasks"] = stage_tasks + self._trace_prerequisites_bfs(stage_title, context)
-                    adj["reason"] = f"诊断显示{stage_title}未掌握（{score}分），增加学习时间和前置知识回顾。"
-                    adjustments.append(f"强化 {stage_title}：{days}天→{new_days}天")
+                # 如果有 accelerated + strengthened 混合，记录
+                sec_adj_types = set(s.get("_adjustment", "") for ch in new_chapters for s in ch.get("sections", []))
+                if "strengthened" in sec_adj_types:
+                    adj_kps = []
+                    for ch in new_chapters:
+                        for s in ch.get("sections", []):
+                            if s.get("_adjustment") == "strengthened":
+                                adj_kps.append(s.get("title", ""))
+                    if adj_kps:
+                        adjustments.append(f"强化小节：{'、'.join(adj_kps[:3])}")
+                if "accelerated" in sec_adj_types:
+                    fast_kps = []
+                    for ch in new_chapters:
+                        for s in ch.get("sections", []):
+                            if s.get("_adjustment") == "accelerated":
+                                fast_kps.append(s.get("title", ""))
+                    if fast_kps:
+                        adjustments.append(f"加速小节（已掌握）：{'、'.join(fast_kps[:3])}")
+
             else:
-                adj["reason"] = stage.get("reason", "") + "（无诊断数据，保持原计划）"
+                # ── 旧版：flat tasks 结构（保持原逻辑降级） ──
+                stage_tasks = list(stage.get("tasks", []))
+                duration_str = str(stage.get("duration", ""))
+                days = self._parse_duration_days(duration_str)
+                mastery = next((m for m in mastery_levels if isinstance(m, dict) and m.get("name", "") in stage_title), None)
+                adj = dict(stage)
+                if mastery:
+                    score = mastery.get("score", 50)
+                    level = mastery.get("level", "")
+                    if level == "精通" and score >= 95:
+                        new_days = max(1, days // 3)
+                        adj["duration"] = f"第{days}-{new_days}天（加速）"
+                        adj["_adjustment"] = "accelerated"
+                        adjustments.append(f"加速 {stage_title}：{days}天→{new_days}天")
+                    elif level == "未学" and score < 40:
+                        new_days = min(days + 3, 14)
+                        adj["duration"] = f"第{days}-{new_days}天（强化）"
+                        adj["tasks"] = stage_tasks + self._trace_prerequisites_bfs(stage_title, context)
+                        adj["_adjustment"] = "strengthened"
+                        adjustments.append(f"强化 {stage_title}：{days}天→{new_days}天")
+                adj.setdefault("reason", stage.get("reason", ""))
+                adjusted_path.append(adj)
+                continue
 
-            adjusted_path.append(adj)
+            adjusted_path.append(stage)
 
-        # 连续错题 → 在前端插入前置知识阶段
+        # ── 连续错题 → 插入前置知识补救阶段（section 级别） ──
         if consecutive_wrong >= 2 and mastery_levels:
-            weak_names = [m.get("name", "") for m in mastery_levels[:2] if isinstance(m, dict) and m.get("level") in ("未学", "初步")]
+            weak_kps = [m for m in mastery_levels if isinstance(m, dict) and m.get("score", 50) <= 40]
+            weak_names = [m.get("name", "") for m in weak_kps[:3]]
             if weak_names:
+                # 构建补救章节，包含对薄弱 KPs 的回顾 section
+                remedial_chapters = [{
+                    "chapter_id": "ch_remedial",
+                    "title": "前置知识补救",
+                    "order": 0,
+                    "sections": [
+                        {
+                            "section_id": f"sec_remedial_{i}",
+                            "title": f"回顾：{name}",
+                            "goal": f"快速回顾 {name} 的核心概念和基础题型，为后续学习扫清障碍",
+                            "estimated_minutes": 30,
+                            "content_type": "step_through",
+                            "knowledge_points": [{"name": name, "type": "concept"}],
+                            "_adjustment": "remedial",
+                        }
+                        for i, name in enumerate(weak_names)
+                    ],
+                }]
                 adjusted_path.insert(0, {
                     "stage_id": "stage_remedial",
                     "title": f"前置知识补救：{'、'.join(weak_names)}",
-                    "duration": "第1-2天（补救）",
-                    "goal": f"连续{consecutive_wrong}题错误，先回顾前置基础。",
-                    "tasks": [f"复习 {name} 的核心概念和基础题" for name in weak_names],
-                    "daily_tasks": [{"day": 1, "tasks": [f"重新学习 {name} 的基础定义" for name in weak_names]}],
-                    "resource_types": ["lecture", "quiz"],
-                    "reason": f"连续{consecutive_wrong}题错误触发动态调整——回溯前置知识。",
+                    "order": 0,
+                    "goal": f"连续{consecutive_wrong}题错误，先回顾前置基础再继续后续学习。",
+                    "estimated_days": max(1, len(weak_names)),
+                    "chapters": remedial_chapters,
+                    "_adjustment": "remedial",
                     "source": "dynamic_adjustment",
                 })
-                adjustments.append(f"连续{consecutive_wrong}题错误，插入前置知识补救阶段")
+                adjustments.append(f"连续{consecutive_wrong}题错误→插入前置知识补救阶段（{'、'.join(weak_names)}）")
 
+        # ── 考前冲刺模式 ──
+        exam_keywords = ["考试", "期末", "考研", "高分"]
+        user_msg = str(context.get("user_message", ""))
+        if any(w in user_msg for w in exam_keywords):
+            for stage in adjusted_path:
+                for ch in stage.get("chapters", []):
+                    for sec in ch.get("sections", []):
+                        if sec.get("content_type") in ("lecture", "review"):
+                            sec["content_type"] = "step_through"
+                            sec["estimated_minutes"] = max(
+                                20, int(sec.get("estimated_minutes", 45) * 0.8)
+                            )
+            adjustments.append("检测到考试目标→切换到考前冲刺模式（step_through+减少讲义时间）")
+
+        # ── 统计并生成结果 ──
         time_text = self._collect_time_text(context)
         total_days = self._infer_days(time_text, profile)
 
-        # 目标临近 → 考前冲刺模式
-        exam_keywords = ["考试", "期末", "考研", "高分"]
-        if any(w in str(context.get("user_message", "")) for w in exam_keywords):
-            for adj in adjusted_path:
-                adj["resource_types"] = list(set(adj.get("resource_types", []) + ["quiz", "practice"]))
-                adj["reason"] = str(adj.get("reason", "")) + "（考前冲刺模式——增加练习密度）"
-            adjustments.append("检测到考试目标，切换到考前冲刺模式")
-
-        # ── 阶段耗时过长 → 拆分为步骤引导（M5）──
-        decomposed_path = []
-        for stage in adjusted_path:
-            if not isinstance(stage, dict):
-                decomposed_path.append(stage)
-                continue
-            days = self._parse_duration_days(str(stage.get("duration", "")))
-            if days >= 10 and len(stage.get("tasks", []) or []) >= 3:
-                sub_stages = self._decompose_stage(stage)
-                decomposed_path.extend(sub_stages)
-                adjustments.append(f"拆解长阶段 {stage.get('title','')}：{days}天→{len(sub_stages)}个子阶段")
-            else:
-                decomposed_path.append(stage)
-
         diag_meta = {
-            "diagnosis_used": True, "weak_topic_names": [m.get("name", "") for m in mastery_levels[:5] if isinstance(m, dict)],
+            "diagnosis_used": True,
+            "weak_topic_names": [m.get("name", "") for m in mastery_levels[:5] if isinstance(m, dict)],
             "needs_more_diagnosis": len(mastery_levels) < 3,
             "evidence_sources": ["diagnosis_mastery", "grading_results"],
             "risk_flags": ["dynamic_adjustment"] + (["time_budget_tight"] if consecutive_correct >= 3 else []),
             "total_days": total_days,
         }
 
-        result = self._make_result(decomposed_path, total_days, diag_meta)
+        result = self._make_result(adjusted_path, total_days, diag_meta)
         result["adjustments"] = adjustments
-        result["review_tasks"] = self._generate_review_tasks(decomposed_path)
+        result["review_tasks"] = self._generate_review_tasks(adjusted_path)
         result["consecutive_correct"] = consecutive_correct
         result["consecutive_wrong"] = consecutive_wrong
         return result
@@ -1118,6 +1258,26 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
             s["estimated_days"] = d
             s["estimatedDays"] = d
         return stages
+
+    @staticmethod
+    def _adjustment_needs_restructure(context: dict, diagnosis: dict) -> bool:
+        """Return True if adjustment requires full re-planning instead of lightweight tweaks.
+
+        Re-plan when:
+        - No existing path → must plan from scratch
+        - Any mastery score ≤ 40 (base weak) → needs content restructuring
+        """
+        existing_path = context.get("existing_path", []) or []
+        if not existing_path:
+            return True
+
+        mastery_levels = diagnosis.get("mastery_levels", []) or []
+        for m in mastery_levels:
+            if isinstance(m, dict):
+                score = m.get("score", 50)
+                if score <= 40:
+                    return True
+        return False
 
     def _parse_duration_days(self, duration: str) -> int:
         """解析 duration 字符串中的天数。"""
@@ -1816,12 +1976,18 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
     def _make_result(self, path, total_days, diag_meta):
         path = self._normalize_stage_days(path, total_days)
         plan_summary = self._summarize(path, diag_meta, total_days)
+        estimated_minutes_total = sum(
+            sec.get("estimated_minutes", 45)
+            for s in path if isinstance(s, dict)
+            for ch in (s.get("chapters") or []) if isinstance(ch, dict)
+            for sec in (ch.get("sections") or []) if isinstance(sec, dict)
+        )
         return {
             "learning_path": path,
             "stages": path,
             "estimatedDays": total_days,
-            "plan_summary": plan_summary,
-            "summary": plan_summary,
+            "estimated_minutes_total": estimated_minutes_total,
+            "version": int(time.time() * 1000),
             "diagnosis_used": diag_meta["diagnosis_used"],
             "diagnosis_references": diag_meta.get("weak_topic_names", []),
             "stage_rationales": [

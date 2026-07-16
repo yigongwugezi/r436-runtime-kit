@@ -197,14 +197,23 @@ def get_learning_path(session_id: str) -> dict[str, Any] | None:
         if path is None:
             return None
 
+        stages = path.stages or []
+        estimated_minutes_total = sum(
+            sec.get("estimated_minutes", 45)
+            for s in stages if isinstance(s, dict)
+            for ch in (s.get("chapters") or []) if isinstance(ch, dict)
+            for sec in (ch.get("sections") or []) if isinstance(sec, dict)
+        )
         return {
             "id": path.id,
             "course_id": path.course_id,
             "course_name": path.course_name,
             "description": path.description or "",
-            "stages": path.stages or [],
+            "stages": stages,
             "overall_progress": path.overall_progress or 0,
             "estimated_days": path.estimated_days or 14,
+            "estimated_minutes_total": estimated_minutes_total,
+            "version": int(path.updated_at.timestamp() * 1000) if path.updated_at else 0,
             "created_at": path.created_at.isoformat() if path.created_at else None,
             "updated_at": path.updated_at.isoformat() if path.updated_at else None,
         }

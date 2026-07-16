@@ -29,9 +29,9 @@ logger = logging.getLogger(__name__)
 
 # ── Thresholds ───────────────────────────────────────────────────────────
 
-REASSESS_INTERVAL_SECONDS = 3 * 24 * 3600   # re-assess every 3 days
+REASSESS_INTERVAL_SECONDS = 24 * 3600       # re-assess every 1 day
 MIN_EVENTS_FOR_REASSESS = 3                  # need at least N new events to re-assess
-RESOURCE_COMPLETE_BATCH = 5                  # auto-diagnose after every N resource completions
+RESOURCE_COMPLETE_BATCH = 3                  # auto-diagnose after every N resource completions
 
 
 def _dynamic_threshold(score: float) -> int:
