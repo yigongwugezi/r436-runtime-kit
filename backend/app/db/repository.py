@@ -1564,10 +1564,14 @@ def create_attempt(db: Session, attempt_data: dict) -> AttemptModel:
     attempt = AttemptModel(
         attempt_id=attempt_data.get("attempt_id", f"att_{uuid.uuid4().hex[:12]}"),
         session_id=attempt_data.get("session_id", ""),
+        subject_id=attempt_data.get("subject_id"),
         quiz_id=attempt_data.get("quiz_id"),
         exam_set_id=attempt_data.get("exam_set_id"),
         max_score=attempt_data.get("max_score", 100),
         learner_id=attempt_data.get("learner_id"),
+        idempotency_key=attempt_data.get("idempotency_key"),
+        attempt_number=attempt_data.get("attempt_number", 1),
+        assessment_eligible=attempt_data.get("assessment_eligible", True),
     )
     db.add(attempt)
     db.commit()
@@ -1612,8 +1616,17 @@ def update_attempt(db: Session, attempt_id: str, data: dict) -> AttemptModel | N
         attempt.status = data["status"]
     if "total_score" in data and data["total_score"] is not None:
         attempt.total_score = data["total_score"]
-    if data.get("status") in ("submitted", "graded"):
-        attempt.submitted_at = _utcnow()
+    if data.get("status") in ("submitted", "graded", "processing", "completed"):
+        if attempt.submitted_at is None:
+            attempt.submitted_at = _utcnow()
+    if data.get("status") in ("graded", "processing", "completed"):
+        attempt.graded_at = data.get("graded_at", _utcnow())
+    if "assessment_eligible" in data:
+        attempt.assessment_eligible = data["assessment_eligible"]
+    if "processing_task_id" in data:
+        attempt.processing_task_id = data["processing_task_id"]
+    if "diagnosis_task_id" in data:
+        attempt.diagnosis_task_id = data["diagnosis_task_id"]
     db.commit()
     db.refresh(attempt)
     return attempt
@@ -1624,6 +1637,44 @@ def get_attempt_answers(db: Session, attempt_id: str) -> list[AnswerRecordModel]
     return db.query(AnswerRecordModel).filter(
         AnswerRecordModel.attempt_id == attempt_id
     ).order_by(AnswerRecordModel.created_at).all()
+
+
+def find_attempt_by_idempotency_key(
+    db: Session,
+    learner_id: str,
+    idempotency_key: str,
+    *,
+    quiz_id: str | None = None,
+    exam_set_id: str | None = None,
+) -> AttemptModel | None:
+    """Look up an existing attempt by its idempotency key and parent resource."""
+    q = db.query(AttemptModel).filter(
+        AttemptModel.learner_id == learner_id,
+        AttemptModel.idempotency_key == idempotency_key,
+    )
+    if quiz_id:
+        q = q.filter(AttemptModel.quiz_id == quiz_id)
+    if exam_set_id:
+        q = q.filter(AttemptModel.exam_set_id == exam_set_id)
+    return q.order_by(desc(AttemptModel.created_at)).first()
+
+
+def get_next_attempt_number(
+    db: Session,
+    learner_id: str,
+    *,
+    quiz_id: str | None = None,
+    exam_set_id: str | None = None,
+) -> int:
+    """Compute the next attempt_number for a learner on a quiz or exam set."""
+    q = db.query(func.count(AttemptModel.id)).filter(
+        AttemptModel.learner_id == learner_id,
+    )
+    if quiz_id:
+        q = q.filter(AttemptModel.quiz_id == quiz_id)
+    if exam_set_id:
+        q = q.filter(AttemptModel.exam_set_id == exam_set_id)
+    return (q.scalar() or 0) + 1
 
 
 # ── Assessment State (closed-loop persistence) ─────────────────────────

@@ -19,7 +19,10 @@ from app.db.engine import SessionLocal
 from app.db.models import AnswerRecordModel, AttemptModel, ExamSetModel, PracticeQuestionModel, QuizModel
 from app.db.repository import (
     create_attempt,
+    find_attempt_by_idempotency_key,
     get_attempt,
+    get_attempt_answers,
+    get_next_attempt_number,
     list_attempts,
     save_exam_set,
     save_quiz,
@@ -133,10 +136,18 @@ class SectionQuizGenerateRequest(BaseModel):
 
 
 class QuizSubmitRequest(BaseModel):
-    """Payload for submitting all answers to a quiz at once."""
+    """Payload for submitting all answers to a quiz at once.
+
+    idempotency_key is REQUIRED — the client must generate a unique key per
+    submission intent.  Same key + same answers → idempotent replay of the
+    original result.  Same key + different answers → 409 Conflict.
+    """
     session_id: str = Field(default="", alias="sessionId")
     answers: list[dict] = Field(default_factory=list)
     # Each answer: {"questionId": "...", "answer": "..."}
+    idempotency_key: str = Field(..., alias="idempotencyKey")
+    answers_revealed: bool = Field(default=False, alias="answersRevealed")
+    client_submitted_at: str | None = Field(default=None, alias="clientSubmittedAt")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -198,6 +209,7 @@ def _attempt_dict(a) -> dict:
         "id": a.id,
         "attemptId": a.attempt_id,
         "sessionId": a.session_id,
+        "subjectId": a.subject_id,
         "quizId": a.quiz_id,
         "examSetId": a.exam_set_id,
         "learnerId": a.learner_id,
@@ -205,8 +217,15 @@ def _attempt_dict(a) -> dict:
         "totalScore": a.total_score,
         "maxScore": a.max_score,
         "status": a.status,
+        "attemptNumber": a.attempt_number,
+        "idempotencyKey": a.idempotency_key,
+        "assessmentEligible": a.assessment_eligible,
         "startedAt": a.started_at.isoformat() if a.started_at else None,
         "submittedAt": a.submitted_at.isoformat() if a.submitted_at else None,
+        "gradedAt": a.graded_at.isoformat() if a.graded_at else None,
+        "answersRevealedAt": a.answers_revealed_at.isoformat() if a.answers_revealed_at else None,
+        "processingTaskId": a.processing_task_id,
+        "diagnosisTaskId": a.diagnosis_task_id,
         "createdAt": a.created_at.isoformat() if a.created_at else None,
     }
 
@@ -326,6 +345,84 @@ def _trigger_post_submit_assessment(
             )
 
     threading.Thread(target=_run, daemon=True).start()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Idempotency helpers
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _answers_match(stored: list | None, incoming: list | None) -> bool:
+    """Compare two answer sets for idempotency content matching.
+
+    Returns True when both sets contain the same questionId→answer mappings,
+    regardless of order.  Used to decide whether a resubmission with the same
+    idempotency key should replay the original result (True) or return 409
+    (False).
+    """
+    if stored is None and incoming is None:
+        return True
+    if stored is None or incoming is None:
+        return False
+    if len(stored) != len(incoming):
+        return False
+    stored_map = {a.get("questionId", ""): a.get("answer", "") for a in stored}
+    incoming_map = {a.get("questionId", ""): a.get("answer", "") for a in incoming}
+    return stored_map == incoming_map
+
+
+def _build_idempotent_response(
+    db,
+    attempt: AttemptModel,
+    quiz_title: str = "",
+) -> dict:
+    """Reconstruct the post-submit response from a previously-graded attempt.
+
+    Reads existing AnswerRecords from the database rather than re-grading,
+    so the response is identical to what the original submission returned.
+    """
+    answer_records = (
+        db.query(AnswerRecordModel)
+        .filter(AnswerRecordModel.attempt_id == attempt.attempt_id)
+        .order_by(AnswerRecordModel.created_at)
+        .all()
+    )
+    results = []
+    for ar in answer_records:
+        results.append({
+            "questionId": ar.question_id,
+            "studentAnswer": ar.student_answer,
+            "isCorrect": (ar.total_score or 0) >= 60,
+            "score": ar.total_score or 0,
+            "maxScore": 100,
+            "correctAnswer": "",
+            "explanation": ar.error_explanation or "",
+            "feedback": "",
+            "errorType": ar.error_type,
+            "errorLabel": ar.error_label,
+            "knowledgePoint": "",
+        })
+
+    total_score = attempt.total_score or 0
+    if total_score >= 80:
+        suggestion = "mastered"
+    elif total_score >= 50:
+        suggestion = "in_progress"
+    else:
+        suggestion = "needs_review"
+
+    return {
+        "status": "success",
+        "data": {
+            "attempt": _attempt_dict(attempt),
+            "results": results,
+            "totalScore": total_score,
+            "maxScore": attempt.max_score,
+            "sectionStatusSuggestion": suggestion,
+            "weakPoints": [],
+            "idempotentReplay": True,
+        },
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -687,11 +784,27 @@ def submit_quiz(
 
     Choice/truefalse are rule-graded. Shortanswer uses the GradingAgent LLM.
     An AttemptModel is created to group the answer records.
+
+    Idempotency: same idempotencyKey + same answers → replay original result.
+    Same idempotencyKey + different answers → 409 Conflict.
     """
     db = SessionLocal()
     try:
         quiz = require_owned_quiz(db, quiz_id, auth.learner_id)
         session_id = require_matching_session(quiz.session_id, body.session_id)
+
+        # ── Idempotency check ─────────────────────────────────
+        existing = find_attempt_by_idempotency_key(
+            db, auth.learner_id, body.idempotency_key, quiz_id=quiz_id,
+        )
+        if existing is not None:
+            if existing.status == "graded" and _answers_match(existing.answers, body.answers):
+                return _build_idempotent_response(db, existing, quiz_title=quiz.title)
+            raise HTTPException(
+                status_code=409,
+                detail="该 idempotencyKey 已用于不同的答案内容，请检查是否重复提交",
+            )
+
         # ── Load linked questions with answers ──────────────────
         linked = (
             db.query(PracticeQuestionModel)
@@ -705,14 +818,47 @@ def submit_quiz(
             raise HTTPException(status_code=400, detail="该小测没有题目")
         questions_by_id = {pq.question_id: pq for pq in linked}
 
+        # ── Compute attempt number (server-side) ───────────────
+        attempt_no = get_next_attempt_number(
+            db, auth.learner_id, quiz_id=quiz_id,
+        )
+
+        # ── Resolve subject_id from session ────────────────────
+        subject_id = quiz.session_id  # fallback; resolve from session if possible
+        try:
+            from app.db.models import SessionModel
+            sess = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+            if sess and sess.subject_id:
+                subject_id = sess.subject_id
+        except Exception:
+            pass
+
         # ── Create attempt ─────────────────────────────────────
-        attempt = create_attempt(db, {
-            "attempt_id": f"att_{uuid.uuid4().hex[:12]}",
-            "session_id": session_id,
-            "quiz_id": quiz_id,
-            "max_score": 100 * len(linked),
-            "learner_id": auth.learner_id,
-        })
+        try:
+            attempt = create_attempt(db, {
+                "attempt_id": f"att_{uuid.uuid4().hex[:12]}",
+                "session_id": session_id,
+                "subject_id": subject_id,
+                "quiz_id": quiz_id,
+                "max_score": 100 * len(linked),
+                "learner_id": auth.learner_id,
+                "idempotency_key": body.idempotency_key,
+                "attempt_number": attempt_no,
+                "assessment_eligible": not body.answers_revealed,
+            })
+        except Exception:
+            # Race: another request inserted between our SELECT and INSERT.
+            # The unique index caught it.  Re-query and reconcile.
+            db.rollback()
+            existing2 = find_attempt_by_idempotency_key(
+                db, auth.learner_id, body.idempotency_key, quiz_id=quiz_id,
+            )
+            if existing2 is not None and existing2.status == "graded" and _answers_match(existing2.answers, body.answers):
+                return _build_idempotent_response(db, existing2, quiz_title=quiz.title)
+            raise HTTPException(
+                status_code=409,
+                detail="检测到重复提交，与已有答案不一致",
+            )
 
         # ── Grade each answer ──────────────────────────────────
         results = []
@@ -1335,11 +1481,28 @@ def submit_exam_set(
     body: QuizSubmitRequest,
     auth: AuthContext = Depends(require_auth),
 ) -> dict:
-    """Submit all answers for an exam set — grade each and return results."""
+    """Submit all answers for an exam set — grade each and return results.
+
+    Idempotency: same idempotencyKey + same answers → replay original result.
+    Same idempotencyKey + different answers → 409 Conflict.
+    """
     db = SessionLocal()
     try:
         exam_set = require_owned_exam_set(db, exam_set_id, auth.learner_id)
         session_id = require_matching_session(exam_set.session_id, body.session_id)
+
+        # ── Idempotency check ─────────────────────────────────
+        existing = find_attempt_by_idempotency_key(
+            db, auth.learner_id, body.idempotency_key, exam_set_id=exam_set_id,
+        )
+        if existing is not None:
+            if existing.status == "graded" and _answers_match(existing.answers, body.answers):
+                return _build_idempotent_response(db, existing, quiz_title=exam_set.title)
+            raise HTTPException(
+                status_code=409,
+                detail="该 idempotencyKey 已用于不同的答案内容，请检查是否重复提交",
+            )
+
         linked = (
             db.query(PracticeQuestionModel)
             .filter(
@@ -1352,13 +1515,45 @@ def submit_exam_set(
             raise HTTPException(status_code=400, detail="该题集没有题目")
         questions_by_id = {pq.question_id: pq for pq in linked}
 
-        attempt = create_attempt(db, {
-            "attempt_id": f"att_{uuid.uuid4().hex[:12]}",
-            "session_id": session_id,
-            "exam_set_id": exam_set_id,
-            "max_score": 100 * len(linked),
-            "learner_id": auth.learner_id,
-        })
+        # ── Compute attempt number (server-side) ───────────────
+        attempt_no = get_next_attempt_number(
+            db, auth.learner_id, exam_set_id=exam_set_id,
+        )
+
+        # ── Resolve subject_id from session ────────────────────
+        subject_id = exam_set.session_id
+        try:
+            from app.db.models import SessionModel
+            sess = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+            if sess and sess.subject_id:
+                subject_id = sess.subject_id
+        except Exception:
+            pass
+
+        # ── Create attempt ─────────────────────────────────────
+        try:
+            attempt = create_attempt(db, {
+                "attempt_id": f"att_{uuid.uuid4().hex[:12]}",
+                "session_id": session_id,
+                "subject_id": subject_id,
+                "exam_set_id": exam_set_id,
+                "max_score": 100 * len(linked),
+                "learner_id": auth.learner_id,
+                "idempotency_key": body.idempotency_key,
+                "attempt_number": attempt_no,
+                "assessment_eligible": not body.answers_revealed,
+            })
+        except Exception:
+            db.rollback()
+            existing2 = find_attempt_by_idempotency_key(
+                db, auth.learner_id, body.idempotency_key, exam_set_id=exam_set_id,
+            )
+            if existing2 is not None and existing2.status == "graded" and _answers_match(existing2.answers, body.answers):
+                return _build_idempotent_response(db, existing2, quiz_title=exam_set.title)
+            raise HTTPException(
+                status_code=409,
+                detail="检测到重复提交，与已有答案不一致",
+            )
 
         results = []
         total_score = 0

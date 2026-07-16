@@ -111,7 +111,7 @@ def main() -> None:
             ("post", "/api/quizzes/quiz_b/attempts", {"sessionId": "session_b"}),
             ("get", "/api/quizzes/quiz_b/attempts", None),
             ("get", "/api/quizzes/quiz_b/results", None),
-            ("post", "/api/quizzes/quiz_b/submit", {"sessionId": "session_b", "answers": []}),
+            ("post", "/api/quizzes/quiz_b/submit", {"sessionId": "session_b", "answers": [], "idempotencyKey": "auth-test-qb"}),
             ("delete", "/api/quizzes/quiz_b", None),
             ("post", "/api/sections/section_b/quiz/generate", {"sessionId": "session_b"}),
             ("post", "/api/attempts", {"sessionId": "session_b", "quizId": "quiz_b"}),
@@ -124,7 +124,7 @@ def main() -> None:
             ("patch", "/api/exam-sets/exam_b", {"title": "attacker"}),
             ("post", "/api/exam-sets/exam_b/attempts", {"sessionId": "session_b"}),
             ("post", "/api/exam-sets/generate", {"sessionId": "session_b"}),
-            ("post", "/api/exam-sets/exam_b/submit", {"sessionId": "session_b", "answers": []}),
+            ("post", "/api/exam-sets/exam_b/submit", {"sessionId": "session_b", "answers": [], "idempotencyKey": "auth-test-eb"}),
             ("get", "/api/exam-sets/exam_b/results?attemptId=exam_attempt_b", None),
             ("get", "/api/exam-sets/exam_b/attempts", None),
             ("delete", "/api/exam-sets/exam_b", None),
@@ -160,14 +160,14 @@ def main() -> None:
 
         response = client.post(
             "/api/quizzes/quiz_a/submit", headers=owner,
-            json={"sessionId": "session_a", "answers": [{"questionId": "question_a", "answer": "A"}]},
+            json={"sessionId": "session_a", "idempotencyKey": "auth-test-qa", "answers": [{"questionId": "question_a", "answer": "A"}]},
         )
         assert response.status_code == 200
         assert response.json()["data"]["totalScore"] == 100
 
         response = client.post(
             "/api/exam-sets/exam_a/submit", headers=owner,
-            json={"sessionId": "session_a", "answers": [{"questionId": "exam_question_a", "answer": "A"}]},
+            json={"sessionId": "session_a", "idempotencyKey": "auth-test-ea", "answers": [{"questionId": "exam_question_a", "answer": "A"}]},
         )
         assert response.status_code == 200
         assert response.json()["data"]["totalScore"] == 100

@@ -580,6 +580,13 @@ class AttemptModel(Base):
 
     An attempt belongs to exactly one quiz OR one exam set (not both).
     Individual answers link back via AnswerRecordModel.attempt_id.
+
+    Lifecycle status: started → submitted → graded → processing → completed
+                                               ↘ failed / cancelled
+
+    Idempotency: (learner_id, quiz_id, idempotency_key) and
+    (learner_id, exam_set_id, idempotency_key) are enforced unique via
+    partial indexes created in engine.init_db().
     """
 
     __tablename__ = "attempts"
@@ -587,6 +594,7 @@ class AttemptModel(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     attempt_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     session_id: Mapped[str] = mapped_column(String(64), index=True)
+    subject_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
 
     # ── Polymorphic parent ────────────────────────────────────
     quiz_id: Mapped[str | None] = mapped_column(
@@ -595,6 +603,12 @@ class AttemptModel(Base):
     exam_set_id: Mapped[str | None] = mapped_column(
         String(64), nullable=True, default=None, index=True
     )
+
+    # ── Idempotency & ordering ────────────────────────────────
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, default=None, index=True
+    )
+    attempt_number: Mapped[int] = mapped_column(Integer, default=1)
 
     # ── Answers snapshot ──────────────────────────────────────
     answers: Mapped[list | None] = mapped_column(
@@ -605,13 +619,28 @@ class AttemptModel(Base):
 
     # ── Status ────────────────────────────────────────────────
     status: Mapped[str] = mapped_column(
-        String(16), default="in_progress"
-    )  # in_progress | submitted | graded
+        String(16), default="started"
+    )  # started | submitted | graded | processing | completed | failed | cancelled
     learner_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+
+    # ── Assessment eligibility ────────────────────────────────
+    assessment_eligible: Mapped[bool] = mapped_column(Boolean, default=True)
+    # True when the learner did NOT view answers before submitting.
+    # False attempts are still stored but excluded from mastery updates.
+
+    # ── Post-processing linkage ───────────────────────────────
+    processing_task_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None
+    )
+    diagnosis_task_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None
+    )
 
     # ── Timestamps ────────────────────────────────────────────
     started_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    graded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    answers_revealed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 

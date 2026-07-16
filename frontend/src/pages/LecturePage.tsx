@@ -186,6 +186,7 @@ export default function LecturePage() {
   // ── Quiz state（优先从缓存恢复）──
   const [quizQuestions, setQuizQuestions] = useState<LinkedQuestion[]>(cachedQuiz?.questions || []);
   const [quizId, setQuizId] = useState(cachedQuiz?.quizId || '');
+  const quizSubmitIdempotencyKeyRef = useRef('');
   const [quizAnswers, setQuizAnswers] = useState<Record<string, string>>(cachedQuiz?.answers || {});
   const [quizResults, setQuizResults] = useState<QuizResult[]>(cachedQuiz?.results || []);
   const [quizTotalScore, setQuizTotalScore] = useState<number | null>(cachedQuiz?.totalScore ?? null);
@@ -535,6 +536,7 @@ export default function LecturePage() {
         setQuizResults([]);
         setQuizTotalScore(null);
         setQuizState('answering');
+        quizSubmitIdempotencyKeyRef.current = '';  // reset for new quiz
         // 保存到 store 以便跨页面恢复
         store.setQuiz(`${sessionId}:${activeSectionId}`, { questions: data.questions, quizId: data.quiz.id, answers: {}, results: [], totalScore: null, submitted: false, suggestion: '', weakPoints: [] });
         generatePanelRef.current?.updateRecord(cid, {
@@ -576,9 +578,13 @@ export default function LecturePage() {
       answer: quizAnswers[q.questionId] || '',
     }));
     try {
+      if (!quizSubmitIdempotencyKeyRef.current) {
+        quizSubmitIdempotencyKeyRef.current = crypto.randomUUID();
+      }
       const res = await submitQuizAttempt(quizId, {
         sessionId: sessionId || `lecture_${activeSectionId}`,
         answers,
+        idempotencyKey: quizSubmitIdempotencyKeyRef.current,
       }) as any;
       const data = res?.data || res;
       if (data?.results && data.results.length > 0) {

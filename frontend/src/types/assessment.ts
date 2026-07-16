@@ -2,7 +2,7 @@
 export type QuizScopeType = 'knowledge_point' | 'section' | 'chapter' | 'stage' | 'path';
 export type ExamScopeType = 'chapter' | 'stage' | 'path';
 
-export type AttemptStatus = 'in_progress' | 'submitted' | 'graded';
+export type AttemptStatus = 'started' | 'in_progress' | 'submitted' | 'graded' | 'processing' | 'completed' | 'failed' | 'cancelled';
 export type ExamSetStatus = 'not_started' | 'in_progress' | 'completed';
 
 /** A question reference inside a quiz or exam set. */
@@ -88,6 +88,7 @@ export interface Attempt {
   id: number;
   attemptId: string;
   sessionId: string;
+  subjectId?: string | null;
   quizId?: string | null;
   examSetId?: string | null;
   learnerId?: string | null;
@@ -96,8 +97,15 @@ export interface Attempt {
   totalScore?: number | null;
   maxScore: number;
   status: AttemptStatus;
+  attemptNumber?: number;
+  idempotencyKey?: string;
+  assessmentEligible?: boolean;
   startedAt: string | null;
   submittedAt: string | null;
+  gradedAt?: string | null;
+  answersRevealedAt?: string | null;
+  processingTaskId?: string | null;
+  diagnosisTaskId?: string | null;
   createdAt: string | null;
 }
 
@@ -134,6 +142,12 @@ export interface SectionQuizGenerateRequest {
 export interface QuizSubmitRequest {
   sessionId: string;
   answers: { questionId: string; answer: string }[];
+  /** Client-generated unique key for idempotent submission. Required. */
+  idempotencyKey: string;
+  /** Whether the learner viewed correct answers before submitting. */
+  answersRevealed?: boolean;
+  /** Client-side timestamp of submission intent. */
+  clientSubmittedAt?: string;
 }
 
 /** Response from quiz submission. */
@@ -144,6 +158,8 @@ export interface QuizSubmitResponse {
   maxScore: number;
   sectionStatusSuggestion: 'mastered' | 'in_progress' | 'needs_review';
   weakPoints?: WeakPoint[];
+  /** True when this response is a replay of a previously-submitted attempt. */
+  idempotentReplay?: boolean;
 }
 
 /** A knowledge-point-level weakness summary. */

@@ -166,10 +166,23 @@ def init_db() -> None:
         "personal_subjects": {
             "textbook_id": "VARCHAR(64)",
         },
+        "attempts": {
+            "subject_id": "VARCHAR(64)",
+            "idempotency_key": "VARCHAR(128)",
+            "attempt_number": "INTEGER DEFAULT 1",
+            "graded_at": "DATETIME",
+            "answers_revealed_at": "DATETIME",
+            "assessment_eligible": "BOOLEAN DEFAULT 1",
+            "processing_task_id": "VARCHAR(64)",
+            "diagnosis_task_id": "VARCHAR(64)",
+        },
     }
     for table, columns in migrations.items():
         for column, definition in columns.items():
             add_column_if_missing(table, column, definition)
+
+    # ── Attempt idempotency unique indexes ────────────────────────────
+    _migrate_attempts_idempotency_indexes()
 
     # ── Fix stale FK on student_questions.session_id ──────────────────
     # Earlier versions had session_id -> sessions.id FK.  Teacher-pushed
@@ -181,6 +194,41 @@ def init_db() -> None:
     # Same issue — quiz attempts and practice answers use synthetic
     # session IDs that may not exist in the sessions table.
     _migrate_answer_records_session_fk()
+
+
+def _migrate_attempts_idempotency_indexes() -> None:
+    """Create partial unique indexes for attempt idempotency if they don't exist.
+
+    SQLite 3.8+ supports partial unique indexes.  These enforce that
+    (learner_id, quiz_id, idempotency_key) and (learner_id, exam_set_id,
+    idempotency_key) are unique when both key fields are non-NULL.
+    """
+    with engine.connect() as conn:
+        # Check that the table exists first
+        tables = {
+            row[0]
+            for row in conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table' AND name='attempts'")
+            ).fetchall()
+        }
+        if "attempts" not in tables:
+            return
+
+        for name, parent_col in (
+            ("uq_attempts_quiz_idemkey", "quiz_id"),
+            ("uq_attempts_exam_idemkey", "exam_set_id"),
+        ):
+            try:
+                conn.execute(
+                    text(
+                        f"CREATE UNIQUE INDEX IF NOT EXISTS {name} "
+                        f"ON attempts(learner_id, {parent_col}, idempotency_key) "
+                        f"WHERE {parent_col} IS NOT NULL AND idempotency_key IS NOT NULL"
+                    )
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
 
 
 def _migrate_student_questions_session_fk() -> None:
