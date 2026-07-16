@@ -823,7 +823,7 @@ export default function ChatPage() {
       </div>
 
       {/* ── Messages area ── */}
-      <div className="flex-1 overflow-hidden flex flex-col w-full min-w-0">
+      <div className="flex-1 overflow-hidden flex flex-col w-full min-w-0 will-change-transform">
         <div ref={scrollRef} className="flex-1 overflow-y-scroll w-full min-w-0" style={{ overflowAnchor: 'auto' }}>
           <div className="max-w-[48rem] mx-auto w-full px-4 py-4 space-y-6">
             {(() => {
