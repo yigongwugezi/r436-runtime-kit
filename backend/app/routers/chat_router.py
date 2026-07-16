@@ -271,12 +271,6 @@ async def _run_chat(message: str, session_id: str, search_enabled: bool = False,
         state_obj.feedback_signal = new_signal
     if result:
         conversation_store.set_result(session_id, result)
-    # ── Sync to planning draft for path page confirmation flow ──
-    try:
-        from app.routers.product import _sync_planning_draft
-        _sync_planning_draft(session_id, state_obj)
-    except Exception:
-        pass
     return reply, thinking, result
 
 
