@@ -246,7 +246,7 @@ async def _run_chat(message: str, session_id: str, search_enabled: bool = False,
         state["existing_path"] = {"stages": last["learning_path"]}
 
     # ── 普通对话快速通道：跳过 run_pipeline 全套 Agent 开销 ──
-    _chat_quick = _is_chat_quick(message, state_obj)
+    _chat_quick = _is_chat_quick(message, state_obj, deep_think_enabled)
     if _chat_quick:
         reply, thinking = await _quick_chat(message, session_id, state_obj, assessment_context)
         # ── Auto-persist profile snapshot after every message ──
@@ -328,9 +328,12 @@ _GEN_TRIGGERS = frozenset({
 })
 
 
-def _is_chat_quick(message: str, state_obj: Any) -> bool:
+def _is_chat_quick(message: str, state_obj: Any, deep_think_enabled: bool = False) -> bool:
     """判断是否为纯闲聊——只需 DeepTutor，不需要跑任何 Agent。"""
     if not message:
+        return False
+    # 深度思考模式需要走完整链路（切换 deepseek-reasoner 模型）
+    if deep_think_enabled:
         return False
     compact = re.sub(r"\s+", "", message)
     if any(t in compact for t in _GEN_TRIGGERS):

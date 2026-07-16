@@ -841,7 +841,10 @@ action："""
     def _call_llm(self, messages):
         if not self.llm_client:
             raise LLMClientError("No LLM client configured")
-        return self.llm_client.chat(messages=messages, temperature=0.7, max_tokens=800)
+        kwargs = {"messages": messages, "temperature": 0.7, "max_tokens": 800}
+        if getattr(self, "_deep_think_enabled", False):
+            kwargs["reasoning"] = True
+        return self.llm_client.chat(**kwargs)
 
     def _parse_response(self, raw: str) -> tuple[str, str, dict]:
         text = raw.strip()

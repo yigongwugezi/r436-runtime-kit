@@ -275,7 +275,12 @@ class DeepSeekLLMClient(BaseLLMClient):
         with request.urlopen(req, timeout=timeout) as response:
             body = json.loads(response.read().decode("utf-8"))
 
-        return body["choices"][0]["message"]["content"]
+        content = body["choices"][0]["message"]["content"]
+        # deepseek-reasoner 的 reasoning_content 转为 <thinking> 标签
+        reasoning = body["choices"][0]["message"].get("reasoning_content", "")
+        if reasoning:
+            content = f"<thinking>{reasoning}</thinking>\n\n{content}"
+        return content
 
     @staticmethod
     def _read_error_body(exc: error.HTTPError) -> str:
