@@ -133,19 +133,19 @@ export async function recoverGeneration(sessionId: string): Promise<{
 
 /** 查询试题列表 */
 export async function listQuestions(sessionId: string): Promise<any> {
-  const { data } = await client.get('/api/questions', { params: { sessionId } });
+  const { data } = await client.get('/api/questions', { params: { sessionId, learnerId: getStableLearnerId() } });
   return data.data || data;
 }
 
 /** 提交作答并获取判卷结果 */
 export async function gradeAnswer(questionId: string, answer: string, sessionId: string): Promise<any> {
-  const { data } = await client.post(`/api/questions/${questionId}/grade`, { answer, sessionId });
+  const { data } = await client.post(`/api/questions/${questionId}/grade`, { answer, sessionId, learnerId: getStableLearnerId() });
   return data.data || data;
 }
 
 /** 错题本 */
 export async function getWeakQuestions(sessionId: string, errorType?: string): Promise<any> {
-  const params: any = { sessionId };
+  const params: any = { sessionId, learnerId: getStableLearnerId() };
   if (errorType) params.errorType = errorType;
   const { data } = await client.get('/api/questions/weak', { params });
   return data.data || data;
@@ -153,18 +153,18 @@ export async function getWeakQuestions(sessionId: string, errorType?: string): P
 
 /** 答题历史 */
 export async function getAnswerHistory(sessionId: string): Promise<any> {
-  const { data } = await client.get('/api/questions/history', { params: { sessionId } });
+  const { data } = await client.get('/api/questions/history', { params: { sessionId, learnerId: getStableLearnerId() } });
   return data.data || data;
 }
 
 /** 题目集列表 */
 export async function getQuestionSets(sessionId: string): Promise<any> {
-  const { data } = await client.get('/api/questions/sets', { params: { sessionId } });
+  const { data } = await client.get('/api/questions/sets', { params: { sessionId, learnerId: getStableLearnerId() } });
   return data.data || data;
 }
 
 /** 删除题目集 */
 export async function deleteQuestionSet(setId: string, sessionId: string): Promise<any> {
-  const { data } = await client.delete(`/api/questions/sets/${setId}`, { params: { sessionId } });
+  const { data } = await client.delete(`/api/questions/sets/${setId}`, { params: { sessionId, learnerId: getStableLearnerId() } });
   return data;
 }

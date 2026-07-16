@@ -1,4 +1,5 @@
 import client from './client';
+import { getStableLearnerId } from '../store/authStore';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -57,7 +58,7 @@ export interface HistoryRecord {
 
 /** Generate questions via AI for a session. */
 export async function generateQuestions(body: { sessionId: string; message: string }) {
-  const { data } = await client.post('/api/questions/generate', body);
+  const { data } = await client.post('/api/questions/generate', { ...body, learnerId: getStableLearnerId() });
   return data as {
     status: string;
     data: { questionSetId: string; questions: StudentQuestion[]; count: number };
@@ -66,7 +67,7 @@ export async function generateQuestions(body: { sessionId: string; message: stri
 
 /** List questions for a session (no answers returned). */
 export async function listQuestions(params: Record<string, string>) {
-  const { data } = await client.get('/api/questions', { params });
+  const { data } = await client.get('/api/questions', { params: { ...params, learnerId: getStableLearnerId() } });
   return data as {
     status: string;
     data: { questionSetId: string; questions: StudentQuestion[]; count: number };
@@ -74,9 +75,9 @@ export async function listQuestions(params: Record<string, string>) {
 }
 
 /** Get a single question. Set reveal=true to include answers. */
-export async function getQuestion(questionId: string, reveal: boolean = false) {
+export async function getQuestion(questionId: string, sessionId: string, reveal: boolean = false) {
   const { data } = await client.get(`/api/questions/${questionId}`, {
-    params: { reveal },
+    params: { sessionId, learnerId: getStableLearnerId(), reveal },
   });
   return data as { status: string; data: { question: StudentQuestion } };
 }
@@ -86,19 +87,19 @@ export async function gradeAnswer(
   questionId: string,
   body: { sessionId: string; answer: string }
 ) {
-  const { data } = await client.post(`/api/questions/${questionId}/grade`, body);
+  const { data } = await client.post(`/api/questions/${questionId}/grade`, { ...body, learnerId: getStableLearnerId() });
   return data as { status: string; data: { gradingResult: GradingResult } };
 }
 
 /** Get the student's wrong-answer book. */
 export async function getWeakQuestions(params: Record<string, string | number>) {
-  const { data } = await client.get('/api/questions/weak', { params });
+  const { data } = await client.get('/api/questions/weak', { params: { ...params, learnerId: getStableLearnerId() } });
   return data as { status: string; data: { records: WeakQuestionRecord[]; total: number } };
 }
 
 /** Get answer history for a session. */
 export async function getAnswerHistory(params: Record<string, string | number>) {
-  const { data } = await client.get('/api/questions/history', { params });
+  const { data } = await client.get('/api/questions/history', { params: { ...params, learnerId: getStableLearnerId() } });
   return data as {
     status: string;
     data: { records: HistoryRecord[]; totalCorrect: number; totalAttempted: number };

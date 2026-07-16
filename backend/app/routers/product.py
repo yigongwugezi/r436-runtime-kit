@@ -4660,7 +4660,6 @@ def learning_timeline(
 # ═══════════════════════════════════════════════════════════════════════
 
 
-@router.post("/questions/generate")
 def generate_questions(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     """触发 QuestionAgent 生成试题并持久化到 DB。"""
     session_id = _payload_session_id(payload)
@@ -4708,7 +4707,6 @@ def _q_to_dict(q) -> dict:
     }
 
 
-@router.get("/questions")
 def list_questions(sessionId: str = "", subjectId: str = "",
                    knowledgePoint: str = "", difficulty: str = "",
                    qtype: str = "") -> dict[str, Any]:
@@ -4729,7 +4727,6 @@ def list_questions(sessionId: str = "", subjectId: str = "",
         db.close()
 
 
-@router.get("/questions/sets")
 def question_sets(sessionId: str = "") -> dict[str, Any]:
     """列出所有题目集（按 question_set_id 分组）。"""
     session_id = _resolve_session_id(sessionId, "")
@@ -4776,7 +4773,6 @@ def question_sets(sessionId: str = "") -> dict[str, Any]:
         db.close()
 
 
-@router.delete("/questions/sets/{set_id}")
 def delete_question_set(set_id: str, sessionId: str = "") -> dict[str, Any]:
     """删除一个题目集及其所有题目和答题记录。"""
     session_id = _resolve_session_id(sessionId, "")
@@ -4799,7 +4795,6 @@ def delete_question_set(set_id: str, sessionId: str = "") -> dict[str, Any]:
         db.close()
 
 
-@router.get("/questions/weak")
 def weak_questions(sessionId: str = "", errorType: str = "", limit: int = 20) -> dict[str, Any]:
     """错题本：查询作答错误的题目及判卷结果。"""
     session_id = _resolve_session_id(sessionId, "")
@@ -4827,7 +4822,6 @@ def weak_questions(sessionId: str = "", errorType: str = "", limit: int = 20) ->
         db.close()
 
 
-@router.get("/questions/history")
 def answer_history(sessionId: str = "", limit: int = 50) -> dict[str, Any]:
     """答题历史：查询所有作答记录及统计。"""
     session_id = _resolve_session_id(sessionId, "")
@@ -4858,7 +4852,6 @@ def answer_history(sessionId: str = "", limit: int = 50) -> dict[str, Any]:
         db.close()
 
 
-@router.get("/questions/{question_id}")
 def get_question(question_id: str, sessionId: str = "", reveal: bool = False) -> dict[str, Any]:
     """获取单题详情（从 DB）。reveal=True 时返回答案。"""
     session_id = _resolve_session_id(sessionId, "")
@@ -4877,7 +4870,6 @@ def get_question(question_id: str, sessionId: str = "", reveal: bool = False) ->
         db.close()
 
 
-@router.post("/questions/{question_id}/grade")
 def grade_answer(question_id: str, payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     """提交作答，触发 GradingAgent 判卷并持久化到 DB。"""
     session_id = _payload_session_id(payload)
