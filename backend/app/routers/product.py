@@ -544,6 +544,10 @@ def _to_resource(
         "reason": item.get("reason", ""),
         "evidence": item.get("evidence", []),
         "fallbackReason": item.get("fallback_reason", ""),
+        "profileVersion": item.get("profile_version") or item.get("profileVersion"),
+        "diagnosisVersion": item.get("diagnosis_version") or item.get("diagnosisVersion"),
+        "recommendationReason": item.get("recommendation_reason") or item.get("recommendationReason") or item.get("reason", ""),
+        "personalizationFactors": item.get("personalization_factors") or item.get("personalizationFactors") or [],
     }
 
 
@@ -2875,6 +2879,10 @@ def get_resources(
             "reason": item.get("reason", ""),
             "evidence": item.get("evidence", []),
             "fallbackReason": item.get("fallbackReason", item.get("fallback_reason", "")),
+            "profileVersion": item.get("profileVersion", item.get("profile_version")),
+            "diagnosisVersion": item.get("diagnosisVersion", item.get("diagnosis_version")),
+            "recommendationReason": item.get("recommendationReason", item.get("recommendation_reason", item.get("reason", ""))),
+            "personalizationFactors": item.get("personalizationFactors", item.get("personalization_factors", [])),
             "resourceMetadata": metadata,
         }
 
@@ -3028,7 +3036,7 @@ def save_online_search_result(payload: dict[str, Any]) -> dict[str, Any]:
                 )
         from app.db.repository import upsert_resource
         resource_id = f"online-{hashlib.sha256(f'{session_id}|{canonical_url}'.encode('utf-8')).hexdigest()[:24]}"
-        saved = upsert_resource(db, session_id, {
+        resource_dict = {
             "id": resource_id,
             "type": resource_type,
             "title": str(item.get("title") or canonical_topic)[:256],
@@ -3055,7 +3063,9 @@ def save_online_search_result(payload: dict[str, Any]) -> dict[str, Any]:
                 "quality_status": str(item.get("quality_status") or "passed"),
                 "subject_id": resolved_subject,
             },
-        })
+        }
+        _attach_personalization_metadata(resource_dict, session_id, resolved_subject)
+        saved = upsert_resource(db, session_id, resource_dict)
         return _product_response(
             {"resourceId": saved.id, "reused": False},
             session_id=session_id, subject_id=resolved_subject, source="db",
@@ -3466,6 +3476,8 @@ def _generate_general_resource(payload: dict[str, Any], workflow_task: Any = Non
     db = SessionLocal()
     try:
         from app.db.repository import upsert_resource
+        _attach_personalization_metadata(resource, request["sessionId"],
+                                          str(request.get("subjectId", "")))
         saved = upsert_resource(db, request["sessionId"], resource)
         item = {
             "resource_id": saved.id, "type": saved.type, "title": saved.title, "description": saved.description,
@@ -3516,6 +3528,7 @@ def _legacy_generate_resource(payload: dict[str, Any], auth: AuthContext = Depen
                     db = SessionLocal()
                     try:
                         from app.db.repository import upsert_resource
+                        _attach_personalization_metadata(resource, session_id, subject_id)
                         upsert_resource(db, session_id, resource)
                     finally:
                         db.close()
@@ -6132,6 +6145,7 @@ def _public_tutor_video(result: dict[str, Any]) -> dict[str, Any]:
 def generate_all_section_resources(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Multi-agent pipeline: profile → knowledge → resource for a section."""
     session_id = _payload_session_id(payload)
+    subject_id = _payload_subject_id(payload)
     section_title = str(payload.get("sectionTitle", "")).strip()
     section_goal = str(payload.get("sectionGoal", "")).strip()
     chapter_id = str(payload.get("chapterId", "")).strip()
@@ -6253,14 +6267,16 @@ def generate_all_section_resources(section_id: str, payload: dict[str, Any]) -> 
         db = SessionLocal()
         from app.db.repository import upsert_resource
         for r in results.get("resources", []):
-            upsert_resource(db, session_id, {
+            rd = {
                 "id": r.get("resource_id", f"res_{hash(r.get('title',''))}"),
                 "type": r.get("type", "lecture"), "title": r.get("title", ""),
                 "description": r.get("description", ""), "content": r.get("content", ""),
                 "format": r.get("format", "text"), "difficulty": r.get("difficulty", "medium"),
                 "source": "agent_generated",
                 "related_stage_id": stage_id, "related_chapter_id": chapter_id, "related_section_id": section_id,
-            })
+            }
+            _attach_personalization_metadata(rd, session_id, subject_id)
+            upsert_resource(db, session_id, rd)
         db.commit()
     except Exception:
         pass
@@ -7017,6 +7033,7 @@ def generate_chapter_mindmap(chapter_id: str, payload: dict[str, Any]) -> dict[s
             sections=payload.get("sections") if isinstance(payload.get("sections"), list) else context.get("sections", []),
             session_id=session_id,
         )
+        _attach_personalization_metadata(resource, session_id, subject_id)
         saved = service.persist(db, session_id, resource)
         return _product_response({"mindmap": service.serialize(saved), "reused": False}, session_id=session_id, source="agent")
     except ValueError:
@@ -7065,6 +7082,7 @@ def generate_section_mindmap(section_id: str, payload: dict[str, Any]) -> dict[s
             lecture_content=lecture_content,
         )
         resource["title"] = f"{section_title} · 小节思维导图"
+        _attach_personalization_metadata(resource, session_id, subject_id)
         saved = service.persist(db, session_id, resource)
         return _product_response({"mindmap": service.serialize(saved), "reused": False}, session_id=session_id, source="agent")
     except ValueError:

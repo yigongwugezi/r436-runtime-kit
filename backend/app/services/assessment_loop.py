@@ -544,6 +544,9 @@ def run_post_quiz_assessment(
                     resource_result = resource_agent.run(resource_context)
                     new_resources = resource_result.get("resources", [])
                     if new_resources:
+                        # ── Attach personalization provenance ──────
+                        for r in new_resources:
+                            _stamp_resource_personalization(r, session_id)
                         # Persist generated resources into conversation state
                         existing_result = dict(conversation_store.get(session_id).last_result or {})
                         existing_resources = list(existing_result.get("resources", []))
@@ -798,6 +801,33 @@ def record_learning_event(session_id: str, event_type: str) -> None:
 
 
 # ── Internal helpers ─────────────────────────────────────────────────────
+
+
+def _stamp_resource_personalization(resource: dict, session_id: str) -> None:
+    """Attach personalization provenance to a resource dict (best-effort)."""
+    try:
+        from app.services.personalization_context import PersonalizationContextService
+        svc = PersonalizationContextService()
+        ctx = svc.build(session_id)
+
+        resource["profile_version"] = resource.get("profile_version") or ctx.get("profileVersion")
+        resource["diagnosis_version"] = resource.get("diagnosis_version") or ctx.get("diagnosisVersion")
+        resource["quality_status"] = resource.get("quality_status") or resource.get("qualityStatus") or "passed"
+
+        factors: list[str] = []
+        weaknesses = ctx.get("weaknesses") or []
+        if weaknesses:
+            weak_names = [w.get("name", w.get("knowledgePointKey", "")) for w in weaknesses[:3] if isinstance(w, dict)]
+            factors.extend(f"weak:{n}" for n in weak_names if n)
+        resource["personalization_factors"] = resource.get("personalization_factors") or factors
+
+        if not resource.get("recommendation_reason") and not resource.get("reason"):
+            if ctx.get("diagnosisVersion"):
+                resource["recommendation_reason"] = (
+                    f"基于诊断 v{ctx['diagnosisVersion']} 的补强推荐"
+                )
+    except Exception:
+        pass
 
 
 def _persist_diagnosis_to_db(

@@ -313,6 +313,127 @@ def test_context_builds_empty():
     assert isinstance(ctx["priorResourceIds"], list)
 
 
+# ── Test 9: General lecture prompt injects profile + diagnosis ────────────
+
+
+def test_general_resource_stamps_personalization():
+    """Resources saved via _generate_general_resource carry personalization metadata."""
+    _setup()
+    db = SessionLocal()
+    try:
+        # Seed a diagnosis so there's a version to stamp
+        persist_diagnosis_result(
+            db, learner_id=_LEARNER, subject_id="math",
+            session_id=_SESSION,
+            diagnosis_result={"summary": "T", "mastery_levels": [], "weak_knowledge_points": [],
+                             "weak_topics": [], "strengths": [], "confidence": 0.5},
+        )
+        db.commit()
+
+        rid = f"res_gen_{uuid.uuid4().hex[:8]}"
+        resource = {"id": rid, "type": "lecture", "title": "Test General",
+                     "content": "Content", "format": "text"}
+        from app.routers.product import _attach_personalization_metadata
+        _attach_personalization_metadata(resource, _SESSION, "math")
+
+        upsert_resource(db, _SESSION, resource)
+        res = db.get(ResourceModel, rid)
+        assert res is not None
+        assert res.diagnosis_version is not None, "diagnosis_version should be stamped"
+        assert res.quality_status == "passed"
+    finally:
+        db.close()
+
+
+# ── Test 10: Mindmap save carries personalization ─────────────────────────
+
+
+def test_mindmap_resource_carries_personalization():
+    """Mindmap resources saved via upsert carry personalization fields."""
+    _setup()
+    db = SessionLocal()
+    try:
+        persist_diagnosis_result(
+            db, learner_id=_LEARNER, subject_id="math",
+            session_id=_SESSION, diagnosis_result={"_sample": True},
+        )
+        db.commit()
+
+        rid = f"res_mm_{uuid.uuid4().hex[:8]}"
+        rd = {"id": rid, "type": "mindmap", "title": "Mindmap Test",
+              "content": "graph TD", "format": "diagram",
+              "mermaid_def": "graph TD\nA-->B"}
+        from app.routers.product import _attach_personalization_metadata
+        _attach_personalization_metadata(rd, _SESSION, "math")
+        upsert_resource(db, _SESSION, rd)
+
+        res = db.get(ResourceModel, rid)
+        assert res is not None
+        assert res.profile_version is not None or res.diagnosis_version is not None
+        assert res.quality_status == "passed"
+    finally:
+        db.close()
+
+
+# ── Test 11: Multiple saves produce consistent versions ───────────────────
+
+
+def test_multiple_saves_consistent_versions():
+    """Two resources saved in same session get same diagnosis_version."""
+    _setup()
+    db = SessionLocal()
+    try:
+        snap = persist_diagnosis_result(
+            db, learner_id=_LEARNER, subject_id="math",
+            session_id=_SESSION, diagnosis_result={"_diag": True},
+        )
+        db.commit()
+        ver = snap.version
+
+        for prefix in ["a", "b"]:
+            rid = f"res_multi_{prefix}_{uuid.uuid4().hex[:6]}"
+            rd = {"id": rid, "type": "lecture", "title": f"Lecture {prefix}"}
+            from app.routers.product import _attach_personalization_metadata
+            _attach_personalization_metadata(rd, _SESSION, "math")
+            upsert_resource(db, _SESSION, rd)
+
+        r1 = db.get(ResourceModel, f"res_multi_a_{uuid.uuid4().hex[:6]}")
+        # Just verify two resources were saved with the same version
+        resources = (
+            db.query(ResourceModel)
+            .filter(ResourceModel.id.like("res_multi_%"))
+            .all()
+        )
+        versions = {r.diagnosis_version for r in resources if r.diagnosis_version is not None}
+        assert len(resources) >= 2
+        assert len(versions) == 1, f"All resources should share same diagnosis version, got {versions}"
+    finally:
+        db.close()
+
+
+# ── Test 12: Resource serializers expose new fields ───────────────────────
+
+
+def test_resource_serializers_expose_personalization():
+    """_to_resource includes new personalization fields."""
+    from app.routers.product import _to_resource
+
+    item = {
+        "resource_id": "res_test_ser",
+        "type": "lecture", "title": "Test",
+        "profile_version": 3,
+        "diagnosis_version": 5,
+        "recommendation_reason": "基于诊断生成",
+        "personalization_factors": ["weak:call_stack", "pref:video"],
+        "quality_status": "passed",
+    }
+    result = _to_resource(item)
+    assert result.get("profileVersion") == 3
+    assert result.get("diagnosisVersion") == 5
+    assert result.get("recommendationReason") == "基于诊断生成"
+    assert len(result.get("personalizationFactors", [])) == 2
+
+
 # ── Run ───────────────────────────────────────────────────────────────────
 
 
@@ -326,6 +447,10 @@ def main():
         test_attach_personalization_metadata,
         test_personalization_context_dto,
         test_context_builds_empty,
+        test_general_resource_stamps_personalization,
+        test_mindmap_resource_carries_personalization,
+        test_multiple_saves_consistent_versions,
+        test_resource_serializers_expose_personalization,
     ]
     failed = 0
     for t in tests:
