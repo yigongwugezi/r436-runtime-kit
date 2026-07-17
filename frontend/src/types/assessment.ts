@@ -164,6 +164,8 @@ export interface QuizSubmitResponse {
   knowledgePointResults?: KnowledgePointResult[];
   /** Workflow task ID for post-submit assessment processing (SSE-pollable). */
   processingTaskId?: string | null;
+  /** Workflow task ID for diagnosis snapshot refresh (SSE-pollable). */
+  diagnosisTaskId?: string | null;
 }
 
 /** Per-knowledge-point result computed from a graded answer. */

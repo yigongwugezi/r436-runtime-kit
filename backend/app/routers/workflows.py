@@ -20,13 +20,13 @@ router = APIRouter(prefix="/workflows", tags=["workflows"])
 SUPPORTED_WORKFLOWS = {
     "resource_search", "generated_resource", "generated_resource_regeneration",
     "profile_sync", "profile_rebuild", "learning_path_generation", "lecture_generation", "general_resource_generation", "video_generation",
-    "assessment_processing",
+    "assessment_processing", "diagnosis_refresh",
 }
 CANCELLABLE_WORKFLOWS = {
     "resource_search", "generated_resource", "generated_resource_regeneration",
     "lecture_generation", "general_resource_generation",
     "video_generation", "learning_path_generation",
-    "assessment_processing",
+    "assessment_processing", "diagnosis_refresh",
 }
 
 
@@ -48,6 +48,74 @@ def _session(payload: dict[str, Any], auth: AuthContext) -> tuple[str, str]:
 def _emit_stage(task: WorkflowTask, stage_id: str, label: str, status: str = "running", **data: Any) -> None:
     workflow_task_manager.check_cancelled(task)
     workflow_task_manager.emit(task, f"stage_{'completed' if status == 'completed' else 'started'}", stage_id, status, label=label, **data)
+
+
+def _runner_diagnosis_refresh(
+    session_id: str, learner_id: str, subject_id: str, attempt_id: str = "",
+):
+    """Build a runner that isolates the DiagnosisAgent → snapshot persistence step."""
+    def run(workflow_task: WorkflowTask) -> Any:
+        wfm = workflow_task_manager
+
+        # ── Stage 1: Build diagnosis context ──────────────────────
+        wfm.emit(workflow_task, "stage_started", "context", "running",
+                 label="正在收集学习数据")
+        from app.services.assessment_loop import _build_diagnosis_context
+        diagnosis_context = _build_diagnosis_context(session_id)
+
+        # ── Stage 2: Run DiagnosisAgent ──────────────────────────
+        wfm.check_cancelled(workflow_task)
+        wfm.emit(workflow_task, "stage_started", "analysis", "running",
+                 label="正在运行诊断分析")
+        diagnosis_agent = None
+        try:
+            from app.services.assessment_loop import _get_or_create_factory
+            factory = _get_or_create_factory()
+            diagnosis_agent = factory.get("diagnosis_agent")
+        except Exception:
+            pass
+        if diagnosis_agent is None:
+            from app.agents.diagnosis_agent import DiagnosisAgent
+            diagnosis_agent = DiagnosisAgent(mock_data={})
+        result = diagnosis_agent.run(diagnosis_context)
+        new_diagnosis = result.get("diagnosis", {})
+
+        # ── Stage 3: Persist snapshot + evidence ─────────────────
+        wfm.check_cancelled(workflow_task)
+        wfm.emit(workflow_task, "stage_started", "persist", "running",
+                 label="正在保存诊断快照")
+        from app.db.engine import SessionLocal
+        from app.services.diagnosis_snapshot_service import persist_diagnosis_result
+        db = SessionLocal()
+        try:
+            snap = persist_diagnosis_result(
+                db,
+                learner_id=learner_id,
+                subject_id=subject_id,
+                session_id=session_id,
+                diagnosis_result=new_diagnosis,
+                source_attempt_ids=[attempt_id] if attempt_id else [],
+                active_task_id=workflow_task.task_id,
+            )
+            db.commit()
+            wfm.emit(workflow_task, "stage_completed", "persist", "completed",
+                     label="诊断快照已保存",
+                     safe_metadata={
+                         "snapshotId": snap.diagnosis_snapshot_id,
+                         "version": snap.version,
+                     })
+        except Exception as exc:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+        return {
+            "status": "completed",
+            "snapshotId": snap.diagnosis_snapshot_id,
+            "version": snap.version,
+        }
+    return run
 
 
 def _runner_assessment_processing(attempt_id: str, quiz_id: str, exam_set_id: str, session_id: str):
@@ -130,6 +198,12 @@ def _runner(workflow_type: str, payload: dict[str, Any], auth: AuthContext):
     def run(task: WorkflowTask) -> Any:
         # Runtime import avoids coupling the product router back to this API.
         from app.routers import product
+
+        if workflow_type == "diagnosis_refresh":
+            return _runner_diagnosis_refresh(
+                task.session_scope, task.user_scope, task.subject_scope,
+                str(payload.get("attemptId") or payload.get("attempt_id") or "").strip(),
+            )(task)
 
         if workflow_type == "assessment_processing":
             attempt_id = str(payload.get("attemptId") or payload.get("attempt_id") or "").strip()

@@ -356,6 +356,51 @@ def _trigger_post_submit_assessment(
     threading.Thread(target=_run, daemon=True).start()
 
 
+def _create_diagnosis_refresh_task(
+    session_id: str,
+    learner_id: str,
+    subject_id: str,
+    attempt_id: str,
+) -> str | None:
+    """Create and start a ``diagnosis_refresh`` workflow task.
+
+    Runs DiagnosisAgent and persists a new versioned snapshot.
+    Best-effort — grading result is preserved even if task creation fails.
+
+    Returns the ``task_id``, or ``None`` if creation failed.
+    """
+    try:
+        from app.services.workflow_tasks import workflow_task_manager
+        payload: dict[str, Any] = {
+            "operation": "diagnosis_refresh",
+            "sessionId": session_id,
+            "subjectId": subject_id,
+            "attemptId": attempt_id,
+        }
+        task, reused = workflow_task_manager.get_or_create(
+            "diagnosis_refresh",
+            learner_id,
+            session_id,
+            subject_id,
+            payload=payload,
+            metadata={"attempt_id": attempt_id},
+            retry_payload=dict(payload),
+        )
+        if not reused:
+            from app.routers.workflows import _runner_diagnosis_refresh
+            runner = _runner_diagnosis_refresh(
+                session_id, learner_id, subject_id, attempt_id,
+            )
+            workflow_task_manager.start(task, runner)
+        return task.task_id
+    except Exception:
+        logger.exception(
+            "Failed to create diagnosis_refresh task for attempt=%s",
+            attempt_id,
+        )
+        return None
+
+
 def _create_assessment_processing_task(
     session_id: str,
     learner_id: str,
@@ -566,6 +611,7 @@ def _build_idempotent_response(
             "idempotentReplay": True,
             "knowledgePointResults": kp_results,
             "processingTaskId": attempt.processing_task_id,
+            "diagnosisTaskId": attempt.diagnosis_task_id,
         },
     }
 
@@ -1271,6 +1317,22 @@ def submit_quiz(
             except Exception:
                 pass  # best-effort — grading result is preserved
 
+        # ── Create diagnosis_refresh workflow task ───────────────
+        diagnosis_task_id = _create_diagnosis_refresh_task(
+            session_id=session_id,
+            learner_id=auth.learner_id,
+            subject_id=subject_id,
+            attempt_id=attempt.attempt_id,
+        )
+        if diagnosis_task_id:
+            try:
+                update_attempt(db, attempt.attempt_id, {
+                    "diagnosis_task_id": diagnosis_task_id,
+                })
+                db.commit()
+            except Exception:
+                pass  # best-effort
+
         # ── Trigger closed-loop assessment (fire-and-forget) ────
         _trigger_post_submit_assessment(
             session_id=session_id,
@@ -1281,6 +1343,7 @@ def submit_quiz(
 
         response_attempt = _attempt_dict(get_attempt(db, attempt.attempt_id))
         response_attempt["processingTaskId"] = processing_task_id
+        response_attempt["diagnosisTaskId"] = diagnosis_task_id
 
         return {
             "status": "success",
@@ -1293,6 +1356,7 @@ def submit_quiz(
                 "weakPoints": weak_points,
                 "knowledgePointResults": kp_results,
                 "processingTaskId": processing_task_id,
+                "diagnosisTaskId": diagnosis_task_id,
             },
         }
     finally:
@@ -2006,6 +2070,22 @@ def submit_exam_set(
             except Exception:
                 pass  # best-effort
 
+        # ── Create diagnosis_refresh workflow task ───────────────
+        diagnosis_task_id = _create_diagnosis_refresh_task(
+            session_id=session_id,
+            learner_id=auth.learner_id,
+            subject_id=subject_id,
+            attempt_id=attempt.attempt_id,
+        )
+        if diagnosis_task_id:
+            try:
+                update_attempt(db, attempt.attempt_id, {
+                    "diagnosis_task_id": diagnosis_task_id,
+                })
+                db.commit()
+            except Exception:
+                pass  # best-effort
+
         # ── Trigger closed-loop assessment (fire-and-forget) ────
         _trigger_post_submit_assessment(
             session_id=session_id,
@@ -2016,6 +2096,7 @@ def submit_exam_set(
 
         response_attempt = _attempt_dict(get_attempt(db, attempt.attempt_id))
         response_attempt["processingTaskId"] = processing_task_id
+        response_attempt["diagnosisTaskId"] = diagnosis_task_id
 
         return {
             "status": "success",
@@ -2028,6 +2109,7 @@ def submit_exam_set(
                 "weakPoints": weak_points,
                 "knowledgePointResults": kp_results,
                 "processingTaskId": processing_task_id,
+                "diagnosisTaskId": diagnosis_task_id,
             },
         }
     finally:
