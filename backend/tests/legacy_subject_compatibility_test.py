@@ -43,7 +43,7 @@ def main() -> None:
                 SessionModel(id="unbound-session", learner_id="learner-a", subject_id=None),
                 PersonalSubjectModel(id="ps-current", learner_id="learner-a", name="Current Subject"),
                 PersonalSubjectModel(id="ps-no-session", learner_id="learner-a", name="No Session Subject"),
-                PersonalSubjectModel(id="ps-foreign", learner_id="learner-b", name="Foreign Subject"),
+                PersonalSubjectModel(id="ps_foreign", learner_id="learner-b", name="Foreign Subject"),
                 LearningPathModel(
                     id="legacy-path",
                     session_id="legacy-session",
@@ -70,7 +70,7 @@ def main() -> None:
             ("subject_1700000000000_ab..23", "Dot Dot ID"),
             (f"{legacy_subject_id} \n", "Whitespace ID"),
             ("subject_" + "1" * 300, "Long ID"),
-            ("ps-foreign", "Formal ID"),
+            ("ps_foreign", "Formal ID"),
         ]
         invalid_migrated = subjects.migrate_subjects(
             subjects.MigrateSubjectsRequest(subjects=[{"id": subject_id, "name": name} for subject_id, name in invalid_subjects]),
@@ -83,8 +83,8 @@ def main() -> None:
             assert generated_id.startswith("ps_")
         db = factory()
         try:
-            assert db.get(PersonalSubjectModel, "ps-foreign").learner_id == "learner-b"
-            assert invalid_by_name["Formal ID"] != "ps-foreign"
+            assert db.get(PersonalSubjectModel, "ps_foreign").learner_id == "learner-b"
+            assert invalid_by_name["Formal ID"] != "ps_foreign"
         finally:
             db.close()
 
