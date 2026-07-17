@@ -450,9 +450,48 @@ async def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_a
                 yield f"data: {json.dumps(_done_event(session_id, {}), ensure_ascii=False)}\n\n"
                 conversation_store.append_message(session_id, "assistant", full_reply or message)
                 return
+
+            # ── 规划模式 + 聊天内容 → 也直接流式 ──
+            if _is_likely_chat(message, {}):
+                from app.services.llm_factory import get_chat_client
+                client = get_chat_client()
+                deep_think = bool(payload.get("deep_think_enabled", False))
+                token_buf = ""
+                full_reply = ""
+                stream_model = None
+                if deep_think:
+                    from app.config import settings as _st
+                    stream_model = getattr(_st, "llm_reasoner_model", "deepseek-reasoner")
+                try:
+                    for token in client.stream_chat([{"role": "user", "content": message}], model=stream_model):
+                        if token.startswith("<thinking>"):
+                            rc = token[len("<thinking>"):-len("</thinking>")] if token.endswith("</thinking>") else token[len("<thinking>"):]
+                            if rc:
+                                yield f"data: {json.dumps({'reasoning': rc}, ensure_ascii=False)}\n\n"
+                        else:
+                            token_buf += token
+                            full_reply += token
+                            if len(token_buf) >= 4 or token in ("\n", ".", "!", "？", "。", "！"):
+                                yield f"data: {json.dumps({'type': 'messages', 'content': token_buf}, ensure_ascii=False)}\n\n"
+                                token_buf = ""
+                    if token_buf:
+                        yield f"data: {json.dumps({'type': 'messages', 'content': token_buf}, ensure_ascii=False)}\n\n"
+                except Exception as e:
+                    logger.error("Stream chat failed: %s", e, exc_info=e)
+                    yield f"data: {json.dumps({'type': 'error', 'message': '对话生成失败'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps(_done_event(session_id, {}, str(e)), ensure_ascii=False)}\n\n"
+                    return
+                conversation_store.append_message(session_id, "user", message)
+                conversation_store.append_message(session_id, "assistant", full_reply or message)
+                yield f"data: {json.dumps(_done_event(session_id, {}), ensure_ascii=False)}\n\n"
+                return
+
+            # ── 需要调 Agent → yield 进度事件 + 走原有 pipeline ──
+            yield f"data: {json.dumps({'stage': '正在分析你的需求…', 'agentName': 'understanding', 'progress': 10, 'done': False}, ensure_ascii=False)}\n\n"
             reply, thinking, result = await _run_chat(message, session_id, search_enabled=search_enabled, deep_think_enabled=deep_think_enabled, chat_mode=chat_mode)
             if thinking:
                 yield f"data: {json.dumps({'reasoning': thinking}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'stage': '正在生成回答…', 'agentName': 'responding', 'progress': 90, 'done': False}, ensure_ascii=False)}\n\n"
             for chunk in reply.splitlines(keepends=True):
                 yield f"data: {json.dumps({'type': 'messages', 'content': chunk}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps(_done_event(session_id, result), ensure_ascii=False)}\n\n"

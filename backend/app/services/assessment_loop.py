@@ -607,6 +607,14 @@ def run_post_quiz_assessment(
         # ═══════════════════════════════════════════════════════════
         assessment_tracker.record_diagnosis(session_id, new_mastery)
 
+        # ── Step 9: LLM 多维度学习评估（异步触发，不阻塞主流程）──
+        _th = threading.Thread(
+            target=_trigger_llm_assessment,
+            args=(session_id,),
+            daemon=True,
+        )
+        _th.start()
+
         return {
             "diagnosis_ran": True,
             "mastery_levels_count": len(mastery_levels),
@@ -617,14 +625,6 @@ def run_post_quiz_assessment(
             "path_adjusted": path_adjusted,
             "resources_generated": resources_generated,
         }
-
-        # ── LLM 学习评估（异步触发，不阻塞）──
-        try:
-            import threading as _th
-            _sid = session_id
-            _th.Thread(target=lambda: _trigger_llm_assessment(_sid), daemon=True).start()
-        except Exception:
-            pass
 
     except Exception:
         logger.exception("Post-quiz assessment failed for session=%s", session_id)
