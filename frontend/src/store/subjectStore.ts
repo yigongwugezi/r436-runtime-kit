@@ -117,7 +117,7 @@ export const useSubjectStore = create<SubjectStore>((set, get) => ({
         try {
           // Upload local subjects to server, get merged list back
           const migrated = await subjectsApi.migratePersonalSubjects(
-            localSubjects.map(s => ({ name: s.name, description: s.description })),
+            localSubjects.map(s => ({ id: s.id, name: s.name, description: s.description })),
           );
           // Use merged server result, update local cache
           persistSubjects(migrated);

@@ -171,7 +171,13 @@ def migrate_subjects(
             name = canonical_subject_name(sub.get("name") or "")
             if not name:
                 continue
-            _subject, created = get_or_create_personal_subject(db, auth.learner_id, name, sub.get("description"))
+            _subject, created = get_or_create_personal_subject(
+                db,
+                auth.learner_id,
+                name,
+                sub.get("description"),
+                legacy_subject_id=sub.get("id"),
+            )
             created_count += int(created)
 
         # Return the complete merged list
@@ -210,20 +216,18 @@ def get_subject_session(
     For parent accounts, returns the child's session so data queries
     (profile, analytics, resources, etc.) can use the correct scope.
 
-    Lookup strategy (most → least specific):
-    1. Session linked to this exact subject (subject_id match).
-    2. Session linked to this subject regardless of learner_id
-       (handles sessions created before learner_id backfill).
-    3. Any recent session for this learner — link it to the subject.
-    4. Return None if no session exists yet.
+    The subject must belong to the target learner.  For historical sessions
+    without ``learner_id``, the owned personal subject is the required proof
+    of ownership; this endpoint never backfills or rebinds old records.
     """
     db = SessionLocal()
     try:
         target_id = _get_target_learner_id(db, auth)
+        subject = db.get(PersonalSubjectModel, subject_id)
+        if subject is None or subject.learner_id != target_id:
+            return {"status": "success", "data": {"session_id": None}}
 
-        session = None
-
-        # 1. Ideal: subject_id + learner_id match
+        # Current records: exact subject and learner match.
         session = (
             db.query(SessionModel)
             .filter(
@@ -234,38 +238,18 @@ def get_subject_session(
             .first()
         )
 
-        # 2. Subject match without learner_id (pre-backfill sessions)
-        if session is None:
-            session = (
-                db.query(SessionModel)
-                .filter(SessionModel.subject_id == subject_id)
-                .order_by(SessionModel.updated_at.desc())
-                .first()
-            )
-            # Backfill learner_id if missing
-            if session is not None and not session.learner_id:
-                session.learner_id = target_id
-                db.commit()
-                logger.info("Backfilled learner_id on session %s → %s", session.id, target_id)
-
-        # 3. Any unbound session for this learner — link it to this subject.
-        #    Only match sessions whose subject_id is NULL; sessions already
-        #    bound to a different subject must not be returned (they belong
-        #    to that other subject, not this one).
+        # Historical records: the owned personal subject proves the scope.
+        # Keep this read-only; a subject ID alone must not claim a session.
         if session is None:
             session = (
                 db.query(SessionModel)
                 .filter(
-                    SessionModel.learner_id == target_id,
-                    SessionModel.subject_id.is_(None),
+                    SessionModel.subject_id == subject_id,
+                    SessionModel.learner_id.is_(None),
                 )
                 .order_by(SessionModel.updated_at.desc())
                 .first()
             )
-            if session is not None:
-                session.subject_id = subject_id
-                db.commit()
-                logger.info("Linked session %s to subject %s", session.id, subject_id)
 
         logger.info(
             "Session resolution: subject=%s target=%s → %s",
