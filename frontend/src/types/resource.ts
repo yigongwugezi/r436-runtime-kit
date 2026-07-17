@@ -48,7 +48,8 @@ export type QualityStatus =
   | 'blocked'
   | 'insufficient_context'
   | 'needs_review'
-  | 'fallback_passed';
+  | 'fallback_passed'
+  | 'provider_unavailable';
 
 /** 审核问题项 */
 export interface ReviewIssue {

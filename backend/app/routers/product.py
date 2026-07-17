@@ -2241,7 +2241,25 @@ def _attach_personalization_metadata(
 
         resource["profile_version"] = ctx.get("profileVersion")
         resource["diagnosis_version"] = ctx.get("diagnosisVersion")
-        resource["quality_status"] = resource.get("quality_status") or resource.get("qualityStatus") or "passed"
+
+        # ── Quality gate (spec §6) ──────────────────────────────────
+        existing_qs = resource.get("quality_status") or resource.get("qualityStatus") or ""
+        if existing_qs and existing_qs not in ("passed", ""):
+            # Legacy status from upstream agent → map to public status
+            from app.services.content_quality_service import ContentQualityService
+            resource["quality_status"] = ContentQualityService.map_legacy_status(existing_qs)
+        else:
+            try:
+                from app.services.content_quality_service import ContentQualityService
+                result = ContentQualityService.review(resource)
+                resource["quality_status"] = result.status
+                # Merge check results into resource_metadata if present
+                meta = resource.get("resource_metadata")
+                if isinstance(meta, dict):
+                    meta["quality_checks"] = result.checks
+                    meta["quality_issues"] = result.issues
+            except Exception:
+                resource["quality_status"] = "needs_review"
 
         # Collect personalization factors that influenced this resource
         factors: list[str] = []
@@ -3424,7 +3442,6 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
             "operation": request["operation"],
             "generation_mode": request["mode"],
             "profile_snapshot_version": request["profileSnapshotVersion"],
-            "quality_status": "passed",
         },
     }
     if resource_type == "lecture":
@@ -3445,23 +3462,40 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
         resource["code_blocks"] = [{"language": "python", "code": "def solve(value):\n    if value is None:\n        raise ValueError('value is required')\n    return value", "explanation": "从输入校验开始，再补充与主题对应的处理逻辑。"}]
     elif resource_type == "ppt":
         from app.services.ppt_generator import generate_pptx
-        pptx_path = generate_pptx(topic, request["difficulty"], request["sessionId"])
+        try:
+            pptx_path = generate_pptx(topic, request["difficulty"], request["sessionId"])
+        except Exception:
+            pptx_path = None
         if not pptx_path:
-            raise RuntimeError("ppt_generation_failed")
-        rel_path = pptx_path.replace(str(settings.project_root), "").replace("\\", "/").lstrip("/")
-        resource["content"] = f"/api/multimodal/file/{rel_path}"
-        resource["format"] = "pptx"
+            resource["quality_status"] = "provider_unavailable"
+            resource["content"] = f"# {topic}\n\nPPT 生成服务暂时不可用，请稍后重试。"
+            resource["format"] = "text"
+        else:
+            rel_path = pptx_path.replace(str(settings.project_root), "").replace("\\", "/").lstrip("/")
+            resource["content"] = f"/api/multimodal/file/{rel_path}"
+            resource["format"] = "pptx"
     else:
         from app.services.multimodal_registry import default_registry
         capability = "manim_generation" if resource_type in {"animation", "manim"} else "video_generation"
         _, tool = default_registry().select_tool(capability)
         if tool is None:
-            raise RuntimeError("provider_not_configured")
-        result = tool.run({"topic": topic, "subject_name": topic, "user_message": f"Generate {resource_type} for {topic}"})
-        output = result.get("result") if isinstance(result, dict) else {}
-        if result.get("status") != "success" or not isinstance(output, dict) or not (output.get("video_url") or output.get("url")):
-            raise RuntimeError("provider_not_configured")
-        resource["content"] = str(output.get("video_url") or output.get("url"))
+            resource["quality_status"] = "provider_unavailable"
+            resource["content"] = f"# {topic}\n\n{resource_type} 生成服务未配置或不可用。"
+            resource["format"] = "text"
+        else:
+            try:
+                result = tool.run({"topic": topic, "subject_name": topic, "user_message": f"Generate {resource_type} for {topic}"})
+                output = result.get("result") if isinstance(result, dict) else {}
+                if result.get("status") != "success" or not isinstance(output, dict) or not (output.get("video_url") or output.get("url")):
+                    resource["quality_status"] = "provider_unavailable"
+                    resource["content"] = f"# {topic}\n\n{resource_type} 生成失败，请稍后重试。"
+                    resource["format"] = "text"
+                else:
+                    resource["content"] = str(output.get("video_url") or output.get("url"))
+            except Exception:
+                resource["quality_status"] = "provider_unavailable"
+                resource["content"] = f"# {topic}\n\n{resource_type} 生成服务异常，请稍后重试。"
+                resource["format"] = "text"
     return resource
 
 

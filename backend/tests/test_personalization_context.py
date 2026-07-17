@@ -262,7 +262,9 @@ def test_attach_personalization_metadata():
         _attach_personalization_metadata(resource, _SESSION, "math")
 
         assert resource.get("diagnosis_version") == snap.version
-        assert resource.get("quality_status") == "passed"
+        qs = resource.get("quality_status")
+        from app.services.content_quality_service import PUBLIC_STATUSES
+        assert qs in PUBLIC_STATUSES, f"quality_status {qs!r} not in {PUBLIC_STATUSES}"
         factors = resource.get("personalization_factors", [])
         assert any("call_stack" in str(f) for f in factors), f"Weak factor missing: {factors}"
     finally:
@@ -340,7 +342,8 @@ def test_general_resource_stamps_personalization():
         res = db.get(ResourceModel, rid)
         assert res is not None
         assert res.diagnosis_version is not None, "diagnosis_version should be stamped"
-        assert res.quality_status == "passed"
+        from app.services.content_quality_service import PUBLIC_STATUSES
+        assert res.quality_status in PUBLIC_STATUSES, f"quality_status {res.quality_status!r} not in {PUBLIC_STATUSES}"
     finally:
         db.close()
 
@@ -362,7 +365,7 @@ def test_mindmap_resource_carries_personalization():
         rid = f"res_mm_{uuid.uuid4().hex[:8]}"
         rd = {"id": rid, "type": "mindmap", "title": "Mindmap Test",
               "content": "graph TD", "format": "diagram",
-              "mermaid_def": "graph TD\nA-->B"}
+              "mermaid_def": "mindmap\n  root((X))\n    A\n    B\n    C"}
         from app.routers.product import _attach_personalization_metadata
         _attach_personalization_metadata(rd, _SESSION, "math")
         upsert_resource(db, _SESSION, rd)
@@ -370,7 +373,8 @@ def test_mindmap_resource_carries_personalization():
         res = db.get(ResourceModel, rid)
         assert res is not None
         assert res.profile_version is not None or res.diagnosis_version is not None
-        assert res.quality_status == "passed"
+        from app.services.content_quality_service import PUBLIC_STATUSES
+        assert res.quality_status in PUBLIC_STATUSES, f"quality_status {res.quality_status!r} not in {PUBLIC_STATUSES}"
     finally:
         db.close()
 
