@@ -162,6 +162,8 @@ export interface QuizSubmitResponse {
   idempotentReplay?: boolean;
   /** Per-knowledge-point results, one per mapping per question. */
   knowledgePointResults?: KnowledgePointResult[];
+  /** Workflow task ID for post-submit assessment processing (SSE-pollable). */
+  processingTaskId?: string | null;
 }
 
 /** Per-knowledge-point result computed from a graded answer. */

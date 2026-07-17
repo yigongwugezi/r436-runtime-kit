@@ -356,6 +356,61 @@ def _trigger_post_submit_assessment(
     threading.Thread(target=_run, daemon=True).start()
 
 
+def _create_assessment_processing_task(
+    session_id: str,
+    learner_id: str,
+    subject_id: str,
+    attempt_id: str,
+    *,
+    quiz_id: str = "",
+    exam_set_id: str = "",
+) -> str | None:
+    """Create and start an ``assessment_processing`` workflow task.
+
+    Called after synchronous grading is committed so the task always
+    sees a persisted attempt.  Task creation is best-effort — if it
+    fails the graded result is still returned to the user.
+
+    Returns the ``task_id``, or ``None`` if creation failed.
+    """
+    try:
+        from app.services.workflow_tasks import workflow_task_manager
+        payload: dict[str, Any] = {
+            "operation": "assessment_processing",
+            "sessionId": session_id,
+            "subjectId": subject_id,
+            "attemptId": attempt_id,
+            "quizId": quiz_id,
+            "examSetId": exam_set_id,
+        }
+        task, reused = workflow_task_manager.get_or_create(
+            "assessment_processing",
+            learner_id,
+            session_id,
+            subject_id,
+            payload=payload,
+            metadata={
+                "attempt_id": attempt_id,
+                "quiz_id": quiz_id,
+                "exam_set_id": exam_set_id,
+            },
+            retry_payload=dict(payload),
+        )
+        if not reused:
+            from app.routers.workflows import _runner_assessment_processing
+            runner = _runner_assessment_processing(
+                attempt_id, quiz_id, exam_set_id, session_id,
+            )
+            workflow_task_manager.start(task, runner)
+        return task.task_id
+    except Exception:
+        logger.exception(
+            "Failed to create assessment_processing task for attempt=%s",
+            attempt_id,
+        )
+        return None
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Idempotency helpers
 # ═══════════════════════════════════════════════════════════════════════
@@ -510,6 +565,7 @@ def _build_idempotent_response(
             "weakPoints": [],
             "idempotentReplay": True,
             "knowledgePointResults": kp_results,
+            "processingTaskId": attempt.processing_task_id,
         },
     }
 
@@ -951,7 +1007,7 @@ def submit_quiz(
             db, auth.learner_id, body.idempotency_key, quiz_id=quiz_id,
         )
         if existing is not None:
-            if existing.status == "graded" and _answers_match(existing.answers, body.answers):
+            if existing.status in ("graded", "processing", "completed", "failed") and _answers_match(existing.answers, body.answers):
                 return _build_idempotent_response(
                     db, existing, quiz_title=quiz.title,
                     quiz_id=quiz_id, session_id=session_id,
@@ -1010,7 +1066,7 @@ def submit_quiz(
             existing2 = find_attempt_by_idempotency_key(
                 db, auth.learner_id, body.idempotency_key, quiz_id=quiz_id,
             )
-            if existing2 is not None and existing2.status == "graded" and _answers_match(existing2.answers, body.answers):
+            if existing2 is not None and existing2.status in ("graded", "processing", "completed", "failed") and _answers_match(existing2.answers, body.answers):
                 return _build_idempotent_response(
                     db, existing2, quiz_title=quiz.title,
                     quiz_id=quiz_id, session_id=session_id,
@@ -1198,6 +1254,23 @@ def submit_quiz(
             quiz_title=quiz.title,
         )
 
+        # ── Create assessment_processing workflow task ──────────
+        processing_task_id = _create_assessment_processing_task(
+            session_id=session_id,
+            learner_id=auth.learner_id,
+            subject_id=subject_id,
+            attempt_id=attempt.attempt_id,
+            quiz_id=quiz_id,
+        )
+        if processing_task_id:
+            try:
+                update_attempt(db, attempt.attempt_id, {
+                    "processing_task_id": processing_task_id,
+                })
+                db.commit()
+            except Exception:
+                pass  # best-effort — grading result is preserved
+
         # ── Trigger closed-loop assessment (fire-and-forget) ────
         _trigger_post_submit_assessment(
             session_id=session_id,
@@ -1206,16 +1279,20 @@ def submit_quiz(
             weak_points=weak_points,
         )
 
+        response_attempt = _attempt_dict(get_attempt(db, attempt.attempt_id))
+        response_attempt["processingTaskId"] = processing_task_id
+
         return {
             "status": "success",
             "data": {
-                "attempt": _attempt_dict(get_attempt(db, attempt.attempt_id)),
+                "attempt": response_attempt,
                 "results": results,
                 "totalScore": avg_score,
                 "maxScore": 100,
                 "sectionStatusSuggestion": suggestion,
                 "weakPoints": weak_points,
                 "knowledgePointResults": kp_results,
+                "processingTaskId": processing_task_id,
             },
         }
     finally:
@@ -1689,7 +1766,7 @@ def submit_exam_set(
             db, auth.learner_id, body.idempotency_key, exam_set_id=exam_set_id,
         )
         if existing is not None:
-            if existing.status == "graded" and _answers_match(existing.answers, body.answers):
+            if existing.status in ("graded", "processing", "completed", "failed") and _answers_match(existing.answers, body.answers):
                 return _build_idempotent_response(
                     db, existing, quiz_title=exam_set.title,
                     exam_set_id=exam_set_id, session_id=session_id,
@@ -1745,7 +1822,7 @@ def submit_exam_set(
             existing2 = find_attempt_by_idempotency_key(
                 db, auth.learner_id, body.idempotency_key, exam_set_id=exam_set_id,
             )
-            if existing2 is not None and existing2.status == "graded" and _answers_match(existing2.answers, body.answers):
+            if existing2 is not None and existing2.status in ("graded", "processing", "completed", "failed") and _answers_match(existing2.answers, body.answers):
                 return _build_idempotent_response(
                     db, existing2, quiz_title=exam_set.title,
                     exam_set_id=exam_set_id, session_id=session_id,
@@ -1912,6 +1989,23 @@ def submit_exam_set(
 
         suggestion = "mastered" if avg_score >= 80 else ("in_progress" if avg_score >= 50 else "needs_review")
 
+        # ── Create assessment_processing workflow task ──────────
+        processing_task_id = _create_assessment_processing_task(
+            session_id=session_id,
+            learner_id=auth.learner_id,
+            subject_id=subject_id,
+            attempt_id=attempt.attempt_id,
+            exam_set_id=exam_set_id,
+        )
+        if processing_task_id:
+            try:
+                update_attempt(db, attempt.attempt_id, {
+                    "processing_task_id": processing_task_id,
+                })
+                db.commit()
+            except Exception:
+                pass  # best-effort
+
         # ── Trigger closed-loop assessment (fire-and-forget) ────
         _trigger_post_submit_assessment(
             session_id=session_id,
@@ -1920,16 +2014,20 @@ def submit_exam_set(
             weak_points=weak_points,
         )
 
+        response_attempt = _attempt_dict(get_attempt(db, attempt.attempt_id))
+        response_attempt["processingTaskId"] = processing_task_id
+
         return {
             "status": "success",
             "data": {
-                "attempt": _attempt_dict(get_attempt(db, attempt.attempt_id)),
+                "attempt": response_attempt,
                 "results": results,
                 "totalScore": avg_score,
                 "maxScore": 100,
                 "sectionStatusSuggestion": suggestion,
                 "weakPoints": weak_points,
                 "knowledgePointResults": kp_results,
+                "processingTaskId": processing_task_id,
             },
         }
     finally:
