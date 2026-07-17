@@ -90,19 +90,32 @@ def _seed() -> None:
 def main() -> None:
     _seed()
     assessment._trigger_post_submit_assessment = lambda **_kwargs: None
+    assessment._create_diagnosis_refresh_task = lambda **_kwargs: None
     with TestClient(app) as client:
         owner = _headers("learner_a")
+        db = SessionLocal()
+        try:
+            exam_set_count = db.query(ExamSetModel).count()
+        finally:
+            db.close()
 
         for method, path, body in (
             ("get", "/api/quizzes/quiz_a", None),
             ("post", "/api/quizzes", {"sessionId": "session_a"}),
             ("post", "/api/attempts", {"sessionId": "session_a", "quizId": "quiz_a"}),
+            ("get", "/api/exam-sets", None),
             ("get", "/api/exam-sets/exam_a", None),
             ("post", "/api/exam-sets", {"sessionId": "session_a"}),
         ):
             response = getattr(client, method)(path, json=body) if body is not None else getattr(client, method)(path)
             assert response.status_code == 401
             _assert_private(response)
+
+        db = SessionLocal()
+        try:
+            assert db.query(ExamSetModel).count() == exam_set_count
+        finally:
+            db.close()
 
         blocked = [
             ("get", "/api/quizzes?sessionId=session_b", None),
@@ -135,7 +148,7 @@ def main() -> None:
             _assert_private(response)
 
         response = client.get("/api/quizzes/not-a-real-quiz", headers=owner)
-        assert response.status_code == 403
+        assert response.status_code == 404
         response = client.get("/api/quizzes/quiz_a/results?attemptId=not-a-real-attempt", headers=owner)
         assert response.status_code == 404
 
@@ -145,6 +158,18 @@ def main() -> None:
         response = client.get("/api/exam-sets?sessionId=session_a", headers=owner)
         assert response.status_code == 200
         assert [row["id"] for row in response.json()["data"]["examSets"]] == ["exam_a"]
+
+        response = client.post(
+            "/api/exam-sets", headers=owner,
+            json={"sessionId": "session_a", "title": "owner exam", "learnerId": "learner_b"},
+        )
+        assert response.status_code == 200
+        created_exam_id = response.json()["data"]["examSet"]["id"]
+        db = SessionLocal()
+        try:
+            assert db.get(ExamSetModel, created_exam_id).session_id == "session_a"
+        finally:
+            db.close()
 
         response = client.post("/api/quizzes/quiz_a/attempts", headers=owner, json={"sessionId": "session_b"})
         assert response.status_code == 403
@@ -180,4 +205,7 @@ if __name__ == "__main__":
         main()
     finally:
         engine.dispose()
-        Path(_db_path).unlink(missing_ok=True)
+        try:
+            Path(_db_path).unlink(missing_ok=True)
+        except PermissionError:
+            pass
