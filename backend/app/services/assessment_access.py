@@ -16,6 +16,19 @@ def require_owned_session(db: Session, session_id: str, learner_id: str) -> Sess
     )
     if session is not None:
         return session
+    # Allow anonymous→real learner transition (normal login flow)
+    from app.db.repository import try_upgrade_anonymous_session
+    if try_upgrade_anonymous_session(db, session_id, learner_id):
+        session = (
+            db.query(SessionModel)
+            .filter(SessionModel.id == session_id, SessionModel.learner_id == learner_id)
+            .first()
+        )
+        if session is not None:
+            return session
+    exists = db.query(SessionModel.id).filter(SessionModel.id == session_id).first()
+    if exists is None:
+        raise HTTPException(status_code=404, detail="resource not found")
     raise HTTPException(status_code=403, detail="access denied")
 
 
@@ -28,6 +41,23 @@ def _owned(db: Session, model, resource_id: str, learner_id: str):
     )
     if resource is not None:
         return resource
+    # Allow anonymous→real learner transition (normal login flow)
+    # Find the resource's session, upgrade it, then re-check
+    raw = db.query(model).filter(model.id == resource_id).first()
+    if raw is not None:
+        from app.db.repository import try_upgrade_anonymous_session
+        if try_upgrade_anonymous_session(db, raw.session_id, learner_id):
+            resource = (
+                db.query(model)
+                .join(SessionModel, model.session_id == SessionModel.id)
+                .filter(model.id == resource_id, SessionModel.learner_id == learner_id)
+                .first()
+            )
+            if resource is not None:
+                return resource
+    exists = db.query(model.id).filter(model.id == resource_id).first()
+    if exists is None:
+        raise HTTPException(status_code=404, detail="resource not found")
     raise HTTPException(status_code=403, detail="access denied")
 
 
@@ -48,6 +78,22 @@ def require_owned_attempt(db: Session, attempt_id: str, learner_id: str) -> Atte
     )
     if attempt is not None:
         return attempt
+    # Allow anonymous→real learner transition (normal login flow)
+    raw = db.query(AttemptModel).filter(AttemptModel.attempt_id == attempt_id).first()
+    if raw is not None:
+        from app.db.repository import try_upgrade_anonymous_session
+        if try_upgrade_anonymous_session(db, raw.session_id, learner_id):
+            attempt = (
+                db.query(AttemptModel)
+                .join(SessionModel, AttemptModel.session_id == SessionModel.id)
+                .filter(AttemptModel.attempt_id == attempt_id, SessionModel.learner_id == learner_id)
+                .first()
+            )
+            if attempt is not None:
+                return attempt
+    exists = db.query(AttemptModel.attempt_id).filter(AttemptModel.attempt_id == attempt_id).first()
+    if exists is None:
+        raise HTTPException(status_code=404, detail="resource not found")
     raise HTTPException(status_code=403, detail="access denied")
 
 
@@ -66,9 +112,20 @@ def require_parent_attempt(
         .first()
     )
     if attempt is None:
-        if db.query(AttemptModel.id).filter(AttemptModel.attempt_id == attempt_id).first() is None:
+        # Allow anonymous→real learner transition (normal login flow)
+        raw = db.query(AttemptModel).filter(AttemptModel.attempt_id == attempt_id).first()
+        if raw is None:
             raise HTTPException(status_code=404, detail="resource not found")
-        raise HTTPException(status_code=403, detail="access denied")
+        from app.db.repository import try_upgrade_anonymous_session
+        if try_upgrade_anonymous_session(db, raw.session_id, learner_id):
+            attempt = (
+                db.query(AttemptModel)
+                .join(SessionModel, AttemptModel.session_id == SessionModel.id)
+                .filter(AttemptModel.attempt_id == attempt_id, SessionModel.learner_id == learner_id)
+                .first()
+            )
+        if attempt is None:
+            raise HTTPException(status_code=403, detail="access denied")
     if (quiz_id and attempt.quiz_id != quiz_id) or (exam_set_id and attempt.exam_set_id != exam_set_id):
         raise HTTPException(status_code=403, detail="access denied")
     return attempt

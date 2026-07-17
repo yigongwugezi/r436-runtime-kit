@@ -27,14 +27,14 @@ logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.middleware.auth import AuthContext, get_auth, reject_parent, validate_anonymous_learner_id
+from app.middleware.auth import AuthContext, get_auth, reject_parent, require_auth, validate_anonymous_learner_id
 
 from app.agents.conversation_agent import ConversationAgent
 from app.agents.diagnosis_agent import DiagnosisAgent
 from app.agents.multimodal_agent import MultimodalAgent
 from app.config import settings
 from app.db.engine import SessionLocal
-from app.db.models import AnswerRecordModel, DailyTaskModel, LearnerModel, LearningEventModel, PracticeQuestionModel, ResourceModel, SessionModel
+from app.db.models import AnswerRecordModel, DailyTaskModel, LearnerModel, LearningEventModel, PlanningDraftModel, PracticeQuestionModel, ResourceModel, SessionModel
 from app.db.repository import (
     get_bookmarked_ids,
     get_daily_tasks as repo_get_daily_tasks,
@@ -1945,7 +1945,12 @@ def get_chat_session(session_id: str, learnerId: str = "", auth: AuthContext = D
         session = db.get(SessionModel, session_id)
         learner_id = _request_learner_id(auth, learnerId)
         if session and session.learner_id and (not learner_id or session.learner_id != learner_id):
-            raise HTTPException(status_code=403, detail="session belongs to another learner")
+            # Allow anonymous→real learner transition (normal login flow)
+            if _is_session_anonymous(session.learner_id) and not _is_session_anonymous(learner_id or ""):
+                session.learner_id = learner_id
+                db.commit()
+            else:
+                raise HTTPException(status_code=403, detail="session belongs to another learner")
         messages = repo_get_messages(db, session_id)
         return _product_response(
             {
@@ -2017,7 +2022,12 @@ def delete_chat_session(session_id: str, learnerId: str = "", auth: AuthContext 
         session = db.get(SessionModel, session_id)
         learner_id = _request_learner_id(auth, learnerId)
         if session and session.learner_id and (not learner_id or session.learner_id != learner_id):
-            raise HTTPException(status_code=403, detail="session belongs to another learner")
+            # Allow anonymous→real learner transition (normal login flow)
+            if _is_session_anonymous(session.learner_id) and not _is_session_anonymous(learner_id or ""):
+                session.learner_id = learner_id
+                db.commit()
+            else:
+                raise HTTPException(status_code=403, detail="session belongs to another learner")
         ok = repo_delete_session(db, session_id)
         if not ok:
             return _product_response(
@@ -2285,6 +2295,16 @@ def _attach_personalization_metadata(
         pass  # best-effort: never block resource saving
 
 
+_ANONYMOUS_LEARNER_RE = re.compile(
+    r"^anon_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+
+
+def _is_session_anonymous(session_learner_id: str | None) -> bool:
+    """Return True when the session is currently owned by an anonymous learner."""
+    return bool(session_learner_id and _ANONYMOUS_LEARNER_RE.match(str(session_learner_id)))
+
+
 def _ensure_session_linked(
     session_id: str,
     subject_id: str = "",
@@ -2297,6 +2317,12 @@ def _ensure_session_linked(
 
     Handles race conditions gracefully: if a concurrent request already created
     the session, we fall back to an update instead of failing.
+
+    **Anonymous→real transition:** When a session was previously owned by an
+    anonymous learner (``anon_<uuid>``) and a real authenticated learner
+    accesses it, the session is transparently upgraded to the real identity.
+    This is the normal login flow — the anonymous session was created before
+    the user signed in and must not be rejected with 403.
     """
     if not subject_id and not learner_id:
         return
@@ -2309,7 +2335,12 @@ def _ensure_session_linked(
         if sess is not None:
             changed = False
             if learner_id and sess.learner_id and sess.learner_id != learner_id:
-                raise PermissionError("session belongs to another learner")
+                # Allow anonymous → real learner transition (normal login flow)
+                if _is_session_anonymous(sess.learner_id) and not _is_session_anonymous(learner_id):
+                    sess.learner_id = learner_id
+                    changed = True
+                else:
+                    raise PermissionError("session belongs to another learner")
             if learner_id and not sess.learner_id:
                 sess.learner_id = learner_id
                 changed = True
@@ -2338,7 +2369,11 @@ def _ensure_session_linked(
             if sess is not None:
                 changed = False
                 if learner_id and sess.learner_id and sess.learner_id != learner_id:
-                    raise PermissionError("session belongs to another learner")
+                    if _is_session_anonymous(sess.learner_id) and not _is_session_anonymous(learner_id):
+                        sess.learner_id = learner_id
+                        changed = True
+                    else:
+                        raise PermissionError("session belongs to another learner")
                 if learner_id and not sess.learner_id:
                     sess.learner_id = learner_id
                     changed = True
@@ -2518,7 +2553,10 @@ def build_profile(payload: dict[str, Any], auth: AuthContext = Depends(reject_pa
     """Trigger agent pipeline and build/refresh the student profile."""
     session_id = _payload_session_id(payload)
     subject_id = _payload_subject_id(payload)
-    _ensure_session_linked(session_id, subject_id=subject_id, learner_id=auth.learner_id)
+    try:
+        _ensure_session_linked(session_id, subject_id=subject_id, learner_id=auth.learner_id)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="session belongs to another learner")
     message = str(payload.get("message", "我想学习人工智能导论"))
 
     conversation_store.append_message(session_id, "user", message)
@@ -2539,7 +2577,10 @@ def update_profile_context(payload: dict[str, Any], auth: AuthContext = Depends(
     updates = payload.get("context")
     if not isinstance(updates, dict):
         raise HTTPException(status_code=400, detail="context required")
-    _ensure_session_linked(session_id, learner_id=auth.learner_id)
+    try:
+        _ensure_session_linked(session_id, learner_id=auth.learner_id)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="session belongs to another learner")
     profile_v2 = update_profile_v2_context(_profile_v2(session_id), updates)
     _save_profile_v2(session_id, profile_v2)
     return _product_response({"profileV2": profile_v2}, session_id=session_id, source="user_input")
@@ -2555,7 +2596,10 @@ def sync_profile_from_conversation(
     session_id = _payload_session_id(payload)
     subject_id = str(subject_id).strip()
     _require_matching_subject(session_id, subject_id)
-    _ensure_session_linked(session_id, subject_id=subject_id, learner_id=auth.learner_id)
+    try:
+        _ensure_session_linked(session_id, subject_id=subject_id, learner_id=auth.learner_id)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="session belongs to another learner")
     db = SessionLocal()
     try:
         messages = repo_get_messages(db, session_id)
@@ -2579,7 +2623,10 @@ def update_profile_self_report(payload: dict[str, Any], auth: AuthContext = Depe
     updates = payload.get("selfReport")
     if not isinstance(updates, dict):
         raise HTTPException(status_code=400, detail="selfReport required")
-    _ensure_session_linked(session_id, learner_id=auth.learner_id)
+    try:
+        _ensure_session_linked(session_id, learner_id=auth.learner_id)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="session belongs to another learner")
     profile_v2 = update_self_report(_profile_v2(session_id), updates)
     _save_profile_v2(session_id, profile_v2)
     return _product_response({"profileV2": profile_v2}, session_id=session_id, source="user_input")
@@ -2591,6 +2638,9 @@ def update_profile_fact(fact_key: str, payload: dict[str, Any], auth: AuthContex
     action = str(payload.get("action") or "").strip().lower()
     try:
         _ensure_session_linked(session_id, learner_id=auth.learner_id)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="session belongs to another learner")
+    try:
         profile_v2 = update_fact_control(
             _profile_v2(session_id), fact_key, action, payload.get("value"), str(payload.get("scope") or "") or None,
         )
@@ -2605,6 +2655,9 @@ def delete_profile_fact(fact_key: str, sessionId: str = "", auth: AuthContext = 
     session_id = _payload_session_id({"sessionId": sessionId})
     try:
         _ensure_session_linked(session_id, learner_id=auth.learner_id)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="session belongs to another learner")
+    try:
         profile_v2 = update_fact_control(_profile_v2(session_id), fact_key, "delete")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -4386,6 +4439,139 @@ def complete_daily_task(
         )
     finally:
         db.close()
+
+
+@router.get("/learning-path/drafts")
+def list_planning_drafts(
+    sessionId: str = "",
+    subjectId: str = "",
+    auth: AuthContext = Depends(get_auth),
+) -> dict[str, Any]:
+    """List planning drafts for the current session/subject.
+
+    Returns the latest draft for the given session+subject as ``draft``
+    and all learner drafts as ``drafts`` for the authenticated learner.
+    """
+    from app.db.repository import get_planning_draft_by_session, get_planning_drafts_for_learner
+    session_id = _resolve_session_id(sessionId, subjectId)
+    subject_id = str(subjectId).strip()
+
+    if auth.is_authenticated:
+        try:
+            _ensure_session_linked(session_id, subject_id=subject_id, learner_id=auth.learner_id)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail="session belongs to another learner") from exc
+
+    db = SessionLocal()
+    try:
+        latest = get_planning_draft_by_session(db, session_id, subject_id=subject_id)
+        all_drafts: list[dict] = []
+        if auth.is_authenticated:
+            drafts = get_planning_drafts_for_learner(db, auth.learner_id)
+            all_drafts = [_draft_to_dict(d) for d in drafts]
+        return {
+            "ok": True,
+            "draft": _draft_to_dict(latest) if latest else None,
+            "drafts": all_drafts,
+        }
+    finally:
+        db.close()
+
+
+@router.post("/learning-path/drafts")
+def upsert_planning_draft_endpoint(
+    payload: dict[str, Any],
+    auth: AuthContext = Depends(require_auth),
+) -> dict[str, Any]:
+    """Create or update a planning draft.
+
+    Fields accepted: sessionId, subjectId, topic, goal, currentLevel,
+    dailyTime, targetDuration, resourcePreferences, confirmed.
+    """
+    from app.db.repository import upsert_planning_draft, get_planning_draft_by_session
+    session_id = _payload_session_id(payload)
+    subject_id = _payload_subject_id(payload)
+
+    try:
+        _ensure_session_linked(session_id, subject_id=subject_id, learner_id=auth.learner_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="session belongs to another learner") from exc
+
+    import hashlib
+    draft_id_raw = f"draft_{session_id}_{subject_id or 'nosubj'}"
+    draft_id = hashlib.sha256(draft_id_raw.encode("utf-8")).hexdigest()[:32]
+
+    db = SessionLocal()
+    try:
+        confirmed = bool(payload.get("confirmed"))
+        draft = upsert_planning_draft(
+            db,
+            draft_id=draft_id,
+            learner_id=auth.learner_id,
+            session_id=session_id,
+            subject_id=subject_id,
+            topic=str(payload.get("topic", "")).strip(),
+            goal=str(payload.get("goal", "")).strip(),
+            current_level=str(payload.get("currentLevel", "")).strip(),
+            daily_time=str(payload.get("dailyTime", "")).strip(),
+            target_duration=str(payload.get("targetDuration", "")).strip(),
+            resource_preferences=payload.get("resourcePreferences") or [],
+            status="confirmed" if confirmed else "collecting",
+            confirmed_at=datetime.now(timezone.utc) if confirmed else None,
+        )
+        # Calculate completeness
+        fields = ["topic", "goal", "current_level", "daily_time", "target_duration"]
+        filled = sum(1 for f in fields if getattr(draft, f, ""))
+        total = len(fields)
+        completeness = {"filled": filled, "total": total,
+                        "percent": round(filled / total * 100) if total else 0}
+        return {"ok": True, "draft": _draft_to_dict(draft), "completeness": completeness}
+    finally:
+        db.close()
+
+
+@router.get("/learning-path/drafts/{draft_id}")
+def get_planning_draft_endpoint(
+    draft_id: str,
+    auth: AuthContext = Depends(get_auth),
+) -> dict[str, Any]:
+    """Get a single planning draft by ID."""
+    db = SessionLocal()
+    try:
+        draft = db.get(PlanningDraftModel, draft_id)
+        if draft is None:
+            return {"ok": True, "draft": None, "completeness": None}
+        # Ownership check
+        if auth.is_authenticated and draft.learner_id != auth.learner_id:
+            raise HTTPException(status_code=403, detail="access denied")
+        fields = ["topic", "goal", "current_level", "daily_time", "target_duration"]
+        filled = sum(1 for f in fields if getattr(draft, f, ""))
+        total = len(fields)
+        completeness = {"filled": filled, "total": total,
+                        "percent": round(filled / total * 100) if total else 0}
+        return {"ok": True, "draft": _draft_to_dict(draft), "completeness": completeness}
+    finally:
+        db.close()
+
+
+def _draft_to_dict(draft) -> dict[str, Any]:
+    """Serialize a PlanningDraftModel to the frontend PlanningDraft shape."""
+    return {
+        "draftId": draft.id,
+        "learnerId": draft.learner_id,
+        "sessionId": draft.session_id,
+        "subjectId": draft.subject_id or "",
+        "topic": draft.topic or "",
+        "goal": draft.goal or "",
+        "currentLevel": draft.current_level or "",
+        "dailyTime": draft.daily_time or "",
+        "targetDuration": draft.target_duration or "",
+        "resourcePreferences": draft.resource_preferences or [],
+        "status": draft.status or "collecting",
+        "createdAt": draft.created_at.isoformat() if draft.created_at else None,
+        "updatedAt": draft.updated_at.isoformat() if draft.updated_at else None,
+        "confirmedAt": draft.confirmed_at.isoformat() if draft.confirmed_at else None,
+    }
 
 
 @router.get("/learning-path/{raw_session_id}/daily-tasks")

@@ -38,8 +38,13 @@ def _session(payload: dict[str, Any], auth: AuthContext) -> tuple[str, str]:
     db = SessionLocal()
     try:
         row = db.get(SessionModel, session_id)
-        if row is not None and row.learner_id and row.learner_id != auth.learner_id:
-            raise HTTPException(status_code=403, detail="无权访问该任务")
+        if row is not None:
+            # Allow anonymous→real learner transition (normal login flow)
+            from app.db.repository import try_upgrade_anonymous_session
+            try_upgrade_anonymous_session(db, session_id, auth.learner_id)
+            db.refresh(row)
+            if row.learner_id and row.learner_id != auth.learner_id:
+                raise HTTPException(status_code=403, detail="无权访问该任务")
     finally:
         db.close()
     return session_id, subject_id

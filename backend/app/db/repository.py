@@ -7,6 +7,7 @@ transaction boundaries.
 
 from datetime import datetime, timedelta, timezone
 import logging
+import re
 from typing import Any
 import uuid
 
@@ -43,6 +44,44 @@ def _utcnow() -> datetime:
 
 # ── Session ──────────────────────────────────────────────────────────────
 
+_ANONYMOUS_LEARNER_RE = re.compile(
+    r"^anon_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+
+
+def _is_session_anonymous(session_learner_id: str | None) -> bool:
+    """Return True when the session is currently owned by an anonymous learner."""
+    return bool(session_learner_id and _ANONYMOUS_LEARNER_RE.match(str(session_learner_id)))
+
+
+def try_upgrade_anonymous_session(db: Session, session_id: str, learner_id: str) -> bool:
+    """Upgrade an anonymous session to a real learner identity.
+
+    When a session was previously owned by an anonymous learner
+    (``anon_<uuid>``) and a real authenticated learner accesses it,
+    this function transparently upgrades the session ownership.
+
+    Returns ``True`` if the session was upgraded, ``False`` otherwise.
+    Callers should re-query the session after a successful upgrade.
+    """
+    if not learner_id or _is_session_anonymous(learner_id):
+        return False
+    sess = db.get(SessionModel, session_id)
+    if sess is None:
+        return False
+    # Upgrade: NULL → real (session created before user logged in)
+    if not sess.learner_id:
+        sess.learner_id = learner_id
+        db.commit()
+        return True
+    # Upgrade: anonymous (anon_<uuid>) → real (normal login flow)
+    if _is_session_anonymous(sess.learner_id):
+        sess.learner_id = learner_id
+        db.commit()
+        return True
+    return False
+
+
 def get_or_create_session(
     db: Session,
     session_id: str,
@@ -74,7 +113,11 @@ def get_or_create_session(
             raise PermissionError("session requires a learner identity")
         if learner_id:
             if sess.learner_id and sess.learner_id != learner_id:
-                raise PermissionError("session belongs to another learner")
+                # Allow anonymous → real learner transition (normal login flow)
+                if _is_session_anonymous(sess.learner_id) and not _is_session_anonymous(learner_id):
+                    sess.learner_id = get_or_create_learner(db, learner_id).id
+                else:
+                    raise PermissionError("session belongs to another learner")
             if not sess.learner_id:
                 sess.learner_id = get_or_create_learner(db, learner_id).id
         if subject_id and not sess.subject_id:
