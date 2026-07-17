@@ -134,21 +134,15 @@ export default function KGGraph({
           lineWidth: 1.5,
           endArrow: true,
           radius: 8,
-        },
-        label: {
-          text: (d: any) => {
+          labelText: (d: any) => {
             const r = d.data?.relation;
             if (r === 'prerequisite') return '前置';
             if (r === 'contains') return '包含';
             if (r === 'related') return '关联';
             return '';
           },
-          fontSize: 9,
-          fill: '#94a3b8',
-          background: true,
-          backgroundFill: '#fff',
-          backgroundOpacity: 0.8,
-          padding: [2, 4],
+          labelFontSize: 9,
+          labelFill: '#94a3b8',
         },
         state: {
           highlighted: { stroke: '#2563eb', lineWidth: 2.5 },
@@ -199,7 +193,7 @@ export default function KGGraph({
       const match = nodes.find((n) => n.label.toLowerCase().includes(searchTerm.toLowerCase()));
       if (match) {
         graph.setElementState({ [match.id]: 'searched' });
-        graph.focusElement(match.id, { animation: true });
+        graph.focusElement(match.id, { duration: 300 });
       }
     } else if (selectedNodeId) {
       graph.setElementState({ [selectedNodeId]: 'selected' });

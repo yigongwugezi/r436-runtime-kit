@@ -69,15 +69,6 @@ export default function KGPreview({ graphData, className = '', height = 360 }: K
         })),
       },
       node: {
-        label: {
-          text: (d: any) => d.data?.label || d.id,
-          fontSize: 12,
-          fill: '#1f2937',
-          fontWeight: 500,
-          position: 'bottom',
-          offset: 6,
-          maxLines: 2,
-        },
         style: {
           size: (d: any) => 20 + (d.data?.importance || 2) * 4,
           fill: '#6366f1',
@@ -96,21 +87,15 @@ export default function KGPreview({ graphData, className = '', height = 360 }: K
           stroke: '#cbd5e1',
           lineWidth: 1.5,
           endArrow: true,
-        },
-        label: {
-          text: (d: any) => {
+          labelText: (d: any) => {
             const r = d.data?.relation;
             if (r === 'prerequisite') return '前置';
             if (r === 'contains') return '包含';
             if (r === 'related') return '关联';
             return '';
           },
-          fontSize: 9,
-          fill: '#94a3b8',
-          background: true,
-          backgroundFill: '#fff',
-          backgroundOpacity: 0.8,
-          padding: [2, 4],
+          labelFontSize: 9,
+          labelFill: '#94a3b8',
         },
       },
       behaviors: [],
