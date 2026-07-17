@@ -43,6 +43,7 @@ def main() -> None:
                 SessionModel(id="unbound-session", learner_id="learner-a", subject_id=None),
                 PersonalSubjectModel(id="ps-current", learner_id="learner-a", name="Current Subject"),
                 PersonalSubjectModel(id="ps-no-session", learner_id="learner-a", name="No Session Subject"),
+                PersonalSubjectModel(id="ps-foreign", learner_id="learner-b", name="Foreign Subject"),
                 LearningPathModel(
                     id="legacy-path",
                     session_id="legacy-session",
@@ -61,6 +62,31 @@ def main() -> None:
         )["data"]["subjects"]
         assert migrated[0]["id"] == legacy_subject_id
         assert any(item["id"] == legacy_subject_id for item in subjects.list_subjects(AuthContext(learner_id="learner-a"))["data"]["subjects"])
+
+        invalid_subjects = [
+            ("arbitrary-subject", "Arbitrary ID"),
+            ("subject_1700000000000_ab/c23", "Slash ID"),
+            (r"subject_1700000000000_ab\c23", "Backslash ID"),
+            ("subject_1700000000000_ab..23", "Dot Dot ID"),
+            (f"{legacy_subject_id} \n", "Whitespace ID"),
+            ("subject_" + "1" * 300, "Long ID"),
+            ("ps-foreign", "Formal ID"),
+        ]
+        invalid_migrated = subjects.migrate_subjects(
+            subjects.MigrateSubjectsRequest(subjects=[{"id": subject_id, "name": name} for subject_id, name in invalid_subjects]),
+            AuthContext(learner_id="learner-a"),
+        )["data"]["subjects"]
+        invalid_by_name = {item["name"]: item["id"] for item in invalid_migrated}
+        for source_id, name in invalid_subjects:
+            generated_id = invalid_by_name[name]
+            assert generated_id != source_id
+            assert generated_id.startswith("ps_")
+        db = factory()
+        try:
+            assert db.get(PersonalSubjectModel, "ps-foreign").learner_id == "learner-b"
+            assert invalid_by_name["Formal ID"] != "ps-foreign"
+        finally:
+            db.close()
 
         assert subjects.get_subject_session(legacy_subject_id, AuthContext(learner_id="learner-a"))["data"]["session_id"] == "legacy-session"
         assert subjects.get_subject_session("ps-current", AuthContext(learner_id="learner-a"))["data"]["session_id"] == "current-session"
