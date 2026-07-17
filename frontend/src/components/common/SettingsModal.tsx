@@ -320,7 +320,7 @@ export default function SettingsModal({ open, onClose }: {
               <SettingRow label="学习风格" description="推荐的学习资源类型偏好">
                 <Select value={prefs.learningStyle} options={[
                   { value: 'visual', label: '👁 视觉型（图表/导图）' },
-                  { value: 'reading', label: '📖 阅读型（讲义/文章）' },
+                  { value: 'reading', label: '📖 阅读型（文档/文章）' },
                   { value: 'practical', label: '💻 实践型（案例/代码）' },
                   { value: 'mixed', label: '🎯 混合型（自适应）' },
                 ]} onChange={v => updatePrefs({ learningStyle: v })} />

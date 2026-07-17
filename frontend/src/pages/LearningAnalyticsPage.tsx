@@ -160,7 +160,7 @@ export default function LearningAnalyticsPage() {
           <div className="space-y-3">
             {Object.entries(analytics.resourceTypeBreakdown).sort(([, a], [, b]) => (b as number) - (a as number)).slice(0, 6).map(([k, v]) => {
               const max = Math.max(...Object.values(analytics.resourceTypeBreakdown).map(Number));
-              const typeLabels: Record<string, string> = { lecture: '讲义', mindmap: '思维导图', quiz: '练习', reading: '阅读', case_study: '案例', video: '视频', ppt: 'PPT' };
+              const typeLabels: Record<string, string> = { lecture: '文档', mindmap: '思维导图', quiz: '练习', reading: '阅读', case_study: '案例', video: '视频', ppt: 'PPT' };
               return (
                 <div key={k} className="space-y-1.5">
                   <div className="flex items-center justify-between text-sm"><span className="text-surface-600">{typeLabels[k] || k}</span><span className="text-surface-500">{v as number}</span></div>

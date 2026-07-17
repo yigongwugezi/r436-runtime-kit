@@ -7,7 +7,7 @@ import { timeAgo } from '../../utils/format';
  * 事件类型标签映射
  * =================================================================== */
 const RESOURCE_TYPE_LABELS: Record<string, string> = {
-  lecture: '课程讲义',
+  lecture: '学习文档',
   mindmap: '思维导图',
   quiz: '练习题',
   reading: '拓展阅读',

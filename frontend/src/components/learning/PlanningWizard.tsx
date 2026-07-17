@@ -26,7 +26,7 @@ const PLANNING_FIELDS = [
   { key: 'currentLevel', label: '当前基础', placeholder: '例如：零基础、了解部分概念、有编程基础、系统学过', maxLen: 64 },
   { key: 'dailyTime', label: '每日时间', placeholder: '例如：90分钟、2小时', maxLen: 64 },
   { key: 'targetDuration', label: '计划周期', placeholder: '例如：8周、2个月', maxLen: 64 },
-  { key: 'resourcePreferences', label: '资源偏好', placeholder: '视频、讲义、练习、项目、思维导图', maxLen: 256 },
+  { key: 'resourcePreferences', label: '资源偏好', placeholder: '视频、文档、练习、项目、思维导图', maxLen: 256 },
 ] as const;
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -396,7 +396,7 @@ export default function PlanningWizard({ sessionId, subjectId, subjectName, prof
           const sourceLabel = SOURCE_LABELS[source] || '';
 
           if (key === 'resourcePreferences') {
-            const prefs = ['视频', '讲义', '练习', '项目', '思维导图'];
+            const prefs = ['视频', '文档', '练习', '项目', '思维导图'];
             const selected = draft?.resourcePreferences || [];
             return (
               <div key={key}>

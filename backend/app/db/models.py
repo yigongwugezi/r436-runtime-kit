@@ -320,7 +320,8 @@ class ResourceModel(Base):
     tags: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     difficulty: Mapped[str] = mapped_column(String(16), default="easy")  # easy|medium|hard
     estimated_minutes: Mapped[int] = mapped_column(Integer, default=20)
-    format: Mapped[str] = mapped_column(String(16), default="text")   # text|diagram|video|code|quiz
+    format: Mapped[str] = mapped_column(String(16), default="text")   # text|diagram|video|code|quiz|graph_data
+    content_format: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
 
     # ── Structured content (type-specific) ────────────────────────────
     mermaid_def: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)

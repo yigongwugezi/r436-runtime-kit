@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { BrainCircuit, CheckCircle2, ChevronRight, Clapperboard, Clock, FileQuestion, FileText, Image as ImageIcon, Loader2, Presentation, Sparkles, XCircle } from 'lucide-react';
-import { startGeneralResourceGeneration, type GeneralResourceType } from '../api/resources';
+import { BrainCircuit, CheckCircle2, ChevronRight, Clapperboard, Clock, FileQuestion, FileText, Image as ImageIcon, Loader2, Presentation, Sparkles, X, XCircle } from 'lucide-react';
+import { startGeneralResourceGeneration, getPptTemplates, type GeneralResourceType, type PptTemplate } from '../api/resources';
 import { cancelWorkflow, consumeWorkflowEvents, readWorkflow, retryWorkflow, type WorkflowState } from '../api/workflows';
 import { getCurrentLearner } from '../store/authStore';
 import { useChatStore } from '../store/chatStore';
@@ -20,7 +20,7 @@ import {
 type TaskEntry = WorkflowState & { resourceType: GeneralResourceType; reusedExisting?: boolean };
 
 const resourceTypes: Array<{ id: GeneralResourceType; label: string; icon: typeof FileText; description: string }> = [
-  { id: 'lecture', label: '课程讲义', icon: FileText, description: '结构化的知识讲解' },
+  { id: 'lecture', label: '学习文档', icon: FileText, description: '结构化的知识讲解' },
   { id: 'mindmap', label: '思维导图', icon: BrainCircuit, description: '可渲染的知识结构图' },
   { id: 'quiz', label: '练习题库', icon: FileQuestion, description: '含答案与解析的自测题' },
   { id: 'practice', label: '实操案例', icon: FileText, description: '含代码示例的实践任务' },
@@ -77,6 +77,9 @@ export default function ResourceGenerationPage() {
   const [workflows, setWorkflows] = useState<Record<string, TaskEntry>>({});
   const [genError, setGenError] = useState('');
   const [progressExpanded, setProgressExpanded] = useState(true);
+  const [pptTemplates, setPptTemplates] = useState<PptTemplate[]>([]);
+  const [selectedTemplate, setSelectedTemplate] = useState<string>('');
+  const [showTemplatePicker, setShowTemplatePicker] = useState(false);
   const controllers = useRef(new Map<string, AbortController>());
   const pollingTimers = useRef(new Map<string, ReturnType<typeof setInterval>>());
   const restoring = useRef(new Set<string>());
@@ -200,7 +203,16 @@ export default function ResourceGenerationPage() {
     }
   }, [bumpDataVersion, putTask, scopeFor, sessionId, startPolling]);
 
-  /** Cleanup polling timers on unmount. */
+  useEffect(() => {
+    if (selectedTypes.includes('ppt')) {
+      getPptTemplates().then((res) => {
+        if (res.templates?.length) setPptTemplates(res.templates);
+      }).catch(() => {});
+    } else {
+      setPptTemplates([]);
+      setSelectedTemplate('');
+    }
+  }, [selectedTypes]);
   useEffect(() => {
     return () => {
       pollingTimers.current.forEach((timerId) => clearInterval(timerId));
@@ -297,10 +309,12 @@ export default function ResourceGenerationPage() {
   const handleGenerate = async () => {
     if (!sessionId || !prompt.trim() || !selectedTypes.length || activeTasks.length) return;
     setGenError(''); setProgressExpanded(true);
+    const genOptions: Record<string, unknown> = {};
+    if (selectedTemplate) genOptions.templateId = selectedTemplate;
     try {
       const started = await startGeneralResourceGeneration({
         sessionId, learnerId: getCurrentLearner()?.id, subjectId, pathId: path?.id || '', stageId: '', chapterId: '', sectionId: '', topic: prompt.trim(), resourceTypes: selectedTypes,
-        difficulty: 'medium', operation: 'generate', mode: 'general_resource_generation', profileSnapshotVersion: '', generationOptions: {},
+        difficulty: 'medium', operation: 'generate', mode: 'general_resource_generation', profileSnapshotVersion: '', generationOptions: genOptions,
       });
       if (started.tasks.length !== selectedTypes.length) throw new Error('任务未完整创建');
       for (const task of started.tasks) {
@@ -339,7 +353,7 @@ export default function ResourceGenerationPage() {
       <div className="grid grid-cols-3 gap-6">
         <div className="col-span-2 space-y-6">
           <div className="bg-white rounded-2xl p-6 shadow-soft"><label className="block text-sm font-medium text-surface-700 mb-3">描述你的学习需求</label><textarea value={prompt} onChange={(event) => updatePrompt(event.target.value)} maxLength={500} className="w-full h-32 px-4 py-3 bg-surface-50 border border-surface-200 rounded-xl" /><div className="flex justify-between mt-3 text-xs text-surface-400"><span>支持 Markdown 输入</span><span>{prompt.length}/500</span></div></div>
-          <div className="bg-white rounded-2xl p-6 shadow-soft"><div className="flex justify-between mb-4"><h3 className="font-semibold text-surface-700">选择资源类型</h3><span className="text-xs text-primary-600">已选择 {selectedTypes.length}/3 种</span></div><div className="grid grid-cols-2 gap-3">{resourceTypes.map((type) => { const Icon = type.icon; const selected = selectedTypes.includes(type.id); return <button key={type.id} onClick={() => toggleType(type.id)} disabled={!selected && selectedTypes.length >= 3} className={`p-4 rounded-xl border-2 text-left ${selected ? 'border-primary-500 bg-primary-50' : 'border-surface-200 bg-surface-50'} disabled:opacity-50`}><Icon size={20} className="mb-2 text-primary-600" /><p className="text-sm font-medium">{type.label}</p><p className="text-xs text-surface-500 mt-1">{type.description}</p></button>; })}</div></div>
+          <div className="bg-white rounded-2xl p-6 shadow-soft"><div className="flex justify-between mb-4"><h3 className="font-semibold text-surface-700">选择资源类型</h3><span className="text-xs text-primary-600">已选择 {selectedTypes.length}/3 种</span></div><div className="grid grid-cols-2 gap-3">{resourceTypes.map((type) => { const Icon = type.icon; const selected = selectedTypes.includes(type.id); const isPpt = type.id === 'ppt'; return <div key={type.id} className="relative"><button onClick={() => toggleType(type.id)} disabled={!selected && selectedTypes.length >= 3} className={`w-full p-4 rounded-xl border-2 text-left ${selected ? 'border-primary-500 bg-primary-50' : 'border-surface-200 bg-surface-50'} disabled:opacity-50`}><Icon size={20} className="mb-2 text-primary-600" /><p className="text-sm font-medium">{type.label}</p><p className="text-xs text-surface-500 mt-1">{type.description}</p></button>{isPpt && selected && pptTemplates.length > 0 && <button onClick={(e) => { e.stopPropagation(); setShowTemplatePicker(true); }} className="mt-2 w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border border-primary-200 bg-primary-50 text-primary-600 text-xs font-medium hover:bg-primary-100 transition-colors"><Presentation size={14} />{selectedTemplate ? (pptTemplates.find(t => t.templateId === selectedTemplate)?.name || '已选模板') : '选择模板'}</button>}</div>; })}</div></div>
           <button onClick={handleGenerate} disabled={!prompt.trim() || !selectedTypes.length || activeTasks.length > 0} className="w-full flex items-center justify-center gap-3 px-6 py-4 rounded-xl font-semibold text-lg bg-gradient-to-r from-primary-600 to-accent-600 text-white disabled:bg-surface-100 disabled:text-surface-400 disabled:cursor-not-allowed"><Sparkles size={22} />{activeTasks.length ? '任务进行中…' : `开始生成（${selectedTypes.length} 种资源）`}</button>
         </div>
         <div className="space-y-4">
@@ -376,6 +390,23 @@ export default function ResourceGenerationPage() {
               </div>
             )}
           </div>
+          {selectedTypes.includes('ppt') && pptTemplates.length > 0 && (
+            <div className="bg-surface-50 rounded-2xl p-5">
+              <h4 className="text-sm font-medium text-surface-700 mb-3">PPT 模板</h4>
+              <select
+                value={selectedTemplate}
+                onChange={(e) => setSelectedTemplate(e.target.value)}
+                className="w-full px-3 py-2 bg-white border border-surface-200 rounded-lg text-sm text-surface-700"
+              >
+                <option value="">智能推荐（默认）</option>
+                {pptTemplates.map((t) => (
+                  <option key={t.templateId} value={t.templateId}>
+                    {t.name} {t.style ? `(${t.style})` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="bg-surface-50 rounded-2xl p-5">
             <h4 className="text-sm font-medium text-surface-700 mb-3">生成记录</h4>
             {completedResources.length > 0 ? (
@@ -420,6 +451,26 @@ export default function ResourceGenerationPage() {
           {genError && <p className="p-3 rounded-xl bg-error-50 text-error-600 text-sm">{genError}</p>}
         </div>
       </div>
+      {/* Template picker modal */}
+      {showTemplatePicker && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowTemplatePicker(false)}>
+          <div className="bg-white rounded-2xl shadow-elevated max-w-lg w-full max-h-[70vh] overflow-y-auto p-5 mx-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-surface-800">选择 PPT 模板</h3>
+              <button onClick={() => setShowTemplatePicker(false)} className="p-1 hover:bg-surface-100 rounded-lg"><X size={18} /></button>
+            </div>
+            <div className="space-y-2">
+              <button onClick={() => { setSelectedTemplate(''); setShowTemplatePicker(false); }} className={`w-full text-left px-4 py-3 rounded-xl border ${!selectedTemplate ? 'border-primary-500 bg-primary-50' : 'border-surface-200'} transition-colors`}><p className="text-sm font-medium text-surface-800">智能推荐（默认）</p><p className="text-xs text-surface-500 mt-0.5">由系统自动选择最合适的模板</p></button>
+              {pptTemplates.map((t) => (
+                <button key={t.templateId} onClick={() => { setSelectedTemplate(t.templateId); setShowTemplatePicker(false); }} className={`w-full text-left px-4 py-3 rounded-xl border ${selectedTemplate === t.templateId ? 'border-primary-500 bg-primary-50' : 'border-surface-200'} transition-colors`}>
+                  <p className="text-sm font-medium text-surface-800">{t.name}</p>
+                  <div className="flex items-center gap-2 mt-1"><span className="text-[11px] text-surface-400">{t.style || '通用'}</span>{t.color && <span className="text-[11px] text-surface-400">· {t.color}</span>}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

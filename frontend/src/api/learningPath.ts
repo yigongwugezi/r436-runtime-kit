@@ -171,3 +171,52 @@ export async function listRevisions(sessionId: string): Promise<{ revisions: any
   const { data } = await client.get(`/api/learning-path/${sessionId}/revisions`);
   return data?.data || data;
 }
+
+// ── Document Download API ──
+
+// Get auth token from localStorage (mirrors client.ts logic)
+function _getDownloadToken(): string {
+  try {
+    return localStorage.getItem('edu_token') || '';
+  } catch {
+    return '';
+  }
+}
+
+/** 下载学习路径文档（DOCX 或 PDF 格式） */
+export async function downloadLearningPathDocument(params: {
+  sessionId: string;
+  format: 'docx' | 'pdf';
+  subjectId?: string;
+}): Promise<void> {
+  const { sessionId, format, subjectId } = params;
+  const query = new URLSearchParams({ format });
+  if (subjectId) query.set('subjectId', subjectId);
+
+  const token = _getDownloadToken();
+
+  const response = await fetch(`/api/learning-path/${sessionId}/download?${query}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+
+  if (!response.ok) {
+    const errBody = await response.text().catch(() => '');
+    throw new Error(errBody || `下载失败 (${response.status})`);
+  }
+
+  const blob = await response.blob();
+  const disposition = response.headers.get('Content-Disposition') || '';
+  const match = disposition.match(/filename\*?=(?:UTF-8'')?([^;\s]+)/i);
+  const filename = match
+    ? decodeURIComponent(match[1])
+    : `学习路径_${format === 'docx' ? '文档' : 'PDF'}.${format}`;
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}

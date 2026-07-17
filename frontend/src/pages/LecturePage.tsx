@@ -4,7 +4,7 @@ import { useLearningPath } from '../hooks/useLearningPath';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
 import { useLectureStore } from '../store/lectureStore';
-import { ChevronLeft, ChevronRight, Sparkles, MessageCircle, Send, Brain, BookOpen, ArrowLeft, ArrowRight, Target, Lightbulb, Layers, Clock, GraduationCap, Hash, CheckCircle2, Check, X, Loader2, HelpCircle, RefreshCw, FileText } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Sparkles, MessageCircle, Send, Brain, BookOpen, ArrowLeft, ArrowRight, Target, Lightbulb, Layers, Clock, GraduationCap, Hash, CheckCircle2, Check, X, Loader2, HelpCircle, RefreshCw, FileText, FileDown } from 'lucide-react';
 import Markdown from '../utils/markdown';
 import MermaidDiagram from '../utils/mermaid';
 import { generateSectionQuiz, submitQuizAttempt } from '../api/assessment';
@@ -127,6 +127,34 @@ export default function LecturePage() {
 
   // ── 从 store 读取持久化状态 ──
   const store = useLectureStore();
+  // ── Section download handler ──
+  const handleSectionDownload = async (fmt) => {
+    const sid = activeSectionId;
+    if (!sid) return;
+    setDownloadLoading(fmt);
+    try {
+      const token = (() => { try { return localStorage.getItem('edu_token') || ''; } catch { return ''; } })();
+      const resp = await fetch(`/api/sections/${sid}/lecture/download?format=${fmt}&sessionId=${sessionId || ''}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!resp.ok) throw new Error(`下载失败 (${resp.status})`);
+      const blob = await resp.blob();
+      const disposition = resp.headers.get('Content-Disposition') || '';
+      const match = disposition.match(/filename\*?=(?:UTF-8'')?([^;\s]+)/i);
+      const filename = match ? decodeURIComponent(match[1]) : `文档_${fmt}.${fmt}`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error('下载失败:', e);
+    } finally {
+      setDownloadLoading('');
+    }
+  };
+
   const [activeSectionId, setActiveSectionId] = useState(sectionId || '');
 
   // ── 本地临时状态 ──
@@ -139,7 +167,8 @@ export default function LecturePage() {
   const [rightTab, setRightTab] = useState<'tutor' | 'resources' | 'toc' | 'generate'>('tutor');
   const [genAll, setGenAll] = useState(false);
   const [prevLecture, setPrevLecture] = useState('');           // 控制返回按钮显示
-  const originalLectureRef = useRef('');                         // 永远指向原始讲义，不会被子卡片覆盖
+  const [downloadLoading, setDownloadLoading] = useState('');
+  const originalLectureRef = useRef('');                         // 永远指向原始文档，不会被子卡片覆盖
   const [showRightPanel, setShowRightPanel] = useState(true);
   const [quotedText, setQuotedText] = useState('');                 // 学员划词引用
   const [quotePos, setQuotePos] = useState<{x:number;y:number}|null>(null);
@@ -229,9 +258,9 @@ export default function LecturePage() {
       setQuizResults([]); setQuizTotalScore(null);
       setQuizSuggestion(''); setQuizWeakPoints([]);
     }
-    // 如果缓存的讲义是卡片内容（阅读/导图/实操/视频），清掉强制重拉原始讲义
+    // 如果缓存的文档是卡片内容（阅读/导图/实操/视频），清掉强制重拉原始文档
     const cached = store.lectureCache[cacheKey];
-    if (cached && (cached.includes('点击上方「返回讲义」回到正文') || cached.trimStart().startsWith('```mermaid'))) {
+    if (cached && (cached.includes('点击上方「返回文档」回到正文') || cached.trimStart().startsWith('```mermaid'))) {
       store.clearLecture(cacheKey);
     }
     const planned = currentSection?.contentType as ContentType | undefined;
@@ -302,7 +331,7 @@ export default function LecturePage() {
   // Resolved content: textbook content in textbook mode, generated lecture otherwise
   const effectiveLectureContent = isTextbookMode ? textbookLectureContent : lecture;
 
-  // ── 加载已有讲义（优先读缓存）──
+  // ── 加载已有文档（优先读缓存）──
   useEffect(() => {
     if (!activeSectionId || !sessionId) return;
     const key = `${sessionId}:${activeSectionId}`;
@@ -685,7 +714,7 @@ export default function LecturePage() {
         </div>
       </div>
 
-      {/* ══ 中：讲义 + 小测 ══ */}
+      {/* ══ 中：文档 + 小测 ══ */}
       <div className="flex-1 flex flex-col min-w-0 bg-surface-50/50">
         {/* 顶部工具栏 */}
         <div className="bg-white border-b border-surface-200">
@@ -703,7 +732,7 @@ export default function LecturePage() {
                     setPrevLecture('');
                   }}
                     className="flex items-center gap-1.5 text-xs text-surface-500 hover:text-surface-700 mb-1 transition-colors">
-                    <ArrowLeft size={14} />返回讲义
+                    <ArrowLeft size={14} />返回文档
                   </button>
                 )}
                 <h2 className="text-lg font-bold text-surface-900">{currentSection?.title || '选择小节'}</h2>
@@ -745,6 +774,22 @@ export default function LecturePage() {
                       </button>
                     ))}
                   </div>
+                )}
+                {lecture && (
+                  <button onClick={() => handleSectionDownload('docx')} disabled={!!downloadLoading}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-surface-200 text-surface-500 hover:bg-surface-50 hover:text-surface-700 text-xs transition-all disabled:opacity-50"
+                    title="下载文档 (DOCX)">
+                    <FileDown size={14} />
+                    {downloadLoading === 'docx' ? '…' : 'DOCX'}
+                  </button>
+                )}
+                {lecture && (
+                  <button onClick={() => handleSectionDownload('pdf')} disabled={!!downloadLoading}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-surface-200 text-surface-500 hover:bg-surface-50 hover:text-surface-700 text-xs transition-all disabled:opacity-50"
+                    title="下载文档 (PDF)">
+                    <FileDown size={14} />
+                    {downloadLoading === 'pdf' ? '…' : 'PDF'}
+                  </button>
                 )}
                 <button onClick={() => setShowRightPanel(!showRightPanel)}
                   className={`w-8 h-8 rounded-lg border transition-colors flex items-center justify-center ${showRightPanel ? 'bg-violet-50 border-violet-200 text-violet-500' : 'bg-white border-surface-200 text-surface-400 hover:bg-surface-50'}`}
@@ -1126,7 +1171,7 @@ export default function LecturePage() {
                     </div>
                   </div>
                 ) : !chatLoading && (
-                  <p className="text-[11px] text-surface-400 px-1">点击快捷提问或输入问题，AI 结合讲义和知识点为你解答</p>
+                  <p className="text-[11px] text-surface-400 px-1">点击快捷提问或输入问题，AI 结合文档和知识点为你解答</p>
                 )}
                 {chatLoading && (
                   <div className="flex items-center gap-2 text-xs text-surface-500 px-1"><div className="w-3 h-3 border-2 border-surface-300 border-t-transparent rounded-full animate-spin" />思考中…</div>
@@ -1172,7 +1217,7 @@ export default function LecturePage() {
               onViewContent={(c: any) => {
                 if (c.status !== 'ready') return;
                 const sk = `${sessionId || ''}:${activeSectionId}`;
-                // 首次离开讲义时保存原始讲义（连续点卡片不会覆盖）
+                // 首次离开文档时保存原始文档（连续点卡片不会覆盖）
                 if (!prevLecture) {
                   originalLectureRef.current = store.lectureCache[sk] || '';
                 }
@@ -1189,17 +1234,17 @@ export default function LecturePage() {
                 } else if (c.type === 'lecture' && c.content) {
                   store.setLecture(sk, c.content);
                 } else if (c.type === 'mindmap' && c.content) {
-                  store.setLecture(sk, `> 🧠 以下为**思维导图**。点击上方「返回讲义」回到正文。\n\n\`\`\`mermaid\n${c.content}\n\`\`\``);
+                  store.setLecture(sk, `> 🧠 以下为**思维导图**。点击上方「返回文档」回到正文。\n\n\`\`\`mermaid\n${c.content}\n\`\`\``);
                 } else if (c.type === 'reading' && c.content) {
-                  store.setLecture(sk, `> 📖 以下为**拓展阅读**内容，与讲义互补。点击上方「返回讲义」回到正文。\n\n${c.content}`);
+                  store.setLecture(sk, `> 📖 以下为**拓展阅读**内容，与文档互补。点击上方「返回文档」回到正文。\n\n${c.content}`);
                 } else if (c.type === 'practice' && c.content) {
-                  store.setLecture(sk, `> 💻 以下为**实操案例**内容。点击上方「返回讲义」回到正文。\n\n${c.content}`);
+                  store.setLecture(sk, `> 💻 以下为**实操案例**内容。点击上方「返回文档」回到正文。\n\n${c.content}`);
                 } else if (c.type === 'video' && c.content) {
                   const isVideoUrl = /\.(mp4|webm)(\?|$)/i.test(c.content) || c.content.startsWith('/api/multimodal/file/');
                   if (isVideoUrl) {
-                    store.setLecture(sk, `> 🎬 教学视频已生成\n>\n> [▶ 点击播放视频](${c.content})\n>\n> 点击上方「返回讲义」回到正文。`);
+                    store.setLecture(sk, `> 🎬 教学视频已生成\n>\n> [▶ 点击播放视频](${c.content})\n>\n> 点击上方「返回文档」回到正文。`);
                   } else {
-                    store.setLecture(sk, `> 🎬 以下为**教学视频**内容。点击上方「返回讲义」回到正文。\n\n${c.content}`);
+                    store.setLecture(sk, `> 🎬 以下为**教学视频**内容。点击上方「返回文档」回到正文。\n\n${c.content}`);
                   }
                 }
               }}

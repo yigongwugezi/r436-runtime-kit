@@ -28,7 +28,7 @@ export const mockProfile: StudentProfile = {
     { topic: '损失函数设计', mastery: 55, source: ['diagnosis'] },
   ],
   preferences: {
-    preferredFormats: ['文本讲义', '视频', '思维导图'],
+    preferredFormats: ['文本文档', '视频', '思维导图'],
     paceMinutes: 30,
     difficulty: 'intermediate',
     explainStyle: 'diagram',

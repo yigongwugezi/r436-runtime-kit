@@ -274,21 +274,23 @@ function ResourceDetailView({
                 <Play size={18} /> 点击播放视频
               </a>
             ) : resource.type === 'mindmap' ? (
-              ((() => {
+              (() => {
                 const gd = resource.graphData;
-                if (!gd) return null;
-                return (
-                  <div className="bg-white rounded-2xl shadow-soft p-5">
-                    <h3 className="text-sm font-semibold text-surface-700 mb-3">知识结构图</h3>
-                    <KGPreview graphData={gd} />
-                    <div className="mt-3 text-center">
-                      <button onClick={() => nav(`/kg?resourceId=${resource.id}`)} className="text-xs text-primary-600 hover:text-primary-700 font-medium">
-                        查看完整图谱 →
-                      </button>
+                if (gd && gd.nodes?.length) {
+                  return (
+                    <div className="bg-white rounded-2xl shadow-soft p-5">
+                      <h3 className="text-sm font-semibold text-surface-700 mb-3">知识结构图</h3>
+                      <KGPreview graphData={gd} />
+                      <div className="mt-3 text-center">
+                        <button onClick={() => nav(`/kg?resourceId=${resource.id}`)} className="text-xs text-primary-600 hover:text-primary-700 font-medium">
+                          查看完整图谱 →
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                );
-              })())
+                  );
+                }
+                return <Markdown content={resource.content || '暂无内容'} />;
+              })()
             ) : resource.type === 'ppt' ? (
               <div className="space-y-4">
                 {resource.content && (
@@ -727,7 +729,7 @@ export default function ResourceLibrary() {
          resource={detailResource}
          sessionId={detailSessionId}
          onBack={handleBack}
-         backLabel={lectureReturn ? '返回当前讲义' : '返回资源库'}
+         backLabel={lectureReturn ? '返回当前文档' : '返回资源库'}
          subjectId={detailSubjectId}
         onBookmark={handleBookmark}
         onComplete={handleComplete}

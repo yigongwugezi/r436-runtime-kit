@@ -819,12 +819,10 @@ export default function LearningPathPage() {
             }}
           />
         </div>
-      ) : (
-      /* Main content - 两栏，撑满剩余高度 */
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 flex-1 min-h-0">
-        {/* 左侧：学习阶段 */}
-        <div className="lg:col-span-2 bg-white rounded-2xl p-6 shadow-soft flex flex-col">
-          {isDetailView ? (
+      ) : viewMode === 'timeline' ? (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 flex-1 min-h-0">
+          <div className="lg:col-span-2">
+            {isDetailView ? (
             <div className="animate-fade-in flex-1 overflow-auto">
               <button onClick={handleBackToGraph} className="flex items-center gap-1.5 text-sm text-surface-500 hover:text-primary-600 transition-colors mb-4">
                 <ArrowLeft size={16} />
@@ -1087,50 +1085,48 @@ export default function LearningPathPage() {
               </div>
             </div>
           )}
-        </div>
-
-        {/* 右侧：概览卡片 */}
-        <div className="bg-white rounded-2xl p-6 shadow-soft flex flex-col justify-center">
-          <h3 className="font-display text-lg font-semibold text-surface-800 mb-4">学习概览</h3>
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-surface-500">总体进度</span>
-              <span className="text-sm font-semibold text-primary-600">{progress}%</span>
-            </div>
-            <div className="relative h-2 bg-surface-100 rounded-full overflow-hidden">
-              <div className="absolute inset-y-0 left-0 bg-gradient-to-r from-primary-500 to-accent-500 rounded-full" style={{ width: `${progress}%` }} />
-            </div>
-            <div className="grid grid-cols-2 gap-3 mt-4">
-              <div className="bg-surface-50 rounded-xl p-4 text-center">
-                <p className="text-2xl font-bold text-surface-800">{stages.length}</p>
-                <p className="text-xs text-surface-400 mt-1">学习阶段</p>
-              </div>
-              <div className="bg-surface-50 rounded-xl p-4 text-center">
-                <p className="text-2xl font-bold text-surface-800">{totalNodes}</p>
-                <p className="text-xs text-surface-400 mt-1">知识点</p>
-              </div>
-              <div className="bg-success-50 rounded-xl p-4 text-center">
-                <p className="text-2xl font-bold text-success-600">{masteredNodes}</p>
-                <p className="text-xs text-success-500 mt-1">已掌握</p>
-              </div>
-              <div className="bg-primary-50 rounded-xl p-4 text-center">
-                <p className="text-2xl font-bold text-primary-600">{totalDays}</p>
-                <p className="text-xs text-primary-500 mt-1">预计天数</p>
-              </div>
-            </div>
-            <div className="mt-4 pt-4 border-t border-surface-100">
+          </div>
+          <div className="bg-white rounded-2xl p-6 shadow-soft flex flex-col justify-center">
+            <h3 className="font-display text-lg font-semibold text-surface-800 mb-4">学习概览</h3>
+            <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <span className="text-sm text-surface-500 flex items-center gap-1.5">
-                  <Clock size={14} className="text-primary-400" />
-                  今日学习时长
-                </span>
-                <span className="text-lg font-bold text-primary-600">{formatDuration(path?.todayDuration || 0)}</span>
+                <span className="text-sm text-surface-500">总体进度</span>
+                <span className="text-sm font-semibold text-primary-600">{progress}%</span>
+              </div>
+              <div className="relative h-2 bg-surface-100 rounded-full overflow-hidden">
+                <div className="absolute inset-y-0 left-0 bg-gradient-to-r from-primary-500 to-accent-500 rounded-full" style={{ width: `${progress}%` }} />
+              </div>
+              <div className="grid grid-cols-2 gap-3 mt-4">
+                <div className="bg-surface-50 rounded-xl p-4 text-center">
+                  <p className="text-2xl font-bold text-surface-800">{stages.length}</p>
+                  <p className="text-xs text-surface-400 mt-1">学习阶段</p>
+                </div>
+                <div className="bg-surface-50 rounded-xl p-4 text-center">
+                  <p className="text-2xl font-bold text-surface-800">{totalNodes}</p>
+                  <p className="text-xs text-surface-400 mt-1">知识点</p>
+                </div>
+                <div className="bg-success-50 rounded-xl p-4 text-center">
+                  <p className="text-2xl font-bold text-success-600">{masteredNodes}</p>
+                  <p className="text-xs text-success-500 mt-1">已掌握</p>
+                </div>
+                <div className="bg-primary-50 rounded-xl p-4 text-center">
+                  <p className="text-2xl font-bold text-primary-600">{totalDays}</p>
+                  <p className="text-xs text-primary-500 mt-1">预计天数</p>
+                </div>
+              </div>
+              <div className="mt-4 pt-4 border-t border-surface-100">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-surface-500 flex items-center gap-1.5">
+                    <Clock size={14} className="text-primary-400" />
+                    今日学习时长
+                  </span>
+                  <span className="text-lg font-bold text-primary-600">{formatDuration(path?.todayDuration || 0)}</span>
+                </div>
               </div>
             </div>
           </div>
         </div>
-      </div>
-      )}
+      ) : null}
     </div>
   );
 }

@@ -34,7 +34,7 @@ const CLARIFICATION_ACTIONS = [
     label: '推荐学习资源',
     icon: BookOpen,
     prompt: '帮我推荐学习资源',
-    description: '获取讲义、练习、思维导图',
+    description: '获取文档、练习、思维导图',
     color: 'from-emerald-500 to-green-600',
     bg: 'bg-emerald-50 hover:bg-emerald-100',
     textColor: 'text-emerald-700',

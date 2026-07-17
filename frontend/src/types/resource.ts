@@ -4,7 +4,7 @@
 
 /** 资源类型 — 10 种资源 */
 export type ResourceType =
-  | 'lecture'     // 课程讲义
+  | 'lecture'     // 学习文档
   | 'mindmap'     // 思维导图
   | 'quiz'        // 练习题
   | 'reading'     // 拓展阅读

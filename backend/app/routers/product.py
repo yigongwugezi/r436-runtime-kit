@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import hashlib
 import logging
+import os
 import re
 import time
 import threading
@@ -24,8 +25,9 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse, StreamingResponse
+from urllib.parse import quote
 
 from app.middleware.auth import AuthContext, get_auth, reject_parent, require_auth, validate_anonymous_learner_id
 
@@ -500,6 +502,33 @@ def _source_label(source: str) -> str:
     return _SOURCE_MAP.get(source, "system_inferred")
 
 
+def _build_graph_data(item: dict) -> dict | None:
+    """Build graphData from a resource item, trying all possible sources."""
+    if item.get("type") != "mindmap":
+        return None
+    content = item.get("content", "") or ""
+    mermaid = item.get("mermaidDef", item.get("mermaid_def", "")) or ""
+    title = item.get("title", "") or ""
+
+    # 1. Try JSON graph_data from content
+    gd = _try_parse_graph_data(content)
+    if gd:
+        return gd
+
+    # 2. Try converting mermaid_def
+    if mermaid:
+        gd = _mermaid_to_graph_data(mermaid, title)
+        if gd:
+            return gd
+
+    # 3. Try converting content as mermaid
+    gd = _mermaid_to_graph_data(content, title)
+    if gd and gd.get("nodes") and len(gd["nodes"]) > 1:
+        return gd
+
+    return None
+
+
 def _try_parse_graph_data(content: str) -> dict | None:
     """Try to parse content as graph_data JSON. Returns None if not valid."""
     import json
@@ -625,7 +654,7 @@ def _to_resource(
         "estimatedMinutes": item.get("estimatedMinutes", 20),
         "format": "diagram" if content_fmt == "mermaid" else ("graph_data" if content_fmt == "graph_data" else ("code" if item.get("type") == "practice" else "text")),
         "mermaidDef": (item.get("mermaid_def") or item.get("mermaidDef")) if content_fmt == "mermaid" else None,
-        "graphData": _try_parse_graph_data(content) if content_fmt == "graph_data" else _mermaid_to_graph_data(item.get("mermaid_def") or item.get("mermaidDef") or (content if item.get("type") == "mindmap" else ""), item.get("title", "")) if item.get("type") == "mindmap" else None,
+        "graphData": _build_graph_data(item),
         "contentFormat": content_fmt,
         "codeBlocks": item.get("code_blocks"),
         "questions": item.get("questions") or item.get("items"),
@@ -3033,7 +3062,7 @@ def get_resources(
             "estimatedMinutes": item.get("estimatedMinutes", item.get("estimated_minutes", 20)),
             "format": item.get("format", "text"),
             "mermaidDef": item.get("mermaidDef", item.get("mermaid_def")),
-            "graphData": _try_parse_graph_data(item.get("content", "")) or _mermaid_to_graph_data(item.get("mermaidDef", item.get("mermaid_def", "")), item.get("title", "")) if item.get("type") == "mindmap" else None,
+            "graphData": _build_graph_data(item),
             "contentFormat": item.get("content_format", item.get("contentFormat", "markdown")),
             "codeBlocks": item.get("codeBlocks", item.get("code_blocks")),
             "questions": item.get("questions"),
@@ -3575,7 +3604,7 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
     safe_topic = re.sub(r"[()\[\]{}\"'\n\r]", " ", topic).strip()[:80] or "Learning topic"
     task_id = str(getattr(workflow_task, "task_id", "") or "")
     labels = {
-        "lecture": "课程讲义", "mindmap": "思维导图", "quiz": "练习题库", "ppt": "PPT演示",
+        "lecture": "学习文档", "mindmap": "思维导图", "quiz": "练习题库", "ppt": "PPT演示",
         "video": "教学视频", "animation": "教学动画", "manim": "Manim 动画", "reading": "拓展阅读",
         "practice": "实操案例", "image": "知识图解",
     }
@@ -3721,7 +3750,24 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
                     ppt_outline = result["result"].get("outline", [])
                     logger.info("PPT generated via Presenton: %s", pptx_path)
         except Exception as e:
-            logger.warning("Presenton failed, falling back to ppt_generator: %s", e)
+            logger.warning("Presenton failed: %s", e)
+
+        # Try iFlytek (讯飞智文) second — no Docker needed
+        if not pptx_path:
+            try:
+                from app.services.iflytek_ppt_provider import IflytekPPTProvider
+                provider = IflytekPPTProvider()
+                if provider.is_configured():
+                    ctx = {"topic": topic}
+                    gen_opts = request.get("generationOptions") or {}
+                    if gen_opts.get("templateId"):
+                        ctx["template_id"] = gen_opts["templateId"]
+                    result = provider.run(ctx)
+                    if result.get("status") == "success" and result.get("result", {}).get("filepath"):
+                        pptx_path = result["result"]["filepath"]
+                        logger.info("PPT generated via iFlytek: %s", pptx_path)
+            except Exception as e:
+                logger.warning("iFlytek failed: %s", e)
 
         if not pptx_path:
             from app.services.ppt_generator import generate_pptx
@@ -3836,7 +3882,7 @@ def _legacy_generate_resource(payload: dict[str, Any], auth: AuthContext = Depen
     parts = [f"请为「{topic}」"]
     if resource_type:
         type_labels = {
-            "lecture": "生成一份课程讲义",
+            "lecture": "生成一份学习文档",
             "mindmap": "生成一份思维导图（Mermaid mindmap 格式）",
             "quiz": "生成一套练习题（含答案和解析）",
             "reading": "生成一份拓展阅读材料",
@@ -4352,6 +4398,119 @@ def generate_learning_path(payload: dict[str, Any], auth: AuthContext = Depends(
     result = _run_agents(message, session_id=session_id, plan_mode=plan_mode, path_mode=path_mode)
     path = _to_learning_path(result)
     return _product_response({"path": path}, session_id=session_id, source="agent")
+
+
+@router.get("/learning-path/{session_id}/download")
+def download_learning_path(
+    session_id: str,
+    format: str = Query("docx"),  # "docx" | "pdf"
+    subjectId: str = Query(default=""),
+    auth: AuthContext = Depends(require_auth),
+) -> FileResponse:
+    """下载学习路径文档（DOCX 或 PDF 格式）。
+
+    流程：
+    1. 获取学习路径数据（复用 get_learning_path 内部逻辑）
+    2. 生成 DOCX/PDF 文档
+    3. 返回 FileResponse 触发浏览器下载
+    """
+    try:
+        resolved_id = _resolve_session_id(session_id, subjectId)
+        subject_id = str(subjectId).strip()
+
+        # ── 1. Fetch path data (mirrors get_learning_path logic) ──
+        path_data = None
+        day_plan = None
+
+        # 1a. Try DB
+        db = SessionLocal()
+        try:
+            from app.db.repository import get_latest_learning_path
+            db_path = get_latest_learning_path(db, resolved_id)
+            if db_path:
+                stages = _raw_stages_to_nodes(db_path.stages or [])
+                stages = _apply_node_progress(stages, resolved_id)
+                all_nodes = [n for s in stages for n in s.get("nodes", [])]
+                mastered = sum(1 for n in all_nodes if n.get("status") == "mastered")
+                overall = round(mastered / len(all_nodes) * 100) if all_nodes else 0
+                path_data = {
+                    "id": db_path.id,
+                    "title": f"{db_path.course_name or ''}个性化学习路径",
+                    "courseName": db_path.course_name or "",
+                    "courseId": db_path.course_id or "",
+                    "description": db_path.description or "",
+                    "stages": stages,
+                    "estimatedDays": db_path.estimated_days or 14,
+                    "overallProgress": overall,
+                }
+        finally:
+            db.close()
+
+        # 1b. Fallback to conversation_store
+        if not path_data:
+            from app.services.conversation_state import conversation_store
+            state = conversation_store.get(resolved_id)
+            if state and state.last_result:
+                result = state.last_result
+                path_data = {
+                    "id": f"path_{resolved_id}",
+                    "title": result.get("course", {}).get("course_name", "") + "个性化学习路径",
+                    "courseName": result.get("course", {}).get("course_name", ""),
+                    "description": result.get("diagnosis", {}).get("recommended_strategy", ""),
+                    "stages": _raw_stages_to_nodes(result.get("learning_path", [])),
+                    "estimatedDays": result.get("estimatedDays", 14),
+                    "overallProgress": 0,
+                }
+                # Day plan from day_planner output
+                days = result.get("day_plan", {})
+                if days:
+                    day_plan = days
+                # Also try state's last_result day_plan
+                day_plan_state = state.last_result.get("day_plan")
+                if day_plan_state:
+                    day_plan = day_plan_state
+
+        if not path_data or not path_data.get("stages"):
+            raise HTTPException(status_code=404, detail="学习路径不存在")
+
+        # ── 2. Generate document ──
+        from app.services.document_generator import (
+            generate_learning_path_docx,
+            generate_learning_path_pdf,
+        )
+
+        format_lower = format.strip().lower()
+        course_name = path_data.get("courseName") or "learning_path"
+        safe_name = "".join(c for c in course_name if c.isalnum() or c in " _-").strip() or "path"
+        date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+
+        if format_lower == "docx":
+            file_path = generate_learning_path_docx(path_data, day_plan)
+            media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            filename = f"学习路径_{safe_name}_{date_str}.docx"
+        elif format_lower == "pdf":
+            file_path = generate_learning_path_pdf(path_data, day_plan)
+            media_type = "application/pdf"
+            filename = f"学习路径_{safe_name}_{date_str}.pdf"
+        else:
+            raise HTTPException(status_code=400, detail=f"不支持的格式: {format}")
+
+        return FileResponse(
+            file_path,
+            media_type=media_type,
+            filename=filename,
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.warning(
+            "download_learning_path failed for sessionId=%s", session_id, exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail="文档生成失败，请重试")
 
 
 @router.patch("/learning-path/nodes/{node_id}")
@@ -6478,7 +6637,7 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
     if workflow_task is not None:
         from app.services.workflow_tasks import workflow_task_manager
         workflow_task_manager.check_cancelled(workflow_task)
-        workflow_task_manager.emit(workflow_task, "stage_started", "content_generation", "running", label="生成讲义正文")
+        workflow_task_manager.emit(workflow_task, "stage_started", "content_generation", "running", label="生成文档正文")
     try:
         raw = client.chat(
             messages=[{"role": "user", "content": prompt + kb_context + req_context}],
@@ -6511,7 +6670,7 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
         )
 
     if workflow_task is not None:
-        workflow_task_manager.emit(workflow_task, "preview_updated", "content_validation", "completed", label="讲义内容已生成，正在检查", text_delta=raw)
+        workflow_task_manager.emit(workflow_task, "preview_updated", "content_validation", "completed", label="文档内容已生成，正在检查", text_delta=raw)
         workflow_task_manager.check_cancelled(workflow_task)
 
     # 图文并茂：为每个 ## 主章节生成星火配图
@@ -6525,7 +6684,7 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
         resource_dict = {
             "id": resource_id,
             "type": "lecture",
-            "title": f"讲义：{section_title}",
+            "title": f"文档：{section_title}",
             "description": section_goal or "",
             "content": raw,
             "format": "text",
@@ -6544,7 +6703,7 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
 
     lecture_data = {
         "id": resource_id,
-        "title": f"讲义：{section_title}",
+        "title": f"文档：{section_title}",
         "content": raw,
         "sectionId": section_id,
         "chapterId": chapter_id,
@@ -6557,6 +6716,105 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
 @router.post("/sections/{section_id}/lecture/generate")
 def generate_section_lecture(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     return _generate_section_lecture(section_id, payload)
+
+
+@router.get("/sections/{section_id}/lecture/download")
+def download_section_lecture(
+    section_id: str,
+    format: str = Query("docx"),  # "docx" | "pdf"
+    sessionId: str = Query(default=""),
+    auth: AuthContext = Depends(require_auth),
+) -> FileResponse:
+    """下载小节学习文档（DOCX 或 PDF 格式）。
+
+    将已有的讲义/学习内容导出为可下载的文档文件。
+    """
+    try:
+        db = SessionLocal()
+        try:
+            query = db.query(ResourceModel).filter(
+                ResourceModel.related_section_id == section_id,
+                ResourceModel.type == "lecture",
+            )
+            if sessionId:
+                query = query.filter(ResourceModel.session_id == sessionId)
+            lecture = query.order_by(ResourceModel.created_at.desc()).first()
+
+            if not lecture or not lecture.content or _is_profile_json(lecture.content or ""):
+                raise HTTPException(status_code=404, detail="文档内容不存在，请先生成")
+        finally:
+            db.close()
+
+        from app.services.document_generator import (
+            generate_learning_path_docx,
+            generate_learning_path_pdf,
+        )
+
+        title = lecture.title or "学习文档"
+        content_text = lecture.content or ""
+        chapter_title = lecture.related_chapter_title or ""
+        stage_title = lecture.related_stage_title or ""
+
+        # Build a simple path-like structure for the document generator
+        path_data = {
+            "courseName": stage_title or title,
+            "title": title,
+            "description": chapter_title or "",
+            "stages": [{
+                "id": lecture.related_stage_id or "s0",
+                "title": stage_title or "学习内容",
+                "order": 1,
+                "chapters": [{
+                    "id": lecture.related_chapter_id or "c0",
+                    "title": chapter_title or title,
+                    "sections": [{
+                        "title": title,
+                        "goal": "",
+                        "estimatedMinutes": 0,
+                        "status": "available",
+                        "knowledgePoints": [],
+                    }]
+                }]
+            }]
+        }
+
+        # Add the markdown content as the description
+        if content_text:
+            path_data["stages"][0]["chapters"][0]["sections"][0]["goal"] = content_text[:200]
+            # Store full content for the document body
+            path_data["_content_markdown"] = content_text
+
+        format_lower = format.strip().lower()
+        safe_name = "".join(c for c in title if c.isalnum() or c in " _-").strip() or "document"
+        date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+
+        if format_lower == "docx":
+            file_path = generate_learning_path_docx(path_data, day_plan=None)
+            media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            filename = f"{safe_name}_{date_str}.docx"
+        elif format_lower == "pdf":
+            file_path = generate_learning_path_pdf(path_data, day_plan=None)
+            media_type = "application/pdf"
+            filename = f"{safe_name}_{date_str}.pdf"
+        else:
+            raise HTTPException(status_code=400, detail=f"不支持的格式: {format}")
+
+        return FileResponse(
+            file_path,
+            media_type=media_type,
+            filename=filename,
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.warning(
+            "download_section_lecture failed for sectionId=%s", section_id, exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail="文档下载失败，请重试")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -6618,7 +6876,7 @@ mindmap
 - 只背复杂度结论，没有说明操作位置。
 - 混淆访问、查找、插入和删除。
 - 忽略数据规模变化对操作成本的影响。"""
-    detail = f"讲义当前重点：{excerpt}" if excerpt else context
+    detail = f"文档当前重点：{excerpt}" if excerpt else context
     return f"""## {section_title} 概念讲解
 
 {topic}需要从定义、操作方式和适用场景三个角度理解。先明确数据如何组织，再分析每种操作需要访问或移动多少数据。
@@ -6970,7 +7228,7 @@ def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
 - 小节：{section_title}
 - 目标：{section_goal}
 - 知识点：{kp_names}
-{chr(10) + '讲义片段：' + chr(10) + lecture_excerpt if lecture_excerpt else ""}
+{chr(10) + '文档片段：' + chr(10) + lecture_excerpt if lecture_excerpt else ""}
 
 学生问题：{question}{diagram_hint}
 
@@ -7808,7 +8066,7 @@ def _recommend_and_generate_v2(session_id: str, subject_id: str = "") -> dict[st
     # Category C: AI generated resources — group by resource type
     if gen_results:
         type_groups: dict[str, list[dict]] = {}
-        gen_labels = {"lecture": "课程讲义", "mindmap": "思维导图", "quiz": "练习题库", "reading": "拓展阅读", "practice": "实操案例"}
+        gen_labels = {"lecture": "学习文档", "mindmap": "思维导图", "quiz": "练习题库", "reading": "拓展阅读", "practice": "实操案例"}
         for item in gen_results:
             rtype = item.get("type", "lecture")
             type_groups.setdefault(rtype, []).append(item)
@@ -8092,3 +8350,15 @@ def update_conversation_facts(payload: dict[str, Any]) -> dict[str, Any]:
             state.facts[key] = value
     return {"ok": True, "facts": dict(state.facts)}
     return {"facts": dict(state.facts), "rich_facts": state.rich_facts}
+
+
+@router.get("/ppt/templates")
+def get_ppt_templates(auth: AuthContext = Depends(reject_parent)):
+    """Return available PPT templates from 讯飞智文."""
+    pay_type = os.environ.get("AIPPT_PAY_TYPE", "free")
+    try:
+        from app.services.iflytek_ppt_provider import IflytekPPTProvider
+        templates = IflytekPPTProvider.get_template_list(pay_type=pay_type)
+        return {"templates": templates}
+    except Exception as e:
+        return {"templates": [], "error": str(e)}

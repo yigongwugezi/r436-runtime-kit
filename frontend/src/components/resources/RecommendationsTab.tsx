@@ -34,7 +34,7 @@ const WEB_TYPE_LABELS: Record<string, string> = {
 };
 
 const GEN_TYPE_LABELS: Record<string, string> = {
-  lecture: '课程讲义', mindmap: '思维导图', quiz: '练习题库', reading: '拓展阅读', practice: '实操案例',
+  lecture: '学习文档', mindmap: '思维导图', quiz: '练习题库', reading: '拓展阅读', practice: '实操案例',
 };
 
 // ──画像摘要卡片（复用）─────────────────────────────────────────────

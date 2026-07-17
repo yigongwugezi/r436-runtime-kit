@@ -286,7 +286,7 @@ def _runner(workflow_type: str, payload: dict[str, Any], auth: AuthContext):
             "profile_sync": "提取对话中的画像事实",
             "profile_rebuild": "重建学习画像",
             "learning_path_generation": "规划学习路径",
-            "lecture_generation": "生成讲义内容",
+            "lecture_generation": "生成文档内容",
             "general_resource_generation": "生成指定类型的学习资源",
         }[workflow_type])
 

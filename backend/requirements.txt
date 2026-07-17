@@ -30,3 +30,7 @@ python-pptx>=1.0.2,<2.0.0
 
 # ── Content Safety Engine ─────────────────────────────────────────────
 pyahocorasick>=2.0,<3.0
+
+# ── Document export (DOCX / PDF) ─────────────────────────────────────
+python-docx>=1.1.2,<2.0.0
+fpdf2>=2.8.0,<3.0.0

@@ -544,6 +544,7 @@ def upsert_resource(
         difficulty=resource_data.get("difficulty", "easy"),
         estimated_minutes=resource_data.get("estimated_minutes") or resource_data.get("estimatedMinutes", 20),
         format=resource_data.get("format", "text"),
+        content_format=resource_data.get("content_format") or resource_data.get("contentFormat"),
         mermaid_def=resource_data.get("mermaid_def") or resource_data.get("mermaidDef"),
         code_blocks=resource_data.get("code_blocks") or resource_data.get("codeBlocks"),
         questions=resource_data.get("questions"),

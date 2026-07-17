@@ -354,7 +354,7 @@ export default function SettingsPage() {
     { name: 'KnowledgeAgent', label: '知识检索', desc: '检索课程知识库' },
     { name: 'DiagnosisAgent', label: '诊断分析', desc: '诊断知识短板' },
     { name: 'PlannerAgent', label: '路径规划', desc: '生成个性化路径' },
-    { name: 'ResourceAgent', label: '资源生成', desc: '生成讲义/练习/导图' },
+    { name: 'ResourceAgent', label: '资源生成', desc: '生成文档/练习/导图' },
     { name: 'ReviewAgent', label: '质量检查', desc: '校验内容质量' },
   ];
 
@@ -479,7 +479,7 @@ export default function SettingsPage() {
             <SettingRow label="学习风格" description="推荐的学习资源类型偏好">
               <Select value={prefs.learningStyle} options={[
                 { value: 'visual', label: '👁 视觉型（图表/导图）' },
-                { value: 'reading', label: '📖 阅读型（讲义/文章）' },
+                { value: 'reading', label: '📖 阅读型（文档/文章）' },
                 { value: 'practical', label: '💻 实践型（案例/代码）' },
                 { value: 'mixed', label: '🎯 混合型（自适应）' },
               ]} onChange={v => updatePrefs({ learningStyle: v })} />

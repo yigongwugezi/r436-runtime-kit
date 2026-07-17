@@ -204,6 +204,19 @@ export async function importResourcesFromKb(params: {
   return data;
 }
 
+export interface PptTemplate {
+  templateId: string;
+  name: string;
+  style?: string;
+  color?: string;
+  preview?: string;
+}
+
+export async function getPptTemplates(): Promise<{ templates: PptTemplate[] }> {
+  const { data } = await client.get('/api/ppt/templates');
+  return data;
+}
+
 // ── Recommend-v2: 联网搜索 + AI 生成 + DB 推荐，三路并行 ─────────────
 
 export interface WebSearchResultItem {

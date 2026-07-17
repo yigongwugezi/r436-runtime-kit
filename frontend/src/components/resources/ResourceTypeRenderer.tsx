@@ -119,7 +119,7 @@ function DocRenderer({ resource, type }: Props & { type: 'lecture' | 'reading' }
             <span className="text-2xl">{isLecture ? '📖' : '📚'}</span>
             <div>
               <p className={`text-sm font-semibold ${isLecture ? 'text-blue-700' : 'text-emerald-700'}`}>
-                {isLecture ? '课程讲义' : '拓展阅读'}
+                {isLecture ? '学习文档' : '拓展阅读'}
               </p>
               <p className="text-xs text-surface-500 mt-0.5">
                 {resource.title} · 约 {Math.ceil(content.length / 500)} 分钟阅读

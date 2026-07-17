@@ -417,7 +417,7 @@ function MarkdownLectureView({ content, onComplete }: Props) {
       ) : (
         <div className="bg-white rounded-2xl shadow-soft p-10 text-center">
           <BookOpen size={40} className="text-surface-300 mx-auto mb-3" />
-          <p className="text-surface-500 text-sm">点击上方「生成讲义」按钮生成本节内容</p>
+          <p className="text-surface-500 text-sm">点击上方「生成文档」按钮生成本节内容</p>
         </div>
       )}
 

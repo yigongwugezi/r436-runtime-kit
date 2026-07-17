@@ -21,7 +21,7 @@ export const DIMENSION_COLORS = [
 
 /** 资源类型中文标签 */
 export const RESOURCE_TYPE_LABELS: Record<string, string> = {
-  lecture: '课程讲义',
+  lecture: '学习文档',
   mindmap: '思维导图',
   quiz: '练习题',
   reading: '拓展阅读',
