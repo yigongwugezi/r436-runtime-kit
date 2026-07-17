@@ -53,6 +53,7 @@ from app.db.repository import (
     save_profile_snapshot,
     save_user_preferences,
     toggle_bookmark,
+    upsert_learning_path,
     update_task_completion as repo_update_task_completion,
     delete_session as repo_delete_session,
 )
@@ -4372,8 +4373,16 @@ def enable_profile_extraction(payload: dict[str, Any]) -> dict[str, Any]:
     return _product_response({"ok": True}, session_id=session_id)
 
 
-@router.post("/learning-path/generate")
-def generate_learning_path(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
+@router.get("/learning-path/validate-course")
+def validate_course(courseName: str = "") -> dict[str, Any]:
+    """Validate local course-name input without claiming catalog membership."""
+    normalized = courseName.strip()
+    valid = bool(normalized) and len(normalized) <= 120 and not any(ord(char) < 32 for char in normalized)
+    return {"valid": valid, "normalizedCourseName": normalized if valid else "", "reason": None if valid else "请输入不超过 120 个字符的课程名称"}
+
+
+def _generate_learning_path(payload: dict[str, Any], auth: AuthContext) -> dict[str, Any]:
+    """Run the canonical planner path and persist only a non-empty result."""
     session_id = _payload_session_id(payload)
     user_message = str(payload.get("userMessage", "")).strip()
     course_id = str(payload.get("courseId", "")).strip()
@@ -4383,21 +4392,42 @@ def generate_learning_path(payload: dict[str, Any], auth: AuthContext = Depends(
     state = conversation_store.get(session_id)
     plan_mode = str(payload.get("planMode", "")).strip()
     path_mode = str(payload.get("pathMode", "")).strip()
-
-    if user_message:
-        message = user_message
-        if course_id:
-            selected = course_catalog.get_course(course_id)
-            if selected:
-                message = (
-                    f"目标课程：{selected.get('course_name', course_id)}。{message}"
-                )
-    else:
-        message = conversation_store.profile_prompt(state, latest_message="请生成学习路径")
-
-    result = _run_agents(message, session_id=session_id, plan_mode=plan_mode, path_mode=path_mode)
+    message = user_message or conversation_store.profile_prompt(state, latest_message="请生成学习路径")
+    result = _run_agents(
+        message,
+        session_id=session_id,
+        agents_filter=["profile_agent", "planner_agent"],
+        plan_mode=plan_mode,
+        path_mode=path_mode,
+    )
+    result["session_id"] = session_id
     path = _to_learning_path(result)
-    return _product_response({"path": path}, session_id=session_id, source="agent")
+    if not path.get("stages"):
+        error = RuntimeError("learning path generation produced no stages")
+        error.error_code = "LEARNING_PATH_UNAVAILABLE"
+        error.safe_error_message = "路径生成服务暂不可用，未保存空路径。"
+        raise error
+
+    path["id"] = f"path_{session_id}"
+    path["courseId"] = course_id or str(result.get("course_id", ""))
+    db = SessionLocal()
+    try:
+        saved = upsert_learning_path(db, session_id, {
+            "id": path["id"], "course_id": path["courseId"], "course_name": path["courseName"],
+            "description": path["description"], "stages": result.get("learning_path", []),
+            "overallProgress": path["overallProgress"], "estimatedDays": path["estimatedDays"],
+        })
+    finally:
+        db.close()
+    path["id"] = saved.id
+    return _product_response({"path": path, "pathId": saved.id, "generated": True}, session_id=session_id, subject_id=subject_id, source="agent")
+
+
+@router.post("/learning-path/generate")
+def generate_learning_path(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
+    from app.routers.workflows import _start
+    task, reused_existing = _start("learning_path_generation", payload, auth)
+    return _product_response({"taskId": task.task_id, "status": task.status, "reusedExisting": reused_existing}, session_id=task.session_scope, subject_id=task.subject_scope, source="workflow")
 
 
 @router.get("/learning-path/{session_id}/download")

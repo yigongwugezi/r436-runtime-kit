@@ -1,11 +1,11 @@
 // @ts-nocheck
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useChatPanel } from '../components/layout/AppLayout';
 import { useLearningPath } from '../hooks/useLearningPath';
 import { PlayCircle, BookOpen, Code2, FileCheck, Lock, CheckCircle2, Circle, Loader2, ChevronRight, Zap, Target, ArrowLeft, FileText, Brain, Calendar, ExternalLink, Clock, ClipboardList, Plus, AlertCircle, LayoutGrid } from 'lucide-react';
 import { listExamSets, generateExamSet } from '../api/assessment';
-import { generateLearningPath, validateCourse, enableProfileExtraction, planningChat, listPlanningDrafts, type PlanningDraft } from '../api/learningPath';
+import { validateCourse, enableProfileExtraction, planningChat, listPlanningDrafts, type PlanningDraft } from '../api/learningPath';
 import { useProfile } from '../hooks/useProfile';
 import { useChatStore } from '../store/chatStore';
 import DayPlanView from '../components/learning/DayPlanView';
@@ -191,7 +191,7 @@ const NODE_BOX_HEIGHT = 56;
 export default function LearningPathPage() {
   const nav = useNavigate();
   const chat = useChatPanel();
-  const { path, loading, error, fetchPath } = useLearningPath();
+  const { path, loading, error, fetchPath, generatePath, generationWorkflow } = useLearningPath();
   const { profileV2 } = useProfile();
   const subject = profileV2?.subject_context || {};
   // Settings
@@ -385,22 +385,24 @@ export default function LearningPathPage() {
   const ss = (k: string) => statusStyle[k] || _def;
   const nb = (k: string) => nodeBorder[k] || 'bg-surface-50 border-surface-200';
 
-  const handleValidateCourse = async (name: string) => {
-    setCourseName(name);
-    if (!name.trim()) { setCourseValid(false); setCourseSuggestions([]); return; }
-    try {
-      const res = await validateCourse(name.trim());
-      if (res.valid && res.exact) {
-        setCourseName(res.exact);
-        setCourseId(res.courseId || '');
-        setCourseValid(true);
+  const validationRequestRef = useRef(0);
+  useEffect(() => {
+    const normalized = courseName.trim();
+    if (!normalized) { setCourseValid(false); setCourseSuggestions([]); return; }
+    const request = ++validationRequestRef.current;
+    const timer = window.setTimeout(async () => {
+      try {
+        const res: any = await validateCourse(normalized);
+        if (request !== validationRequestRef.current) return;
+        setCourseValid(!!res.valid);
         setCourseSuggestions([]);
-      } else {
-        setCourseValid(false);
-        setCourseSuggestions(res.suggestions || []);
-      }
-    } catch { setCourseValid(false); }
-  };
+        if (res.valid && res.normalizedCourseName && res.normalizedCourseName !== courseName) setCourseName(res.normalizedCourseName);
+      } catch { if (request === validationRequestRef.current) setCourseValid(false); }
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [courseName]);
+
+  const handleValidateCourse = (name: string) => { setCourseName(name); setCourseId(''); };
 
 
 
@@ -576,9 +578,8 @@ export default function LearningPathPage() {
             去对话收集信息
           </button>
           <button onClick={() => {
-            const sid = useChatStore.getState().dataSessionId || sessionId || '';
-            generateLearningPath({
-              sessionId: sid,
+            generatePath({
+              subjectId: subject.subject_id || '',
               planMode: planMode === 'focus' ? 'focus' : '',
               pathMode: planMode === 'daily' ? 'daily' : 'textbook',
               totalDays: initTotalDays,
@@ -586,11 +587,12 @@ export default function LearningPathPage() {
               dynamicAdjust: dynamicAdjust,
               reviewEnabled: reviewEnabled,
               userMessage: [courseName && '学习' + courseName, '规划模式：' + planMode, '总天数：' + initTotalDays + '天'].filter(Boolean).join('。'),
-            }).then(() => fetchPath()).catch(e => setInitError(e?.message || '生成失败'));
+            }).then(path => { if (!path) setInitError('生成失败'); }).catch(e => setInitError(e?.message || '生成失败'));
           }}
+            disabled={generationWorkflow?.status === 'running'}
             className="flex-1 py-3 bg-primary-600 text-white rounded-xl font-medium hover:bg-primary-700 transition-colors text-sm flex items-center justify-center gap-2"
           >
-            <Zap size={16} />直接生成路径
+            {generationWorkflow?.status === 'running' ? <Loader2 size={16} className="animate-spin" /> : <Zap size={16} />} {generationWorkflow?.status === 'running' ? '正在生成路径' : '直接生成路径'}
           </button>
         </div>
       </div>
