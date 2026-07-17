@@ -306,7 +306,7 @@ export default function PlanningWizard({ sessionId, subjectId, subjectName, prof
           <div className="px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-600">{task.safe_error_message}</div>
         )}
         {isTerminal && task.status === 'completed' && (
-          <button onClick={() => task.result?.data?.path?.id && onPathGenerated(task.result.pathId)}
+          <button onClick={() => task.result?.data?.path?.id && onPathGenerated(task.result.data.path.id)}
             className="px-6 py-2.5 bg-primary-600 text-white rounded-xl font-medium hover:bg-primary-700 transition-colors">
             查看学习路径
           </button>

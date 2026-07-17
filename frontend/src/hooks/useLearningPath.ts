@@ -97,7 +97,7 @@ export function useLearningPath() {
     }
   }, [sessionId, subjectId]);
 
-  const generatePath = useCallback(async (params: { subjectId?: string; targetTopics?: string[] }) => {
+  const generatePath = useCallback(async (params: { subjectId?: string; targetTopics?: string[]; planMode?: string; pathMode?: string; totalDays?: number; weekends?: boolean; dynamicAdjust?: boolean; reviewEnabled?: boolean; userMessage?: string }) => {
     setLoading(true); setError(null);
     try {
       const started = await startWorkflow('learning_path_generation', { ...params, sessionId, subjectId: params.subjectId || subjectId });

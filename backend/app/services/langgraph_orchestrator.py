@@ -1161,7 +1161,7 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
             except Exception:
                 _collecting = False
 
-            if _collecting:
+            if _collecting and not (_caller_plan_mode or _caller_path_mode):
                 # 画像收集模式：不触发规划器，退回聊天让 persona 收集信息
                 state["intent"] = "none"
                 logger.info("path_planning_info_mode=True, overriding plan intent to chat for session=%s",

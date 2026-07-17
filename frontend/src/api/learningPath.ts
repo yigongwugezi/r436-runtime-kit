@@ -28,7 +28,7 @@ export async function updateNodeProgress(
 }
 
 /** 验证课程名称 */
-export async function validateCourse(courseName: string): Promise<{ exact: string | null; suggestions: string[]; valid: boolean; courseId?: string }> {
+export async function validateCourse(courseName: string): Promise<{ valid: boolean; normalizedCourseName: string; reason: string | null }> {
   const { data } = await client.get('/api/learning-path/validate-course', { params: { courseName } });
   return data;
 }
