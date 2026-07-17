@@ -182,6 +182,91 @@ class ProfileSnapshotModel(Base):
     session: Mapped["SessionModel"] = relationship("SessionModel", back_populates="profile_snapshots")
 
 
+# ── Diagnosis Snapshot (spec §4.1) ──────────────────────────────────────
+
+
+class DiagnosisSnapshotModel(Base):
+    """Persistent, versioned diagnosis snapshot — the unified fact source
+    for Profile, Analytics, and Resource.
+
+    Each new DiagnosisAgent run for a given (learner_id, subject_id)
+    creates a new row with an incremented version number.  Previous
+    snapshots are marked ``superseded`` but never deleted, providing
+    a full audit trail.
+
+    Status lifecycle:  generating → ready | failed   ;   ready → superseded
+    """
+
+    __tablename__ = "diagnosis_snapshots"
+
+    diagnosis_snapshot_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    learner_id: Mapped[str] = mapped_column(String(64), index=True)
+    subject_id: Mapped[str] = mapped_column(String(64), index=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(16), default="generating")
+    # generating | ready | needs_review | failed | superseded
+
+    mastery_levels: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    weaknesses: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    strengths: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    confidence: Mapped[float | None] = mapped_column(nullable=True, default=None)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+
+    source_attempt_ids: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    source_event_ids: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    evidence_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    generated_by: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    supersedes_snapshot_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None,
+    )
+    active_task_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+# ── Diagnosis Evidence (spec §4.2) ──────────────────────────────────────
+
+
+class DiagnosisEvidenceModel(Base):
+    """Evidence backing a diagnosis conclusion.
+
+    Each row connects one knowledge-point-level observation (from a
+    quiz answer, exam answer, resource completion, etc.) to the
+    diagnosis snapshot it supports.
+    """
+
+    __tablename__ = "diagnosis_evidence"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    evidence_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    diagnosis_snapshot_id: Mapped[str] = mapped_column(String(64), index=True)
+    learner_id: Mapped[str] = mapped_column(String(64), index=True)
+    subject_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+
+    knowledge_point_key: Mapped[str] = mapped_column(String(128), index=True)
+    evidence_type: Mapped[str] = mapped_column(String(32), default="quiz_answer")
+    # quiz_answer | exam_answer | resource_completion | practice_result
+    # repeated_error | improvement | explicit_self_report
+
+    attempt_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    question_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    learning_event_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    resource_id: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
+
+    score: Mapped[float | None] = mapped_column(nullable=True, default=None)
+    weight: Mapped[float | None] = mapped_column(nullable=True, default=None)
+    confidence: Mapped[float | None] = mapped_column(nullable=True, default=None)
+
+    occurred_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    metadata_: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
 # ── Learning Path ────────────────────────────────────────────────────────
 
 class LearningPathModel(Base):
@@ -253,6 +338,15 @@ class ResourceModel(Base):
     related_chapter_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
     related_section_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
     task_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+
+    # ── Personalization provenance (spec §5.4) ───────────────────────
+    profile_version: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    diagnosis_version: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    personalization_factors: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    recommendation_reason: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    quality_status: Mapped[str] = mapped_column(String(16), default="passed")
+    # passed | needs_review | blocked | provider_unavailable (spec §2.1)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
@@ -262,14 +356,40 @@ class ResourceModel(Base):
 # ── Learning Event ───────────────────────────────────────────────────────
 
 class LearningEventModel(Base):
+    """A timestamped learning event — the canonical audit trail for Analytics & Diagnosis.
+
+    Before commit 3 (quiz result events), only session_id, event_type,
+    resource_id, and metadata_ were populated.  The new fields below are
+    populated for server-authoritative events (e.g. quiz_result) and are
+    NULL for legacy / frontend-logged events.
+    """
+
     __tablename__ = "learning_events"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None, unique=True, index=True,
+    )
     session_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("sessions.id", ondelete="CASCADE"), index=True
     )
+    learner_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None, index=True,
+    )
+    subject_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None,
+    )
     event_type: Mapped[str] = mapped_column(String(64), default="generic")
     resource_id: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, default=None,
+    )
+    attempt_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None, index=True,
+    )
+    schema_version: Mapped[str | None] = mapped_column(
+        String(8), nullable=True, default=None,
+    )
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
@@ -377,6 +497,42 @@ class KnowledgePointModel(Base):
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+
+# ── Question–Knowledge Point Mapping ────────────────────────────────────────
+
+class QuestionKnowledgePointMappingModel(Base):
+    """Weighted mapping from a question to a knowledge point.
+
+    Each question can map to multiple knowledge points with different
+    weights.  Weights for a single question must sum to 1.0.
+
+    ``knowledge_point_key`` may reference ``KnowledgePointModel.id``
+    when the KP exists in the knowledge graph, or a plain string label
+    when it does not.  ``knowledge_point_label`` always holds the
+    human-readable display name.
+
+    source values:
+      explicit   – manually assigned by an instructor / admin
+      generated  – produced by an LLM during question creation
+      fallback   – auto-created from legacy knowledge_points JSON strings
+      migrated   – imported from an external question bank
+    """
+
+    __tablename__ = "question_knowledge_point_mappings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    mapping_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    question_id: Mapped[str] = mapped_column(String(64), index=True)
+    subject_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    knowledge_point_key: Mapped[str] = mapped_column(String(128), index=True)
+    knowledge_point_label: Mapped[str] = mapped_column(String(256), default="")
+    weight: Mapped[float] = mapped_column(default=1.0)
+    confidence: Mapped[float] = mapped_column(default=1.0)
+    source: Mapped[str] = mapped_column(String(16), default="explicit")
+    # explicit | generated | fallback | migrated
+    mapping_version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
 # ── Student Questions ──────────────────────────────────────────────────────
@@ -583,6 +739,13 @@ class AttemptModel(Base):
 
     An attempt belongs to exactly one quiz OR one exam set (not both).
     Individual answers link back via AnswerRecordModel.attempt_id.
+
+    Lifecycle status: started → submitted → graded → processing → completed
+                                               ↘ failed / cancelled
+
+    Idempotency: (learner_id, quiz_id, idempotency_key) and
+    (learner_id, exam_set_id, idempotency_key) are enforced unique via
+    partial indexes created in engine.init_db().
     """
 
     __tablename__ = "attempts"
@@ -590,6 +753,7 @@ class AttemptModel(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     attempt_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     session_id: Mapped[str] = mapped_column(String(64), index=True)
+    subject_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
 
     # ── Polymorphic parent ────────────────────────────────────
     quiz_id: Mapped[str | None] = mapped_column(
@@ -598,6 +762,12 @@ class AttemptModel(Base):
     exam_set_id: Mapped[str | None] = mapped_column(
         String(64), nullable=True, default=None, index=True
     )
+
+    # ── Idempotency & ordering ────────────────────────────────
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, default=None, index=True
+    )
+    attempt_number: Mapped[int] = mapped_column(Integer, default=1)
 
     # ── Answers snapshot ──────────────────────────────────────
     answers: Mapped[list | None] = mapped_column(
@@ -608,13 +778,28 @@ class AttemptModel(Base):
 
     # ── Status ────────────────────────────────────────────────
     status: Mapped[str] = mapped_column(
-        String(16), default="in_progress"
-    )  # in_progress | submitted | graded
+        String(16), default="started"
+    )  # started | submitted | graded | processing | completed | failed | cancelled
     learner_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+
+    # ── Assessment eligibility ────────────────────────────────
+    assessment_eligible: Mapped[bool] = mapped_column(Boolean, default=True)
+    # True when the learner did NOT view answers before submitting.
+    # False attempts are still stored but excluded from mastery updates.
+
+    # ── Post-processing linkage ───────────────────────────────
+    processing_task_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None
+    )
+    diagnosis_task_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None
+    )
 
     # ── Timestamps ────────────────────────────────────────────
     started_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    graded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    answers_revealed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 

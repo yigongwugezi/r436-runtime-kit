@@ -28,11 +28,13 @@ const DIFFICULTY_MAP: Record<string, { label: string; variant: BadgeVariant }> =
 };
 
 const QUALITY_MAP: Record<string, { label: string; variant: BadgeVariant }> = {
-  passed:          { label: '已通过',   variant: 'green' },
-  needs_review:    { label: '需复核',   variant: 'red' },
-  fallback_passed: { label: '兜底通过', variant: 'amber' },
-  warning:         { label: '警告',     variant: 'amber' },
-  ok:              { label: '正常',     variant: 'green' },
+  passed:                { label: '已通过',     variant: 'green' },
+  needs_review:          { label: '需复核',     variant: 'red' },
+  fallback_passed:       { label: '兜底通过',   variant: 'amber' },
+  warning:               { label: '警告',       variant: 'amber' },
+  blocked:               { label: '已屏蔽',     variant: 'red' },
+  provider_unavailable:  { label: '服务不可用', variant: 'slate' },
+  ok:                    { label: '正常',       variant: 'green' },
 };
 
 const PRIORITY_MAP: Record<string, { label: string; variant: BadgeVariant }> = {

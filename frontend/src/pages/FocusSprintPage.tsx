@@ -189,6 +189,7 @@ function QuickQuiz({ sectionId, section, sessionId, lecture }: {
   const [results, setResults] = useState<QuizResult[]>([]);
   const [generating, setGenerating] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const submitIdempotencyKeyRef = useRef('');
 
   const generate = useCallback(async () => {
     setGenerating(true); setQuestions([]); setAnswers({}); setResults([]); setSubmitted(false);
@@ -208,9 +209,13 @@ function QuickQuiz({ sectionId, section, sessionId, lecture }: {
   const submit = useCallback(async () => {
     if (questions.length === 0) return;
     try {
+      if (!submitIdempotencyKeyRef.current) {
+        submitIdempotencyKeyRef.current = crypto.randomUUID();
+      }
       const res: any = await submitQuizAttempt(sectionId, {
         sessionId,
         answers: questions.map(q => ({ questionId: q.questionId, answer: answers[q.questionId] || '' })),
+        idempotencyKey: submitIdempotencyKeyRef.current,
       });
       const data = res?.data || res;
       if (data?.results) { setResults(data.results); setSubmitted(true); }
