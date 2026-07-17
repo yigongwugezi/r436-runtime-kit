@@ -116,6 +116,11 @@ def init_db() -> None:
             "task_id": "VARCHAR(64)",
             "completed_at": "DATETIME",
             "updated_at": "DATETIME",
+            "profile_version": "INTEGER",
+            "diagnosis_version": "INTEGER",
+            "personalization_factors": "JSON",
+            "recommendation_reason": "TEXT",
+            "quality_status": "VARCHAR(16) DEFAULT 'passed'",
         },
         "questions": {
             "subject": "VARCHAR(64)",
@@ -169,10 +174,80 @@ def init_db() -> None:
         "personal_subjects": {
             "textbook_id": "VARCHAR(64)",
         },
+        "attempts": {
+            "subject_id": "VARCHAR(64)",
+            "idempotency_key": "VARCHAR(128)",
+            "attempt_number": "INTEGER DEFAULT 1",
+            "graded_at": "DATETIME",
+            "answers_revealed_at": "DATETIME",
+            "assessment_eligible": "BOOLEAN DEFAULT 1",
+            "processing_task_id": "VARCHAR(64)",
+            "diagnosis_task_id": "VARCHAR(64)",
+        },
+        "question_knowledge_point_mappings": {
+            "mapping_id": "VARCHAR(64)",
+            "question_id": "VARCHAR(64)",
+            "subject_id": "VARCHAR(64)",
+            "knowledge_point_key": "VARCHAR(128)",
+            "knowledge_point_label": "VARCHAR(256)",
+            "weight": "FLOAT DEFAULT 1.0",
+            "confidence": "FLOAT DEFAULT 1.0",
+            "source": "VARCHAR(16) DEFAULT 'explicit'",
+            "mapping_version": "INTEGER DEFAULT 1",
+        },
+        "learning_events": {
+            "event_id": "VARCHAR(64)",
+            "learner_id": "VARCHAR(64)",
+            "subject_id": "VARCHAR(64)",
+            "idempotency_key": "VARCHAR(128)",
+            "attempt_id": "VARCHAR(64)",
+            "schema_version": "VARCHAR(8)",
+        },
+        "diagnosis_snapshots": {
+            "learner_id": "VARCHAR(64)",
+            "subject_id": "VARCHAR(64)",
+            "session_id": "VARCHAR(64)",
+            "version": "INTEGER DEFAULT 1",
+            "status": "VARCHAR(16) DEFAULT 'generating'",
+            "mastery_levels": "JSON",
+            "weaknesses": "JSON",
+            "strengths": "JSON",
+            "confidence": "FLOAT",
+            "summary": "TEXT",
+            "source_attempt_ids": "JSON",
+            "source_event_ids": "JSON",
+            "evidence_count": "INTEGER DEFAULT 0",
+            "generated_by": "VARCHAR(64)",
+            "supersedes_snapshot_id": "VARCHAR(64)",
+            "active_task_id": "VARCHAR(64)",
+        },
+        "diagnosis_evidence": {
+            "evidence_id": "VARCHAR(64)",
+            "diagnosis_snapshot_id": "VARCHAR(64)",
+            "learner_id": "VARCHAR(64)",
+            "subject_id": "VARCHAR(64)",
+            "knowledge_point_key": "VARCHAR(128)",
+            "evidence_type": "VARCHAR(32) DEFAULT 'quiz_answer'",
+            "attempt_id": "VARCHAR(64)",
+            "question_id": "VARCHAR(64)",
+            "learning_event_id": "VARCHAR(64)",
+            "resource_id": "VARCHAR(128)",
+            "score": "FLOAT",
+            "weight": "FLOAT",
+            "confidence": "FLOAT",
+            "occurred_at": "DATETIME",
+            "metadata": "JSON",
+        },
     }
     for table, columns in migrations.items():
         for column, definition in columns.items():
             add_column_if_missing(table, column, definition)
+
+    # ── Attempt idempotency unique indexes ────────────────────────────
+    _migrate_attempts_idempotency_indexes()
+
+    # ── Quiz result event unique index ────────────────────────────────
+    _migrate_quiz_result_unique_index()
 
     # ── Fix stale FK on student_questions.session_id ──────────────────
     # Earlier versions had session_id -> sessions.id FK.  Teacher-pushed
@@ -184,6 +259,70 @@ def init_db() -> None:
     # Same issue — quiz attempts and practice answers use synthetic
     # session IDs that may not exist in the sessions table.
     _migrate_answer_records_session_fk()
+
+
+def _migrate_attempts_idempotency_indexes() -> None:
+    """Create partial unique indexes for attempt idempotency if they don't exist.
+
+    SQLite 3.8+ supports partial unique indexes.  These enforce that
+    (learner_id, quiz_id, idempotency_key) and (learner_id, exam_set_id,
+    idempotency_key) are unique when both key fields are non-NULL.
+    """
+    with engine.connect() as conn:
+        # Check that the table exists first
+        tables = {
+            row[0]
+            for row in conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table' AND name='attempts'")
+            ).fetchall()
+        }
+        if "attempts" not in tables:
+            return
+
+        for name, parent_col in (
+            ("uq_attempts_quiz_idemkey", "quiz_id"),
+            ("uq_attempts_exam_idemkey", "exam_set_id"),
+        ):
+            try:
+                conn.execute(
+                    text(
+                        f"CREATE UNIQUE INDEX IF NOT EXISTS {name} "
+                        f"ON attempts(learner_id, {parent_col}, idempotency_key) "
+                        f"WHERE {parent_col} IS NOT NULL AND idempotency_key IS NOT NULL"
+                    )
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+
+
+def _migrate_quiz_result_unique_index() -> None:
+    """Create partial unique index to enforce one quiz_result event per attempt.
+
+    SQLite 3.8+ partial unique index — only applies to rows where
+    event_type = 'quiz_result' AND attempt_id IS NOT NULL.
+    """
+    with engine.connect() as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table' AND name='learning_events'")
+            ).fetchall()
+        }
+        if "learning_events" not in tables:
+            return
+
+        try:
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_quiz_result_per_attempt "
+                    "ON learning_events(attempt_id) "
+                    "WHERE event_type = 'quiz_result' AND attempt_id IS NOT NULL"
+                )
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
 
 
 def _migrate_student_questions_session_fk() -> None:

@@ -14,12 +14,19 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 
 from app.db.engine import SessionLocal
 from app.db.models import AnswerRecordModel, AttemptModel, ExamSetModel, PracticeQuestionModel, QuizModel
 from app.db.repository import (
+    check_quiz_result_event_exists,
     create_attempt,
+    create_quiz_result_event,
+    find_attempt_by_idempotency_key,
     get_attempt,
+    get_attempt_answers,
+    get_next_attempt_number,
+    get_quiz_result_event,
     list_attempts,
     save_exam_set,
     save_quiz,
@@ -40,6 +47,11 @@ from app.services.assessment_access import (
     require_owned_quiz,
     require_owned_session,
     require_parent_attempt,
+)
+from app.services.knowledge_point_service import (
+    compute_all_results,
+    get_highest_weight_label,
+    resolve_mappings,
 )
 from app.utils.llm_json import parse_safe
 
@@ -133,10 +145,18 @@ class SectionQuizGenerateRequest(BaseModel):
 
 
 class QuizSubmitRequest(BaseModel):
-    """Payload for submitting all answers to a quiz at once."""
+    """Payload for submitting all answers to a quiz at once.
+
+    idempotency_key is REQUIRED — the client must generate a unique key per
+    submission intent.  Same key + same answers → idempotent replay of the
+    original result.  Same key + different answers → 409 Conflict.
+    """
     session_id: str = Field(default="", alias="sessionId")
     answers: list[dict] = Field(default_factory=list)
     # Each answer: {"questionId": "...", "answer": "..."}
+    idempotency_key: str = Field(..., alias="idempotencyKey")
+    answers_revealed: bool = Field(default=False, alias="answersRevealed")
+    client_submitted_at: str | None = Field(default=None, alias="clientSubmittedAt")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -198,6 +218,7 @@ def _attempt_dict(a) -> dict:
         "id": a.id,
         "attemptId": a.attempt_id,
         "sessionId": a.session_id,
+        "subjectId": a.subject_id,
         "quizId": a.quiz_id,
         "examSetId": a.exam_set_id,
         "learnerId": a.learner_id,
@@ -205,8 +226,15 @@ def _attempt_dict(a) -> dict:
         "totalScore": a.total_score,
         "maxScore": a.max_score,
         "status": a.status,
+        "attemptNumber": a.attempt_number,
+        "idempotencyKey": a.idempotency_key,
+        "assessmentEligible": a.assessment_eligible,
         "startedAt": a.started_at.isoformat() if a.started_at else None,
         "submittedAt": a.submitted_at.isoformat() if a.submitted_at else None,
+        "gradedAt": a.graded_at.isoformat() if a.graded_at else None,
+        "answersRevealedAt": a.answers_revealed_at.isoformat() if a.answers_revealed_at else None,
+        "processingTaskId": a.processing_task_id,
+        "diagnosisTaskId": a.diagnosis_task_id,
         "createdAt": a.created_at.isoformat() if a.created_at else None,
     }
 
@@ -326,6 +354,330 @@ def _trigger_post_submit_assessment(
             )
 
     threading.Thread(target=_run, daemon=True).start()
+
+
+def _create_diagnosis_refresh_task(
+    session_id: str,
+    learner_id: str,
+    subject_id: str,
+    attempt_id: str,
+) -> str | None:
+    """Create and start a ``diagnosis_refresh`` workflow task.
+
+    Runs DiagnosisAgent and persists a new versioned snapshot.
+    Best-effort — grading result is preserved even if task creation fails.
+
+    Returns the ``task_id``, or ``None`` if creation failed.
+    """
+    try:
+        from app.services.workflow_tasks import workflow_task_manager
+        payload: dict[str, Any] = {
+            "operation": "diagnosis_refresh",
+            "sessionId": session_id,
+            "subjectId": subject_id,
+            "attemptId": attempt_id,
+        }
+        task, reused = workflow_task_manager.get_or_create(
+            "diagnosis_refresh",
+            learner_id,
+            session_id,
+            subject_id,
+            payload=payload,
+            metadata={"attempt_id": attempt_id},
+            retry_payload=dict(payload),
+        )
+        if not reused:
+            from app.routers.workflows import _runner_diagnosis_refresh
+            runner = _runner_diagnosis_refresh(
+                session_id, learner_id, subject_id, attempt_id,
+            )
+            workflow_task_manager.start(task, runner)
+        return task.task_id
+    except Exception:
+        logger.exception(
+            "Failed to create diagnosis_refresh task for attempt=%s",
+            attempt_id,
+        )
+        return None
+
+
+def _create_assessment_processing_task(
+    session_id: str,
+    learner_id: str,
+    subject_id: str,
+    attempt_id: str,
+    *,
+    quiz_id: str = "",
+    exam_set_id: str = "",
+) -> str | None:
+    """Create and start an ``assessment_processing`` workflow task.
+
+    Called after synchronous grading is committed so the task always
+    sees a persisted attempt.  Task creation is best-effort — if it
+    fails the graded result is still returned to the user.
+
+    Returns the ``task_id``, or ``None`` if creation failed.
+    """
+    try:
+        from app.services.workflow_tasks import workflow_task_manager
+        payload: dict[str, Any] = {
+            "operation": "assessment_processing",
+            "sessionId": session_id,
+            "subjectId": subject_id,
+            "attemptId": attempt_id,
+            "quizId": quiz_id,
+            "examSetId": exam_set_id,
+        }
+        task, reused = workflow_task_manager.get_or_create(
+            "assessment_processing",
+            learner_id,
+            session_id,
+            subject_id,
+            payload=payload,
+            metadata={
+                "attempt_id": attempt_id,
+                "quiz_id": quiz_id,
+                "exam_set_id": exam_set_id,
+            },
+            retry_payload=dict(payload),
+        )
+        if not reused:
+            from app.routers.workflows import _runner_assessment_processing
+            runner = _runner_assessment_processing(
+                attempt_id, quiz_id, exam_set_id, session_id,
+            )
+            workflow_task_manager.start(task, runner)
+        return task.task_id
+    except Exception:
+        logger.exception(
+            "Failed to create assessment_processing task for attempt=%s",
+            attempt_id,
+        )
+        return None
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Idempotency helpers
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _answers_match(stored: list | None, incoming: list | None) -> bool:
+    """Compare two answer sets for idempotency content matching.
+
+    Returns True when both sets contain the same questionId→answer mappings,
+    regardless of order.  Used to decide whether a resubmission with the same
+    idempotency key should replay the original result (True) or return 409
+    (False).
+    """
+    if stored is None and incoming is None:
+        return True
+    if stored is None or incoming is None:
+        return False
+    if len(stored) != len(incoming):
+        return False
+    stored_map = {a.get("questionId", ""): a.get("answer", "") for a in stored}
+    incoming_map = {a.get("questionId", ""): a.get("answer", "") for a in incoming}
+    return stored_map == incoming_map
+
+
+def _build_idempotent_response(
+    db,
+    attempt: AttemptModel,
+    quiz_title: str = "",
+    quiz_id: str = "",
+    exam_set_id: str = "",
+    session_id: str = "",
+    assessment_eligible: bool = True,
+) -> dict:
+    """Reconstruct the post-submit response from a previously-graded attempt.
+
+    Reads existing AnswerRecords from the database rather than re-grading,
+    so the response is identical to what the original submission returned.
+    Also recomputes knowledge-point results from stored answer records and
+    writes a quiz_result event if one does not already exist.
+    """
+    answer_records = (
+        db.query(AnswerRecordModel)
+        .filter(AnswerRecordModel.attempt_id == attempt.attempt_id)
+        .order_by(AnswerRecordModel.created_at)
+        .all()
+    )
+    results = []
+    answer_records_by_qid: dict[str, AnswerRecordModel] = {}
+    for ar in answer_records:
+        answer_records_by_qid[ar.question_id] = ar
+        results.append({
+            "questionId": ar.question_id,
+            "studentAnswer": ar.student_answer,
+            "isCorrect": (ar.total_score or 0) >= 60,
+            "score": ar.total_score or 0,
+            "maxScore": 100,
+            "correctAnswer": "",
+            "explanation": ar.error_explanation or "",
+            "feedback": "",
+            "errorType": ar.error_type,
+            "errorLabel": ar.error_label,
+            "knowledgePoint": "",
+        })
+
+    total_score = attempt.total_score or 0
+    if total_score >= 80:
+        suggestion = "mastered"
+    elif total_score >= 50:
+        suggestion = "in_progress"
+    else:
+        suggestion = "needs_review"
+
+    # ── Resolve subject_id from attempt's session ─────────────────
+    subject_id: str | None = attempt.subject_id
+    if not subject_id and session_id:
+        try:
+            from app.db.models import SessionModel
+            sess = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+            if sess and sess.subject_id:
+                subject_id = sess.subject_id
+        except Exception:
+            pass
+
+    # ── Compute knowledge-point results ──────────────────────────
+    kp_results: list[dict] = []
+    qset_id = quiz_id or exam_set_id
+    if qset_id and session_id:
+        linked = (
+            db.query(PracticeQuestionModel)
+            .filter(
+                PracticeQuestionModel.question_set_id == qset_id,
+                PracticeQuestionModel.session_id == session_id,
+            )
+            .all()
+        )
+        if linked:
+            kp_results = compute_all_results(
+                db, linked, answer_records_by_qid,
+                attempt.attempt_id, subject_id,
+                assessment_eligible,
+            )
+            # ── Resolve curriculum scope from quiz/exam set ──
+            _path_id: str | None = None
+            _stage_id: str | None = None
+            _chapter_id: str | None = None
+            _section_id: str | None = None
+            if quiz_id:
+                qset = db.query(QuizModel).filter(QuizModel.id == quiz_id).first()
+                if qset:
+                    _path_id = qset.path_id
+                    _stage_id = qset.stage_id
+                    _chapter_id = qset.chapter_id
+                    _section_id = qset.section_id
+            elif exam_set_id:
+                eset = db.query(ExamSetModel).filter(ExamSetModel.id == exam_set_id).first()
+                if eset:
+                    _path_id = eset.path_id
+                    _stage_id = eset.stage_id
+                    _chapter_id = eset.chapter_id
+
+            # Write quiz_result event on replay if missing
+            _write_quiz_result_event(
+                db,
+                attempt=attempt,
+                session_id=session_id,
+                learner_id=attempt.learner_id or "",
+                subject_id=subject_id,
+                kp_results=kp_results,
+                quiz_id=quiz_id,
+                exam_set_id=exam_set_id,
+                path_id=_path_id,
+                stage_id=_stage_id,
+                chapter_id=_chapter_id,
+                section_id=_section_id,
+            )
+            db.commit()  # persist fallback mappings + event
+
+            for r in results:
+                pq = next((q for q in linked if q.question_id == r["questionId"]), None)
+                if pq is not None:
+                    mappings = resolve_mappings(db, pq, subject_id=subject_id)
+                    r["knowledgePoint"] = get_highest_weight_label(mappings, fallback="")
+
+    return {
+        "status": "success",
+        "data": {
+            "attempt": _attempt_dict(attempt),
+            "results": results,
+            "totalScore": total_score,
+            "maxScore": attempt.max_score,
+            "sectionStatusSuggestion": suggestion,
+            "weakPoints": [],
+            "idempotentReplay": True,
+            "knowledgePointResults": kp_results,
+            "processingTaskId": attempt.processing_task_id,
+            "diagnosisTaskId": attempt.diagnosis_task_id,
+        },
+    }
+
+
+def _write_quiz_result_event(
+    db,
+    *,
+    attempt: AttemptModel,
+    session_id: str,
+    learner_id: str,
+    subject_id: str | None,
+    kp_results: list[dict],
+    quiz_id: str = "",
+    exam_set_id: str = "",
+    path_id: str | None = None,
+    stage_id: str | None = None,
+    chapter_id: str | None = None,
+    section_id: str | None = None,
+) -> str:
+    """Write the canonical quiz_result event for an attempt.  Idempotent.
+
+    Returns the event_id.  Silently skips if an event already exists for
+    this attempt (the unique index guarantees at most one event).
+    """
+    # ── Check for existing event ─────────────────────────────────
+    if check_quiz_result_event_exists(db, attempt.attempt_id):
+        existing = get_quiz_result_event(db, attempt.attempt_id)
+        if existing and existing.event_id:
+            return existing.event_id
+        return ""
+
+    # ── Build event ──────────────────────────────────────────────
+    event_id = f"evt_{uuid.uuid4().hex[:12]}"
+    total_score = attempt.total_score or 0
+    max_score = attempt.max_score or 100
+    normalized = total_score / max(max_score, 1.0)
+
+    try:
+        create_quiz_result_event(
+            db,
+            event_id=event_id,
+            session_id=session_id,
+            learner_id=learner_id,
+            subject_id=subject_id,
+            idempotency_key=attempt.idempotency_key or "",
+            attempt_id=attempt.attempt_id,
+            quiz_id=quiz_id or exam_set_id,
+            total_score=total_score,
+            max_score=max_score,
+            normalized_score=normalized,
+            assessment_eligible=attempt.assessment_eligible,
+            knowledge_point_results=kp_results,
+            path_id=path_id,
+            stage_id=stage_id,
+            chapter_id=chapter_id,
+            section_id=section_id,
+        )
+        db.flush()
+        return event_id
+    except IntegrityError:
+        # Race: another concurrent request already wrote it
+        db.rollback()
+        existing2 = get_quiz_result_event(db, attempt.attempt_id)
+        if existing2 and existing2.event_id:
+            return existing2.event_id
+        return ""
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -687,11 +1039,31 @@ def submit_quiz(
 
     Choice/truefalse are rule-graded. Shortanswer uses the GradingAgent LLM.
     An AttemptModel is created to group the answer records.
+
+    Idempotency: same idempotencyKey + same answers → replay original result.
+    Same idempotencyKey + different answers → 409 Conflict.
     """
     db = SessionLocal()
     try:
         quiz = require_owned_quiz(db, quiz_id, auth.learner_id)
         session_id = require_matching_session(quiz.session_id, body.session_id)
+
+        # ── Idempotency check ─────────────────────────────────
+        existing = find_attempt_by_idempotency_key(
+            db, auth.learner_id, body.idempotency_key, quiz_id=quiz_id,
+        )
+        if existing is not None:
+            if existing.status in ("graded", "processing", "completed", "failed") and _answers_match(existing.answers, body.answers):
+                return _build_idempotent_response(
+                    db, existing, quiz_title=quiz.title,
+                    quiz_id=quiz_id, session_id=session_id,
+                    assessment_eligible=not body.answers_revealed,
+                )
+            raise HTTPException(
+                status_code=409,
+                detail="该 idempotencyKey 已用于不同的答案内容，请检查是否重复提交",
+            )
+
         # ── Load linked questions with answers ──────────────────
         linked = (
             db.query(PracticeQuestionModel)
@@ -705,19 +1077,57 @@ def submit_quiz(
             raise HTTPException(status_code=400, detail="该小测没有题目")
         questions_by_id = {pq.question_id: pq for pq in linked}
 
+        # ── Compute attempt number (server-side) ───────────────
+        attempt_no = get_next_attempt_number(
+            db, auth.learner_id, quiz_id=quiz_id,
+        )
+
+        # ── Resolve subject_id from session ────────────────────
+        subject_id = quiz.session_id  # fallback; resolve from session if possible
+        try:
+            from app.db.models import SessionModel
+            sess = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+            if sess and sess.subject_id:
+                subject_id = sess.subject_id
+        except Exception:
+            pass
+
         # ── Create attempt ─────────────────────────────────────
-        attempt = create_attempt(db, {
-            "attempt_id": f"att_{uuid.uuid4().hex[:12]}",
-            "session_id": session_id,
-            "quiz_id": quiz_id,
-            "max_score": 100 * len(linked),
-            "learner_id": auth.learner_id,
-        })
+        try:
+            attempt = create_attempt(db, {
+                "attempt_id": f"att_{uuid.uuid4().hex[:12]}",
+                "session_id": session_id,
+                "subject_id": subject_id,
+                "quiz_id": quiz_id,
+                "max_score": 100 * len(linked),
+                "learner_id": auth.learner_id,
+                "idempotency_key": body.idempotency_key,
+                "attempt_number": attempt_no,
+                "assessment_eligible": not body.answers_revealed,
+            })
+        except Exception:
+            # Race: another request inserted between our SELECT and INSERT.
+            # The unique index caught it.  Re-query and reconcile.
+            db.rollback()
+            existing2 = find_attempt_by_idempotency_key(
+                db, auth.learner_id, body.idempotency_key, quiz_id=quiz_id,
+            )
+            if existing2 is not None and existing2.status in ("graded", "processing", "completed", "failed") and _answers_match(existing2.answers, body.answers):
+                return _build_idempotent_response(
+                    db, existing2, quiz_title=quiz.title,
+                    quiz_id=quiz_id, session_id=session_id,
+                    assessment_eligible=not body.answers_revealed,
+                )
+            raise HTTPException(
+                status_code=409,
+                detail="检测到重复提交，与已有答案不一致",
+            )
 
         # ── Grade each answer ──────────────────────────────────
         results = []
         total_score = 0
         max_possible = 0
+        answer_records_by_qid: dict[str, AnswerRecordModel] = {}
 
         for ans in body.answers:
             qid = ans.get("questionId", "")
@@ -822,6 +1232,7 @@ def submit_quiz(
 
             db.add(ar)
             total_score += score
+            answer_records_by_qid[qid] = ar
 
             results.append({
                 "questionId": qid,
@@ -846,6 +1257,35 @@ def submit_quiz(
         })
         db.commit()
 
+        # ── Compute knowledge-point results ────────────────────
+        kp_results = compute_all_results(
+            db, linked, answer_records_by_qid,
+            attempt.attempt_id, subject_id,
+            not body.answers_revealed,
+        )
+        # ── Write canonical quiz_result event ──────────────────
+        _write_quiz_result_event(
+            db,
+            attempt=attempt,
+            session_id=session_id,
+            learner_id=auth.learner_id,
+            subject_id=subject_id,
+            kp_results=kp_results,
+            quiz_id=quiz_id,
+            path_id=quiz.path_id,
+            stage_id=quiz.stage_id,
+            chapter_id=quiz.chapter_id,
+            section_id=quiz.section_id,
+        )
+        db.commit()  # persist fallback mappings + event
+
+        # Update per-result knowledgePoint to highest-weight label
+        for i, r in enumerate(results):
+            pq = questions_by_id.get(r["questionId"])
+            if pq is not None:
+                mappings = resolve_mappings(db, pq, subject_id=subject_id)
+                r["knowledgePoint"] = get_highest_weight_label(mappings, fallback="")
+
         # ── Compute section status suggestion ───────────────────
         if avg_score >= 80:
             suggestion = "mastered"
@@ -860,6 +1300,39 @@ def submit_quiz(
             quiz_title=quiz.title,
         )
 
+        # ── Create assessment_processing workflow task ──────────
+        processing_task_id = _create_assessment_processing_task(
+            session_id=session_id,
+            learner_id=auth.learner_id,
+            subject_id=subject_id,
+            attempt_id=attempt.attempt_id,
+            quiz_id=quiz_id,
+        )
+        if processing_task_id:
+            try:
+                update_attempt(db, attempt.attempt_id, {
+                    "processing_task_id": processing_task_id,
+                })
+                db.commit()
+            except Exception:
+                pass  # best-effort — grading result is preserved
+
+        # ── Create diagnosis_refresh workflow task ───────────────
+        diagnosis_task_id = _create_diagnosis_refresh_task(
+            session_id=session_id,
+            learner_id=auth.learner_id,
+            subject_id=subject_id,
+            attempt_id=attempt.attempt_id,
+        )
+        if diagnosis_task_id:
+            try:
+                update_attempt(db, attempt.attempt_id, {
+                    "diagnosis_task_id": diagnosis_task_id,
+                })
+                db.commit()
+            except Exception:
+                pass  # best-effort
+
         # ── Trigger closed-loop assessment (fire-and-forget) ────
         _trigger_post_submit_assessment(
             session_id=session_id,
@@ -868,15 +1341,22 @@ def submit_quiz(
             weak_points=weak_points,
         )
 
+        response_attempt = _attempt_dict(get_attempt(db, attempt.attempt_id))
+        response_attempt["processingTaskId"] = processing_task_id
+        response_attempt["diagnosisTaskId"] = diagnosis_task_id
+
         return {
             "status": "success",
             "data": {
-                "attempt": _attempt_dict(get_attempt(db, attempt.attempt_id)),
+                "attempt": response_attempt,
                 "results": results,
                 "totalScore": avg_score,
                 "maxScore": 100,
                 "sectionStatusSuggestion": suggestion,
                 "weakPoints": weak_points,
+                "knowledgePointResults": kp_results,
+                "processingTaskId": processing_task_id,
+                "diagnosisTaskId": diagnosis_task_id,
             },
         }
     finally:
@@ -1335,11 +1815,32 @@ def submit_exam_set(
     body: QuizSubmitRequest,
     auth: AuthContext = Depends(require_auth),
 ) -> dict:
-    """Submit all answers for an exam set — grade each and return results."""
+    """Submit all answers for an exam set — grade each and return results.
+
+    Idempotency: same idempotencyKey + same answers → replay original result.
+    Same idempotencyKey + different answers → 409 Conflict.
+    """
     db = SessionLocal()
     try:
         exam_set = require_owned_exam_set(db, exam_set_id, auth.learner_id)
         session_id = require_matching_session(exam_set.session_id, body.session_id)
+
+        # ── Idempotency check ─────────────────────────────────
+        existing = find_attempt_by_idempotency_key(
+            db, auth.learner_id, body.idempotency_key, exam_set_id=exam_set_id,
+        )
+        if existing is not None:
+            if existing.status in ("graded", "processing", "completed", "failed") and _answers_match(existing.answers, body.answers):
+                return _build_idempotent_response(
+                    db, existing, quiz_title=exam_set.title,
+                    exam_set_id=exam_set_id, session_id=session_id,
+                    assessment_eligible=not body.answers_revealed,
+                )
+            raise HTTPException(
+                status_code=409,
+                detail="该 idempotencyKey 已用于不同的答案内容，请检查是否重复提交",
+            )
+
         linked = (
             db.query(PracticeQuestionModel)
             .filter(
@@ -1352,16 +1853,53 @@ def submit_exam_set(
             raise HTTPException(status_code=400, detail="该题集没有题目")
         questions_by_id = {pq.question_id: pq for pq in linked}
 
-        attempt = create_attempt(db, {
-            "attempt_id": f"att_{uuid.uuid4().hex[:12]}",
-            "session_id": session_id,
-            "exam_set_id": exam_set_id,
-            "max_score": 100 * len(linked),
-            "learner_id": auth.learner_id,
-        })
+        # ── Compute attempt number (server-side) ───────────────
+        attempt_no = get_next_attempt_number(
+            db, auth.learner_id, exam_set_id=exam_set_id,
+        )
+
+        # ── Resolve subject_id from session ────────────────────
+        subject_id = exam_set.session_id
+        try:
+            from app.db.models import SessionModel
+            sess = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+            if sess and sess.subject_id:
+                subject_id = sess.subject_id
+        except Exception:
+            pass
+
+        # ── Create attempt ─────────────────────────────────────
+        try:
+            attempt = create_attempt(db, {
+                "attempt_id": f"att_{uuid.uuid4().hex[:12]}",
+                "session_id": session_id,
+                "subject_id": subject_id,
+                "exam_set_id": exam_set_id,
+                "max_score": 100 * len(linked),
+                "learner_id": auth.learner_id,
+                "idempotency_key": body.idempotency_key,
+                "attempt_number": attempt_no,
+                "assessment_eligible": not body.answers_revealed,
+            })
+        except Exception:
+            db.rollback()
+            existing2 = find_attempt_by_idempotency_key(
+                db, auth.learner_id, body.idempotency_key, exam_set_id=exam_set_id,
+            )
+            if existing2 is not None and existing2.status in ("graded", "processing", "completed", "failed") and _answers_match(existing2.answers, body.answers):
+                return _build_idempotent_response(
+                    db, existing2, quiz_title=exam_set.title,
+                    exam_set_id=exam_set_id, session_id=session_id,
+                    assessment_eligible=not body.answers_revealed,
+                )
+            raise HTTPException(
+                status_code=409,
+                detail="检测到重复提交，与已有答案不一致",
+            )
 
         results = []
         total_score = 0
+        answer_records_by_qid: dict[str, AnswerRecordModel] = {}
 
         for ans in body.answers:
             qid = ans.get("questionId", "")
@@ -1456,6 +1994,7 @@ def submit_exam_set(
             )
             db.add(ar)
             total_score += score
+            answer_records_by_qid[qid] = ar
 
             results.append({
                 "questionId": qid,
@@ -1480,11 +2019,72 @@ def submit_exam_set(
         update_exam_set(db, exam_set_id, {"status": "completed"})
         db.commit()
 
+        # ── Compute knowledge-point results ────────────────────
+        kp_results = compute_all_results(
+            db, linked, answer_records_by_qid,
+            attempt.attempt_id, subject_id,
+            not body.answers_revealed,
+        )
+        # ── Write canonical quiz_result event ──────────────────
+        _write_quiz_result_event(
+            db,
+            attempt=attempt,
+            session_id=session_id,
+            learner_id=auth.learner_id,
+            subject_id=subject_id,
+            kp_results=kp_results,
+            exam_set_id=exam_set_id,
+            path_id=exam_set.path_id,
+            stage_id=exam_set.stage_id,
+            chapter_id=exam_set.chapter_id,
+        )
+        db.commit()  # persist fallback mappings + event
+
+        # Update per-result knowledgePoint to highest-weight label
+        for i, r in enumerate(results):
+            pq = questions_by_id.get(r["questionId"])
+            if pq is not None:
+                mappings = resolve_mappings(db, pq, subject_id=subject_id)
+                r["knowledgePoint"] = get_highest_weight_label(mappings, fallback="")
+
         weak_points = _record_quiz_weaknesses(
             db, session_id, linked, results, quiz_title=exam_set.title,
         )
 
         suggestion = "mastered" if avg_score >= 80 else ("in_progress" if avg_score >= 50 else "needs_review")
+
+        # ── Create assessment_processing workflow task ──────────
+        processing_task_id = _create_assessment_processing_task(
+            session_id=session_id,
+            learner_id=auth.learner_id,
+            subject_id=subject_id,
+            attempt_id=attempt.attempt_id,
+            exam_set_id=exam_set_id,
+        )
+        if processing_task_id:
+            try:
+                update_attempt(db, attempt.attempt_id, {
+                    "processing_task_id": processing_task_id,
+                })
+                db.commit()
+            except Exception:
+                pass  # best-effort
+
+        # ── Create diagnosis_refresh workflow task ───────────────
+        diagnosis_task_id = _create_diagnosis_refresh_task(
+            session_id=session_id,
+            learner_id=auth.learner_id,
+            subject_id=subject_id,
+            attempt_id=attempt.attempt_id,
+        )
+        if diagnosis_task_id:
+            try:
+                update_attempt(db, attempt.attempt_id, {
+                    "diagnosis_task_id": diagnosis_task_id,
+                })
+                db.commit()
+            except Exception:
+                pass  # best-effort
 
         # ── Trigger closed-loop assessment (fire-and-forget) ────
         _trigger_post_submit_assessment(
@@ -1494,15 +2094,22 @@ def submit_exam_set(
             weak_points=weak_points,
         )
 
+        response_attempt = _attempt_dict(get_attempt(db, attempt.attempt_id))
+        response_attempt["processingTaskId"] = processing_task_id
+        response_attempt["diagnosisTaskId"] = diagnosis_task_id
+
         return {
             "status": "success",
             "data": {
-                "attempt": _attempt_dict(get_attempt(db, attempt.attempt_id)),
+                "attempt": response_attempt,
                 "results": results,
                 "totalScore": avg_score,
                 "maxScore": 100,
                 "sectionStatusSuggestion": suggestion,
                 "weakPoints": weak_points,
+                "knowledgePointResults": kp_results,
+                "processingTaskId": processing_task_id,
+                "diagnosisTaskId": diagnosis_task_id,
             },
         }
     finally:

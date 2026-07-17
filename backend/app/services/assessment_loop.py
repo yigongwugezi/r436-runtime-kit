@@ -444,9 +444,16 @@ def run_post_quiz_assessment(
             for m in mastery_levels
         }
 
-        # Persist diagnosis to conversation state
+        # Persist diagnosis to conversation state (backward compat cache)
         from app.services.conversation_state import conversation_store
         conversation_store.set_diagnosis(session_id, new_diagnosis)
+
+        # ── Persist diagnosis snapshot to DB ──────────────────────
+        _persist_diagnosis_to_db(
+            session_id=session_id,
+            diagnosis_result=new_diagnosis,
+            diagnosis_context=diagnosis_context,
+        )
 
         # ═══════════════════════════════════════════════════════════
         # Step 3: Update ProfileAgent — 画像随学随新
@@ -543,6 +550,9 @@ def run_post_quiz_assessment(
                     resource_result = resource_agent.run(resource_context)
                     new_resources = resource_result.get("resources", [])
                     if new_resources:
+                        # ── Attach personalization provenance ──────
+                        for r in new_resources:
+                            _stamp_resource_personalization(r, session_id)
                         # Persist generated resources into conversation state
                         existing_result = dict(conversation_store.get(session_id).last_result or {})
                         existing_resources = list(existing_result.get("resources", []))
@@ -669,6 +679,12 @@ def run_periodic_reassessment(session_id: str) -> dict[str, Any]:
         # 3. Persist
         from app.services.conversation_state import conversation_store
         conversation_store.set_diagnosis(session_id, new_diagnosis)
+
+        _persist_diagnosis_to_db(
+            session_id=session_id,
+            diagnosis_result=new_diagnosis,
+            diagnosis_context=diagnosis_context,
+        )
 
         # 4. Update ProfileAgent — 画像随学随新
         try:
@@ -797,6 +813,98 @@ def record_learning_event(session_id: str, event_type: str) -> None:
 
 
 # ── Internal helpers ─────────────────────────────────────────────────────
+
+
+def _stamp_resource_personalization(resource: dict, session_id: str) -> None:
+    """Attach personalization provenance to a resource dict (best-effort)."""
+    try:
+        from app.services.personalization_context import PersonalizationContextService
+        svc = PersonalizationContextService()
+        ctx = svc.build(session_id)
+
+        resource["profile_version"] = resource.get("profile_version") or ctx.get("profileVersion")
+        resource["diagnosis_version"] = resource.get("diagnosis_version") or ctx.get("diagnosisVersion")
+        resource["quality_status"] = resource.get("quality_status") or resource.get("qualityStatus") or "passed"
+
+        factors: list[str] = []
+        weaknesses = ctx.get("weaknesses") or []
+        if weaknesses:
+            weak_names = [w.get("name", w.get("knowledgePointKey", "")) for w in weaknesses[:3] if isinstance(w, dict)]
+            factors.extend(f"weak:{n}" for n in weak_names if n)
+        resource["personalization_factors"] = resource.get("personalization_factors") or factors
+
+        if not resource.get("recommendation_reason") and not resource.get("reason"):
+            if ctx.get("diagnosisVersion"):
+                resource["recommendation_reason"] = (
+                    f"基于诊断 v{ctx['diagnosisVersion']} 的补强推荐"
+                )
+    except Exception:
+        pass
+
+
+def _persist_diagnosis_to_db(
+    session_id: str,
+    diagnosis_result: dict,
+    diagnosis_context: dict | None = None,
+) -> None:
+    """Persist a DiagnosisAgent result to DiagnosisSnapshotModel.
+
+    This is a fire-and-forget best-effort helper: failures are logged
+    but never propagated — the in-memory diagnosis is already saved
+    in conversation_store and the user-facing flow must not be blocked.
+    """
+    try:
+        from app.db.engine import SessionLocal
+        from app.db.models import SessionModel, LearningEventModel
+
+        db = SessionLocal()
+        try:
+            # Resolve learner + subject
+            sess = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+            if not sess or not sess.learner_id:
+                return
+            learner_id = sess.learner_id
+            subject_id = sess.subject_id or ""
+
+            # Collect source events — quiz_result events for this learner+subject
+            # that were created since the last snapshot
+            source_attempt_ids: list[str] = []
+            source_event_ids: list[str] = []
+
+            try:
+                events = (
+                    db.query(LearningEventModel)
+                    .filter(
+                        LearningEventModel.learner_id == learner_id,
+                        LearningEventModel.event_type == "quiz_result",
+                    )
+                    .order_by(LearningEventModel.created_at.desc())
+                    .limit(20)
+                    .all()
+                )
+                for evt in events:
+                    if evt.event_id:
+                        source_event_ids.append(evt.event_id)
+                    if evt.attempt_id:
+                        source_attempt_ids.append(evt.attempt_id)
+            except Exception:
+                pass
+
+            from app.services.diagnosis_snapshot_service import persist_diagnosis_result
+            persist_diagnosis_result(
+                db,
+                learner_id=learner_id,
+                subject_id=subject_id,
+                session_id=session_id,
+                diagnosis_result=diagnosis_result,
+                source_attempt_ids=source_attempt_ids,
+                source_event_ids=source_event_ids,
+            )
+            db.commit()
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("Failed to persist diagnosis snapshot for session=%s", session_id)
 
 
 def _build_diagnosis_context(session_id: str) -> dict[str, Any]:

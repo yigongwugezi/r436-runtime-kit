@@ -7,6 +7,7 @@ transaction boundaries.
 
 from datetime import datetime, timedelta, timezone
 import logging
+import re
 from typing import Any
 import uuid
 
@@ -18,6 +19,8 @@ from app.db.models import (
     AnswerRecordModel,
     AttemptModel,
     DailyTaskModel,
+    DiagnosisEvidenceModel,
+    DiagnosisSnapshotModel,
     ExamSetModel,
     LearnerModel,
     LearningEventModel,
@@ -26,6 +29,7 @@ from app.db.models import (
     PlanningDraftModel,
     PracticeQuestionModel,
     ProfileSnapshotModel,
+    QuestionKnowledgePointMappingModel,
     QuizModel,
     ResourceModel,
     SessionModel,
@@ -39,6 +43,44 @@ def _utcnow() -> datetime:
 
 
 # ── Session ──────────────────────────────────────────────────────────────
+
+_ANONYMOUS_LEARNER_RE = re.compile(
+    r"^anon_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+
+
+def _is_session_anonymous(session_learner_id: str | None) -> bool:
+    """Return True when the session is currently owned by an anonymous learner."""
+    return bool(session_learner_id and _ANONYMOUS_LEARNER_RE.match(str(session_learner_id)))
+
+
+def try_upgrade_anonymous_session(db: Session, session_id: str, learner_id: str) -> bool:
+    """Upgrade an anonymous session to a real learner identity.
+
+    When a session was previously owned by an anonymous learner
+    (``anon_<uuid>``) and a real authenticated learner accesses it,
+    this function transparently upgrades the session ownership.
+
+    Returns ``True`` if the session was upgraded, ``False`` otherwise.
+    Callers should re-query the session after a successful upgrade.
+    """
+    if not learner_id or _is_session_anonymous(learner_id):
+        return False
+    sess = db.get(SessionModel, session_id)
+    if sess is None:
+        return False
+    # Upgrade: NULL → real (session created before user logged in)
+    if not sess.learner_id:
+        sess.learner_id = learner_id
+        db.commit()
+        return True
+    # Upgrade: anonymous (anon_<uuid>) → real (normal login flow)
+    if _is_session_anonymous(sess.learner_id):
+        sess.learner_id = learner_id
+        db.commit()
+        return True
+    return False
+
 
 def get_or_create_session(
     db: Session,
@@ -71,7 +113,11 @@ def get_or_create_session(
             raise PermissionError("session requires a learner identity")
         if learner_id:
             if sess.learner_id and sess.learner_id != learner_id:
-                raise PermissionError("session belongs to another learner")
+                # Allow anonymous → real learner transition (normal login flow)
+                if _is_session_anonymous(sess.learner_id) and not _is_session_anonymous(learner_id):
+                    sess.learner_id = get_or_create_learner(db, learner_id).id
+                else:
+                    raise PermissionError("session belongs to another learner")
             if not sess.learner_id:
                 sess.learner_id = get_or_create_learner(db, learner_id).id
         if subject_id and not sess.subject_id:
@@ -511,6 +557,11 @@ def upsert_resource(
         related_chapter_id=resource_data.get("related_chapter_id", ""),
         related_section_id=resource_data.get("related_section_id", ""),
         task_id=resource_data.get("task_id", ""),
+        profile_version=resource_data.get("profile_version") or resource_data.get("profileVersion"),
+        diagnosis_version=resource_data.get("diagnosis_version") or resource_data.get("diagnosisVersion"),
+        personalization_factors=resource_data.get("personalization_factors") or resource_data.get("personalizationFactors"),
+        recommendation_reason=resource_data.get("recommendation_reason") or resource_data.get("recommendationReason") or resource_data.get("reason"),
+        quality_status=resource_data.get("quality_status") or resource_data.get("qualityStatus", "passed"),
     )
     existing = db.get(ResourceModel, res.id)
     if existing:
@@ -537,6 +588,11 @@ def upsert_resource(
         existing.related_chapter_id = res.related_chapter_id
         existing.related_section_id = res.related_section_id
         existing.task_id = res.task_id
+        existing.profile_version = res.profile_version
+        existing.diagnosis_version = res.diagnosis_version
+        existing.personalization_factors = res.personalization_factors
+        existing.recommendation_reason = res.recommendation_reason
+        existing.quality_status = res.quality_status
         existing.updated_at = _utcnow()
         res = existing
     else:
@@ -760,6 +816,108 @@ def log_event(
     return evt
 
 
+# ── Quiz Result Events ────────────────────────────────────────────────────
+
+
+def create_quiz_result_event(
+    db: Session,
+    *,
+    event_id: str,
+    session_id: str,
+    learner_id: str,
+    subject_id: str | None,
+    idempotency_key: str,
+    attempt_id: str,
+    quiz_id: str,
+    total_score: int,
+    max_score: int,
+    normalized_score: float,
+    assessment_eligible: bool,
+    knowledge_point_results: list[dict],
+    path_id: str | None = None,
+    stage_id: str | None = None,
+    chapter_id: str | None = None,
+    section_id: str | None = None,
+    occurred_at: str = "",
+    schema_version: str = "1.0",
+    source: str = "server",
+) -> LearningEventModel:
+    """Create a canonical quiz_result event (spec §3.6).
+
+    The full structured payload is serialised into ``metadata_`` as a
+    ``QuizResultEventDTO``-compatible dict.  The DB-level partial unique
+    index on ``(attempt_id) WHERE event_type='quiz_result'`` prevents
+    duplicate events for the same attempt.
+
+    Raises ``IntegrityError`` on duplicate (callers should catch and
+    treat as a no-op for idempotent replay).
+    """
+    from datetime import datetime, timezone
+
+    metadata = {
+        "eventType": "quiz_result",
+        "eventId": event_id,
+        "idempotencyKey": idempotency_key,
+        "learnerId": learner_id,
+        "subjectId": subject_id,
+        "sessionId": session_id,
+        "pathId": path_id,
+        "stageId": stage_id,
+        "chapterId": chapter_id,
+        "sectionId": section_id,
+        "quizId": quiz_id,
+        "attemptId": attempt_id,
+        "totalScore": total_score,
+        "maxScore": max_score,
+        "normalizedScore": normalized_score,
+        "assessmentEligible": assessment_eligible,
+        "knowledgePointResults": knowledge_point_results,
+        "occurredAt": occurred_at or datetime.now(timezone.utc).isoformat(),
+        "source": source,
+        "schemaVersion": schema_version,
+    }
+    evt = LearningEventModel(
+        event_id=event_id,
+        session_id=session_id,
+        learner_id=learner_id,
+        subject_id=subject_id,
+        event_type="quiz_result",
+        idempotency_key=idempotency_key,
+        attempt_id=attempt_id,
+        schema_version=schema_version,
+        metadata_=metadata,
+    )
+    db.add(evt)
+    return evt
+
+
+def get_quiz_result_event(
+    db: Session, attempt_id: str,
+) -> LearningEventModel | None:
+    """Return the quiz_result event for *attempt_id*, or None."""
+    return (
+        db.query(LearningEventModel)
+        .filter(
+            LearningEventModel.attempt_id == attempt_id,
+            LearningEventModel.event_type == "quiz_result",
+        )
+        .first()
+    )
+
+
+def check_quiz_result_event_exists(db: Session, attempt_id: str) -> bool:
+    """Return True if a quiz_result event already exists for *attempt_id*."""
+    return (
+        db.query(LearningEventModel)
+        .filter(
+            LearningEventModel.attempt_id == attempt_id,
+            LearningEventModel.event_type == "quiz_result",
+        )
+        .first()
+        is not None
+    )
+
+
 def get_events(
     db: Session,
     session_id: str | None = None,
@@ -827,50 +985,69 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
 
         # Quiz accuracy
         if etype in {"quiz_submit", "quiz_result", "practice_result"}:
-            if "accuracy" in meta:
+            # ── Structured format (commit 3+ server-authoritative events) ──
+            if meta.get("eventType") == "quiz_result":
                 try:
-                    quiz_scores.append(float(meta["accuracy"]))
+                    ts = int(meta.get("totalScore", 0))
+                    ms = int(meta.get("maxScore", 100))
+                    ns = float(meta.get("normalizedScore", 0))
+                    quiz_scores.append(round(ns * 100))
+                    quiz_correct += max(0, ts)
+                    quiz_total += ms
+                    quiz_pct = round(ns * 100)
+                    quiz_results.append({
+                        "score": quiz_pct,
+                        "topic": "",
+                        "timestamp": evt.created_at.isoformat() if evt.created_at else "",
+                    })
                 except (TypeError, ValueError):
                     pass
-            if "score" in meta:
-                try:
-                    quiz_scores.append(float(meta["score"]))
-                except (TypeError, ValueError):
-                    pass
-            if "correct" in meta and "total" in meta:
-                try:
-                    quiz_correct += int(meta["correct"])
-                    quiz_total += int(meta["total"])
-                except (TypeError, ValueError):
-                    pass
-            # Track individual quiz result for latest/best
-            quiz_pct: float | None = None
-            if "accuracy" in meta:
-                try:
-                    a = float(meta["accuracy"])
-                    quiz_pct = round(a * 100) if a <= 1 else round(a)
-                except (TypeError, ValueError):
-                    pass
-            if quiz_pct is None and "score" in meta:
-                try:
-                    s = float(meta["score"])
-                    quiz_pct = round(s * 100) if s <= 1 else round(s)
-                except (TypeError, ValueError):
-                    pass
-            if quiz_pct is None and "correct" in meta and "total" in meta:
-                try:
-                    c = int(meta["correct"])
-                    t = int(meta["total"])
-                    if t > 0:
-                        quiz_pct = round(c / t * 100)
-                except (TypeError, ValueError):
-                    pass
-            if quiz_pct is not None:
-                quiz_results.append({
-                    "score": quiz_pct,
-                    "topic": meta.get("topic") or meta.get("knowledgePoint") or "",
-                    "timestamp": evt.created_at.isoformat() if evt.created_at else "",
-                })
+            else:
+                # ── Legacy format (frontend-logged events) ──
+                if "accuracy" in meta:
+                    try:
+                        quiz_scores.append(float(meta["accuracy"]))
+                    except (TypeError, ValueError):
+                        pass
+                if "score" in meta:
+                    try:
+                        quiz_scores.append(float(meta["score"]))
+                    except (TypeError, ValueError):
+                        pass
+                if "correct" in meta and "total" in meta:
+                    try:
+                        quiz_correct += int(meta["correct"])
+                        quiz_total += int(meta["total"])
+                    except (TypeError, ValueError):
+                        pass
+                # Track individual quiz result for latest/best
+                quiz_pct2: float | None = None
+                if "accuracy" in meta:
+                    try:
+                        a = float(meta["accuracy"])
+                        quiz_pct2 = round(a * 100) if a <= 1 else round(a)
+                    except (TypeError, ValueError):
+                        pass
+                if quiz_pct2 is None and "score" in meta:
+                    try:
+                        s = float(meta["score"])
+                        quiz_pct2 = round(s * 100) if s <= 1 else round(s)
+                    except (TypeError, ValueError):
+                        pass
+                if quiz_pct2 is None and "correct" in meta and "total" in meta:
+                    try:
+                        c = int(meta["correct"])
+                        t = int(meta["total"])
+                        if t > 0:
+                            quiz_pct2 = round(c / t * 100)
+                    except (TypeError, ValueError):
+                        pass
+                if quiz_pct2 is not None:
+                    quiz_results.append({
+                        "score": quiz_pct2,
+                        "topic": meta.get("topic") or meta.get("knowledgePoint") or "",
+                        "timestamp": evt.created_at.isoformat() if evt.created_at else "",
+                    })
 
         # Feedback stats
         if etype == "feedback":
@@ -883,11 +1060,25 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
                     pass
 
         # Topic stats
-        topic = meta.get("topic") or meta.get("knowledgePoint")
-        if topic:
-            key = str(topic)
-            topic_total[key] = topic_total.get(key, 0) + int(meta.get("total", 1) or 1)
-            topic_wrong[key] = topic_wrong.get(key, 0) + int(meta.get("wrong", 0) or 0)
+        if meta.get("eventType") == "quiz_result":
+            # ── Structured format: iterate knowledgePointResults ──
+            kprs = meta.get("knowledgePointResults") or []
+            for kpr in (kprs if isinstance(kprs, list) else []):
+                if not isinstance(kpr, dict):
+                    continue
+                kp_key = str(kpr.get("knowledgePointKey") or kpr.get("knowledgePointLabel") or "")
+                if not kp_key:
+                    continue
+                topic_total[kp_key] = topic_total.get(kp_key, 0) + 1
+                if not kpr.get("isCorrect", True):
+                    topic_wrong[kp_key] = topic_wrong.get(kp_key, 0) + 1
+        else:
+            # ── Legacy format ──
+            topic = meta.get("topic") or meta.get("knowledgePoint")
+            if topic:
+                key = str(topic)
+                topic_total[key] = topic_total.get(key, 0) + int(meta.get("total", 1) or 1)
+                topic_wrong[key] = topic_wrong.get(key, 0) + int(meta.get("wrong", 0) or 0)
 
     # Quiz accuracy
     quiz_accuracy: int | None = None
@@ -924,20 +1115,34 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
     topic_sources: dict[str, set[str]] = {}
     for evt in events:
         meta = evt.metadata_ or {}
-        topic = meta.get("topic") or meta.get("knowledgePoint")
-        if not topic:
-            continue
-        tk = str(topic)
-        if tk not in topic_sources:
-            topic_sources[tk] = set()
-        if evt.event_type in ("quiz_result", "quiz_submit"):
-            topic_sources[tk].add("quiz")
-        elif evt.event_type == "practice_result":
-            topic_sources[tk].add("practice")
-        elif evt.event_type == "feedback":
-            topic_sources[tk].add("feedback")
-        elif evt.event_type == "diagnosis":
-            topic_sources[tk].add("diagnosis")
+        if meta.get("eventType") == "quiz_result":
+            # ── Structured format ──
+            kprs = meta.get("knowledgePointResults") or []
+            for kpr in (kprs if isinstance(kprs, list) else []):
+                if not isinstance(kpr, dict):
+                    continue
+                tk = str(kpr.get("knowledgePointKey") or kpr.get("knowledgePointLabel") or "")
+                if not tk:
+                    continue
+                if tk not in topic_sources:
+                    topic_sources[tk] = set()
+                topic_sources[tk].add("quiz")
+        else:
+            # ── Legacy format ──
+            topic = meta.get("topic") or meta.get("knowledgePoint")
+            if not topic:
+                continue
+            tk = str(topic)
+            if tk not in topic_sources:
+                topic_sources[tk] = set()
+            if evt.event_type in ("quiz_result", "quiz_submit"):
+                topic_sources[tk].add("quiz")
+            elif evt.event_type == "practice_result":
+                topic_sources[tk].add("practice")
+            elif evt.event_type == "feedback":
+                topic_sources[tk].add("feedback")
+            elif evt.event_type == "diagnosis":
+                topic_sources[tk].add("diagnosis")
 
     ranked = sorted(
         topic_wrong.items(),
@@ -1572,10 +1777,14 @@ def create_attempt(db: Session, attempt_data: dict) -> AttemptModel:
     attempt = AttemptModel(
         attempt_id=attempt_data.get("attempt_id", f"att_{uuid.uuid4().hex[:12]}"),
         session_id=attempt_data.get("session_id", ""),
+        subject_id=attempt_data.get("subject_id"),
         quiz_id=attempt_data.get("quiz_id"),
         exam_set_id=attempt_data.get("exam_set_id"),
         max_score=attempt_data.get("max_score", 100),
         learner_id=attempt_data.get("learner_id"),
+        idempotency_key=attempt_data.get("idempotency_key"),
+        attempt_number=attempt_data.get("attempt_number", 1),
+        assessment_eligible=attempt_data.get("assessment_eligible", True),
     )
     db.add(attempt)
     db.commit()
@@ -1620,8 +1829,17 @@ def update_attempt(db: Session, attempt_id: str, data: dict) -> AttemptModel | N
         attempt.status = data["status"]
     if "total_score" in data and data["total_score"] is not None:
         attempt.total_score = data["total_score"]
-    if data.get("status") in ("submitted", "graded"):
-        attempt.submitted_at = _utcnow()
+    if data.get("status") in ("submitted", "graded", "processing", "completed"):
+        if attempt.submitted_at is None:
+            attempt.submitted_at = _utcnow()
+    if data.get("status") in ("graded", "processing", "completed"):
+        attempt.graded_at = data.get("graded_at", _utcnow())
+    if "assessment_eligible" in data:
+        attempt.assessment_eligible = data["assessment_eligible"]
+    if "processing_task_id" in data:
+        attempt.processing_task_id = data["processing_task_id"]
+    if "diagnosis_task_id" in data:
+        attempt.diagnosis_task_id = data["diagnosis_task_id"]
     db.commit()
     db.refresh(attempt)
     return attempt
@@ -1632,6 +1850,44 @@ def get_attempt_answers(db: Session, attempt_id: str) -> list[AnswerRecordModel]
     return db.query(AnswerRecordModel).filter(
         AnswerRecordModel.attempt_id == attempt_id
     ).order_by(AnswerRecordModel.created_at).all()
+
+
+def find_attempt_by_idempotency_key(
+    db: Session,
+    learner_id: str,
+    idempotency_key: str,
+    *,
+    quiz_id: str | None = None,
+    exam_set_id: str | None = None,
+) -> AttemptModel | None:
+    """Look up an existing attempt by its idempotency key and parent resource."""
+    q = db.query(AttemptModel).filter(
+        AttemptModel.learner_id == learner_id,
+        AttemptModel.idempotency_key == idempotency_key,
+    )
+    if quiz_id:
+        q = q.filter(AttemptModel.quiz_id == quiz_id)
+    if exam_set_id:
+        q = q.filter(AttemptModel.exam_set_id == exam_set_id)
+    return q.order_by(desc(AttemptModel.created_at)).first()
+
+
+def get_next_attempt_number(
+    db: Session,
+    learner_id: str,
+    *,
+    quiz_id: str | None = None,
+    exam_set_id: str | None = None,
+) -> int:
+    """Compute the next attempt_number for a learner on a quiz or exam set."""
+    q = db.query(func.count(AttemptModel.id)).filter(
+        AttemptModel.learner_id == learner_id,
+    )
+    if quiz_id:
+        q = q.filter(AttemptModel.quiz_id == quiz_id)
+    if exam_set_id:
+        q = q.filter(AttemptModel.exam_set_id == exam_set_id)
+    return (q.scalar() or 0) + 1
 
 
 # ── Assessment State (closed-loop persistence) ─────────────────────────
@@ -1758,3 +2014,405 @@ def delete_planning_draft(db: Session, draft_id: str) -> bool:
     db.delete(draft)
     db.commit()
     return True
+
+
+# ── Question–Knowledge Point Mappings ──────────────────────────────────────
+
+
+def get_mappings_for_question(
+    db: Session, question_id: str,
+) -> list[QuestionKnowledgePointMappingModel]:
+    """Get all KP mappings for a question, ordered by weight descending."""
+    return (
+        db.query(QuestionKnowledgePointMappingModel)
+        .filter(QuestionKnowledgePointMappingModel.question_id == question_id)
+        .order_by(QuestionKnowledgePointMappingModel.weight.desc())
+        .all()
+    )
+
+
+def get_mappings_for_questions(
+    db: Session, question_ids: list[str],
+) -> dict[str, list[QuestionKnowledgePointMappingModel]]:
+    """Batch lookup: question_id → list of mappings."""
+    if not question_ids:
+        return {}
+    rows = (
+        db.query(QuestionKnowledgePointMappingModel)
+        .filter(QuestionKnowledgePointMappingModel.question_id.in_(question_ids))
+        .order_by(QuestionKnowledgePointMappingModel.weight.desc())
+        .all()
+    )
+    result: dict[str, list[QuestionKnowledgePointMappingModel]] = {qid: [] for qid in question_ids}
+    for row in rows:
+        result.setdefault(row.question_id, []).append(row)
+    return result
+
+
+def create_question_kp_mapping(
+    db: Session,
+    *,
+    mapping_id: str,
+    question_id: str,
+    knowledge_point_key: str,
+    knowledge_point_label: str = "",
+    weight: float = 1.0,
+    confidence: float = 1.0,
+    source: str = "explicit",
+    subject_id: str | None = None,
+    mapping_version: int = 1,
+) -> QuestionKnowledgePointMappingModel:
+    """Create a single question→knowledge-point mapping."""
+    mapping = QuestionKnowledgePointMappingModel(
+        mapping_id=mapping_id,
+        question_id=question_id,
+        subject_id=subject_id,
+        knowledge_point_key=knowledge_point_key,
+        knowledge_point_label=knowledge_point_label or knowledge_point_key,
+        weight=weight,
+        confidence=confidence,
+        source=source,
+        mapping_version=mapping_version,
+    )
+    db.add(mapping)
+    return mapping
+
+
+def get_or_create_fallback_mappings(
+    db: Session,
+    question_id: str,
+    subject_id: str | None,
+    kp_strings: list[str],
+) -> list[QuestionKnowledgePointMappingModel]:
+    """Create equal-weight fallback mappings from old string-list knowledge_points.
+
+    Only creates new mappings if no rows exist for this question yet.
+    Returns existing mappings if they already exist.
+    """
+    existing = get_mappings_for_question(db, question_id)
+    if existing:
+        return existing
+
+    if not kp_strings:
+        return []
+
+    weight = 1.0 / len(kp_strings)
+    mappings: list[QuestionKnowledgePointMappingModel] = []
+    for kp_str in kp_strings:
+        kp_str = kp_str.strip()
+        if not kp_str:
+            continue
+        m = create_question_kp_mapping(
+            db,
+            mapping_id=f"fb_{question_id}_{kp_str[:48]}"[:64],
+            question_id=question_id,
+            knowledge_point_key=kp_str,
+            knowledge_point_label=kp_str,
+            weight=weight,
+            confidence=0.5,
+            source="fallback",
+            subject_id=subject_id,
+            mapping_version=1,
+        )
+        mappings.append(m)
+    if mappings:
+        db.flush()
+    return mappings
+
+
+def ensure_question_kp_mappings(
+    db: Session,
+    question: PracticeQuestionModel,
+    subject_id: str | None = None,
+) -> list[QuestionKnowledgePointMappingModel]:
+    """Resolve KP mappings for a question, creating fallbacks from legacy data.
+
+    Priority:
+    1. Existing explicit / generated / fallback mappings in DB
+    2. Create fallback from question.knowledge_points (JSON string list)
+    3. Return empty list when nothing is available (unmapped)
+    """
+    existing = get_mappings_for_question(db, question.question_id)
+    if existing:
+        return existing
+
+    # Try to create fallback mappings from legacy knowledge_points JSON
+    raw_kps: list[str] = []
+    kp_data = question.knowledge_points
+    if isinstance(kp_data, list):
+        raw_kps = [str(k) for k in kp_data if k and str(k).strip()]
+    elif isinstance(kp_data, dict):
+        # Handle dict form: {"name": "..."} or {"kp_name": ...}
+        raw_kps = [str(v) for v in kp_data.values() if v and str(v).strip()]
+
+    if raw_kps:
+        mappings = get_or_create_fallback_mappings(
+            db, question.question_id, subject_id, raw_kps,
+        )
+        if mappings:
+            return mappings
+
+    # Unmapped — no knowledge point data available
+    return []
+
+
+# ── Diagnosis Snapshots & Evidence (spec §4.1–4.2) ────────────────────────
+
+
+def get_next_diagnosis_version(
+    db: Session, learner_id: str, subject_id: str,
+) -> int:
+    """Return the next version number for a (learner, subject) pair."""
+    max_ver = (
+        db.query(func.max(DiagnosisSnapshotModel.version))
+        .filter(
+            DiagnosisSnapshotModel.learner_id == learner_id,
+            DiagnosisSnapshotModel.subject_id == subject_id,
+        )
+        .scalar()
+    )
+    return (max_ver or 0) + 1
+
+
+def supersede_snapshots(
+    db: Session, learner_id: str, subject_id: str, *,
+    except_snapshot_id: str = "",
+) -> int:
+    """Mark all ready snapshots as superseded except the given one.
+
+    Returns the number of rows updated.
+    """
+    filters = [
+        DiagnosisSnapshotModel.learner_id == learner_id,
+        DiagnosisSnapshotModel.subject_id == subject_id,
+        DiagnosisSnapshotModel.status.in_(["ready", "generating"]),
+    ]
+    if except_snapshot_id:
+        filters.append(DiagnosisSnapshotModel.diagnosis_snapshot_id != except_snapshot_id)
+    count = (
+        db.query(DiagnosisSnapshotModel)
+        .filter(*filters)
+        .update({"status": "superseded"}, synchronize_session=False)
+    )
+    return count
+
+
+def create_diagnosis_snapshot(
+    db: Session,
+    *,
+    diagnosis_snapshot_id: str,
+    learner_id: str,
+    subject_id: str | None,
+    session_id: str,
+    version: int,
+    status: str = "ready",
+    mastery_levels: list | None = None,
+    weaknesses: list | None = None,
+    strengths: list | None = None,
+    confidence: float | None = None,
+    summary: str | None = None,
+    source_attempt_ids: list | None = None,
+    source_event_ids: list | None = None,
+    evidence_count: int = 0,
+    generated_by: str = "diagnosis_agent",
+    supersedes_snapshot_id: str | None = None,
+    active_task_id: str | None = None,
+) -> DiagnosisSnapshotModel:
+    """Create a new diagnosis snapshot row."""
+    snap = DiagnosisSnapshotModel(
+        diagnosis_snapshot_id=diagnosis_snapshot_id,
+        learner_id=learner_id,
+        subject_id=subject_id or "",
+        session_id=session_id,
+        version=version,
+        status=status,
+        mastery_levels=mastery_levels or [],
+        weaknesses=weaknesses or [],
+        strengths=strengths or [],
+        confidence=confidence,
+        summary=summary,
+        source_attempt_ids=source_attempt_ids or [],
+        source_event_ids=source_event_ids or [],
+        evidence_count=evidence_count,
+        generated_by=generated_by,
+        supersedes_snapshot_id=supersedes_snapshot_id,
+        active_task_id=active_task_id,
+    )
+    db.add(snap)
+    db.flush()
+    return snap
+
+
+def get_latest_diagnosis_snapshot(
+    db: Session, learner_id: str, subject_id: str,
+) -> DiagnosisSnapshotModel | None:
+    """Return the latest ready snapshot for a (learner, subject) pair."""
+    return (
+        db.query(DiagnosisSnapshotModel)
+        .filter(
+            DiagnosisSnapshotModel.learner_id == learner_id,
+            DiagnosisSnapshotModel.subject_id == subject_id,
+            DiagnosisSnapshotModel.status == "ready",
+        )
+        .order_by(DiagnosisSnapshotModel.version.desc())
+        .first()
+    )
+
+
+def get_diagnosis_at_version(
+    db: Session, learner_id: str, subject_id: str, version: int,
+) -> DiagnosisSnapshotModel | None:
+    """Return a specific version of a diagnosis snapshot."""
+    return (
+        db.query(DiagnosisSnapshotModel)
+        .filter(
+            DiagnosisSnapshotModel.learner_id == learner_id,
+            DiagnosisSnapshotModel.subject_id == subject_id,
+            DiagnosisSnapshotModel.version == version,
+        )
+        .first()
+    )
+
+
+def create_diagnosis_evidence(
+    db: Session,
+    *,
+    evidence_id: str,
+    diagnosis_snapshot_id: str,
+    learner_id: str,
+    knowledge_point_key: str,
+    evidence_type: str = "quiz_answer",
+    subject_id: str | None = None,
+    attempt_id: str | None = None,
+    question_id: str | None = None,
+    learning_event_id: str | None = None,
+    resource_id: str | None = None,
+    score: float | None = None,
+    weight: float | None = None,
+    confidence: float | None = None,
+    occurred_at: datetime | None = None,
+    metadata_: dict | None = None,
+) -> DiagnosisEvidenceModel:
+    """Create a single evidence row linked to a diagnosis snapshot."""
+    ev = DiagnosisEvidenceModel(
+        evidence_id=evidence_id,
+        diagnosis_snapshot_id=diagnosis_snapshot_id,
+        learner_id=learner_id,
+        subject_id=subject_id,
+        knowledge_point_key=knowledge_point_key,
+        evidence_type=evidence_type,
+        attempt_id=attempt_id,
+        question_id=question_id,
+        learning_event_id=learning_event_id,
+        resource_id=resource_id,
+        score=score,
+        weight=weight,
+        confidence=confidence,
+        occurred_at=occurred_at or _utcnow(),
+        metadata_=metadata_,
+    )
+    db.add(ev)
+    return ev
+
+
+def get_evidence_for_snapshot(
+    db: Session, diagnosis_snapshot_id: str,
+) -> list[DiagnosisEvidenceModel]:
+    """Return all evidence rows for a given snapshot."""
+    return (
+        db.query(DiagnosisEvidenceModel)
+        .filter(DiagnosisEvidenceModel.diagnosis_snapshot_id == diagnosis_snapshot_id)
+        .order_by(DiagnosisEvidenceModel.knowledge_point_key)
+        .all()
+    )
+
+
+def collect_evidence_from_events(
+    db: Session,
+    learner_id: str,
+    subject_id: str | None,
+    source_event_ids: list[str],
+    source_attempt_ids: list[str],
+) -> list[dict]:
+    """Collect structured evidence records from quiz_result events and answer records.
+
+    Each entry is a dict suitable for passing to ``create_diagnosis_evidence``.
+    Evidence is only collected for ``assessment_eligible`` attempts.
+    """
+    evidence: list[dict] = []
+
+    # ── From quiz_result events ─────────────────────────────────
+    if source_event_ids:
+        events = (
+            db.query(LearningEventModel)
+            .filter(LearningEventModel.event_id.in_(source_event_ids))
+            .all()
+        )
+        for evt in events:
+            meta = evt.metadata_ or {}
+            kprs = meta.get("knowledgePointResults", [])
+            if isinstance(kprs, list):
+                for kpr in kprs:
+                    if not kpr.get("assessmentEligible", True):
+                        continue
+                    evidence.append({
+                        "knowledge_point_key": str(kpr.get("knowledgePointKey", "")),
+                        "evidence_type": "quiz_answer",
+                        "attempt_id": evt.attempt_id,
+                        "question_id": str(kpr.get("questionId", "")),
+                        "learning_event_id": evt.event_id,
+                        "score": float(kpr.get("normalizedScore", 0)),
+                        "weight": float(kpr.get("weight", 1.0)),
+                        "confidence": float(kpr.get("mappingConfidence", 1.0)),
+                        "occurred_at": evt.created_at,
+                        "metadata_": kpr,
+                    })
+
+    # ── From legacy AnswerRecords (no quiz_result event yet) ───
+    if source_attempt_ids:
+        # Only include attempts that don't already have a quiz_result event
+        attempts_with_events = set()
+        if source_event_ids:
+            evt_attempts = (
+                db.query(LearningEventModel.attempt_id)
+                .filter(LearningEventModel.event_id.in_(source_event_ids))
+                .all()
+            )
+            attempts_with_events = {a[0] for a in evt_attempts if a[0]}
+
+        for aid in source_attempt_ids:
+            if aid in attempts_with_events:
+                continue
+            # Check assessment_eligible
+            attempt = db.get(AttemptModel, aid) if hasattr(AttemptModel, 'attempt_id') else None
+            if attempt is None:
+                att = db.query(AttemptModel).filter(AttemptModel.attempt_id == aid).first()
+                if att is None or not getattr(att, "assessment_eligible", True):
+                    continue
+                attempt_id_val = att.attempt_id
+            else:
+                attempt_id_val = aid
+
+            answer_records = (
+                db.query(AnswerRecordModel)
+                .filter(AnswerRecordModel.attempt_id == attempt_id_val)
+                .all()
+            )
+            for ar in answer_records:
+                q_score = float(ar.total_score or 0)
+                evidence.append({
+                    "knowledge_point_key": f"question_{ar.question_id}",
+                    "evidence_type": "quiz_answer",
+                    "attempt_id": attempt_id_val,
+                    "question_id": ar.question_id,
+                    "score": q_score / 100.0,
+                    "weight": 1.0,
+                    "confidence": 0.8,
+                    "occurred_at": ar.created_at,
+                    "metadata_": {
+                        "errorType": ar.error_type,
+                        "totalScore": ar.total_score,
+                    },
+                })
+
+    return evidence

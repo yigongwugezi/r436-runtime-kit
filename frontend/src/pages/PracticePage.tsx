@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useChatStore } from '../store/chatStore';
 import { Target, BookOpen, AlertCircle, BarChart3, Play, Loader2, ChevronLeft, ChevronRight, Check, X, RefreshCw, Edit3, Users, GraduationCap, ClipboardList, Trash2 } from 'lucide-react';
@@ -47,6 +47,7 @@ export default function PracticePage() {
   const [grades, setGrades] = useState<Record<string, GradingResult>>({});
   const [currentIdx, setCurrentIdx] = useState(0);
   const [grading, setGrading] = useState(false);
+  const submitIdempotencyKeyRef = useRef('');
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState<any>(null);
   const [weakData, setWeakData] = useState<any>(null);
@@ -130,6 +131,7 @@ export default function PracticePage() {
       const res: any = await startExamSetAttempt(activeExamSet.id, { sessionId });
       const data = res?.data || res;
       setExamSetAttemptId(data?.attempt?.attemptId || '');
+      submitIdempotencyKeyRef.current = '';  // reset for new attempt
       const qRes: any = await getExamSetResults(activeExamSet.id);
       const qData = qRes?.data || qRes;
       const linked = qData?.examSet?.linkedQuestions || [];
@@ -170,9 +172,17 @@ export default function PracticePage() {
   const submitExamSetAnswers = async () => {
     if (!activeExamSet || !examSetAttemptId) return;
     setGrading(true);
+    // Generate idempotency key on first click; subsequent clicks (double-click) reuse it
+    if (!submitIdempotencyKeyRef.current) {
+      submitIdempotencyKeyRef.current = crypto.randomUUID();
+    }
     try {
       const answerList = examSetQuestions.map(q => ({ questionId: q.question_id, answer: answers[q.question_id] || '' }));
-      const res: any = await submitExamSet(activeExamSet.id, { sessionId, answers: answerList });
+      const res: any = await submitExamSet(activeExamSet.id, {
+        sessionId,
+        answers: answerList,
+        idempotencyKey: submitIdempotencyKeyRef.current,
+      });
       const data = res?.data || res;
       setExamSetResults(data?.results || []);
       setExamSetTotalScore(data?.totalScore ?? null);

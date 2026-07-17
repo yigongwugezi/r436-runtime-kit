@@ -31,6 +31,16 @@ def require_owned_session(db: Session, session_id: str, learner_id: str) -> Sess
     )
     if owned is not None:
         return owned
+    # Allow anonymous→real learner transition (normal login flow)
+    from app.db.repository import try_upgrade_anonymous_session
+    if try_upgrade_anonymous_session(db, session_id, learner_id):
+        owned = (
+            db.query(SessionModel)
+            .filter(SessionModel.id == session_id, SessionModel.learner_id == learner_id)
+            .first()
+        )
+        if owned is not None:
+            return owned
     exists = db.query(SessionModel.id).filter(SessionModel.id == session_id).first()
     if exists is None:
         raise HTTPException(status_code=404, detail="resource not found")
