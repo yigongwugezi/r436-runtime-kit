@@ -113,6 +113,11 @@ def init_db() -> None:
             "task_id": "VARCHAR(64)",
             "completed_at": "DATETIME",
             "updated_at": "DATETIME",
+            "profile_version": "INTEGER",
+            "diagnosis_version": "INTEGER",
+            "personalization_factors": "JSON",
+            "recommendation_reason": "TEXT",
+            "quality_status": "VARCHAR(16) DEFAULT 'passed'",
         },
         "questions": {
             "subject": "VARCHAR(64)",

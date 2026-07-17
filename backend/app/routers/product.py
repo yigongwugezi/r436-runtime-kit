@@ -2222,6 +2222,47 @@ def _payload_subject_id(payload: dict[str, Any]) -> str:
     return str(payload.get("subjectId", "")).strip()
 
 
+def _attach_personalization_metadata(
+    resource: dict, session_id: str, subject_id: str = "",
+) -> None:
+    """Attach personalization provenance to a resource dict before saving.
+
+    Reads the current profile and diagnosis versions from the personalization
+    context and stamps them onto the resource, along with relevant factors.
+    """
+    try:
+        from app.services.personalization_context import PersonalizationContextService
+        svc = PersonalizationContextService()
+        ctx = svc.build(session_id, subject_id=subject_id or None)
+
+        resource["profile_version"] = ctx.get("profileVersion")
+        resource["diagnosis_version"] = ctx.get("diagnosisVersion")
+        resource["quality_status"] = resource.get("quality_status") or resource.get("qualityStatus") or "passed"
+
+        # Collect personalization factors that influenced this resource
+        factors: list[str] = []
+        weaknesses = ctx.get("weaknesses") or []
+        if weaknesses:
+            weak_names = [w.get("name", w.get("knowledgePointKey", "")) for w in weaknesses[:3] if isinstance(w, dict)]
+            factors.extend(f"weak:{n}" for n in weak_names if n)
+        prefs = ctx.get("subjectPreferences") or {}
+        if prefs.get("preferredFormats"):
+            factors.append(f"pref:format={prefs['preferredFormats']}")
+        goal = ctx.get("targetGoal")
+        if goal:
+            factors.append(f"goal:{goal[:40]}")
+        resource["personalization_factors"] = factors
+
+        # Keep existing reason if present, otherwise note the diagnosis version used
+        if not resource.get("recommendation_reason") and not resource.get("reason"):
+            if ctx.get("diagnosisVersion"):
+                resource["recommendation_reason"] = (
+                    f"基于诊断 v{ctx['diagnosisVersion']} 和当前掌握度生成"
+                )
+    except Exception:
+        pass  # best-effort: never block resource saving
+
+
 def _ensure_session_linked(
     session_id: str,
     subject_id: str = "",
@@ -5802,6 +5843,7 @@ flowchart LR
 def _generate_section_lecture(section_id: str, payload: dict[str, Any], workflow_task: Any = None) -> dict[str, Any]:
     """Generate a structured lecture for a section using LLM, persist as Resource."""
     session_id = _payload_session_id(payload)
+    subject_id = _payload_subject_id(payload)
     section_title = str(payload.get("sectionTitle", "")).strip()
     section_goal = str(payload.get("sectionGoal", "")).strip()
     chapter_id = str(payload.get("chapterId", "")).strip()
@@ -5951,7 +5993,7 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
     try:
         db = SessionLocal()
         from app.db.repository import upsert_resource
-        upsert_resource(db, session_id, {
+        resource_dict = {
             "id": resource_id,
             "type": "lecture",
             "title": f"讲义：{section_title}",
@@ -5965,7 +6007,9 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
             "related_chapter_id": chapter_id,
             "related_section_id": section_id,
             "knowledge_points": [kp.get("name", str(kp)) if isinstance(kp, dict) else str(kp) for kp in (knowledge_points or [])],
-        })
+        }
+        _attach_personalization_metadata(resource_dict, session_id, subject_id)
+        upsert_resource(db, session_id, resource_dict)
     finally:
         db.close()
 
@@ -6816,6 +6860,8 @@ def _generate_section_resource(section_id: str, payload: dict[str, Any], workflo
             workflow_task_manager.check_cancelled(workflow_task)
         if existing is not None:
             resource["id"] = existing.id
+        # ── Attach personalization provenance ───────────────────
+        _attach_personalization_metadata(resource, session_id, subject_id)
         saved = service.persist(db, session_id, resource)
         return _product_response({"resource": service.serialize(saved), "reused": False}, session_id=session_id, source="agent")
     except ValueError:

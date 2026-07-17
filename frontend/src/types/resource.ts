@@ -102,6 +102,14 @@ export interface Resource {
   relatedChapter?: string;
   /** 关联的知识点列表 */
   relatedKnowledgePoints?: string[];
+  /** 个性化所依据的画像版本 */
+  profileVersion?: number;
+  /** 个性化所依据的诊断版本 */
+  diagnosisVersion?: number;
+  /** 个性化因子（哪些因素影响了推荐/生成） */
+  personalizationFactors?: string[];
+  /** 推荐理由（用户可读） */
+  recommendationReason?: string;
   /** 质检状态 */
   qualityStatus?: QualityStatus;
   /** 审核状态 */

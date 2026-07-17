@@ -506,6 +506,11 @@ def upsert_resource(
         related_chapter_id=resource_data.get("related_chapter_id", ""),
         related_section_id=resource_data.get("related_section_id", ""),
         task_id=resource_data.get("task_id", ""),
+        profile_version=resource_data.get("profile_version") or resource_data.get("profileVersion"),
+        diagnosis_version=resource_data.get("diagnosis_version") or resource_data.get("diagnosisVersion"),
+        personalization_factors=resource_data.get("personalization_factors") or resource_data.get("personalizationFactors"),
+        recommendation_reason=resource_data.get("recommendation_reason") or resource_data.get("recommendationReason") or resource_data.get("reason"),
+        quality_status=resource_data.get("quality_status") or resource_data.get("qualityStatus", "passed"),
     )
     existing = db.get(ResourceModel, res.id)
     if existing:
@@ -532,6 +537,11 @@ def upsert_resource(
         existing.related_chapter_id = res.related_chapter_id
         existing.related_section_id = res.related_section_id
         existing.task_id = res.task_id
+        existing.profile_version = res.profile_version
+        existing.diagnosis_version = res.diagnosis_version
+        existing.personalization_factors = res.personalization_factors
+        existing.recommendation_reason = res.recommendation_reason
+        existing.quality_status = res.quality_status
         existing.updated_at = _utcnow()
         res = existing
     else:

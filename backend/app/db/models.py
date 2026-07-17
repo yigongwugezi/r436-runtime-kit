@@ -335,6 +335,15 @@ class ResourceModel(Base):
     related_chapter_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
     related_section_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
     task_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+
+    # ── Personalization provenance (spec §5.4) ───────────────────────
+    profile_version: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    diagnosis_version: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    personalization_factors: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    recommendation_reason: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    quality_status: Mapped[str] = mapped_column(String(16), default="passed")
+    # passed | needs_review | blocked | provider_unavailable (spec §2.1)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
