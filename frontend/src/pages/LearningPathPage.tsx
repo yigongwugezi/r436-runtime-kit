@@ -182,6 +182,11 @@ const nodeStatusColor = (status: string) => {
 };
 
 // ====== 布局常量 ======
+const GRAPH_MIN_Y = 150;
+const GRAPH_MAX_Y = 200;
+const AXIS_TOP = 320;
+const AXIS_PAD = 48;
+const NODE_BOX_HEIGHT = 56;
 
 export default function LearningPathPage() {
   const nav = useNavigate();
@@ -277,6 +282,28 @@ export default function LearningPathPage() {
     const m = minutes % 60;
     return m > 0 ? `${h}h${m}m` : `${h}h`;
   };
+
+  // ====== 容器宽度 ======
+  const graphRef = React.useRef<HTMLDivElement>(null);
+  const [graphW, setGraphW] = useState(800);
+
+  useEffect(() => {
+    const el = graphRef.current;
+    if (!el) return;
+    const getWidth = () => {
+      if (el.offsetWidth > 0) setGraphW(el.offsetWidth);
+    };
+    getWidth();
+    const observer = new ResizeObserver(getWidth);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  const ratioToLeftPct = useCallback((ratio: number) => {
+    if (graphW <= 0) return '50%';
+    const px = AXIS_PAD + ratio * (graphW - AXIS_PAD * 2);
+    return `${(px / graphW) * 100}%`;
+  }, [graphW]);
 
   const sessionId = useChatStore((s) => s.currentSessionId);
 
