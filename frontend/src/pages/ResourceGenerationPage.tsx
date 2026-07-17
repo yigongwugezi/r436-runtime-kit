@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { BrainCircuit, CheckCircle2, ChevronRight, Clapperboard, Clock, FileQuestion, FileText, Loader2, Presentation, Sparkles, XCircle } from 'lucide-react';
+import { BrainCircuit, CheckCircle2, ChevronRight, Clapperboard, Clock, FileQuestion, FileText, Image as ImageIcon, Loader2, Presentation, Sparkles, XCircle } from 'lucide-react';
 import { startGeneralResourceGeneration, type GeneralResourceType } from '../api/resources';
 import { cancelWorkflow, consumeWorkflowEvents, readWorkflow, retryWorkflow, type WorkflowState } from '../api/workflows';
 import { getCurrentLearner } from '../store/authStore';
@@ -21,12 +21,13 @@ type TaskEntry = WorkflowState & { resourceType: GeneralResourceType; reusedExis
 
 const resourceTypes: Array<{ id: GeneralResourceType; label: string; icon: typeof FileText; description: string }> = [
   { id: 'lecture', label: '课程讲义', icon: FileText, description: '结构化的知识讲解' },
-  { id: 'video', label: '教学视频', icon: Clapperboard, description: '可视化教学讲解' },
   { id: 'mindmap', label: '思维导图', icon: BrainCircuit, description: '可渲染的知识结构图' },
-  { id: 'practice', label: '实操案例', icon: FileText, description: '含代码示例的实践任务' },
   { id: 'quiz', label: '练习题库', icon: FileQuestion, description: '含答案与解析的自测题' },
+  { id: 'practice', label: '实操案例', icon: FileText, description: '含代码示例的实践任务' },
+  { id: 'reading', label: '拓展阅读', icon: FileText, description: '学术风格的延伸阅读' },
+  { id: 'image', label: '知识图解', icon: ImageIcon, description: 'AI 生成的教学图解' },
   { id: 'ppt', label: 'PPT 演示', icon: Presentation, description: '可下载的本地演示文稿' },
-  { id: 'manim', label: 'Manim 动画', icon: Clapperboard, description: '需要本地 Manim 渲染环境' },
+  { id: 'manim', label: '动画演示', icon: Clapperboard, description: '需要本地 Manim 渲染环境' },
 ];
 
 const labels = Object.fromEntries(resourceTypes.map((item) => [item.id, item.label])) as Record<GeneralResourceType, string>;
@@ -35,7 +36,7 @@ const POLL_INTERVAL_MS = 3000;
 
 function normalizeTypes(value: string | null): GeneralResourceType[] {
   const aliases: Record<string, GeneralResourceType> = { 'mind-map': 'mindmap', mind_map: 'mindmap', case_study: 'practice' };
-  const known = new Set<GeneralResourceType>(['lecture', 'mindmap', 'quiz', 'ppt', 'video', 'animation', 'manim', 'reading', 'practice']);
+  const known = new Set<GeneralResourceType>(['lecture', 'mindmap', 'quiz', 'ppt', 'video', 'animation', 'manim', 'reading', 'practice', 'image']);
   const values = (value || '').split(',').map((item) => aliases[item] || item).filter((item): item is GeneralResourceType => known.has(item as GeneralResourceType));
   return [...new Set(values)].slice(0, 3);
 }
@@ -185,8 +186,12 @@ export default function ResourceGenerationPage() {
             events: [], preview: '', elapsedMs: latest.elapsed_ms || 0, result: latest.result,
             errorMessage: latest.safe_error_message || '',
           }, reusedExisting);
-          if (latest.status === 'completed') bumpDataVersion();
-          clearWorkflowTask(scope);
+          if (latest.status === 'completed') {
+            bumpDataVersion();
+            // Keep completed tasks in sessionStorage for recovery on page refresh
+          } else {
+            clearWorkflowTask(scope);
+          }
         }
         // if latest is null (readWorkflow failed), keep saved task for future recovery
       } catch {
@@ -253,9 +258,10 @@ export default function ResourceGenerationPage() {
           putTask(rt, restored);
           if (isActiveWorkflowStatus(task.status)) {
             await monitor(rt, record.taskId, false, restored);
-          } else {
+          } else if (isTerminalWorkflowStatus(task.status)) {
             if (task.status === 'completed') bumpDataVersion();
-            if (isTerminalWorkflowStatus(task.status)) {
+            // Only clean up failed/cancelled tasks; keep completed ones for recovery
+            if (task.status !== 'completed') {
               const baseScope: WorkflowTaskScope = {
                 workflowType: 'general_resource_generation', sessionId, subjectId, pathId: path?.id || '',
                 resourceType: rt, operation: 'generate', topicFingerprint: '', recoveryKey: '',
@@ -271,8 +277,11 @@ export default function ResourceGenerationPage() {
       })();
     }
 
-    return () => { active = false; };
-  }, [bumpDataVersion, monitor, path?.id, putTask, sessionId, subjectId]);
+    return () => {
+      active = false;
+      restoring.current.clear();
+    };
+  }, [sessionId, subjectId]);
 
   if (isParent) return <div className="h-[calc(100vh-300px)] flex items-center justify-center text-surface-500">家长账户只能查看已生成资源。</div>;
 

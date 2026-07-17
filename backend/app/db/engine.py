@@ -92,6 +92,9 @@ def init_db() -> None:
         "learning_paths": {
             "description": "TEXT",
             "textbook_id": "VARCHAR(64)",
+            "pending_revision": "JSON",
+            "path_revisions": "JSON",
+            "current_version": "INTEGER DEFAULT 0",
         },
         "resources": {
             "knowledge_points": "JSON",

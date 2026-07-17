@@ -75,6 +75,13 @@ export interface Resource {
   format: ResourceFormat;
   /** Mermaid 图谱定义 (mindmap 类型) */
   mermaidDef?: string;
+  /** 知识图谱数据结构 (graph_data 格式) */
+  graphData?: {
+    nodes: Array<{ id: string; label: string; type?: string; mastery?: number; status?: string; difficulty?: string; importance?: number }>;
+    edges: Array<{ source: string; target: string; relation?: string }>;
+  };
+  /** 内容格式标识 */
+  contentFormat?: string;
   /** 代码内容 (case_study 类型) */
   codeBlocks?: CodeBlock[];
   /** 题目 (quiz 类型) */

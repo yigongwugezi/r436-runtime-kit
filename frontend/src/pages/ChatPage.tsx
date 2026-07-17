@@ -5,10 +5,10 @@ import { useStreamChat } from '../hooks/useStreamChat';
 import { useNotificationPoller } from '../hooks/useNotificationPoller';
 import { getSessionMessages, getQuickCommands, recoverGeneration, uploadMultimodalImage, saveMultimodalResource, prepareKnowledgeCandidates } from '../api/chat';
 import { DEFAULT_QUICK_COMMANDS } from '../utils/constants';
-import { timeAgo } from '../utils/format';
+import { timeAgo, uid } from '../utils/format';
 import { runtimeStorageKeys, writeStorageItem } from '../utils/storageKeys';
 import type { ChatAttachment, ChatMessage, GenerationProgress, ProgressStep, QuickCommand } from '../types/chat';
-import { Send, Sparkles, Square, Copy, Check, AlertCircle, Bot, RefreshCw, XCircle, Loader2, BrainCircuit, ImagePlus, Trash2, MessageCircle, Globe } from 'lucide-react';
+import { Send, Sparkles, Square, Copy, Check, AlertCircle, Bot, RefreshCw, XCircle, Loader2, BrainCircuit, ImagePlus, Trash2, MessageCircle, Globe, Target } from 'lucide-react';
 import { getCurrentLearner } from '../store/authStore';
 import Markdown from '../utils/markdown';
 import MarkmapDiagram from '../utils/markmap';
@@ -583,11 +583,16 @@ const ModeToggleBar = memo(function ModeToggleBar() {
           }`}
         >自由学习</button>
         <button
-          onClick={() => useChatStore.getState().setChatMode('planning')}
+          onClick={() => useChatStore.getState().setChatMode('invoke')}
           className={`rounded-lg px-4 py-1.5 text-xs font-medium transition-colors ${
-            chatMode === 'planning' ? 'bg-white text-surface-800 shadow-sm' : 'text-surface-500 hover:text-surface-700'
+            chatMode === 'invoke' ? 'bg-white text-surface-800 shadow-sm' : 'text-surface-500 hover:text-surface-700'
           }`}
-        >规划学习</button>
+        >调用模式</button>
+        {chatMode === 'planning' && (
+          <span className="rounded-lg px-4 py-1.5 text-xs font-medium bg-accent-100 text-accent-700 shadow-sm flex items-center gap-1.5">
+            <Target size={12} />规划模式
+          </span>
+        )}
       </div>
     </div>
   );
@@ -755,6 +760,33 @@ export default function ChatPage() {
     const text = inputValue.trim();
     if ((!text && !selectedImage) || isStreaming) return;
     const finalText = text || '识别这张图片';
+
+    // ═══ 检测规划关键词：自由/调用模式自动切换到规划模式 ═══
+    const currentMode = useChatStore.getState().chatMode;
+    const PLAN_KEYWORDS = ["制定学习计划", "制定学习路径", "帮我规划", "规划学习", "帮我制定", "学习方案", "安排学习", "生成学习路径", "规划模式", "路径规划"];
+    if (currentMode !== 'planning' && PLAN_KEYWORDS.some(kw => finalText.includes(kw))) {
+      useChatStore.getState().setChatMode('planning');
+      const GUIDING_MSGS = [
+        '你好！我是你的学习路径规划助手。我的角色是**提问者**——在你准备好生成路径之前，我会一直问、一直听，不会提前给建议。了解得越深，规划才越准。',
+        '我需要了解以下几个方面的信息，越详细规划越精准：\n\n📌 **基础信息** — 你的专业背景、目标课程、当前掌握程度\n📌 **目标与时间** — 学习目标（考试/竞赛/系统掌握）、可用时间、计划周期\n📌 **能力诊断** — 已有基础水平、薄弱环节、易错题型\n📌 **学习偏好** — 喜欢的学习方式（视频/讲义/练习/项目）、学习节奏偏好\n📌 **资源与约束** — 可用资源、截止日期、每周空闲时段\n\n我们一项一项聊，你先说，我来记。',
+        '先说说你的**专业背景**吧——你目前是什么专业/年级？想学的这门课和你专业的相关度如何？',
+      ];
+      const store = useChatStore.getState();
+      for (const msg of GUIDING_MSGS) {
+        store.addMessage({
+          id: uid(),
+          role: 'assistant',
+          content: msg,
+          timestamp: Date.now(),
+          mode: 'planning',
+        });
+      }
+      setInputValue('');
+      if (inputRef.current) inputRef.current.value = '';
+      inputRef.current?.focus();
+      return;
+    }
+
     const attachments = selectedImage ? [await uploadMultimodalImage(selectedImage.file, currentSessionId)] : [];
     send(finalText, attachments, { ignoreImageContext: referencesLastImage && imageContextDisabled });
     setInputValue('');

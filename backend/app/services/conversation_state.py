@@ -171,6 +171,8 @@ class ConversationState:
     # 是否启用对话文字自动画像提取（默认关闭，仅在路径规划专用对话中开启）
     profile_extraction_enabled: bool = True
     path_planning_info_mode: bool = False  # 路径规划信息收集模式（不触发Planner）
+    pending_revision: dict | None = None  # 待用户确认的路径调整候选
+    path_revisions: list[dict] = field(default_factory=list)  # 历史版本快照
     # 结构化画像（topic 级明细、置信度、证据链）
     rich_facts: dict[str, Any] = field(default_factory=lambda: {
         dim: {"summary": "", "topics": [], "gaps_found": [], "probe_history": [], "next_probe_topics": [], "last_probed_at": 0}
@@ -572,6 +574,133 @@ class ConversationStore:
         result["diagnosis"] = diagnosis
         state.last_result = result
         state.updated_at = time.time()
+
+    # ── 路径版本管理 ─────────────────────────────────────────────
+
+    def set_pending_revision(
+        self,
+        session_id: str,
+        proposed_stages: list[dict],
+        diff: dict,
+        reason: str = "",
+    ) -> None:
+        """存储候选路径供用户确认，不覆盖当前 active path。"""
+        state = self.get(session_id)
+        revision = {
+            "revision_id": f"rev_{int(time.time() * 1000)}",
+            "created_at": time.time(),
+            "status": "ready_for_review",
+            "reason": reason,
+            "summary": diff.get("summary", ""),
+            "diff": diff,
+            "proposed_stages": proposed_stages,
+            "diagnosis_snapshot_id": f"diag_{int(time.time() * 1000)}",
+        }
+        state.pending_revision = revision
+        state.updated_at = time.time()
+        # 持久化到 DB
+        if self._db_enabled:
+            try:
+                db = self._db_session()
+                from app.db.models import LearningPathModel
+                from app.db.repository import get_or_create_session
+                get_or_create_session(db, session_id)
+                existing = db.get(LearningPathModel, f"path_{session_id}")
+                if existing:
+                    existing.pending_revision = revision
+                else:
+                    lr = state.last_result or {}
+                    db.add(LearningPathModel(
+                        id=f"path_{session_id}",
+                        session_id=session_id,
+                        pending_revision=revision,
+                        stages=lr.get("learning_path", []),
+                    ))
+                db.commit()
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.info("set_pending_revision persisted for session=%s", session_id)
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("set_pending_revision DB failed: %s", exc)
+            finally:
+                db.close()
+
+    def apply_pending_revision(self, session_id: str) -> dict | None:
+        """用户确认候选路径，将 proposed_stages 写入 active path。"""
+        state = self.get(session_id)
+        if not state.pending_revision:
+            # DB 兜底
+            self.get_pending_revision(session_id)
+        if not state.pending_revision:
+            return None
+        rev = state.pending_revision
+        # 当前路径入历史
+        current = dict(state.last_result or {})
+        old_path = current.get("learning_path", [])
+        if old_path:
+            snapshot = {
+                "version": len(state.path_revisions) + 1,
+                "stages": old_path,
+                "applied_at": time.time(),
+                "reason": "被新版本替换",
+            }
+            state.path_revisions.append(snapshot)
+        # 应用候选路径
+        rev["status"] = "applied"
+        rev["decided_at"] = time.time()
+        current["learning_path"] = rev["proposed_stages"]
+        current["version"] = int(time.time() * 1000)
+        state.last_result = current
+        state.pending_revision = None
+        state.updated_at = time.time()
+        # 持久化到 DB
+        if self._db_enabled:
+            try:
+                db = self._db_session()
+                from app.db.models import LearningPathModel
+                existing = db.get(LearningPathModel, f"path_{session_id}")
+                if existing:
+                    existing.pending_revision = None
+                    existing.path_revisions = state.path_revisions
+                    existing.stages = rev["proposed_stages"]
+                    existing.current_version = len(state.path_revisions)
+                    db.commit()
+            except Exception:
+                pass
+            finally:
+                db.close()
+        return {"success": True, "version": current["version"]}
+
+    def reject_pending_revision(self, session_id: str) -> None:
+        """用户拒绝候选路径。"""
+        state = self.get(session_id)
+        if state.pending_revision:
+            state.pending_revision["status"] = "rejected"
+            state.pending_revision["decided_at"] = time.time()
+            state.pending_revision = None
+            state.updated_at = time.time()
+
+    def get_pending_revision(self, session_id: str) -> dict | None:
+        """获取待确认的候选路径（内存优先，DB 兜底）。"""
+        state = self.get(session_id)
+        if state.pending_revision:
+            return state.pending_revision
+        # DB 兜底：其他进程写入的 pending_revision
+        if self._db_enabled:
+            try:
+                db = self._db_session()
+                from app.db.models import LearningPathModel
+                existing = db.get(LearningPathModel, f"path_{session_id}")
+                if existing and existing.pending_revision:
+                    state.pending_revision = existing.pending_revision
+                    return existing.pending_revision
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("get_pending_revision DB fallback failed: %s", exc)
+            finally:
+                db.close()
+        return None
 
     # ── 结构化画像（topic 级别）──
 

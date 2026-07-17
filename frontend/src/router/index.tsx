@@ -7,6 +7,7 @@ import LearningPathPage from '../pages/LearningPathPage';
 import ProfilePage from '../pages/ProfilePage';
 import LearningAnalyticsPage from '../pages/LearningAnalyticsPage';
 import LearningTimelinePage from '../pages/LearningTimelinePage';
+import KnowledgeGraphPage from '../pages/KnowledgeGraphPage';
 import PracticePage from '../pages/PracticePage';
 import ResourceGenerationPage from '../pages/ResourceGenerationPage';
 import ConversationHistoryPage from '../pages/ConversationHistoryPage';
@@ -73,6 +74,7 @@ const router = createBrowserRouter([
       { path: 'textbook/:subjectId', element: <RequireStudent><TextbookViewPage /></RequireStudent> },
       { path: 'resources', element: <RequireStudent><ResourceLibrary /></RequireStudent> },
       { path: 'resources/:id', element: <RequireStudent><ResourceLibrary /></RequireStudent> },
+      { path: 'kg', element: <RequireStudent><KnowledgeGraphPage /></RequireStudent> },
       { path: 'path', element: <RequireStudent><LearningPathPage /></RequireStudent> },
       { path: 'profile', element: <RequireStudent><ProfilePage /></RequireStudent> },
       { path: 'analytics', element: <RequireStudent><LearningAnalyticsPage /></RequireStudent> },

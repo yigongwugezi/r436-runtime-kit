@@ -14,6 +14,7 @@ const PAGE_TITLES: Record<string, { title: string; subtitle: string }> = {
   '/chat': { title: '智能对话', subtitle: '与AI助手对话交流' },
   '/resources': { title: '资源库', subtitle: '个性化推荐的学习资源' },
   '/path': { title: '学习路径', subtitle: '智能规划的学习进阶路线' },
+  '/kg': { title: '知识图谱', subtitle: '交互式知识点关系图谱' },
   '/profile': { title: '学习画像', subtitle: 'AI对话构建的个性化学习特征' },
   '/analytics': { title: '学习分析', subtitle: '学习行为数据分析' },
   '/timeline': { title: '学习时间线', subtitle: '学习行为记录' },

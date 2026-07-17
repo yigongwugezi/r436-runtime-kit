@@ -902,16 +902,30 @@ class ResourceAgent(BaseAgent):
         try:
             mm = generate_mindmap(title or course_name)
             if mm and len(mm) > 50:
-                import uuid
+                import uuid, json
+                # Wrap raw mermaid content as graph_data for unified rendering
+                graph_data = {
+                    "nodes": [
+                        {"id": "root", "label": title or course_name, "type": "concept", "difficulty": "medium", "importance": 4},
+                    ],
+                    "edges": [],
+                }
+                # Try to parse structured nodes from mermaid lines
+                for line in mm.strip().split("\n"):
+                    stripped = line.strip()
+                    if stripped and not stripped.startswith("mindmap") and not stripped.startswith("root") and not stripped.startswith("```"):
+                        node_id = stripped.replace(" ", "_").replace("(", "").replace(")", "")[:24]
+                        graph_data["nodes"].append({"id": node_id, "label": stripped, "type": "concept", "difficulty": "medium", "importance": 2})
+                        graph_data["edges"].append({"source": "root", "target": node_id, "relation": "contains"})
                 return {
                     "resource_id": uuid.uuid4().hex[:12],
                     "type": "mindmap",
                     "title": f"{title} - 思维导图",
-                    "content": mm,
-                    "content_format": "mermaid",
+                    "content": json.dumps(graph_data, ensure_ascii=False),
+                    "content_format": "graph_data",
                     "related_stage_id": str(stage.get("stage_id", "")),
                     "source": "deeptutor",
-                    "format": "mermaid",
+                    "format": "diagram",
                     "difficulty": "medium",
                     "quality_status": "passed",
                 }
@@ -1187,11 +1201,28 @@ class ResourceAgent(BaseAgent):
         label = task or stage_id
         res_id = f"res_mindmap_{task_id}" if task_id else f"res_mindmap_{stage_id}"
         safe_label = str(label).replace("(", "").replace(")", "").replace("[", "").replace("]", "")
-        content = f"mindmap\n  root(({safe_label}))\n    核心概念\n    关键算法\n    应用场景\n    常见误区"
+        # Generate graph_data instead of Mermaid mindmap
+        graph_data = {
+            "nodes": [
+                {"id": "root", "label": safe_label, "type": "concept", "difficulty": "medium", "importance": 4},
+                {"id": "concept", "label": "核心概念", "type": "concept", "difficulty": "medium", "importance": 3},
+                {"id": "algorithm", "label": "关键算法", "type": "procedure", "difficulty": "medium", "importance": 3},
+                {"id": "scenario", "label": "应用场景", "type": "concept", "difficulty": "easy", "importance": 2},
+                {"id": "mistake", "label": "常见误区", "type": "memory", "difficulty": "medium", "importance": 2},
+            ],
+            "edges": [
+                {"source": "root", "target": "concept", "relation": "contains"},
+                {"source": "root", "target": "algorithm", "relation": "contains"},
+                {"source": "root", "target": "scenario", "relation": "contains"},
+                {"source": "root", "target": "mistake", "relation": "contains"},
+            ],
+        }
+        import json
+        content = json.dumps(graph_data, ensure_ascii=False)
         return self._resource(
             res_id, "mindmap",
             f"{label}知识图谱", f"学习任务「{label}」的知识结构图。",
-            "mermaid", binding,
+            "graph_data", binding,
             content=content,
             reason=f"帮助学生建立{label}的结构关系",
             task_id=task_id,

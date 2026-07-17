@@ -505,14 +505,20 @@ def run_post_quiz_assessment(
                     planner_result = planner_agent.run(planner_context)
                     adjusted_path = planner_result.get("learning_path", [])
                     if adjusted_path:
-                        # Persist adjusted path into conversation state
-                        existing_result = dict(conversation_store.get(session_id).last_result or {})
-                        existing_result["learning_path"] = adjusted_path
-                        conversation_store.set_result(session_id, existing_result)
+                        # ── 不直接覆盖，创建 pending_revision ──
+                        from app.services.day_planner import compute_diff
+                        existing_path = diagnosis_context.get("learning_path", [])
+                        diff = compute_diff(existing_path, adjusted_path)
+                        conversation_store.set_pending_revision(
+                            session_id,
+                            proposed_stages=adjusted_path,
+                            diff=diff,
+                            reason=f"基于小测「{quiz_title}」结果调整学习路径",
+                        )
                         path_adjusted = True
                         logger.info(
-                            "PlannerAgent adjusted path for session=%s, stages=%d",
-                            session_id, len(adjusted_path),
+                            "PlannerAgent created pending revision for session=%s, diff=%s",
+                            session_id, diff.get("summary", ""),
                         )
             except Exception:
                 logger.exception("PlannerAgent adjustment failed for session=%s", session_id)
@@ -708,9 +714,15 @@ def run_periodic_reassessment(session_id: str) -> dict[str, Any]:
                     })
                     adjusted_path = planner_result.get("learning_path", [])
                     if adjusted_path:
-                        existing_result = dict(conversation_store.get(session_id).last_result or {})
-                        existing_result["learning_path"] = adjusted_path
-                        conversation_store.set_result(session_id, existing_result)
+                        from app.services.day_planner import compute_diff
+                        existing_path = diagnosis_context.get("learning_path", [])
+                        diff = compute_diff(existing_path, adjusted_path)
+                        conversation_store.set_pending_revision(
+                            session_id,
+                            proposed_stages=adjusted_path,
+                            diff=diff,
+                            reason="定期诊断发现掌握度变化",
+                        )
                         path_adjusted = True
             except Exception:
                 logger.exception("PlannerAgent failed in periodic reassessment")
@@ -734,8 +746,8 @@ def run_periodic_reassessment(session_id: str) -> dict[str, Any]:
 
         if should_adjust and not decayed_topics:
             notification_store.push(session_id, AssessmentNotification(
-                type="plan_adjusted",
-                title="学习路径已调整",
+                type="plan_revision_ready",
+                title="路径调整建议待确认",
                 message="定期检查发现你的学习进度已发生变化，学习路径已自动更新。",
                 session_id=session_id,
             ))

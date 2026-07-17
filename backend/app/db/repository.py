@@ -451,9 +451,17 @@ def upsert_learning_path(
         existing.stages = path.stages
         existing.overall_progress = path.overall_progress
         existing.estimated_days = path.estimated_days
+        existing.current_version = path_data.get("current_version", existing.current_version or 0)
+        if path_data.get("pending_revision") is not None:
+            existing.pending_revision = path_data["pending_revision"]
+        if path_data.get("path_revisions") is not None:
+            existing.path_revisions = path_data["path_revisions"]
         existing.updated_at = _utcnow()
         path = existing
     else:
+        path.current_version = path_data.get("current_version", 0)
+        path.pending_revision = path_data.get("pending_revision")
+        path.path_revisions = path_data.get("path_revisions")
         db.add(path)
     db.commit()
     db.refresh(path)

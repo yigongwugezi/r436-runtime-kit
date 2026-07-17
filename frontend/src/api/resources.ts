@@ -42,7 +42,7 @@ export async function generateResource(params: {
   return data;
 }
 
-export type GeneralResourceType = 'lecture' | 'mindmap' | 'quiz' | 'ppt' | 'video' | 'animation' | 'manim' | 'reading' | 'practice';
+export type GeneralResourceType = 'lecture' | 'mindmap' | 'quiz' | 'ppt' | 'video' | 'animation' | 'manim' | 'reading' | 'practice' | 'image';
 
 export interface GeneralResourceGenerationRequest {
   sessionId: string;

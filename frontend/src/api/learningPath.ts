@@ -146,3 +146,28 @@ export async function cancelWorkflowTask(taskId: string): Promise<{ ok: boolean 
   const { data } = await client.post(`/api/workflows/${taskId}/cancel`);
   return data;
 }
+
+// ── Path Revision API ──
+
+export async function getPendingRevision(sessionId: string): Promise<{
+  pending_revision: any;
+  diff?: any;
+}> {
+  const { data } = await client.get(`/api/learning-path/${sessionId}/pending-revision`);
+  return data?.data || data;
+}
+
+export async function acceptPendingRevision(sessionId: string): Promise<{ ok: boolean }> {
+  const { data } = await client.post(`/api/learning-path/${sessionId}/pending-revision/accept`);
+  return data?.data || data;
+}
+
+export async function rejectPendingRevision(sessionId: string): Promise<{ ok: boolean }> {
+  const { data } = await client.post(`/api/learning-path/${sessionId}/pending-revision/reject`);
+  return data?.data || data;
+}
+
+export async function listRevisions(sessionId: string): Promise<{ revisions: any[]; current_version: number }> {
+  const { data } = await client.get(`/api/learning-path/${sessionId}/revisions`);
+  return data?.data || data;
+}

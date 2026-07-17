@@ -86,8 +86,8 @@ interface ChatStore {
   /** 动态进度条步骤（根据实际运行的 Agent 构建，替代硬编码 GEN_PIPELINE） */
   progressPipelineSteps: import('../types/chat').ProgressStep[];
   dataVersion: number;
-  /** 聊天模式：自由学习 / 规划学习 */
-  chatMode: 'free' | 'planning';
+  /** 聊天模式：自由学习 / 调用模式 / 规划学习 */
+  chatMode: 'free' | 'invoke' | 'planning';
   /** 联网搜索开关 */
   searchEnabled: boolean;
   /** 深度思考开关 */
@@ -100,7 +100,7 @@ interface ChatStore {
   appendReasoningToLastAssistant: (chunk: string) => void;
   setSearchEnabled: (v: boolean) => void;
   setDeepThinkEnabled: (v: boolean) => void;
-  setChatMode: (mode: 'free' | 'planning') => void;
+  setChatMode: (mode: 'free' | 'invoke' | 'planning') => void;
   setStreaming: (v: boolean) => void;
   setAgentProgress: (p: GenerationProgress | null) => void;
   setLastImageAttachment: (attachment: import('../types/chat').ChatAttachment | null) => void;

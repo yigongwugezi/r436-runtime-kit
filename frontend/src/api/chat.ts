@@ -17,7 +17,7 @@ export interface SendMessageParams {
   /** 深度思考开关 */
   deep_think_enabled?: boolean;
   /** 聊天模式 */
-  chat_mode?: 'free' | 'planning';
+  chat_mode?: 'free' | 'invoke' | 'planning';
 }
 
 export interface ChatResponse {

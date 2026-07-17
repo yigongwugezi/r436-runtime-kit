@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Search, BookOpen, Brain, Code, FileText, Lightbulb, Play, Presentation, Clock, Star, ChevronRight, BookmarkPlus, BookmarkCheck, CheckCircle2, X, LayoutGrid, List, ChevronDown, MoreHorizontal, RotateCcw, ListChecks, Download, SlidersHorizontal, MessageSquare, Send, ArrowLeft, Trash2 } from 'lucide-react';
+import { Search, BookOpen, Brain, Code, FileText, Lightbulb, Play, Presentation, Clock, Star, ChevronRight, BookmarkPlus, BookmarkCheck, CheckCircle2, X, LayoutGrid, List, ChevronDown, MoreHorizontal, RotateCcw, ListChecks, Download, SlidersHorizontal, MessageSquare, Send, ArrowLeft, Trash2, Image as ImageIcon, Network } from 'lucide-react';
 import { useResources } from '../hooks/useResources';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
@@ -18,6 +18,7 @@ import { PageLoading, PageEmpty, PageError } from '../components/common/PageStat
 import SourceBadge from '../components/common/SourceBadge';
 import Markdown from '../utils/markdown';
 import MermaidDiagram from '../utils/mermaid';
+import KGPreview from '../components/kg/KGPreview';
 import OnlineResourceSearch from '../components/resources/OnlineResourceSearch';
 import RecommendationsTab from '../components/resources/RecommendationsTab';
 
@@ -27,6 +28,7 @@ const icons: Record<string, React.ReactNode> = {
   case_study: <Code className="w-5 h-5 text-cyan-500" />, video: <Play className="w-5 h-5 text-red-500" />, ppt: <Presentation className="w-5 h-5 text-orange-500" />,
   article: <FileText className="w-5 h-5 text-green-500" />, course: <BookOpen className="w-5 h-5 text-blue-500" />,
   document: <FileText className="w-5 h-5 text-slate-500" />, paper: <FileText className="w-5 h-5 text-purple-500" />,
+  image: <ImageIcon className="w-5 h-5 text-pink-500" />,
   summary_card: <FileText className="w-5 h-5 text-green-500" />, concept_comparison: <Lightbulb className="w-5 h-5 text-green-500" />,
   worked_example: <Code className="w-5 h-5 text-cyan-500" />, mistake_checklist: <CheckCircle2 className="w-5 h-5 text-green-500" />,
   review_notes: <BookOpen className="w-5 h-5 text-green-500" />,
@@ -39,13 +41,14 @@ const colorMap: Record<string, { bg: string; text: string }> = {
   quiz: { bg: 'bg-amber-50', text: 'text-amber-600' }, reading: { bg: 'bg-emerald-50', text: 'text-emerald-600' },
   case_study: { bg: 'bg-cyan-50', text: 'text-cyan-600' }, video: { bg: 'bg-red-50', text: 'text-red-600' }, ppt: { bg: 'bg-orange-50', text: 'text-orange-600' },
   article: { bg: 'bg-emerald-50', text: 'text-emerald-600' }, course: { bg: 'bg-blue-50', text: 'text-blue-600' },
-  document: { bg: 'bg-slate-100', text: 'text-slate-600' }, paper: { bg: 'bg-purple-50', text: 'text-purple-600' }
+  document: { bg: 'bg-slate-100', text: 'text-slate-600' }, paper: { bg: 'bg-purple-50', text: 'text-purple-600' },
+  image: { bg: 'bg-pink-50', text: 'text-pink-600' },
 };
 const diffBadge: Record<string, string> = { easy: 'bg-success-100 text-success-700', medium: 'bg-warning-100 text-warning-700', hard: 'bg-error-100 text-error-700' };
 const diffLabel: Record<string, string> = { easy: '基础', medium: '进阶', hard: '挑战' };
 const qualityLabel: Record<string, string> = { passed: '质检通过', repaired: '已修复', fallback: '本地兜底', failed: '需复核', needs_review: '需复核', fallback_passed: '兜底通过' };
 const qualityBadge: Record<string, string> = { passed: 'bg-success-50 text-success-700', repaired: 'bg-blue-50 text-blue-700', fallback: 'bg-warning-50 text-warning-700', failed: 'bg-error-50 text-error-700', needs_review: 'bg-error-50 text-error-700', fallback_passed: 'bg-warning-50 text-warning-700' };
-const TYPES = ['', 'lecture', 'mindmap', 'quiz', 'reading', 'case_study', 'video', 'ppt', 'textbook', 'article', 'course', 'document', 'paper'];
+const TYPES = ['', 'lecture', 'mindmap', 'quiz', 'reading', 'case_study', 'video', 'ppt', 'image', 'textbook', 'article', 'course', 'document', 'paper'];
 const SORTS = [{ v: 'default', l: '推荐' }, { v: 'newest', l: '最新' }, { v: 'easiest', l: '最简单' }, { v: 'hardest', l: '最困难' }];
 const resourceLabel = (resource: Resource) => RESOURCE_TYPE_LABELS[resource.taskId || ''] || RESOURCE_TYPE_LABELS[resource.type] || resource.type;
 const resourceIcon = (resource: Resource) => icons[resource.taskId || ''] || icons[resource.type];
@@ -255,16 +258,7 @@ function ResourceDetailView({
           {!isReadOnly && (
           <button onClick={() => onComplete(resource)} className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${resource.studyStatus === 'completed' ? 'bg-warning-50 text-warning-700 hover:bg-warning-100' : 'bg-success-50 text-success-700 hover:bg-success-100'}`}><CheckCircle2 className="w-3.5 h-3.5" />{resource.studyStatus === 'completed' ? '撤销完成' : '标记完成'}</button>
           )}
-          <button onClick={async () => {
-            if (showKnowledgeGraph) { setShowKnowledgeGraph(false); return; }
-            setKgLoading(true);
-            try {
-              const res = await getResourceKnowledgeGraph(resource.id, { sessionId });
-              setKgMermaidDef(res.mermaidDef || '');
-              setShowKnowledgeGraph(true);
-            } catch { setKgMermaidDef(''); setShowKnowledgeGraph(true); }
-            finally { setKgLoading(false); }
-          }} className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${showKnowledgeGraph ? 'bg-accent-50 text-accent-700' : 'bg-surface-50 text-surface-500 hover:bg-surface-100'}`}>🧠 {kgLoading ? '加载中…' : showKnowledgeGraph ? '收起图谱' : '知识图谱'}</button>
+          <button onClick={() => nav(`/kg?resourceId=${resource.id}`)} className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all bg-surface-50 text-surface-500 hover:bg-primary-50 hover:text-primary-600`}><Network className="w-3.5 h-3.5" />知识图谱</button>
           <button onClick={() => nav('/chat')} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-primary-50 text-primary-700 rounded-lg text-xs font-medium hover:bg-primary-100">✏️ 去提问</button>
           <button onClick={() => nav('/analytics')} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-surface-50 text-surface-500 rounded-lg text-xs font-medium hover:bg-surface-100">📊 学习分析</button>
         </div>
@@ -279,9 +273,56 @@ function ResourceDetailView({
                 className="inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-red-50 border border-red-200 text-red-700 font-medium hover:bg-red-100 transition-colors">
                 <Play size={18} /> 点击播放视频
               </a>
-            ) : resource.type === 'mindmap' ? (resource.mermaidDef ? <><div className="p-4 bg-white rounded-xl border border-surface-200"><MermaidDiagram definition={resource.mermaidDef} /></div>{['knowledge_map', 'process_flow', 'concept_diagram', 'execution_trace'].includes(resource.taskId || '') && <div className="mt-4"><Markdown content={resource.content || ''} /></div>}</> : <Markdown content={resource.content} />) : resource.type === 'case_study' && resource.taskId === 'code_trace' ? <>{resource.mermaidDef && <div className="mb-4 p-4 bg-white rounded-xl border border-surface-200"><MermaidDiagram definition={resource.mermaidDef} /></div>}<Markdown content={resource.content || '暂无内容'} /></> : resource.type === 'quiz' && resource.questions?.length > 0 ? <QuizAnswerer questions={resource.questions} resourceId={resource.id} /> : <Markdown content={resource.content || '暂无内容'} />}
+            ) : resource.type === 'mindmap' ? (
+              ((() => {
+                const gd = resource.graphData;
+                if (!gd) return null;
+                return (
+                  <div className="bg-white rounded-2xl shadow-soft p-5">
+                    <h3 className="text-sm font-semibold text-surface-700 mb-3">知识结构图</h3>
+                    <KGPreview graphData={gd} />
+                    <div className="mt-3 text-center">
+                      <button onClick={() => nav(`/kg?resourceId=${resource.id}`)} className="text-xs text-primary-600 hover:text-primary-700 font-medium">
+                        查看完整图谱 →
+                      </button>
+                    </div>
+                  </div>
+                );
+              })())
+            ) : resource.type === 'ppt' ? (
+              <div className="space-y-4">
+                {resource.content && (
+                  <a href={resource.content} target="_blank" rel="noopener"
+                    className="inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-orange-50 border border-orange-200 text-orange-700 font-medium hover:bg-orange-100 transition-colors">
+                    <Download size={18} /> 下载 PPT 文件
+                  </a>
+                )}
+                {resource.pptOutline?.length > 0 && (
+                  <div className="space-y-3 mt-4">
+                    {resource.pptOutline.map((s, i) => (
+                      <div key={i} className="p-4 bg-white border border-surface-200 rounded-xl">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="w-5 h-5 rounded-full bg-primary-100 text-primary-600 text-[10px] font-bold flex items-center justify-center">{i + 1}</span>
+                          <h4 className="text-sm font-semibold text-surface-800">{s.title}</h4>
+                        </div>
+                        {s.bullets?.length > 0 && (
+                          <ul className="space-y-1 ml-7">
+                            {s.bullets.map((b, bi) => <li key={bi} className="text-xs text-surface-600 list-disc">{b}</li>)}
+                          </ul>
+                        )}
+                        {s.notes && <p className="mt-2 ml-7 text-[11px] text-surface-400 italic">💡 {s.notes}</p>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : resource.type === 'case_study' && resource.taskId === 'code_trace' ? <>{resource.mermaidDef && <div className="mb-4 p-4 bg-white rounded-xl border border-surface-200"><MermaidDiagram definition={resource.mermaidDef} /></div>}<Markdown content={resource.content || '暂无内容'} /></> : resource.type === 'quiz' && resource.questions?.length > 0 ? <QuizAnswerer questions={resource.questions} resourceId={resource.id} /> : resource.type === 'image' ? (
+              <div className="flex justify-center">
+                <img src={resource.content} alt={resource.title} className="max-w-full h-auto rounded-xl shadow-soft" style={{ maxHeight: '70vh' }} />
+              </div>
+            ) : <Markdown content={resource.content || '暂无内容'} />}
             {resource.type === 'case_study' && resource.codeBlocks?.length > 0 && <div className="space-y-4 mt-4">{resource.codeBlocks.map((b, i) => <div key={i} className="bg-surface-800 text-surface-100 rounded-xl overflow-hidden"><div className="px-4 py-1.5 bg-surface-700 text-[10px]">{b.language || 'code'}</div><pre className="text-xs p-4 overflow-x-auto"><code>{b.code}</code></pre></div>)}</div>}
-            {(resource.type === 'video' || resource.type === 'ppt') && resource.pptOutline?.length > 0 && <div className="space-y-3">{resource.pptOutline.map((s, i) => <div key={i} className="p-4 bg-white border border-surface-200 rounded-xl"><div className="flex items-center gap-2 mb-2"><span className="w-5 h-5 rounded-full bg-primary-100 text-primary-600 text-[10px] font-bold flex items-center justify-center">{i + 1}</span><h4 className="text-sm font-semibold text-surface-800">{s.title}</h4></div>{s.bullets?.length > 0 && <ul className="space-y-1 ml-7">{s.bullets.map((b, bi) => <li key={bi} className="text-xs text-surface-600 list-disc">{b}</li>)}</ul>}</div>)}</div>}
+            {(resource.type === 'video') && resource.pptOutline?.length > 0 && <div className="space-y-3">{resource.pptOutline.map((s, i) => <div key={i} className="p-4 bg-white border border-surface-200 rounded-xl"><div className="flex items-center gap-2 mb-2"><span className="w-5 h-5 rounded-full bg-primary-100 text-primary-600 text-[10px] font-bold flex items-center justify-center">{i + 1}</span><h4 className="text-sm font-semibold text-surface-800">{s.title}</h4></div>{s.bullets?.length > 0 && <ul className="space-y-1 ml-7">{s.bullets.map((b, bi) => <li key={bi} className="text-xs text-surface-600 list-disc">{b}</li>)}</ul>}</div>)}</div>}
           </div>
         </div>
       )}

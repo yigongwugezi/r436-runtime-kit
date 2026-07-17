@@ -12,7 +12,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.services.conversation_state import conversation_store
-from app.services.langgraph_orchestrator import run_pipeline, _is_likely_chat
+from app.services.langgraph_orchestrator import run_pipeline, _is_likely_chat, _run_conversation_agent
+from app.services.agent_factory import AgentFactory
+from app.services.intent_router import chat_only_intents
 from app.db.engine import SessionLocal
 from app.db.models import SessionModel
 from app.db.repository import get_or_create_session
@@ -181,7 +183,7 @@ def _bind_current_subject_from_message(state_obj: Any) -> dict[str, Any] | None:
         db.close()
 
 
-async def _run_chat(message: str, session_id: str, search_enabled: bool = False, deep_think_enabled: bool = False, chat_mode: str = "free") -> tuple[str, str, dict[str, Any]]:
+async def _run_chat(message: str, session_id: str, search_enabled: bool = False, deep_think_enabled: bool = False, chat_mode: str = "free", intent: str = "") -> tuple[str, str, dict[str, Any]]:
     # ── 自由模式：纯问答，零副作用，不走任何 Agent 管道 ──
     if chat_mode == "free" and _is_likely_chat(message, {}):
         from app.services.deeptutor_facade import deeptutor
@@ -251,6 +253,8 @@ async def _run_chat(message: str, session_id: str, search_enabled: bool = False,
         "feedback_signal": state_obj.feedback_signal,
         "search_enabled": search_enabled,
         "deep_think_enabled": deep_think_enabled,
+        "intent": intent,
+        "chat_mode": chat_mode,
     }
     try:
         from app.routers.product import _profile_v2
@@ -451,8 +455,24 @@ async def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_a
                 conversation_store.append_message(session_id, "assistant", full_reply or message)
                 return
 
-            # ── 规划模式 + 聊天内容 → 也直接流式 ──
-            if _is_likely_chat(message, {}):
+            # ── 规划模式：先跑意图分类，再决策流式 or 智能体 ──
+            _intent = ""
+            if not _is_likely_chat(message, {}):
+                # 可能不是纯聊天 → 用 ConversationAgent 做准确意图分类
+                _state_obj = conversation_store.get(session_id)
+                _intent_ctx = {
+                    "user_message": message,
+                    "profile_facts": dict(_state_obj.facts) if _state_obj else {},
+                    "conversation_history": [
+                        {"role": m["role"], "content": m["content"]}
+                        for m in (_state_obj.messages[-10:] if _state_obj else [])
+                    ],
+                }
+                _ca_result = await _run_conversation_agent(_intent_ctx, AgentFactory())
+                _intent = _ca_result.get("action", "none")
+
+            if not _intent or _intent in chat_only_intents():
+                # → 纯聊天：直接流式
                 from app.services.llm_factory import get_chat_client
                 client = get_chat_client()
                 deep_think = bool(payload.get("deep_think_enabled", False))
@@ -486,12 +506,11 @@ async def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_a
                 yield f"data: {json.dumps(_done_event(session_id, {}), ensure_ascii=False)}\n\n"
                 return
 
-            # ── 需要调 Agent → yield 进度事件 + 走原有 pipeline ──
-            yield f"data: {json.dumps({'stage': '正在分析你的需求…', 'agentName': 'understanding', 'progress': 10, 'done': False}, ensure_ascii=False)}\n\n"
-            reply, thinking, result = await _run_chat(message, session_id, search_enabled=search_enabled, deep_think_enabled=deep_think_enabled, chat_mode=chat_mode)
+            # ── 需要调智能体 → 走原有 pipeline（跳过重复意图分类） ──
+            reply, thinking, result = await _run_chat(message, session_id, search_enabled=search_enabled, deep_think_enabled=deep_think_enabled, chat_mode=chat_mode, intent=_intent)
+            thinking = result.get("_conversation_thinking", "") or ""
             if thinking:
                 yield f"data: {json.dumps({'reasoning': thinking}, ensure_ascii=False)}\n\n"
-            yield f"data: {json.dumps({'stage': '正在生成回答…', 'agentName': 'responding', 'progress': 90, 'done': False}, ensure_ascii=False)}\n\n"
             for chunk in reply.splitlines(keepends=True):
                 yield f"data: {json.dumps({'type': 'messages', 'content': chunk}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps(_done_event(session_id, result), ensure_ascii=False)}\n\n"

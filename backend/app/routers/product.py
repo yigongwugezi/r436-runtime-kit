@@ -272,6 +272,8 @@ def _run_agents(
     session_id: str,
     progress_callback: Callable | None = None,
     agents_filter: list[str] | None = None,
+    plan_mode: str = "",
+    path_mode: str = "",
 ) -> dict[str, Any]:
     """Trigger the multi-agent pipeline via AgentService and persist results.
 
@@ -303,6 +305,8 @@ def _run_agents(
         course_id=course_id,
         progress_callback=progress_callback,
         agents_filter=agents_filter,
+        plan_mode=plan_mode,
+        path_mode=path_mode,
     )
     if selected_course and "course" not in result:
         result["course"] = {
@@ -496,6 +500,103 @@ def _source_label(source: str) -> str:
     return _SOURCE_MAP.get(source, "system_inferred")
 
 
+def _try_parse_graph_data(content: str) -> dict | None:
+    """Try to parse content as graph_data JSON. Returns None if not valid."""
+    import json
+    if not content or not content.strip().startswith("{"):
+        return None
+    try:
+        parsed = json.loads(content)
+        if isinstance(parsed, dict) and "nodes" in parsed and "edges" in parsed:
+            return parsed
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return None
+
+
+def _mermaid_to_graph_data(mermaid_text: str, root_label: str = "知识结构") -> dict | None:
+    """Convert a basic Mermaid mindmap/flowchart to graph_data format.
+
+    Handles two common formats:
+      mindmap\n  root((label))\n    child1\n    child2
+      flowchart LR\n  A[label] --> B[label2]
+    Returns None if conversion fails.
+    """
+    if not mermaid_text or not mermaid_text.strip():
+        return None
+    text = mermaid_text.strip()
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    seen_ids: set[str] = set()
+    import re
+
+    # Detect format
+    first_line = text.split("\n")[0].strip().lower()
+
+    if first_line.startswith("mindmap"):
+        # mindmap format: hierarchical tree
+        lines = text.split("\n")
+        parent_stack: list[str] = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("mindmap"):
+                continue
+            indent = len(line) - len(line.lstrip())
+            level = indent // 2
+            label = re.sub(r"\(\(|\)\)|\(|\)|\[|\]", "", stripped).strip()
+            if not label:
+                continue
+            node_id = re.sub(r"[^a-zA-Z0-9_一-鿿]", "_", label)[:24]
+            if node_id in seen_ids:
+                node_id = f"{node_id}_{len(seen_ids)}"
+            seen_ids.add(node_id)
+            nodes.append({
+                "id": node_id, "label": label, "type": "concept",
+                "mastery": 0, "status": "not_started", "difficulty": "medium", "importance": 2 if level > 0 else 4,
+            })
+            if parent_stack and level > 0:
+                parent_id = parent_stack[min(level - 1, len(parent_stack) - 1)]
+                edges.append({"source": parent_id, "target": node_id, "relation": "contains"})
+            # Update parent stack
+            while len(parent_stack) <= level:
+                parent_stack.append("")
+            parent_stack[level] = node_id
+
+    elif first_line.startswith("flowchart") or first_line.startswith("graph"):
+        # flowchart LR/ TD format: A[label] --> B[label2]
+        for line in text.split("\n"):
+            stripped = line.strip()
+            # Skip diagram type line and empty lines
+            if stripped.lower().startswith(("flowchart", "graph")):
+                continue
+            # Match A[label] --> B[label2] pattern
+            arrow_match = re.match(r"(\w+)\[(.*?)\]\s*-+>\s*(\w+)\[(.*?)\]", stripped)
+            if arrow_match:
+                src_id = arrow_match.group(1)
+                src_label = arrow_match.group(2)
+                tgt_id = arrow_match.group(3)
+                tgt_label = arrow_match.group(4)
+                for nid, nlabel in [(src_id, src_label), (tgt_id, tgt_label)]:
+                    if nid not in seen_ids:
+                        seen_ids.add(nid)
+                        nodes.append({
+                            "id": nid, "label": nlabel, "type": "concept",
+                            "mastery": 0, "status": "not_started", "difficulty": "medium", "importance": 2,
+                        })
+                edges.append({"source": src_id, "target": tgt_id, "relation": "prerequisite"})
+
+    if not nodes:
+        # Fallback: wrap as single node
+        safe_label = root_label[:40]
+        safe_id = re.sub(r"[^a-zA-Z0-9_一-鿿]", "_", safe_label)
+        nodes.append({
+            "id": safe_id, "label": safe_label, "type": "concept",
+            "mastery": 0, "status": "not_started", "difficulty": "medium", "importance": 4,
+        })
+
+    return {"nodes": nodes, "edges": edges}
+
+
 def _to_resource(
     item: dict[str, Any],
     course_id: str = "ai_intro",
@@ -522,8 +623,10 @@ def _to_resource(
         "tags": [content_fmt, item.get("source", "agent_generated"), quality_status],
         "difficulty": item.get("difficulty", "easy"),
         "estimatedMinutes": item.get("estimatedMinutes", 20),
-        "format": "diagram" if content_fmt == "mermaid" else ("code" if item.get("type") == "practice" else "text"),
-        "mermaidDef": item.get("mermaid_def") or item.get("mermaidDef") or (content if (content_fmt == "mermaid" or item.get("type") == "mindmap") else None),
+        "format": "diagram" if content_fmt == "mermaid" else ("graph_data" if content_fmt == "graph_data" else ("code" if item.get("type") == "practice" else "text")),
+        "mermaidDef": (item.get("mermaid_def") or item.get("mermaidDef")) if content_fmt == "mermaid" else None,
+        "graphData": _try_parse_graph_data(content) if content_fmt == "graph_data" else _mermaid_to_graph_data(item.get("mermaid_def") or item.get("mermaidDef") or (content if item.get("type") == "mindmap" else ""), item.get("title", "")) if item.get("type") == "mindmap" else None,
+        "contentFormat": content_fmt,
         "codeBlocks": item.get("code_blocks"),
         "questions": item.get("questions") or item.get("items"),
         "pptOutline": item.get("ppt_outline"),
@@ -2814,6 +2917,8 @@ def get_resources(
             "estimatedMinutes": item.get("estimatedMinutes", item.get("estimated_minutes", 20)),
             "format": item.get("format", "text"),
             "mermaidDef": item.get("mermaidDef", item.get("mermaid_def")),
+            "graphData": _try_parse_graph_data(item.get("content", "")) or _mermaid_to_graph_data(item.get("mermaidDef", item.get("mermaid_def", "")), item.get("title", "")) if item.get("type") == "mindmap" else None,
+            "contentFormat": item.get("content_format", item.get("contentFormat", "markdown")),
             "codeBlocks": item.get("codeBlocks", item.get("code_blocks")),
             "questions": item.get("questions"),
             "pptOutline": item.get("pptOutline", item.get("ppt_outline")),
@@ -3288,7 +3393,7 @@ def batch_export_resources(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 GENERAL_RESOURCE_TYPES = {
-    "lecture", "mindmap", "quiz", "ppt", "video", "animation", "manim", "reading", "practice",
+    "lecture", "mindmap", "quiz", "ppt", "video", "animation", "manim", "reading", "practice", "image",
 }
 GENERAL_RESOURCE_TYPE_ALIASES = {
     "mind-map": "mindmap", "mind_map": "mindmap", "case_study": "practice",
@@ -3349,7 +3454,8 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
     task_id = str(getattr(workflow_task, "task_id", "") or "")
     labels = {
         "lecture": "课程讲义", "mindmap": "思维导图", "quiz": "练习题库", "ppt": "PPT演示",
-        "video": "教学视频", "animation": "教学动画", "manim": "Manim 动画", "reading": "拓展阅读", "practice": "实操案例",
+        "video": "教学视频", "animation": "教学动画", "manim": "Manim 动画", "reading": "拓展阅读",
+        "practice": "实操案例", "image": "知识图解",
     }
     resource: dict[str, Any] = {
         "id": _general_resource_id(request),
@@ -3360,8 +3466,8 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
         "knowledge_points": [topic],
         "tags": ["general_generated", resource_type],
         "difficulty": request["difficulty"],
-        "estimated_minutes": {"lecture": 20, "mindmap": 8, "quiz": 12, "reading": 15, "practice": 25, "ppt": 18}.get(resource_type, 15),
-        "format": {"mindmap": "diagram", "quiz": "quiz", "practice": "code", "video": "video", "animation": "video", "manim": "video"}.get(resource_type, "text"),
+        "estimated_minutes": {"lecture": 20, "mindmap": 8, "quiz": 12, "reading": 15, "practice": 25, "ppt": 18, "image": 10}.get(resource_type, 15),
+        "format": {"mindmap": "diagram", "quiz": "quiz", "practice": "code", "image": "image", "video": "video", "animation": "video", "manim": "video"}.get(resource_type, "text"),
         "source": "agent_generated",
         "related_stage_id": request["stageId"],
         "related_chapter_id": request["chapterId"],
@@ -3376,31 +3482,137 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
             "quality_status": "passed",
         },
     }
+
+    # ── 真实生成路径：优先调用项目已有的 AI 能力，失败后降级为模板 ──
+    from app.services.deeptutor_client import deeptutor_call, generate_mindmap, generate_quiz, generate_research
+
     if resource_type == "lecture":
-        resource["content"] = f"# {topic}\n\n## 学习目标\n理解 {topic} 的核心概念、关键过程和常见误区。\n\n## 核心讲解\n从定义开始，结合一个小例子逐步说明概念之间的关系。\n\n## 自测\n用自己的话复述关键步骤，并完成一道对应练习。"
+        try:
+            content = deeptutor_call("chat",
+                f"为「{topic}」生成一份专业课程讲义。\n"
+                "格式要求：Markdown格式，至少800字。\n"
+                "内容包括：\n"
+                "1. 课程概述与学习目标\n"
+                "2. 核心知识讲解（分3-5个模块，每个模块包含概念说明和示例）\n"
+                "3. 例题演示（至少2道，含详细解析步骤）\n"
+                "4. 常见误区与易错点\n"
+                "5. 课后自测题（3-5道）\n"
+                "要求概念准确、举例恰当、语言通俗易懂。")
+            if content and len(content) > 100:
+                resource["content"] = content
+                resource["resource_metadata"]["generation_source"] = "deeptutor"
+        except Exception:
+            pass
+        if not resource["content"]:
+            resource["content"] = f"# {topic}\n\n## 学习目标\n理解 {topic} 的核心概念、关键过程和常见误区。\n\n## 核心讲解\n从定义开始，结合一个小例子逐步说明概念之间的关系。\n\n## 自测\n用自己的话复述关键步骤，并完成一道对应练习。"
+
     elif resource_type == "mindmap":
-        resource["content"] = f"## {topic} 知识结构\n\n- 定义\n- 关键步骤\n- 常见误区\n- 自测"
-        resource["mermaid_def"] = sanitize_mermaid(f"mindmap\n  root(({safe_topic}))\n    定义\n    关键步骤\n    常见误区\n    自测")
+        try:
+            mm = generate_mindmap(topic)
+            if mm and len(mm) > 50:
+                resource["content"] = f"## {topic} 知识结构\n\n{mm}"
+                resource["mermaid_def"] = sanitize_mermaid(mm)
+                resource["content_format"] = "mermaid"
+                resource["resource_metadata"]["generation_source"] = "deeptutor"
+        except Exception:
+            pass
+        if not resource.get("mermaid_def"):
+            resource["content"] = f"## {topic} 知识结构\n\n- 定义\n- 关键步骤\n- 常见误区\n- 自测"
+            resource["mermaid_def"] = sanitize_mermaid(f"mindmap\n  root(({safe_topic}))\n    定义\n    关键步骤\n    常见误区\n    自测")
+            resource["content_format"] = "mermaid"
+
     elif resource_type == "quiz":
-        resource["content"] = f"## {topic} 自测题\n\n完成每题后查看解析。"
-        resource["questions"] = [
-            {"id": "q1", "type": "choice", "stem": f"学习 {topic} 时，第一步应优先确认什么？", "options": ["核心定义和边界", "跳过定义直接记结论", "只记术语", "忽略示例"], "answer": "A", "explanation": "先明确概念边界，后续步骤才有可靠依据。", "knowledgePoint": topic, "difficulty": request["difficulty"]},
-            {"id": "q2", "type": "choice", "stem": f"下列哪种做法最适合检验对 {topic} 的理解？", "options": ["复述并完成一个小例子", "只浏览标题", "只看答案", "跳过练习"], "answer": "A", "explanation": "复述和小例子能同时检查概念与应用。", "knowledgePoint": topic, "difficulty": request["difficulty"]},
-        ]
+        try:
+            quiz_content = generate_quiz(topic, count=5)
+            if quiz_content and len(quiz_content) > 50:
+                resource["content"] = f"## {topic} 自测题\n\n{quiz_content}"
+                resource["resource_metadata"]["generation_source"] = "deeptutor"
+        except Exception:
+            pass
+        if not resource["content"] or resource["content"] == f"## {topic} 自测题\n\n完成每题后查看解析。":
+            resource["content"] = f"## {topic} 自测题\n\n完成每题后查看解析。"
+            resource["questions"] = [
+                {"id": "q1", "type": "choice", "stem": f"学习 {topic} 时，第一步应优先确认什么？", "options": ["核心定义和边界", "跳过定义直接记结论", "只记术语", "忽略示例"], "answer": "A", "explanation": "先明确概念边界，后续步骤才有可靠依据。", "knowledgePoint": topic, "difficulty": request["difficulty"]},
+                {"id": "q2", "type": "choice", "stem": f"下列哪种做法最适合检验对 {topic} 的理解？", "options": ["复述并完成一个小例子", "只浏览标题", "只看答案", "跳过练习"], "answer": "A", "explanation": "复述和小例子能同时检查概念与应用。", "knowledgePoint": topic, "difficulty": request["difficulty"]},
+            ]
+
     elif resource_type == "reading":
-        resource["content"] = f"# {topic} 拓展阅读\n\n先阅读定义与背景，再将关键术语整理为自己的笔记，最后用一个例子验证理解。"
+        try:
+            content = generate_research(topic)
+            if content and len(content) > 100:
+                resource["content"] = content
+                resource["resource_metadata"]["generation_source"] = "deeptutor"
+        except Exception:
+            pass
+        if not resource["content"]:
+            resource["content"] = f"# {topic} 拓展阅读\n\n先阅读定义与背景，再将关键术语整理为自己的笔记，最后用一个例子验证理解。"
+
     elif resource_type == "practice":
-        resource["content"] = f"# {topic} 实操练习\n\n把问题拆成输入、过程和输出三个部分，再为边界条件添加测试。"
-        resource["code_blocks"] = [{"language": "python", "code": "def solve(value):\n    if value is None:\n        raise ValueError('value is required')\n    return value", "explanation": "从输入校验开始，再补充与主题对应的处理逻辑。"}]
+        try:
+            content = deeptutor_call("chat",
+                f"为「{topic}」生成一个实操练习。\n"
+                "格式：Markdown\n"
+                "要求包含：\n"
+                "1. 需求说明：明确任务目标和输入输出\n"
+                "2. 参考代码：完整可运行的代码（含注释），用代码块包裹\n"
+                "3. 测试用例：至少2组输入/输出示例\n"
+                "4. 运行指导：如何运行、预期结果\n"
+                "如果主题不涉及编程，则用案例分析或步骤练习代替代码。")
+            if content and len(content) > 50:
+                resource["content"] = content
+                resource["resource_metadata"]["generation_source"] = "deeptutor"
+        except Exception:
+            pass
+        if not resource["content"]:
+            resource["content"] = f"# {topic} 实操练习\n\n把问题拆成输入、过程和输出三个部分，再为边界条件添加测试。"
+            resource["code_blocks"] = [{"language": "python", "code": "def solve(value):\n    if value is None:\n        raise ValueError('value is required')\n    return value", "explanation": "从输入校验开始，再补充与主题对应的处理逻辑。"}]
+
+    elif resource_type == "image":
+        from app.services.multimodal_registry import default_registry
+        _, tool = default_registry().select_tool("image_generation")
+        if tool is None or not tool.is_configured():
+            raise RuntimeError("provider_not_configured")
+        result = tool.run({"topic": topic, "user_message": f"为「{topic}」生成一张教学图解", "prompt": f"一张关于{topic}的教学图解，风格清晰专业，适合课堂展示。"})
+        if isinstance(result, dict):
+            output = result.get("result") or {}
+            image_urls = output.get("image_urls") or []
+            if result.get("status") == "success" and image_urls:
+                resource["content"] = image_urls[0]
+                resource["format"] = "image"
+                resource["resource_metadata"]["image_urls"] = image_urls
+                resource["resource_metadata"]["generation_source"] = result.get("provider", "multimodal")
+            else:
+                raise RuntimeError("provider_not_configured")
+        else:
+            raise RuntimeError("provider_not_configured")
+
     elif resource_type == "ppt":
-        from app.services.ppt_generator import generate_pptx
-        pptx_path = generate_pptx(topic, request["difficulty"], request["sessionId"])
+        # Try Presenton (professional AI PPT service) first
+        pptx_path = None
+        ppt_outline = None
+        try:
+            from app.services.presenton_provider import PresentonProvider
+            provider = PresentonProvider()
+            if provider.is_configured():
+                result = provider.run({"topic": topic, "difficulty": request["difficulty"]})
+                if result.get("status") == "success" and result.get("result", {}).get("filepath"):
+                    pptx_path = result["result"]["filepath"]
+                    ppt_outline = result["result"].get("outline", [])
+                    logger.info("PPT generated via Presenton: %s", pptx_path)
+        except Exception as e:
+            logger.warning("Presenton failed, falling back to ppt_generator: %s", e)
+
+        if not pptx_path:
+            from app.services.ppt_generator import generate_pptx
+            pptx_path, ppt_outline = generate_pptx(topic, request["difficulty"], request["sessionId"])
         if not pptx_path:
             raise RuntimeError("ppt_generation_failed")
         rel_path = pptx_path.replace(str(settings.project_root), "").replace("\\", "/").lstrip("/")
         resource["content"] = f"/api/multimodal/file/{rel_path}"
         resource["format"] = "pptx"
+        resource["ppt_outline"] = ppt_outline or []
     else:
+        # video / animation / manim — existing multimodal provider path
         from app.services.multimodal_registry import default_registry
         capability = "manim_generation" if resource_type in {"animation", "manim"} else "video_generation"
         _, tool = default_registry().select_tool(capability)
@@ -3961,6 +4173,18 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
         )
 
 
+@router.post("/learning-path/enable-profile-extraction")
+def enable_profile_extraction(payload: dict[str, Any]) -> dict[str, Any]:
+    """开启路径规划信息收集模式。由学习路径页「去对话收集信息」按钮调用。"""
+    session_id = str(payload.get("sessionId", payload.get("session_id", ""))).strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="sessionId required")
+    from app.services.conversation_state import conversation_store
+    st = conversation_store.get(session_id)
+    st.path_planning_info_mode = True
+    return _product_response({"ok": True}, session_id=session_id)
+
+
 @router.post("/learning-path/generate")
 def generate_learning_path(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     session_id = _payload_session_id(payload)
@@ -3970,6 +4194,8 @@ def generate_learning_path(payload: dict[str, Any], auth: AuthContext = Depends(
     _ensure_session_linked(session_id, subject_id=subject_id)
 
     state = conversation_store.get(session_id)
+    plan_mode = str(payload.get("planMode", "")).strip()
+    path_mode = str(payload.get("pathMode", "")).strip()
 
     if user_message:
         message = user_message
@@ -3982,7 +4208,7 @@ def generate_learning_path(payload: dict[str, Any], auth: AuthContext = Depends(
     else:
         message = conversation_store.profile_prompt(state, latest_message="请生成学习路径")
 
-    result = _run_agents(message, session_id=session_id)
+    result = _run_agents(message, session_id=session_id, plan_mode=plan_mode, path_mode=path_mode)
     path = _to_learning_path(result)
     return _product_response({"path": path}, session_id=session_id, source="agent")
 
@@ -4000,6 +4226,76 @@ def update_node_progress(node_id: str, payload: dict[str, Any]) -> dict[str, Any
         session_id=session_id,
     )
     return _product_response({"ok": True}, session_id=session_id, source="user_action")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Path revision management
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _revision_ensure_session(session_id: str) -> None:
+    if not session_id:
+        raise HTTPException(status_code=400, detail="sessionId required")
+
+
+@router.get("/learning-path/{session_id}/pending-revision")
+def get_pending_revision(session_id: str) -> dict[str, Any]:
+    """获取待用户确认的路径调整候选。"""
+    _revision_ensure_session(session_id)
+    from app.services.conversation_state import conversation_store
+    rev = conversation_store.get_pending_revision(session_id)
+    if not rev:
+        return _product_response({"pending_revision": None}, session_id=session_id)
+    # 不返回完整的 proposed_stages 给前端（太大），前端需要时请求全量path
+    summary = dict(rev)
+    summary.pop("proposed_stages", None)
+    return _product_response({"pending_revision": summary, "diff": rev.get("diff", {})}, session_id=session_id)
+
+
+@router.post("/learning-path/{session_id}/pending-revision/accept")
+def accept_pending_revision(session_id: str) -> dict[str, Any]:
+    """用户确认路径调整。"""
+    _revision_ensure_session(session_id)
+    from app.services.conversation_state import conversation_store
+    result = conversation_store.apply_pending_revision(session_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="No pending revision found")
+    # accept 后触发 day_plan 重新生成
+    try:
+        from app.services.day_planner import build_day_plan
+        from app.services.agent_service import get_learning_path
+        path_data = get_learning_path(session_id)
+        if path_data and path_data.get("stages"):
+            day_plan = build_day_plan(path_data["stages"], daily_minutes=60)
+            if day_plan:
+                state = conversation_store.get(session_id)
+                lr = dict(state.last_result or {})
+                lr["day_plan"] = day_plan
+                conversation_store.set_result(session_id, lr)
+    except Exception:
+        pass
+    return _product_response({"ok": True, "version": result.get("version")}, session_id=session_id)
+
+
+@router.post("/learning-path/{session_id}/pending-revision/reject")
+def reject_pending_revision(session_id: str) -> dict[str, Any]:
+    """用户拒绝路径调整。"""
+    _revision_ensure_session(session_id)
+    from app.services.conversation_state import conversation_store
+    conversation_store.reject_pending_revision(session_id)
+    return _product_response({"ok": True}, session_id=session_id)
+
+
+@router.get("/learning-path/{session_id}/revisions")
+def list_revisions(session_id: str) -> dict[str, Any]:
+    """获取路径历史版本列表。"""
+    _revision_ensure_session(session_id)
+    from app.services.conversation_state import conversation_store
+    state = conversation_store.get(session_id)
+    return _product_response({
+        "revisions": list(state.path_revisions or []),
+        "current_version": len(state.path_revisions or []),
+    }, session_id=session_id)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -7450,4 +7746,20 @@ def get_conversation_facts(sessionId: str = "") -> dict[str, Any]:
     state = conversation_store.get(sessionId) if sessionId else None
     if state is None:
         return {"facts": {}}
+    return {"facts": dict(state.facts), "rich_facts": state.rich_facts}
+
+
+@router.patch("/conversation-facts")
+def update_conversation_facts(payload: dict[str, Any]) -> dict[str, Any]:
+    """Update conversation facts for a session (inline editing from profile panel)."""
+    session_id = str(payload.get("sessionId") or "")
+    facts_patch: dict[str, str] = payload.get("facts", {})
+    from app.services.conversation_state import conversation_store
+    state = conversation_store.get(session_id) if session_id else None
+    if state is None:
+        return {"ok": False, "error": "session not found"}
+    for key, value in facts_patch.items():
+        if value and isinstance(value, str):
+            state.facts[key] = value
+    return {"ok": True, "facts": dict(state.facts)}
     return {"facts": dict(state.facts), "rich_facts": state.rich_facts}

@@ -38,6 +38,8 @@ def run_agents(
     course_id: str | None = None,
     progress_callback: Callable | None = None,
     agents_filter: list[str] | None = None,
+    plan_mode: str = "",
+    path_mode: str = "",
 ) -> dict[str, Any]:
     """Run the multi-agent pipeline, persist results, and return them.
 
@@ -97,6 +99,8 @@ def run_agents(
         user_message=user_message,
         profile_facts=facts,
         agents_filter=agents_filter,
+        plan_mode=plan_mode,
+        path_mode=path_mode,
     ))
 
     # Attach course metadata

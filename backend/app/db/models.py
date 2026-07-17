@@ -200,6 +200,9 @@ class LearningPathModel(Base):
     textbook_id: Mapped[str | None] = mapped_column(
         String(64), nullable=True, default=None
     )  # linked textbook ID (no FK — textbooks may be deleted independently)
+    current_version: Mapped[int] = mapped_column(Integer, default=0)
+    pending_revision: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    path_revisions: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 

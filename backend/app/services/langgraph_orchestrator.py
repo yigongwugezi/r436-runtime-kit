@@ -737,6 +737,73 @@ def _emit_feedback_signal(state: dict) -> dict[str, Any]:
     return {"feedback_signal": signal}
 
 
+async def _run_chat_only(state: dict, factory: AgentFactory) -> dict:
+    """处理纯聊天流程（不走 Agent 管线），带 persona 注入能力。"""
+    profile_facts = state.get("profile_facts", {}) or {}
+    profile_context = ""
+    persona_context = ""
+    try:
+        from app.services.conversation_state import conversation_store as _cs7
+        _s7 = _cs7.get(state.get("session_id", ""))
+        if _s7 and (_s7.path_planning_info_mode or _s7.profile_extraction_enabled):
+            profile_context = _build_profile_context(profile_facts)
+            persona_context = _build_chat_persona(profile_facts)
+    except Exception:
+        pass
+    user_msg = state.get("user_message", "")
+    reply = ""
+    try:
+        reply, reply_source = await _chat_provider_reply(
+            user_msg, state.get("messages", []) or [], profile_context, persona_context,
+        )
+        if reply:
+            state["reply_source"] = reply_source
+    except Exception:
+        reply = ""
+    if not _is_usable_chat_reply(reply, user_msg):
+        reply = _profile_query_reply(user_msg, state.get("profile_v2"), profile_facts)
+        if reply:
+            state["reply_source"] = "profile_query"
+        else:
+            reply, fallback_meta = _chat_fallback_reply(user_msg, state.get("messages"))
+            state.update(fallback_meta)
+            state["fallback_used"] = True
+            state["reply_source"] = "chat_fallback"
+    state["final_reply"] = reply
+
+    # 画像增量重建
+    try:
+        from app.services.conversation_state import conversation_store as _cs8
+        cs = _cs8.get(state.get("session_id", ""))
+        if cs and cs.profile_dirty:
+            updated_facts = list(cs.last_updated_fields)
+            existing_profile = state.get("profile", {}) or {}
+            profile_agent = factory.get("profile_agent")
+            if profile_agent:
+                pr = profile_agent.run({
+                    "session_id": state.get("session_id", ""),
+                    "user_message": user_msg,
+                    "profile_facts": dict(cs.facts),
+                    "course": state.get("course"),
+                    "_profile_dirty": True,
+                    "_existing_profile": existing_profile,
+                    "_updated_facts": updated_facts,
+                })
+                if pr and pr.get("profile"):
+                    state["profile"] = pr["profile"]
+                    state["profile_v2"] = pr.get("profile_v2", {})
+                    cs.last_result = dict(cs.last_result or {})
+                    cs.last_result["profile"] = pr["profile"]
+                    cs.last_result["profile_v2"] = pr.get("profile_v2", {})
+                    cs.profile_dirty = False
+    except Exception:
+        pass
+
+    state["pipeline_executed"] = True
+    state["overall_status"] = "completed"
+    return dict(state)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # LangGraph nodes
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1038,6 +1105,10 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
     factory = AgentFactory()
     state: dict[str, Any] = dict(**kwargs, _retry_count=0, _factory=factory)
 
+    # 记录调用方是否显式传入了 plan_mode（来自路径页面确认生成按钮）
+    _caller_plan_mode = kwargs.get("plan_mode", "")
+    _caller_path_mode = kwargs.get("path_mode", "")
+
     # ── 确保评估调度器在运行（延迟启动兜底）──
     from app.services.assessment_loop import ensure_scheduler_running
     ensure_scheduler_running()
@@ -1070,70 +1141,9 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
 
     # ── Chat-only intents — go straight to DeepTutor, no agent overhead ──
     if intent in chat_only_intents():
-        profile_facts = state.get("profile_facts", {}) or {}
-        profile_context = ""
-        persona_context = ""
-        try:
-            from app.services.conversation_state import conversation_store as _cs2
-            _s2 = _cs2.get(state.get("session_id", ""))
-            if _s2 and (_s2.path_planning_info_mode or _s2.profile_extraction_enabled):
-                profile_context = _build_profile_context(profile_facts)
-                persona_context = _build_chat_persona(profile_facts)
-        except Exception:
-            pass
-        user_msg = state.get("user_message", "")
-        reply = ""
-        try:
-            reply, reply_source = await _chat_provider_reply(
-                user_msg, state.get("messages", []) or [], profile_context, persona_context,
-            )
-            if reply:
-                state["reply_source"] = reply_source
-        except Exception:
-            reply = ""
-        if not _is_usable_chat_reply(reply, user_msg):
-            reply = _profile_query_reply(user_msg, state.get("profile_v2"), profile_facts)
-            if reply:
-                state["reply_source"] = "profile_query"
-            else:
-                reply, fallback_meta = _chat_fallback_reply(user_msg, state.get("messages"))
-                state.update(fallback_meta)
-                state["fallback_used"] = True
-                state["reply_source"] = "chat_fallback"
-        state["final_reply"] = reply
+        return await _run_chat_only(state, factory)
 
-        # 让"随学随新"真正落地：facts 有核心字段更新时，立即重建画像维度
-        try:
-            cs = conversation_store.get(state.get("session_id", ""))
-            if cs and cs.profile_dirty:
-                # 记录哪些 facts 变了，用于增量更新
-                updated_facts = list(cs.last_updated_fields)
-                existing_profile = state.get("profile", {}) or {}
-                profile_agent = factory.get("profile_agent")
-                if profile_agent:
-                    pr = profile_agent.run({
-                        "session_id": state.get("session_id", ""),
-                        "user_message": user_msg,
-                        "profile_facts": dict(cs.facts),
-                        "course": state.get("course"),
-                        "_profile_dirty": True,
-                        "_existing_profile": existing_profile,
-                        "_updated_facts": updated_facts,
-                    })
-                    if pr and pr.get("profile"):
-                        state["profile"] = pr["profile"]
-                        state["profile_v2"] = pr.get("profile_v2", {})
-                        # 关联到 conversation_state 使其持久化
-                        cs.last_result = dict(cs.last_result or {})
-                        cs.last_result["profile"] = pr["profile"]
-                        cs.last_result["profile_v2"] = pr.get("profile_v2", {})
-                        cs.profile_dirty = False
-        except Exception:
-            pass
-
-        state["pipeline_executed"] = True
-        state["overall_status"] = "completed"
-        return dict(state)
+    # ── Single-agent shortcut ──
 
     # ── Single-agent shortcut ──
     # If agents_filter is explicitly provided (from product.py multi-action dispatch),
@@ -1141,15 +1151,31 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
     agents_filter = state.pop("agents_filter", None)
     agent_ids = agents_filter if (agents_filter is not None and len(agents_filter) > 0) else get_agent_ids(intent)
     if agent_ids is not None and len(agent_ids) > 0:
-        # ── 硬门槛：规划意图在对话中永远不执行 Planner ──
+        # ── 画像收集模式：拦截规划意图，退回聊天 ──
+        # 路径规划页面「去对话收集信息」按钮启用此模式，chat 只收集画像不触发规划器
         if "planner_agent" in agent_ids:
             try:
                 from app.services.conversation_state import conversation_store as _cs7
                 _s7 = _cs7.get(state.get("session_id", ""))
-                _planning = _s7 and _s7.path_planning_info_mode
+                _collecting = _s7 and _s7.path_planning_info_mode
             except Exception:
-                _planning = False
-            if not _planning or (not state.get("plan_mode") and not state.get("path_mode")):
+                _collecting = False
+
+            if _collecting:
+                # 画像收集模式：不触发规划器，退回聊天让 persona 收集信息
+                state["intent"] = "none"
+                logger.info("path_planning_info_mode=True, overriding plan intent to chat for session=%s",
+                            state.get("session_id", ""))
+                return await _run_chat_only(state, factory)
+            elif _caller_plan_mode or _caller_path_mode:
+                # 路径页面「直接生成路径」按钮显式传入了 plan_mode → 放行规划器
+                pass
+            elif kwargs.get("chat_mode") == "planning":
+                # 规划模式对话走画像收集，不阻塞
+                pass
+            else:
+                # 普通对话：规划器不通过对话触发，一律引导到路径页面
+                # 规划模式对话仅用于画像构建，不具备调用功能
                 state["final_reply"] = (
                     "好的！请到「学习路径」页面进行设置和生成，那里可以：\n"
                     "• 选择规划模式（教材式/日课式/精进式）\n"
@@ -1160,6 +1186,7 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
                 state["pipeline_executed"] = True
                 state["overall_status"] = "completed"
                 return dict(state)
+            # 规划器只能从路径页面确认生成按钮触发
 
         # Snapshot old results so we only report what's newly generated
         old_path = len(state.get("learning_path") or [])

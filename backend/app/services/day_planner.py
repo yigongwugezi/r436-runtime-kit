@@ -227,6 +227,101 @@ def build_day_plan(
 # ── 动态调整：基于新诊断修改已有 day_plan ────────────────────────────────
 
 
+# ── 差异计算 ────────────────────────────────────────────────────────────────
+
+
+def compute_diff(old_stages: list[dict], new_stages: list[dict]) -> dict:
+    """计算两个路径版本的差异，用于 revision review。
+
+    按 section_id 逐个匹配，输出结构化变化列表。
+    """
+    # 构建旧路径的 section lookup
+    old_map: dict[str, dict] = {}
+    for s in old_stages:
+        for ch in s.get("chapters", []):
+            for sec in ch.get("sections", []):
+                sid = sec.get("section_id", "")
+                if sid:
+                    old_map[sid] = {**sec, "_stage_title": s.get("title", "")}
+
+    changed: list[dict] = []
+    matched_new: set[str] = set()
+    for s in new_stages:
+        for ch in s.get("chapters", []):
+            for sec in ch.get("sections", []):
+                sid = sec.get("section_id", "")
+                if not sid:
+                    continue
+                matched_new.add(sid)
+                old_sec = old_map.get(sid)
+                if old_sec:
+                    old_mins = old_sec.get("estimated_minutes", 45)
+                    new_mins = sec.get("estimated_minutes", 45)
+                    old_ct = old_sec.get("content_type", "lecture")
+                    new_ct = sec.get("content_type", "lecture")
+                    if old_mins != new_mins or old_ct != new_ct:
+                        changed.append({
+                            "section_id": sid,
+                            "title": sec.get("title", ""),
+                            "stage_title": s.get("title", ""),
+                            "old_minutes": old_mins,
+                            "new_minutes": new_mins,
+                            "old_content_type": old_ct,
+                            "new_content_type": new_ct,
+                            "adjustment": sec.get("_adjustment", ""),
+                            "reason": sec.get("_adjustment_reason", ""),
+                        })
+                else:
+                    # 新出现的 section
+                    changed.append({
+                        "section_id": sid,
+                        "title": sec.get("title", ""),
+                        "stage_title": s.get("title", ""),
+                        "old_minutes": 0,
+                        "new_minutes": sec.get("estimated_minutes", 45),
+                        "old_content_type": "",
+                        "new_content_type": sec.get("content_type", "lecture"),
+                        "adjustment": "added",
+                        "reason": "新增小节",
+                    })
+
+    # 旧路径中已移除的 section
+    for sid, old_sec in old_map.items():
+        if sid not in matched_new:
+            changed.append({
+                "section_id": sid,
+                "title": old_sec.get("title", ""),
+                "stage_title": old_sec.get("_stage_title", ""),
+                "old_minutes": old_sec.get("estimated_minutes", 45),
+                "new_minutes": 0,
+                "old_content_type": old_sec.get("content_type", "lecture"),
+                "new_content_type": "",
+                "adjustment": "removed",
+                "reason": "已移除",
+            })
+
+    old_total = sum(
+        sec.get("estimated_minutes", 45)
+        for s in old_stages for ch in s.get("chapters", []) for sec in ch.get("sections", [])
+    )
+    new_total = sum(
+        sec.get("estimated_minutes", 45)
+        for s in new_stages for ch in s.get("chapters", []) for sec in ch.get("sections", [])
+    )
+
+    return {
+        "changed_sections": changed,
+        "unchanged_count": sum(
+            1 for sid in old_map if sid in matched_new
+            and sid not in {c["section_id"] for c in changed}
+        ),
+        "total_minutes_before": old_total,
+        "total_minutes_after": new_total,
+        "days_impact": "increase" if new_total > old_total else "decrease" if new_total < old_total else "no_change",
+        "summary": f"{len(changed)} 个小节变化，总时长 {old_total}→{new_total} 分钟",
+    }
+
+
 def adjust_day_plan(
     existing_plan: dict,
     stages: list[dict],

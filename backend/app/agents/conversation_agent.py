@@ -1000,12 +1000,7 @@ action："""
             "生成吧", "开始吧", "按这些信息生成",
         ]
         if any(p in compact for p in _GEN_PLAN):
-            # 对明确意图：核心维度足够就放行，不等 7 个全填满
-            profile_facts = context.get("profile_facts", {}) if isinstance(context.get("profile_facts"), dict) else {}
-            essential = ["target_course", "background", "time_budget", "learning_goal"]
-            known = sum(1 for d in essential if str(profile_facts.get(d, "")).strip() not in ("", "未提及", "待补充", "未知", "无"))
-            if known < 2:
-                return self._fallback_result("none", "plan_requested_but_profile_shallow", needs_clarification=True)
+            # 明确规划意图 → 一律放行，由 run_pipeline 的 gate 判断是 redirect 还是 info 收集
             return self._fallback_result("plan", "explicit_generation_request")
 
         _GEN_FULL = ["完整方案", "全套方案", "全部方案", "整套方案", "生成全套", "全部生成"]
