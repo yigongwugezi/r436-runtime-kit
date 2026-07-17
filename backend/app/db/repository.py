@@ -18,6 +18,8 @@ from app.db.models import (
     AnswerRecordModel,
     AttemptModel,
     DailyTaskModel,
+    DiagnosisEvidenceModel,
+    DiagnosisSnapshotModel,
     ExamSetModel,
     LearnerModel,
     LearningEventModel,
@@ -2091,3 +2093,265 @@ def ensure_question_kp_mappings(
 
     # Unmapped — no knowledge point data available
     return []
+
+
+# ── Diagnosis Snapshots & Evidence (spec §4.1–4.2) ────────────────────────
+
+
+def get_next_diagnosis_version(
+    db: Session, learner_id: str, subject_id: str,
+) -> int:
+    """Return the next version number for a (learner, subject) pair."""
+    max_ver = (
+        db.query(func.max(DiagnosisSnapshotModel.version))
+        .filter(
+            DiagnosisSnapshotModel.learner_id == learner_id,
+            DiagnosisSnapshotModel.subject_id == subject_id,
+        )
+        .scalar()
+    )
+    return (max_ver or 0) + 1
+
+
+def supersede_snapshots(
+    db: Session, learner_id: str, subject_id: str, *,
+    except_snapshot_id: str = "",
+) -> int:
+    """Mark all ready snapshots as superseded except the given one.
+
+    Returns the number of rows updated.
+    """
+    filters = [
+        DiagnosisSnapshotModel.learner_id == learner_id,
+        DiagnosisSnapshotModel.subject_id == subject_id,
+        DiagnosisSnapshotModel.status.in_(["ready", "generating"]),
+    ]
+    if except_snapshot_id:
+        filters.append(DiagnosisSnapshotModel.diagnosis_snapshot_id != except_snapshot_id)
+    count = (
+        db.query(DiagnosisSnapshotModel)
+        .filter(*filters)
+        .update({"status": "superseded"}, synchronize_session=False)
+    )
+    return count
+
+
+def create_diagnosis_snapshot(
+    db: Session,
+    *,
+    diagnosis_snapshot_id: str,
+    learner_id: str,
+    subject_id: str | None,
+    session_id: str,
+    version: int,
+    status: str = "ready",
+    mastery_levels: list | None = None,
+    weaknesses: list | None = None,
+    strengths: list | None = None,
+    confidence: float | None = None,
+    summary: str | None = None,
+    source_attempt_ids: list | None = None,
+    source_event_ids: list | None = None,
+    evidence_count: int = 0,
+    generated_by: str = "diagnosis_agent",
+    supersedes_snapshot_id: str | None = None,
+    active_task_id: str | None = None,
+) -> DiagnosisSnapshotModel:
+    """Create a new diagnosis snapshot row."""
+    snap = DiagnosisSnapshotModel(
+        diagnosis_snapshot_id=diagnosis_snapshot_id,
+        learner_id=learner_id,
+        subject_id=subject_id or "",
+        session_id=session_id,
+        version=version,
+        status=status,
+        mastery_levels=mastery_levels or [],
+        weaknesses=weaknesses or [],
+        strengths=strengths or [],
+        confidence=confidence,
+        summary=summary,
+        source_attempt_ids=source_attempt_ids or [],
+        source_event_ids=source_event_ids or [],
+        evidence_count=evidence_count,
+        generated_by=generated_by,
+        supersedes_snapshot_id=supersedes_snapshot_id,
+        active_task_id=active_task_id,
+    )
+    db.add(snap)
+    db.flush()
+    return snap
+
+
+def get_latest_diagnosis_snapshot(
+    db: Session, learner_id: str, subject_id: str,
+) -> DiagnosisSnapshotModel | None:
+    """Return the latest ready snapshot for a (learner, subject) pair."""
+    return (
+        db.query(DiagnosisSnapshotModel)
+        .filter(
+            DiagnosisSnapshotModel.learner_id == learner_id,
+            DiagnosisSnapshotModel.subject_id == subject_id,
+            DiagnosisSnapshotModel.status == "ready",
+        )
+        .order_by(DiagnosisSnapshotModel.version.desc())
+        .first()
+    )
+
+
+def get_diagnosis_at_version(
+    db: Session, learner_id: str, subject_id: str, version: int,
+) -> DiagnosisSnapshotModel | None:
+    """Return a specific version of a diagnosis snapshot."""
+    return (
+        db.query(DiagnosisSnapshotModel)
+        .filter(
+            DiagnosisSnapshotModel.learner_id == learner_id,
+            DiagnosisSnapshotModel.subject_id == subject_id,
+            DiagnosisSnapshotModel.version == version,
+        )
+        .first()
+    )
+
+
+def create_diagnosis_evidence(
+    db: Session,
+    *,
+    evidence_id: str,
+    diagnosis_snapshot_id: str,
+    learner_id: str,
+    knowledge_point_key: str,
+    evidence_type: str = "quiz_answer",
+    subject_id: str | None = None,
+    attempt_id: str | None = None,
+    question_id: str | None = None,
+    learning_event_id: str | None = None,
+    resource_id: str | None = None,
+    score: float | None = None,
+    weight: float | None = None,
+    confidence: float | None = None,
+    occurred_at: datetime | None = None,
+    metadata_: dict | None = None,
+) -> DiagnosisEvidenceModel:
+    """Create a single evidence row linked to a diagnosis snapshot."""
+    ev = DiagnosisEvidenceModel(
+        evidence_id=evidence_id,
+        diagnosis_snapshot_id=diagnosis_snapshot_id,
+        learner_id=learner_id,
+        subject_id=subject_id,
+        knowledge_point_key=knowledge_point_key,
+        evidence_type=evidence_type,
+        attempt_id=attempt_id,
+        question_id=question_id,
+        learning_event_id=learning_event_id,
+        resource_id=resource_id,
+        score=score,
+        weight=weight,
+        confidence=confidence,
+        occurred_at=occurred_at or _utcnow(),
+        metadata_=metadata_,
+    )
+    db.add(ev)
+    return ev
+
+
+def get_evidence_for_snapshot(
+    db: Session, diagnosis_snapshot_id: str,
+) -> list[DiagnosisEvidenceModel]:
+    """Return all evidence rows for a given snapshot."""
+    return (
+        db.query(DiagnosisEvidenceModel)
+        .filter(DiagnosisEvidenceModel.diagnosis_snapshot_id == diagnosis_snapshot_id)
+        .order_by(DiagnosisEvidenceModel.knowledge_point_key)
+        .all()
+    )
+
+
+def collect_evidence_from_events(
+    db: Session,
+    learner_id: str,
+    subject_id: str | None,
+    source_event_ids: list[str],
+    source_attempt_ids: list[str],
+) -> list[dict]:
+    """Collect structured evidence records from quiz_result events and answer records.
+
+    Each entry is a dict suitable for passing to ``create_diagnosis_evidence``.
+    Evidence is only collected for ``assessment_eligible`` attempts.
+    """
+    evidence: list[dict] = []
+
+    # ── From quiz_result events ─────────────────────────────────
+    if source_event_ids:
+        events = (
+            db.query(LearningEventModel)
+            .filter(LearningEventModel.event_id.in_(source_event_ids))
+            .all()
+        )
+        for evt in events:
+            meta = evt.metadata_ or {}
+            kprs = meta.get("knowledgePointResults", [])
+            if isinstance(kprs, list):
+                for kpr in kprs:
+                    if not kpr.get("assessmentEligible", True):
+                        continue
+                    evidence.append({
+                        "knowledge_point_key": str(kpr.get("knowledgePointKey", "")),
+                        "evidence_type": "quiz_answer",
+                        "attempt_id": evt.attempt_id,
+                        "question_id": str(kpr.get("questionId", "")),
+                        "learning_event_id": evt.event_id,
+                        "score": float(kpr.get("normalizedScore", 0)),
+                        "weight": float(kpr.get("weight", 1.0)),
+                        "confidence": float(kpr.get("mappingConfidence", 1.0)),
+                        "occurred_at": evt.created_at,
+                        "metadata_": kpr,
+                    })
+
+    # ── From legacy AnswerRecords (no quiz_result event yet) ───
+    if source_attempt_ids:
+        # Only include attempts that don't already have a quiz_result event
+        attempts_with_events = set()
+        if source_event_ids:
+            evt_attempts = (
+                db.query(LearningEventModel.attempt_id)
+                .filter(LearningEventModel.event_id.in_(source_event_ids))
+                .all()
+            )
+            attempts_with_events = {a[0] for a in evt_attempts if a[0]}
+
+        for aid in source_attempt_ids:
+            if aid in attempts_with_events:
+                continue
+            # Check assessment_eligible
+            attempt = db.get(AttemptModel, aid) if hasattr(AttemptModel, 'attempt_id') else None
+            if attempt is None:
+                att = db.query(AttemptModel).filter(AttemptModel.attempt_id == aid).first()
+                if att is None or not getattr(att, "assessment_eligible", True):
+                    continue
+                attempt_id_val = att.attempt_id
+            else:
+                attempt_id_val = aid
+
+            answer_records = (
+                db.query(AnswerRecordModel)
+                .filter(AnswerRecordModel.attempt_id == attempt_id_val)
+                .all()
+            )
+            for ar in answer_records:
+                q_score = float(ar.total_score or 0)
+                evidence.append({
+                    "knowledge_point_key": f"question_{ar.question_id}",
+                    "evidence_type": "quiz_answer",
+                    "attempt_id": attempt_id_val,
+                    "question_id": ar.question_id,
+                    "score": q_score / 100.0,
+                    "weight": 1.0,
+                    "confidence": 0.8,
+                    "occurred_at": ar.created_at,
+                    "metadata_": {
+                        "errorType": ar.error_type,
+                        "totalScore": ar.total_score,
+                    },
+                })
+
+    return evidence

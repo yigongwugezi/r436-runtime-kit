@@ -182,6 +182,91 @@ class ProfileSnapshotModel(Base):
     session: Mapped["SessionModel"] = relationship("SessionModel", back_populates="profile_snapshots")
 
 
+# ── Diagnosis Snapshot (spec §4.1) ──────────────────────────────────────
+
+
+class DiagnosisSnapshotModel(Base):
+    """Persistent, versioned diagnosis snapshot — the unified fact source
+    for Profile, Analytics, and Resource.
+
+    Each new DiagnosisAgent run for a given (learner_id, subject_id)
+    creates a new row with an incremented version number.  Previous
+    snapshots are marked ``superseded`` but never deleted, providing
+    a full audit trail.
+
+    Status lifecycle:  generating → ready | failed   ;   ready → superseded
+    """
+
+    __tablename__ = "diagnosis_snapshots"
+
+    diagnosis_snapshot_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    learner_id: Mapped[str] = mapped_column(String(64), index=True)
+    subject_id: Mapped[str] = mapped_column(String(64), index=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(16), default="generating")
+    # generating | ready | needs_review | failed | superseded
+
+    mastery_levels: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    weaknesses: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    strengths: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    confidence: Mapped[float | None] = mapped_column(nullable=True, default=None)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+
+    source_attempt_ids: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    source_event_ids: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    evidence_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    generated_by: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    supersedes_snapshot_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None,
+    )
+    active_task_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+# ── Diagnosis Evidence (spec §4.2) ──────────────────────────────────────
+
+
+class DiagnosisEvidenceModel(Base):
+    """Evidence backing a diagnosis conclusion.
+
+    Each row connects one knowledge-point-level observation (from a
+    quiz answer, exam answer, resource completion, etc.) to the
+    diagnosis snapshot it supports.
+    """
+
+    __tablename__ = "diagnosis_evidence"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    evidence_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    diagnosis_snapshot_id: Mapped[str] = mapped_column(String(64), index=True)
+    learner_id: Mapped[str] = mapped_column(String(64), index=True)
+    subject_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+
+    knowledge_point_key: Mapped[str] = mapped_column(String(128), index=True)
+    evidence_type: Mapped[str] = mapped_column(String(32), default="quiz_answer")
+    # quiz_answer | exam_answer | resource_completion | practice_result
+    # repeated_error | improvement | explicit_self_report
+
+    attempt_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    question_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    learning_event_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    resource_id: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
+
+    score: Mapped[float | None] = mapped_column(nullable=True, default=None)
+    weight: Mapped[float | None] = mapped_column(nullable=True, default=None)
+    confidence: Mapped[float | None] = mapped_column(nullable=True, default=None)
+
+    occurred_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    metadata_: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
 # ── Learning Path ────────────────────────────────────────────────────────
 
 class LearningPathModel(Base):

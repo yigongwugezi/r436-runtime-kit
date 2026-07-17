@@ -4345,6 +4345,17 @@ def get_session_daily_tasks(
         db.close()
 
 
+def _mastery_level_name(score: float) -> str:
+    """Map a mastery score to a display label."""
+    if score >= 90:
+        return "精通"
+    elif score >= 70:
+        return "熟练"
+    elif score >= 40:
+        return "初步"
+    return "未学"
+
+
 @router.get("/learning-analytics")
 def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
     session_id = _resolve_session_id(sessionId, subjectId)
@@ -4356,7 +4367,39 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
     last_result = state.last_result or {}
 
     # ── M6: 能力热力图数据 ──
-    diagnosis = last_result.get("diagnosis", {}) if isinstance(last_result, dict) else {}
+    # Try DB snapshot first, fall back to conversation_store
+    diagnosis: dict[str, Any] = {}
+    diagnosis_version: int | None = None
+    diagnosis_generated_at: str | None = None
+    try:
+        from app.db.engine import SessionLocal as AnalyticsSessionLocal
+        from app.services.diagnosis_snapshot_service import try_get_diagnosis
+        _db = AnalyticsSessionLocal()
+        try:
+            _dto = try_get_diagnosis(_db, learner_id=None, subject_id=subject_id or None, session_id=session_id)
+            if _dto:
+                diagnosis = {
+                    "mastery_levels": [
+                        {"name": m["label"], "score": m["score"], "level": _mastery_level_name(m["score"]),
+                         "evidence_count": m["evidenceCount"], "confidence": m["confidence"],
+                         "trend": m["trend"]}
+                        for m in _dto.get("mastery", [])
+                    ],
+                    "weak_knowledge_points": [
+                        {"name": w["knowledgePointKey"], "priority": w["severity"],
+                         "reason": w["reason"], "suggested_action": w.get("recommendedAction")}
+                        for w in _dto.get("weaknesses", [])
+                    ],
+                }
+                diagnosis_version = _dto.get("version")
+                diagnosis_generated_at = _dto.get("createdAt")
+        finally:
+            _db.close()
+    except Exception:
+        pass
+
+    if not diagnosis:
+        diagnosis = last_result.get("diagnosis", {}) if isinstance(last_result, dict) else {}
     mastery_levels = diagnosis.get("mastery_levels", []) or []
     heatmap = [
         {"knowledgePoint": m.get("name", ""), "mastery": m.get("score", 50),
@@ -4589,6 +4632,8 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
             "goalTracking": goal_tracking,
             "todayCard": today_card,
             "summary": "多智能体协同学习分析仪表盘（M6）。",
+            "diagnosisVersion": diagnosis_version,
+            "diagnosisGeneratedAt": diagnosis_generated_at,
         },
         session_id=session_id, subject_id=subjectId, source="agent",
     )
