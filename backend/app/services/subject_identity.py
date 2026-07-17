@@ -46,7 +46,7 @@ def get_or_create_personal_subject(
     canonical_name = canonical_subject_name(name)
     if not canonical_name:
         raise ValueError("subject name is required")
-    legacy_id = str(legacy_subject_id or "").strip()
+    legacy_id = str(legacy_subject_id or "")
     if not _LEGACY_SUBJECT_ID_RE.fullmatch(legacy_id):
         legacy_id = ""
 
