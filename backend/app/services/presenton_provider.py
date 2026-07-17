@@ -52,24 +52,31 @@ class PresentonProvider:
     @staticmethod
     def _find_docker() -> str:
         """Find docker executable path on this system."""
-        # Check common install locations
         candidates = [
             "docker",
             "docker.exe",
             r"C:\Program Files\Docker\Docker\resources\bin\docker.exe",
-            r"C:\Program Files\Docker\Docker\docker.exe",
         ]
         for cmd in candidates:
-            try:
-                subprocess.run([cmd, "version"], capture_output=True, timeout=5)
-                return cmd
-            except (FileNotFoundError, subprocess.TimeoutExpired):
-                continue
+            # Quick file existence check before running
+            if cmd in ("docker", "docker.exe"):
+                try:
+                    subprocess.run([cmd, "--version"], capture_output=True, timeout=2)
+                    return cmd
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    continue
+            else:
+                if os.path.isfile(cmd):
+                    try:
+                        subprocess.run([cmd, "--version"], capture_output=True, timeout=2)
+                        return cmd
+                    except subprocess.TimeoutExpired:
+                        continue
         return ""
 
     @staticmethod
     def _auto_start() -> bool:
-        """Try to start Presenton via Docker."""
+        """Try to start Presenton via Docker. Quick fail (10s max)."""
         logger.info("Presenton: attempting auto-start via Docker")
         docker_cmd = PresentonProvider._find_docker()
         if not docker_cmd:
@@ -77,9 +84,9 @@ class PresentonProvider:
             return False
 
         try:
-            subprocess.run([docker_cmd, "info"], capture_output=True, timeout=10)
+            subprocess.run([docker_cmd, "info"], capture_output=True, timeout=5)
         except Exception:
-            logger.warning("Presenton: Docker engine not ready (still starting?)")
+            logger.warning("Presenton: Docker engine not ready")
             return False
 
         api_key = os.environ.get("DEEPSEEK_API_KEY", "")

@@ -1,7 +1,7 @@
 /** KGPreview — static G6 knowledge graph preview (no interactivity).
 
-Renders a simple force-directed graph using G6 without behaviors or plugins.
-Used in ResourceLibrary for mindmap-type resources with graph_data content. */
+Renders a force-directed graph using G6 without behaviors or plugins.
+Animation runs once and settles — no continuous shaking. */
 import { useEffect, useRef } from 'react';
 import { Graph } from '@antv/g6';
 
@@ -28,12 +28,18 @@ export default function KGPreview({ graphData, className = '', height = 360 }: K
       width: width || 600,
       height,
       autoFit: 'view',
-      animation: true,
+      animation: false,
       layout: {
         type: 'force',
         preventOverlap: true,
-        linkDistance: 120,
-        nodeStrength: -150,
+        nodeSize: (d: any) => 20 + (d.data?.importance || 2) * 4 + 10,
+        nodeStrength: -2000,
+        edgeStrength: 0.8,
+        linkDistance: 400,
+        damping: 0.9,
+        maxSpeed: 20,
+        coulombScale: 2,
+        workerEnabled: true,
       },
       data: {
         nodes: graphData.nodes.map((n) => ({
@@ -44,7 +50,7 @@ export default function KGPreview({ graphData, className = '', height = 360 }: K
             importance: n.importance || 2,
           },
           style: {
-            size: 18 + (n.importance || 2) * 3,
+            size: 20 + (n.importance || 2) * 4,
             fill: '#6366f1',
             stroke: '#fff',
             lineWidth: 2,
@@ -54,6 +60,7 @@ export default function KGPreview({ graphData, className = '', height = 360 }: K
           id: `${e.source}->${e.target}`,
           source: e.source,
           target: e.target,
+          data: { relation: e.relation },
           style: {
             stroke: '#cbd5e1',
             lineWidth: 1.5,
@@ -64,10 +71,24 @@ export default function KGPreview({ graphData, className = '', height = 360 }: K
       node: {
         label: {
           text: (d: any) => d.data?.label || d.id,
-          fontSize: 11,
-          fill: '#374151',
+          fontSize: 12,
+          fill: '#1f2937',
+          fontWeight: 500,
           position: 'bottom',
-          offset: 4,
+          offset: 6,
+          maxLines: 2,
+        },
+        style: {
+          size: (d: any) => 20 + (d.data?.importance || 2) * 4,
+          fill: '#6366f1',
+          stroke: '#fff',
+          lineWidth: 2,
+          labelPlacement: 'bottom',
+          labelOffset: 6,
+          labelText: (d: any) => d.data?.label || d.id,
+          labelFontSize: 12,
+          labelFill: '#1f2937',
+          labelFontWeight: 500,
         },
       },
       edge: {
@@ -76,8 +97,22 @@ export default function KGPreview({ graphData, className = '', height = 360 }: K
           lineWidth: 1.5,
           endArrow: true,
         },
+        label: {
+          text: (d: any) => {
+            const r = d.data?.relation;
+            if (r === 'prerequisite') return '前置';
+            if (r === 'contains') return '包含';
+            if (r === 'related') return '关联';
+            return '';
+          },
+          fontSize: 9,
+          fill: '#94a3b8',
+          background: true,
+          backgroundFill: '#fff',
+          backgroundOpacity: 0.8,
+          padding: [2, 4],
+        },
       },
-      // No behaviors = static, no interaction
       behaviors: [],
     });
 
@@ -92,7 +127,7 @@ export default function KGPreview({ graphData, className = '', height = 360 }: K
   return (
     <div
       ref={containerRef}
-      className={`bg-surface-50 rounded-xl overflow-hidden ${className}`}
+      className={`bg-white rounded-xl ${className}`}
       style={{ height, width: '100%' }}
     />
   );

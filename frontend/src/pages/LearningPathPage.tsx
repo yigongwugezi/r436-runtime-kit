@@ -9,6 +9,7 @@ import { generateLearningPath, validateCourse, enableProfileExtraction, planning
 import { useProfile } from '../hooks/useProfile';
 import { useChatStore } from '../store/chatStore';
 import DayPlanView from '../components/learning/DayPlanView';
+import StageTimeline from '../components/learning/StageTimeline';
 import type { ExamSet } from '../types/assessment';
 import PlanningWizard from '../components/learning/PlanningWizard';
 import { PageLoading, PageEmpty, PageError } from '../components/common/PageState';
@@ -181,11 +182,6 @@ const nodeStatusColor = (status: string) => {
 };
 
 // ====== 布局常量 ======
-const GRAPH_MIN_Y = 150;
-const GRAPH_MAX_Y = 200;
-const AXIS_TOP = 320;
-const AXIS_PAD = 48;
-const NODE_BOX_HEIGHT = 56;
 
 export default function LearningPathPage() {
   const nav = useNavigate();
@@ -226,7 +222,7 @@ export default function LearningPathPage() {
   const [existingDraft, setExistingDraft] = useState<any>(null);
   const [draftLoading, setDraftLoading] = useState(true);
   // View mode: 'graph' | 'day'
-  const [viewMode, setViewMode] = useState<'graph' | 'day'>('day');
+  const [viewMode, setViewMode] = useState<'timeline' | 'day'>('timeline');
 
   const stages = path?.stages || [];
   const allNodes = stages.flatMap(s => s.nodes || []);
@@ -240,19 +236,13 @@ export default function LearningPathPage() {
   // ====== 核心算法 ======
   const { stageLayouts, totalDays, dayToPixelX } = useMemo(() => {
     const fallbackDays = Math.ceil(estimatedDays / Math.max(stages.length, 1));
-
-    // Use path-level estimatedDays as authoritative total — stage-level
-    // estimated_days are internal allocations that may not sum correctly.
     const totalDays = estimatedDays;
-
-    // First pass: collect weights
     const weights = stages.map(s => s.estimatedDays || fallbackDays);
     const totalWeight = weights.reduce((a, b) => a + b, 0) || 1;
-
     let cursor = 0;
     const stageData = stages.map((s, i) => {
       const stageDays = i === stages.length - 1
-        ? totalDays - cursor  // last stage takes the remainder
+        ? totalDays - cursor
         : Math.max(1, Math.round(totalDays * weights[i] / totalWeight));
       cursor += stageDays;
       return {
@@ -264,52 +254,21 @@ export default function LearningPathPage() {
         nodeCount: s.nodes?.length || 1,
       };
     });
-
     const layouts = stageData.map((data, i) => {
       const { startDay, endDay, nodeCount } = data;
       const xRatio = totalDays > 1 ? (startDay - 1) / (totalDays - 1) : 0.5;
       const wave = Math.sin((i / Math.max(stages.length - 1, 1)) * Math.PI * 1.2);
       const cy = GRAPH_MIN_Y + (GRAPH_MAX_Y - GRAPH_MIN_Y) * ((1 - wave) / 2);
       const scale = 0.85 + (nodeCount / maxNodesInStage) * 0.3;
-
-      return {
-        ...data,
-        xRatio,
-        cy,
-        scale,
-      };
+      return { ...data, xRatio, cy, scale };
     });
-
-    const dayToPixelX = (day: number, graphWidth: number) => {
+    const dayToPixelX = (day, graphWidth) => {
       if (totalDays <= 1) return AXIS_PAD + graphWidth * 0.5;
       const ratio = (day - 1) / (totalDays - 1);
       return AXIS_PAD + ratio * (graphWidth - AXIS_PAD * 2);
     };
-
     return { stageLayouts: layouts, totalDays, dayToPixelX };
   }, [stages, estimatedDays, maxNodesInStage]);
-
-  // ====== 容器宽度 ======
-  const graphRef = React.useRef<HTMLDivElement>(null);
-  const [graphW, setGraphW] = useState(800);
-
-  useEffect(() => {
-    const el = graphRef.current;
-    if (!el) return;
-    const getWidth = () => {
-      if (el.offsetWidth > 0) setGraphW(el.offsetWidth);
-    };
-    getWidth();
-    const observer = new ResizeObserver(getWidth);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-
-  const ratioToLeftPct = useCallback((ratio: number) => {
-    if (graphW <= 0) return '50%';
-    const px = AXIS_PAD + ratio * (graphW - AXIS_PAD * 2);
-    return `${(px / graphW) * 100}%`;
-  }, [graphW]);
 
   const formatDuration = (minutes: number) => {
     if (!minutes || minutes <= 0) return '0分钟';
@@ -799,15 +758,14 @@ export default function LearningPathPage() {
       {!isDetailView && (
         <div className="flex items-center gap-1 mb-4">
           <button
-            onClick={() => setViewMode('graph')}
+            onClick={() => setViewMode('timeline')}
             className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
-              viewMode === 'graph'
+              viewMode === 'timeline'
                 ? 'bg-primary-100 text-primary-700 shadow-sm'
                 : 'text-surface-500 hover:text-surface-700 hover:bg-surface-50'
             }`}
           >
-            <LayoutGrid size={16} className="inline mr-1.5" />
-            节点图
+            阶段
           </button>
           <button
             onClick={() => setViewMode('day')}
@@ -837,7 +795,7 @@ export default function LearningPathPage() {
       ) : (
       /* Main content - 两栏，撑满剩余高度 */
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 flex-1 min-h-0">
-        {/* 左侧：学习节点图 */}
+        {/* 左侧：学习阶段 */}
         <div className="lg:col-span-2 bg-white rounded-2xl p-6 shadow-soft flex flex-col">
           {isDetailView ? (
             <div className="animate-fade-in flex-1 overflow-auto">

@@ -273,7 +273,7 @@ export default function KnowledgeGraphPage() {
 
           {/* Floating node card */}
           {selectedNode && !showDetailPanel && (
-            <div className="absolute left-6 bottom-6" style={{ pointerEvents: 'none' }}>
+            <div className="absolute top-6 left-1/2 -translate-x-1/2 z-50">
               <KGNodeCard
                 node={selectedNode}
                 onClose={() => setSelectedNode(null)}
