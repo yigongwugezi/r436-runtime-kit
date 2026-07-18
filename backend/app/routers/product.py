@@ -7302,9 +7302,10 @@ def tutor_ask(section_id: str, payload: dict[str, Any], auth: AuthContext = Depe
         pass
 
     kp_names = ", ".join(kp.get("name", str(kp)) if isinstance(kp, dict) else str(kp) for kp in (knowledge_points or [])[:8])
+    course_context = str(payload.get("courseName") or payload.get("courseId") or payload.get("subjectId") or "").strip()
     task_context = ""
     if stage_id:
-        task_context = f"\n路径任务：阶段 {stage_id}；任务 {str(payload.get('taskId') or section_id)}"
+        task_context = f"\n路径任务：课程 {course_context or '当前课程'}；阶段 {stage_id}；任务 {str(payload.get('taskId') or section_id)}"
 
     # ── Detect tutoring mode from student's course ──
     tutor_persona = "你是 EduAgent 智能助教，请为学生解答问题。"

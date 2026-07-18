@@ -54,7 +54,7 @@ def main() -> None:
         client = TestClient(app)
         params = {"sessionId": "lecture-session", "pathId": "path-1", "stageId": "s1", "taskId": "t1"}
         assert client.get("/api/sections/t1/lecture", params=params).json()["data"]["lecture"] is None
-        payload = {**params, "sectionTitle": "链表讲义", "sectionGoal": "理解节点", "knowledgePoints": [{"name": "指针"}]}
+        payload = {**params, "courseId": "数据结构", "sectionTitle": "链表讲义", "sectionGoal": "理解节点", "knowledgePoints": [{"name": "指针"}]}
         created = client.post("/api/sections/t1/lecture/generate", json=payload)
         assert created.status_code == 200 and created.json()["data"]["lecture"]["content"]
         assert fake.calls == 1
@@ -71,7 +71,7 @@ def main() -> None:
             **payload, "question": "这节课的重点是什么？", "lectureExcerpt": created.json()["data"]["lecture"]["content"],
         })
         assert tutor.status_code == 200 and tutor.json()["data"]["reply"]
-        assert any("阶段 s1；任务 t1" in prompt for prompt in fake.prompts)
+        assert any("课程 数据结构；阶段 s1；任务 t1" in prompt for prompt in fake.prompts)
         completed = client.patch("/api/learning-path/nodes/t1", json={"sessionId": "lecture-session", "status": "mastered", "mastery": 100})
         assert completed.status_code == 200
         db = factory()

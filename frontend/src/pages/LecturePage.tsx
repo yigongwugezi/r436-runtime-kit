@@ -485,6 +485,7 @@ export default function LecturePage() {
           stageId: focusedTask ? focusedStageId : chapterCtx?.stage.id || '',
           taskId: focusedTask ? focusedTaskId : activeSectionId,
           subjectId: focusedSubjectId || undefined,
+          courseId: path?.courseName || undefined,
         }),
       });
       if (res.status === 403) { setFocusedAccessDenied(true); return; }
