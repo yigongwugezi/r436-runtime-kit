@@ -929,6 +929,7 @@ Response:
       "difficulty": "easy",
       "estimatedMinutes": 20,
       "format": "text",
+      "contentFormat": "markdown",
       "mermaidDef": null,
       "codeBlocks": null,
       "questions": null,
@@ -959,6 +960,8 @@ Response:
 Resource `type` values: `lecture`, `mindmap`, `quiz`, `reading`, `case_study`, `video`.
 
 Resource `format` values: `text`, `diagram` (for mindmap mermaid content), `code` (for practice).
+
+`contentFormat` values: `markdown`, `mermaid`, `json`, `graph_data` (format of the `content` field; defaults to `markdown`).
 
 Per-resource `source` values (mapped by backend): `"user_input"`, `"agent_generated"`, `"system_inferred"`, `"fallback"`, `"rule_based_fallback"`.
 
@@ -993,6 +996,7 @@ Response (envelope `data` field):
     "difficulty": "easy",
     "estimatedMinutes": 20,
     "format": "text",
+    "contentFormat": "markdown",
     "mermaidDef": null,
     "codeBlocks": null,
     "questions": null,

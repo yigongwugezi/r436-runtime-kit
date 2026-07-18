@@ -1,11 +1,14 @@
 """SQLAlchemy engine and session factory."""
 
+import logging
 from pathlib import Path
 
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 def _ensure_data_dir() -> None:
@@ -104,6 +107,7 @@ def init_db() -> None:
             "difficulty": "VARCHAR(16) DEFAULT 'easy'",
             "estimated_minutes": "INTEGER DEFAULT 20",
             "format": "VARCHAR(16) DEFAULT 'text'",
+            "content_format": "VARCHAR(32)",
             "mermaid_def": "TEXT",
             "code_blocks": "JSON",
             "questions": "JSON",
@@ -264,6 +268,11 @@ def init_db() -> None:
     # Same issue — quiz attempts and practice answers use synthetic
     # session IDs that may not exist in the sessions table.
     _migrate_answer_records_session_fk()
+
+    # ── Safety net: auto-add any model column still missing ───────────
+    # Catches columns added to models.py but forgotten in the migrations
+    # dict above (e.g. resources.content_format).
+    _sync_missing_columns()
 
 
 def _migrate_attempts_idempotency_indexes() -> None:
@@ -461,6 +470,69 @@ def _migrate_answer_records_session_fk() -> None:
         except Exception:
             conn.execute(text("ROLLBACK"))
             raise
+
+
+def _sync_missing_columns() -> None:
+    """Safety net: add any model column that is still missing from the DB.
+
+    ``Base.metadata.create_all`` only creates brand-new tables, and the
+    manual ``migrations`` dict in :func:`init_db` must be updated by hand
+    whenever a column is added to ``models.py`` — a step that is easy to
+    forget (it once caused ``no such column: resources.content_format`` at
+    runtime).  This sweep diffs every mapped table against
+    ``PRAGMA table_info`` and issues an additive
+    ``ALTER TABLE ... ADD COLUMN`` for anything still missing, logging a
+    warning so the migrations dict can be brought back in sync.  Columns
+    are only ever added (as nullable, with the model's scalar default if
+    one exists) — never dropped or altered.
+    """
+    from app.db.models import Base  # noqa: PLC0415
+
+    with engine.connect() as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).fetchall()
+        }
+        # NOTE: not sorted_tables — topological order is irrelevant for
+        # add-only column sweeps, and sorting warns on the circular FK
+        # between personal_subjects and textbooks.
+        for table in Base.metadata.tables.values():
+            if table.name not in tables:
+                continue  # create_all already handles brand-new tables
+            existing = {
+                row[1]
+                for row in conn.execute(text(f"PRAGMA table_info({table.name})")).fetchall()
+            }
+            for column in table.columns:
+                if column.name in existing:
+                    continue
+                definition = column.type.compile(engine.dialect)
+                default = getattr(column.default, "arg", None)
+                if isinstance(default, bool):
+                    definition += f" DEFAULT {int(default)}"
+                elif isinstance(default, (int, float)):
+                    definition += f" DEFAULT {default}"
+                elif isinstance(default, str):
+                    escaped = default.replace("'", "''")
+                    definition += f" DEFAULT '{escaped}'"
+                try:
+                    conn.execute(
+                        text(f"ALTER TABLE {table.name} ADD COLUMN {column.name} {definition}")
+                    )
+                    conn.commit()
+                    logger.warning(
+                        "Schema drift fixed: added missing column %s.%s (%s) - "
+                        "please add it to the migrations dict in init_db() as well",
+                        table.name,
+                        column.name,
+                        definition,
+                    )
+                except Exception:
+                    # Existing local SQLite files may already contain the column
+                    # while reporting stale PRAGMA metadata on a reused connection.
+                    conn.rollback()
 
 
 # Keep direct route imports and test scripts usable even when FastAPI lifespan
