@@ -3695,7 +3695,8 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
             pass
         if not resource.get("mermaid_def"):
             resource["content"] = f"## {topic} 知识结构\n\n- 定义\n- 关键步骤\n- 常见误区\n- 自测"
-            resource["mermaid_def"] = sanitize_mermaid(f"mindmap\n  root(({safe_topic}))\n    定义\n    关键步骤\n    常见误区\n    自测")
+            fallback_mermaid = f"mindmap\n  root(({safe_topic}))\n    定义\n    关键步骤\n    常见误区\n    自测"
+            resource["mermaid_def"] = sanitize_mermaid(fallback_mermaid) or fallback_mermaid
             resource["content_format"] = "mermaid"
 
     elif resource_type == "quiz":
@@ -3797,29 +3798,30 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
         capability = "manim_generation" if resource_type in {"animation", "manim"} else "video_generation"
         _, tool = default_registry().select_tool(capability)
         if tool is None:
-            resource["quality_status"] = "provider_unavailable"
-            resource["content"] = f"# {topic}\n\n{resource_type} 生成服务未配置或不可用。"
-            resource["format"] = "text"
+            raise RuntimeError("provider_not_configured")
         else:
             try:
                 result = tool.run({"topic": topic, "subject_name": topic, "user_message": f"Generate {resource_type} for {topic}"})
                 output = result.get("result") if isinstance(result, dict) else {}
                 if result.get("status") != "success" or not isinstance(output, dict) or not (output.get("video_url") or output.get("url")):
-                    resource["quality_status"] = "provider_unavailable"
-                    resource["content"] = f"# {topic}\n\n{resource_type} 生成失败，请稍后重试。"
-                    resource["format"] = "text"
+                    raise RuntimeError("provider_not_configured")
                 else:
                     resource["content"] = str(output.get("video_url") or output.get("url"))
             except Exception:
-                resource["quality_status"] = "provider_unavailable"
-                resource["content"] = f"# {topic}\n\n{resource_type} 生成服务异常，请稍后重试。"
-                resource["format"] = "text"
+                raise RuntimeError("provider_not_configured")
     return resource
 
 
 def _generate_general_resource(payload: dict[str, Any], workflow_task: Any = None) -> dict[str, Any]:
     request = normalize_general_resource_request(payload)
     _ensure_session_linked(request["sessionId"], subject_id=request["subjectId"])
+    if request["resourceType"] not in {"video", "ppt", "image"}:
+        from app.config import runtime_capabilities
+        if not runtime_capabilities()["llmConfigured"]:
+            return _product_response(
+                {"errorCode": "provider_not_configured", "resource": None},
+                session_id=request["sessionId"], status="error", message="provider_not_configured", source="agent",
+            )
     resource = _general_resource_payload(request, workflow_task)
     if workflow_task is not None:
         from app.services.workflow_tasks import workflow_task_manager
@@ -3834,7 +3836,7 @@ def _generate_general_resource(payload: dict[str, Any], workflow_task: Any = Non
         item = {
             "resource_id": saved.id, "type": saved.type, "title": saved.title, "description": saved.description,
             "content": saved.content, "knowledge_points": saved.knowledge_points, "difficulty": saved.difficulty,
-            "estimatedMinutes": saved.estimated_minutes, "format": saved.format, "mermaid_def": saved.mermaid_def,
+            "estimatedMinutes": saved.estimated_minutes, "format": saved.format, "content_format": saved.content_format, "mermaid_def": saved.mermaid_def,
             "code_blocks": saved.code_blocks, "questions": saved.questions, "ppt_outline": saved.ppt_outline,
             "source": saved.source, "task_id": saved.task_id,
         }

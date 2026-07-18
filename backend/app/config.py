@@ -1,6 +1,8 @@
 from pathlib import Path
+from importlib.util import find_spec
 import logging
 import os
+import shutil
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -156,3 +158,21 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def runtime_capabilities() -> dict[str, object]:
+    """Return safe runtime readiness data; credentials and URLs never leave process."""
+    provider = settings.llm_provider.lower()
+    key_names = {"deepseek": "DEEPSEEK_API_KEY", "qwen": "QWEN_API_KEY", "glm": "GLM_API_KEY", "openai": "OPENAI_API_KEY"}
+    llm_configured = provider == "mock" or bool(os.getenv(key_names.get(provider, "LLM_API_KEY"), ""))
+    search = settings.search_provider.lower()
+    return {
+        "llmProvider": provider,
+        "llmConfigured": llm_configured,
+        "searchProvider": search,
+        "searchConfigured": search in {"mock", "duckduckgo"} or bool(os.getenv("TAVILY_API_KEY", "")),
+        "pptConfigured": bool(os.getenv("AIPPT_APP_ID", "") and os.getenv("AIPPT_API_SECRET", "")),
+        "videoConfigured": bool(os.getenv("DASHSCOPE_API_KEY", "") or os.getenv("WAN_API_KEY", "") or os.getenv("QWEN_API_KEY", "") or shutil.which("manim")),
+        "imageConfigured": bool(os.getenv("DASHSCOPE_API_KEY", "") or os.getenv("QWEN_API_KEY", "") or (os.getenv("ARK_API_KEY", "") and os.getenv("DEEPSEEK_API_KEY", ""))),
+        "optionalDependencies": {name: find_spec(name) is not None for name in ("ahocorasick", "openai", "faiss", "deeptutor", "manim")},
+    }

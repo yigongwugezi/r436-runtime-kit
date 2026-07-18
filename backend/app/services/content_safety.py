@@ -22,7 +22,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-import ahocorasick
+try:
+    import ahocorasick
+except ImportError:  # optional accelerator; checks still run below
+    ahocorasick = None
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +120,9 @@ class ContentSafetyEngine:
     """Multi-layer content safety engine with AC automaton + regex + LLM + RAG."""
 
     def __init__(self):
-        self._automaton = ahocorasick.Automaton()
+        self._automaton = ahocorasick.Automaton() if ahocorasick else None
+        if self._automaton is None:
+            logger.warning("pyahocorasick unavailable; using pure-Python content safety matching")
         self._word_map: dict[str, tuple[str, Severity]] = {}
         self._build_automaton()
         self._regex_patterns = _REGEX_PATTERNS
@@ -136,9 +141,11 @@ class ContentSafetyEngine:
                 for word in words:
                     key = word.lower()
                     if key not in self._word_map:
-                        self._automaton.add_word(key, (len(self._word_map), word, category, severity))
+                        if self._automaton is not None:
+                            self._automaton.add_word(key, (len(self._word_map), word, category, severity))
                         self._word_map[key] = (category, severity)
-        self._automaton.make_automaton()
+        if self._automaton is not None:
+            self._automaton.make_automaton()
 
     # -- Text normalization --
 
@@ -155,6 +162,13 @@ class ContentSafetyEngine:
     # -- Layer 1: AC automaton fast matching --
 
     def _check_ac(self, text: str) -> list[SafetyViolation]:
+        if self._automaton is None:
+            return [
+                SafetyViolation(pattern=word, category=category, severity=severity,
+                                layer=1, match_text=word)
+                for word, (category, severity) in self._word_map.items()
+                if word in text
+            ]
         violations = []
         seen = set()
         for end_idx, (idx, word, category, severity) in self._automaton.iter(text):
