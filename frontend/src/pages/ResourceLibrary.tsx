@@ -54,6 +54,9 @@ const resourceLabel = (resource: Resource) => RESOURCE_TYPE_LABELS[resource.task
 const resourceIcon = (resource: Resource) => icons[resource.taskId || ''] || icons[resource.type];
 const generatedResourceTypes = new Set(['summary_card', 'concept_comparison', 'worked_example', 'mistake_checklist', 'review_notes', 'knowledge_map', 'process_flow', 'concept_diagram', 'execution_trace', 'code_trace']);
 const visibleTags = (tags: string[] = []) => tags.filter((tag) => !generatedResourceTypes.has(tag) && !['section_generated', 'p4_multimodal', 'textbook'].includes(tag) && !tag.startsWith('path_session_'));
+const isSafeExternalUrl = (value?: string) => {
+  try { return ['http:', 'https:'].includes(new URL(value || '').protocol); } catch { return false; }
+};
 
 function QuizAnswerer({ questions, resourceId }: { questions: any[]; resourceId: string }) {
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -405,6 +408,7 @@ function ResourceListView({
   onToggleBookmark,
   onApplyFilter,
   sessionId,
+  subjectId,
   activeTaskId,
   activeStageId,
   isReadOnly,
@@ -417,6 +421,7 @@ function ResourceListView({
   onToggleBookmark: (id: string) => Promise<void>;
   onApplyFilter: (u: any) => void;
   sessionId: string | null;
+  subjectId?: string;
   activeTaskId?: string;
   activeStageId?: string;
   isReadOnly?: boolean;
@@ -450,10 +455,10 @@ function ResourceListView({
     const ids = Array.from(selectedIds);
     if (!ids.length) return;
     try {
-      if (action === 'complete') await batchUpdateStudyStatus(useChatStore.getState().currentSessionId, ids, 'completed');
-      else if (action === 'bookmark') await batchSetBookmark(useChatStore.getState().currentSessionId, ids, true);
+      if (action === 'complete') await batchUpdateStudyStatus(sessionId || '', ids, 'completed', subjectId);
+      else if (action === 'bookmark') await batchSetBookmark(sessionId || '', ids, true, subjectId);
       else if (action === 'export') {
-        const r = await batchExportResources(useChatStore.getState().currentSessionId, ids);
+        const r = await batchExportResources(sessionId || '', ids, subjectId);
         const blob = new Blob([r.export], { type: 'text/plain' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a'); a.href = url; a.download = 'resources_export.txt'; a.click();
@@ -782,6 +787,7 @@ export default function ResourceLibrary() {
         onToggleBookmark={toggleBookmark}
         onApplyFilter={applyFilter}
         sessionId={sessionId}
+        subjectId={activeSubject?.id}
         activeTaskId={searchParams.get('taskId') || undefined}
         activeStageId={searchParams.get('relatedStageId') || undefined}
         isReadOnly={isParent}

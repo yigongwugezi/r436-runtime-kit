@@ -3236,9 +3236,14 @@ _ONLINE_SEARCH_RESOURCE_TYPES = {"article", "video", "course", "document", "pape
 
 
 @router.post("/resources/search-results/save")
-def save_online_search_result(payload: dict[str, Any]) -> dict[str, Any]:
+def save_online_search_result(payload: dict[str, Any], auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
     """Save one already-ranked external result; this never starts a generator."""
-    session_id = _payload_session_id(payload)
+    scope = resolve_resource_scope(
+        auth, session_id=_payload_session_id(payload), subject_id=str(payload.get("subjectId") or ""),
+        path_id=str(payload.get("pathId") or ""), stage_id=str(payload.get("stageId") or ""),
+        task_id=str(payload.get("taskId") or ""), section_id=str(payload.get("sectionId") or ""),
+    )
+    session_id = scope.session_id
     item = payload.get("resource") if isinstance(payload.get("resource"), dict) else {}
     resource_type = str(item.get("resource_type") or item.get("resourceType") or "").lower().strip()
     if resource_type not in _ONLINE_SEARCH_RESOURCE_TYPES:
@@ -3270,6 +3275,9 @@ def save_online_search_result(payload: dict[str, Any]) -> dict[str, Any]:
         resource_id = f"online-{hashlib.sha256(f'{session_id}|{canonical_url}'.encode('utf-8')).hexdigest()[:24]}"
         resource_dict = {
             "id": resource_id,
+            "learner_id": scope.learner_id,
+            "subject_id": resolved_subject,
+            "path_id": scope.path_id,
             "type": resource_type,
             "title": str(item.get("title") or canonical_topic)[:256],
             "description": str(item.get("snippet") or item.get("reason") or "")[:1000],
@@ -3365,23 +3373,13 @@ def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "", aut
         if match:
             return _product_response({"resource": match}, session_id=session_id, subject_id=subjectId, source="memory")
 
-    return _product_response(
-        {"resource": {
-            "id": resource_id,
-            "type": "lecture",
-            "title": "资源未找到",
-            "description": "",
-            "content": "",
-            "source": "none",
-        }},
-        session_id=session_id, subject_id=subjectId, source="none",
-    )
+    raise HTTPException(status_code=404, detail="resource not found")
 
 
 @router.delete("/resources/{resource_id}")
-def delete_resource(resource_id: str, sessionId: str = "") -> dict[str, Any]:
+def delete_resource(resource_id: str, sessionId: str = "", subjectId: str = "", auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
     """Delete a resource only from its owning session."""
-    session_id = _resolve_session_id(sessionId, "")
+    session_id = resolve_resource_scope(auth, session_id=sessionId, subject_id=subjectId, resource_id=resource_id).session_id
     db = SessionLocal()
     try:
         from app.db.repository import delete_resource as repo_delete_resource
@@ -3404,8 +3402,11 @@ def delete_resource(resource_id: str, sessionId: str = "") -> dict[str, Any]:
 
 
 @router.post("/resources/{resource_id}/bookmark")
-def bookmark_resource(resource_id: str, sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
-    session_id = _resolve_session_id(sessionId, subjectId)
+def bookmark_resource(resource_id: str, payload: dict[str, Any] | None = None, sessionId: str = "", subjectId: str = "", auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
+    # FastAPI registers this dynamic route before /resources/batch/bookmark.
+    if resource_id == "batch":
+        return batch_set_bookmark(payload or {}, auth)
+    session_id = resolve_resource_scope(auth, session_id=sessionId, subject_id=subjectId, resource_id=resource_id).session_id
     try:
         db = SessionLocal()
         from app.db.repository import get_resource as repo_get_resource, upsert_resource as repo_upsert_resource
@@ -3443,9 +3444,12 @@ def bookmark_resource(resource_id: str, sessionId: str = "", subjectId: str = ""
 
 
 @router.patch("/resources/{resource_id}/study-status")
-def update_resource_study_status(resource_id: str, payload: dict[str, Any], sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
+def update_resource_study_status(resource_id: str, payload: dict[str, Any], sessionId: str = "", subjectId: str = "", auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
     """Update the study status of a resource. Only updates existing DB records."""
-    session_id = _resolve_session_id(sessionId, subjectId)
+    # Same route-shape collision as the bookmark endpoint above.
+    if resource_id == "batch":
+        return batch_update_study_status(payload, auth)
+    session_id = resolve_resource_scope(auth, session_id=sessionId, subject_id=subjectId, resource_id=resource_id).session_id
     study_status = str(payload.get("studyStatus", "completed"))
     db = SessionLocal()
     try:
@@ -3497,13 +3501,16 @@ def update_resource_study_status(resource_id: str, payload: dict[str, Any], sess
 
 
 @router.post("/resources/batch/study-status")
-def batch_update_study_status(payload: dict[str, Any]) -> dict[str, Any]:
+def batch_update_study_status(payload: dict[str, Any], auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
     """Batch update study status for multiple resources in a session."""
-    session_id = _payload_session_id(payload)
+    scope = resolve_resource_scope(auth, session_id=_payload_session_id(payload), subject_id=str(payload.get("subjectId") or ""))
+    session_id = scope.session_id
     resource_ids: list[str] = payload.get("resourceIds", [])
     study_status = str(payload.get("studyStatus", "completed"))
     if not resource_ids:
         return _product_response({"ok": False, "updated": 0}, session_id=session_id, status="error", message="resourceIds is required", source="user_action")
+    for resource_id in resource_ids:
+        resolve_resource_scope(auth, session_id=session_id, subject_id=scope.subject_id, resource_id=str(resource_id))
     try:
         db = SessionLocal()
         from app.db.repository import batch_update_study_status as repo_batch_status
@@ -3514,13 +3521,16 @@ def batch_update_study_status(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.post("/resources/batch/bookmark")
-def batch_set_bookmark(payload: dict[str, Any]) -> dict[str, Any]:
+def batch_set_bookmark(payload: dict[str, Any], auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
     """Batch bookmark or un-bookmark multiple resources in a session."""
-    session_id = _payload_session_id(payload)
+    scope = resolve_resource_scope(auth, session_id=_payload_session_id(payload), subject_id=str(payload.get("subjectId") or ""))
+    session_id = scope.session_id
     resource_ids: list[str] = payload.get("resourceIds", [])
     bookmarked = bool(payload.get("bookmarked", True))
     if not resource_ids:
         return _product_response({"ok": False, "updated": 0}, session_id=session_id, status="error", message="resourceIds is required", source="user_action")
+    for resource_id in resource_ids:
+        resolve_resource_scope(auth, session_id=session_id, subject_id=scope.subject_id, resource_id=str(resource_id))
     try:
         db = SessionLocal()
         from app.db.repository import batch_set_bookmark as repo_batch_bookmark
@@ -3531,10 +3541,14 @@ def batch_set_bookmark(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.post("/resources/batch/export")
-def batch_export_resources(payload: dict[str, Any]) -> dict[str, Any]:
+def batch_export_resources(payload: dict[str, Any], auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
     """Export resource titles as a text list. Optionally filter by resourceIds."""
-    session_id = _payload_session_id(payload)
+    scope = resolve_resource_scope(auth, session_id=_payload_session_id(payload), subject_id=str(payload.get("subjectId") or ""))
+    session_id = scope.session_id
     resource_ids: list[str] | None = payload.get("resourceIds")
+    if resource_ids:
+        for resource_id in resource_ids:
+            resolve_resource_scope(auth, session_id=session_id, subject_id=scope.subject_id, resource_id=str(resource_id))
 
     db_resources = ag_get_resources(session_id)
     db_map: dict[str, dict[str, Any]] = {r["id"]: r for r in db_resources}
