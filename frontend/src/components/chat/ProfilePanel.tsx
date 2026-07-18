@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { authHeaders } from '../../api/client';
 import { useNavigate } from 'react-router-dom';
 import { disableProfileExtraction } from '../../api/learningPath';
 import { startWorkflow } from '../../api/workflows';
@@ -169,7 +170,7 @@ export default function ProfilePanel({ sessionId }: { sessionId: string }) {
     let cancelled = false;
     const poll = async () => {
       try {
-        const r = await fetch(`/api/conversation-facts?sessionId=${sessionId}`);
+        const r = await fetch(`/api/conversation-facts?sessionId=${sessionId}`, { headers: authHeaders() });
         const d = await r.json();
         if (!cancelled) {
           if (d.facts) setFacts(d.facts);

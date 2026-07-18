@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { authHeaders } from '../api/client';
 import { useNavigate } from 'react-router-dom';
 import { useLearningPath } from '../hooks/useLearningPath';
 import { useChatStore } from '../store/chatStore';
@@ -341,7 +342,7 @@ function SprintToolsPanel({ sessionId, sectionId, section, lecture, sections, pa
         requirements: '这是精进突破模式，请生成简洁、直击重点的内容。',
       };
       const res = await fetch(`/api/sections/${encodeURIComponent(sectionId)}/lecture/generate`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify(body),
       });
       const data = await res.json();
@@ -431,7 +432,7 @@ function MiniSprintTutor({ sessionId, section, lecture, initialPrompt }: {
     setMsg(''); setLoading(true); setReply('');
     try {
       const res = await fetch(`/api/sections/${encodeURIComponent(section.id)}/tutor/ask`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
           sessionId, question,
           sectionTitle: section.title, sectionGoal: section.goal || '',
@@ -530,7 +531,7 @@ export default function FocusSprintPage({ sectionId, onBack }: Props) {
     if (store.lectureCache[key]) { setLectureLoaded(true); return; }
     setLectureLoaded(false);
     autoGenRef.current = false;
-    fetch(`/api/sections/${encodeURIComponent(currentSection.id)}/lecture?sessionId=${encodeURIComponent(sessionId)}`)
+    fetch(`/api/sections/${encodeURIComponent(currentSection.id)}/lecture?sessionId=${encodeURIComponent(sessionId)}`, { headers: authHeaders() })
       .then(r => r.json())
       .then(d => {
         store.markLoaded(currentSection.id);
@@ -572,7 +573,7 @@ export default function FocusSprintPage({ sectionId, onBack }: Props) {
     setGenerating(true);
     try {
       const res = await fetch(`/api/sections/${encodeURIComponent(currentSection.id)}/lecture/generate`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
           sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal || '',
           courseId: path?.courseName || '', knowledgePoints: currentSection.knowledgePoints || [],

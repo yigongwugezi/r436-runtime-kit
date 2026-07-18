@@ -189,6 +189,15 @@ export function getCurrentSessionId(): string {
   return _sessionIdProvider?.() ?? '';
 }
 
+/** Authorization header for raw fetch() calls that bypass the axios client.
+
+    任何绕过 axios 实例的裸 fetch 都必须带上它——后端按 Bearer token 绑定
+    每用户 AI 凭据上下文，缺头会让已配置的用户被当成匿名（AI/搜索报未配置）。 */
+export function authHeaders(): Record<string, string> {
+  const token = getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 /** 流式请求 — 返回 ReadableStream reader，支持 AbortSignal */
 export async function streamRequest(
   path: string,

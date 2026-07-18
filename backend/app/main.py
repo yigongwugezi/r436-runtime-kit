@@ -112,6 +112,34 @@ async def add_request_id(request: Request, call_next):
     return response
 
 
+# ── Per-user AI credential context middleware ─────────────────────────
+
+
+@app.middleware("http")
+async def bind_user_ai_context(request: Request, call_next):
+    """Bind the caller's per-user AI credential context for EVERY request.
+
+    Product APIs are sessionId-keyed and most do not declare the ``get_auth``
+    dependency, yet still trigger AI/search calls downstream.  Without this
+    global bind their credential resolution always saw the anonymous (empty)
+    config — e.g. Tavily search reported "未配置" right after the user saved
+    a key in 系统设置.  Pure HMAC token parse, no DB access; anonymous or
+    invalid tokens bind the empty context.  ``get_auth`` still re-binds for
+    endpoints that declare it (idempotent).
+    """
+    from app.services.user_ai_config import set_current_learner
+    from app.utils.auth import verify_token
+
+    learner_id = ""
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        payload = verify_token(auth_header[7:].strip())
+        if payload:
+            learner_id = str(payload.get("sub", "") or "")
+    set_current_learner(learner_id)
+    return await call_next(request)
+
+
 # ── Global exception handlers ─────────────────────────────────────────
 
 

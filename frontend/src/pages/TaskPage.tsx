@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { authHeaders } from '../api/client';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useLearningPath } from '../hooks/useLearningPath';
 import { useChatStore } from '../store/chatStore';
@@ -84,7 +85,7 @@ export default function TaskPage() {
         stageId: stage.id,
         taskId,
       });
-      const r = await fetch(`/api/sections/${encodeURIComponent(taskId)}/generated-resources?${params}`).then(r => r.json());
+      const r = await fetch(`/api/sections/${encodeURIComponent(taskId)}/generated-resources?${params}`, { headers: authHeaders() }).then(r => r.json());
       const list = r.resources || [];
       setResources(list);
       if (list.length > 0) return true;
