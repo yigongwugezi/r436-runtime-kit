@@ -24,3 +24,10 @@
 - Fallback: if browser automation cannot start Edge, run the backend deterministic demo test and present the same seeded flow through the local UI; no real network is needed.
 - Non-blocking: Vite reports existing chunk-size/dynamic-import warnings. They do not prevent a production build.
 - Baseline commit: `a603b2d`; run `git rev-parse HEAD` when recording the frozen release commit.
+
+## Automation status (MOSTLY_READY)
+
+- `compileall`, the deterministic Competition Demo and assessment-to-path checks, focused lecture, path lock/runtime, assessment, analytics, resource authorization/versioning, and deterministic search regressions pass with fake providers and no external network.
+- Four Edge journeys pass: browser smoke, general resource generation, learning-path compatibility, and unavailable-Manim capability handling. The production build passes; existing chunk warnings are non-blocking.
+- `online-resource-search` lacks reliable browser automation evidence only: the native Edge CDP harness can observe but cannot safely pause a workflow-start request to bind the application-created session. This is a `TEST_HARNESS_GAP`, not a confirmed production bug; validate this UI manually next.
+- Not covered here: real search/DeepSeek/PPT/video providers, dynamic replanning, or Agent call-path changes.
