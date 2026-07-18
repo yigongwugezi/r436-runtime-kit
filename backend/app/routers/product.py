@@ -5728,7 +5728,7 @@ def generate_learning_assessment(
             profile_snapshot = get_latest_profile(db, session_id)
             profile = {"dimensions": profile_snapshot.dimensions} if profile_snapshot else None
             diagnosis = try_get_diagnosis(db, scope.learner_id, scope.subject_id, session_id)
-            if not analytics.get("assessmentCount"):
+            if not analytics.get("eventCount"):
                 return _product_response({"status": "insufficient_data", "errorCode": "insufficient_data"}, session_id=session_id, source="assessment_snapshot")
             metrics_version = hashlib.sha256(json.dumps(analytics, sort_keys=True, default=str).encode()).hexdigest()[:32]
             cached = db.query(LearningAssessmentSnapshotModel).filter(
