@@ -166,13 +166,23 @@ def runtime_capabilities() -> dict[str, object]:
     key_names = {"deepseek": "DEEPSEEK_API_KEY", "qwen": "QWEN_API_KEY", "glm": "GLM_API_KEY", "openai": "OPENAI_API_KEY"}
     llm_configured = provider == "mock" or bool(os.getenv(key_names.get(provider, "LLM_API_KEY"), ""))
     search = settings.search_provider.lower()
+    def status(configured: bool, dependency: str = "") -> str:
+        if configured:
+            return "available"
+        if dependency and find_spec(dependency) is None:
+            return "dependency_missing"
+        return "not_configured"
+    ppt = bool(os.getenv("AIPPT_APP_ID", "") and os.getenv("AIPPT_API_SECRET", ""))
+    video = bool(os.getenv("DASHSCOPE_API_KEY", "") or os.getenv("WAN_API_KEY", "") or os.getenv("QWEN_API_KEY", "") or shutil.which("manim"))
+    image = bool(os.getenv("DASHSCOPE_API_KEY", "") or os.getenv("QWEN_API_KEY", "") or (os.getenv("ARK_API_KEY", "") and os.getenv("DEEPSEEK_API_KEY", "")))
     return {
         "llmProvider": provider,
         "llmConfigured": llm_configured,
         "searchProvider": search,
         "searchConfigured": search in {"mock", "duckduckgo"} or bool(os.getenv("TAVILY_API_KEY", "")),
-        "pptConfigured": bool(os.getenv("AIPPT_APP_ID", "") and os.getenv("AIPPT_API_SECRET", "")),
-        "videoConfigured": bool(os.getenv("DASHSCOPE_API_KEY", "") or os.getenv("WAN_API_KEY", "") or os.getenv("QWEN_API_KEY", "") or shutil.which("manim")),
-        "imageConfigured": bool(os.getenv("DASHSCOPE_API_KEY", "") or os.getenv("QWEN_API_KEY", "") or (os.getenv("ARK_API_KEY", "") and os.getenv("DEEPSEEK_API_KEY", ""))),
+        "pptConfigured": ppt,
+        "videoConfigured": video,
+        "imageConfigured": image,
+        "providerStatus": {"llm": status(llm_configured), "search": status(search in {"mock", "duckduckgo"} or bool(os.getenv("TAVILY_API_KEY", ""))), "mindmap": status(llm_configured), "ppt": status(ppt), "video": status(video, "manim"), "image": status(image), "rag": status(bool(settings.rag_enabled), "faiss"), "deeptutor": status(find_spec("deeptutor") is not None and llm_configured), "manim": status(bool(shutil.which("manim")), "manim")},
         "optionalDependencies": {name: find_spec(name) is not None for name in ("ahocorasick", "openai", "faiss", "deeptutor", "manim")},
     }
