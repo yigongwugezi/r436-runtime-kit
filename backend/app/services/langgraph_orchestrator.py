@@ -1239,6 +1239,41 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
                     try: progress_cb(full_id, "completed")
                     except Exception: pass
 
+        # Explicit path-adjustment requests create a proposal, never replace the
+        # active path or start resource generation.
+        adjustment_words = ("调整路径", "调整计划", "重新规划", "重新调整", "不适合我", "后面的学习任务")
+        if intent == "plan" and any(word in str(state.get("user_message", "")) for word in adjustment_words):
+            from app.db.engine import SessionLocal
+            from app.db.repository import get_latest_learning_path
+            from app.services.conversation_state import conversation_store
+            from app.services.day_planner import compute_diff
+            db = SessionLocal()
+            try:
+                active = get_latest_learning_path(db, state.get("session_id", ""))
+                proposed = state.get("learning_path") or []
+                if active and active.stages and proposed and proposed != active.stages:
+                    pending = conversation_store.get_pending_revision(state["session_id"])
+                    if pending:
+                        proposal = pending
+                    else:
+                        conversation_store.set_pending_revision(
+                            state["session_id"], proposed, compute_diff(active.stages, proposed),
+                            reason="用户明确请求调整学习路径", path_id=active.id,
+                            subject_id=str(active.session.subject_id or ""),
+                        )
+                        proposal = conversation_store.get_pending_revision(state["session_id"])
+                    state["learning_path"] = active.stages
+                    state["revision_proposal"] = {
+                        "revisionId": proposal["revision_id"], "pathId": active.id,
+                        "status": "pending", "reason": proposal.get("reason", ""),
+                        "triggerSource": "user_request", "changedStages": proposal.get("diff", {}).get("changed_stages", []),
+                        "changedTasks": proposal.get("diff", {}).get("changed_tasks", []),
+                        "currentRevision": active.current_version, "proposedRevision": active.current_version + 1,
+                        "requiresUserConfirmation": True,
+                    }
+            finally:
+                db.close()
+
         # ── 单 agent 路径的审核闭环 ──
         # 跑了 resource_agent 后自动追加 review_agent，发现问题就重试修正
         # 不依赖全量图（图很少被触发），确保所有资源生成都经过审核
