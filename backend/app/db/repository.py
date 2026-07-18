@@ -934,9 +934,62 @@ def get_events(
     return q.all()
 
 
-def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
+def _event_in_analytics_scope(
+    event: LearningEventModel,
+    *,
+    subject_id: str = "",
+    path_id: str = "",
+    stage_id: str = "",
+    include_legacy_unscoped: bool = False,
+) -> bool:
+    """Keep legacy metadata events readable without mixing explicit scopes."""
+    metadata = event.metadata_ or {}
+    event_subject = str(event.subject_id or metadata.get("subjectId") or metadata.get("subject_id") or "")
+    if subject_id and event_subject != subject_id:
+        if not (include_legacy_unscoped and not event_subject):
+            return False
+    if path_id and str(metadata.get("pathId") or metadata.get("path_id") or "") != path_id:
+        return False
+    if stage_id and str(metadata.get("stageId") or metadata.get("stage_id") or "") != stage_id:
+        return False
+    return True
+
+
+def get_scoped_events(
+    db: Session,
+    session_id: str,
+    *,
+    subject_id: str = "",
+    path_id: str = "",
+    stage_id: str = "",
+    include_legacy_unscoped: bool = False,
+) -> list[LearningEventModel]:
+    return [
+        event for event in get_events(db, session_id)
+        if _event_in_analytics_scope(
+            event,
+            subject_id=subject_id,
+            path_id=path_id,
+            stage_id=stage_id,
+            include_legacy_unscoped=include_legacy_unscoped,
+        )
+    ]
+
+
+def get_event_analytics(
+    db: Session,
+    session_id: str,
+    *,
+    subject_id: str = "",
+    path_id: str = "",
+    stage_id: str = "",
+    include_legacy_unscoped: bool = False,
+) -> dict[str, Any]:
     """Compute analytics summary from learning events (mirrors LearningTracker.summary)."""
-    events = get_events(db, session_id)
+    events = get_scoped_events(
+        db, session_id, subject_id=subject_id, path_id=path_id,
+        stage_id=stage_id, include_legacy_unscoped=include_legacy_unscoped,
+    )
 
     total_minutes = 0
     resource_counts: dict[str, int] = {}
@@ -1166,11 +1219,16 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
     # ── Structured recommendations from 5 sources ──
     try:
         session_resources = get_resources(db, session_id)
+        if stage_id:
+            session_resources = [r for r in session_resources if r.related_stage_id == stage_id]
     except SQLAlchemyError:
         session_resources = []
 
     try:
-        session_path = get_latest_learning_path(db, session_id)
+        session_path = (
+            db.query(LearningPathModel).filter(LearningPathModel.id == path_id).first()
+            if path_id else get_latest_learning_path(db, session_id)
+        )
     except SQLAlchemyError:
         session_path = None
 

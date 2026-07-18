@@ -22,6 +22,7 @@ from queue import Queue, Empty
 from threading import Event
 import uuid
 from typing import Any, Callable
+from dataclasses import dataclass
 from sqlalchemy.orm.attributes import flag_modified
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,7 @@ from app.agents.diagnosis_agent import DiagnosisAgent
 from app.agents.multimodal_agent import MultimodalAgent
 from app.config import settings
 from app.db.engine import SessionLocal
-from app.db.models import AnswerRecordModel, DailyTaskModel, LearnerModel, LearningEventModel, PersonalSubjectModel, PlanningDraftModel, PracticeQuestionModel, ResourceModel, SessionModel
+from app.db.models import AnswerRecordModel, DailyTaskModel, LearnerModel, LearningEventModel, LearningPathModel, PersonalSubjectModel, PlanningDraftModel, PracticeQuestionModel, ResourceModel, SessionModel
 from app.db.repository import (
     get_bookmarked_ids,
     get_daily_tasks as repo_get_daily_tasks,
@@ -5242,13 +5243,86 @@ def _mastery_level_name(score: float) -> str:
     return "未学"
 
 
-@router.get("/learning-analytics")
-def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
-    session_id = _resolve_session_id(sessionId, subjectId)
-    subject_id = str(subjectId).strip()
-    _ensure_session_linked(session_id, subject_id=subject_id)
+@dataclass(frozen=True)
+class AnalyticsScope:
+    learner_id: str
+    session_id: str
+    subject_id: str
+    path_id: str = ""
+    stage_id: str = ""
+    include_legacy_unscoped: bool = False
 
-    analytics = ag_get_analytics(session_id)
+
+def resolve_analytics_scope(
+    auth: AuthContext, *, session_id: str, subject_id: str = "", path_id: str = "", stage_id: str = "",
+) -> AnalyticsScope:
+    """Resolve one owned analytics scope before any query or provider call."""
+    session_id = _require_session_id(session_id)
+    subject_id, path_id, stage_id = (str(value or "").strip() for value in (subject_id, path_id, stage_id))
+    db = SessionLocal()
+    try:
+        session = db.get(SessionModel, session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="resource not found")
+        known_subjects = {str(session.subject_id or "")}
+        for event in db.query(LearningEventModel).filter(LearningEventModel.session_id == session_id).all():
+            metadata = event.metadata_ or {}
+            known_subjects.add(str(event.subject_id or metadata.get("subjectId") or metadata.get("subject_id") or ""))
+        known_subjects.discard("")
+        if not subject_id:
+            if len(known_subjects) != 1:
+                raise HTTPException(status_code=400, detail="subjectId required for an ambiguous session")
+            subject_id = known_subjects.pop()
+        subject = db.get(PersonalSubjectModel, subject_id)
+        if subject is None or subject.learner_id != auth.learner_id:
+            raise HTTPException(status_code=403, detail="access denied")
+        if session.learner_id not in (auth.learner_id, None):
+            raise HTTPException(status_code=403, detail="access denied")
+        if session.subject_id and session.subject_id != subject_id:
+            raise HTTPException(status_code=409, detail="session subject does not match subjectId")
+        if session.learner_id is None and session.subject_id != subject_id:
+            raise HTTPException(status_code=403, detail="access denied")
+        path = None
+        if path_id:
+            path = db.query(LearningPathModel).filter(
+                LearningPathModel.id == path_id, LearningPathModel.session_id == session_id,
+            ).first()
+            if path is None:
+                raise HTTPException(status_code=403, detail="access denied")
+            if not session.subject_id:
+                raise HTTPException(status_code=400, detail="path scope requires a subject-bound session")
+        if stage_id:
+            if path is None:
+                raise HTTPException(status_code=400, detail="stageId requires pathId")
+            stages = path.stages or []
+            if isinstance(stages, dict):
+                stages = stages.get("stages", [])
+            if not any(str(stage.get("id") or stage.get("stage_id") or "") == stage_id for stage in stages if isinstance(stage, dict)):
+                raise HTTPException(status_code=403, detail="access denied")
+        return AnalyticsScope(
+            auth.learner_id, session_id, subject_id, path_id, stage_id,
+            include_legacy_unscoped=bool(session.subject_id == subject_id),
+        )
+    finally:
+        db.close()
+
+
+@router.get("/learning-analytics")
+def learning_analytics(
+    sessionId: str = "", subjectId: str = "", pathId: str = "", stageId: str = "",
+    auth: AuthContext = Depends(require_auth),
+) -> dict[str, Any]:
+    scope = resolve_analytics_scope(auth, session_id=sessionId, subject_id=subjectId, path_id=pathId, stage_id=stageId)
+    session_id, subject_id = scope.session_id, scope.subject_id
+    from app.db.repository import get_event_analytics
+    db = SessionLocal()
+    try:
+        analytics = get_event_analytics(
+            db, session_id, subject_id=subject_id, path_id=scope.path_id,
+            stage_id=scope.stage_id, include_legacy_unscoped=scope.include_legacy_unscoped,
+        )
+    finally:
+        db.close()
     state = conversation_store.get(session_id)
     last_result = state.last_result or {}
 
@@ -5262,7 +5336,7 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
         from app.services.diagnosis_snapshot_service import try_get_diagnosis
         _db = AnalyticsSessionLocal()
         try:
-            _dto = try_get_diagnosis(_db, learner_id=None, subject_id=subject_id or None, session_id=session_id)
+            _dto = try_get_diagnosis(_db, learner_id=scope.learner_id, subject_id=subject_id, session_id=session_id)
             if _dto:
                 diagnosis = {
                     "mastery_levels": [
@@ -5284,8 +5358,6 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
     except Exception:
         pass
 
-    if not diagnosis:
-        diagnosis = last_result.get("diagnosis", {}) if isinstance(last_result, dict) else {}
     mastery_levels = diagnosis.get("mastery_levels", []) or []
     heatmap = [
         {"knowledgePoint": m.get("name", ""), "mastery": m.get("score", 50),
@@ -5336,24 +5408,14 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
     try:
         try:
             db_events = SessionLocal()
-            from app.db.models import LearningEventModel
-            from sqlalchemy import and_
-
-            rows = (
-                db_events.query(LearningEventModel)
-                .filter(
-                    and_(
-                        LearningEventModel.session_id == session_id,
-                        LearningEventModel.created_at >= thirty_days_ago,
-                        LearningEventModel.event_type.in_([
-                            "quiz_result", "quiz_submit", "practice_result",
-                            "resource_view", "resource_complete",
-                        ]),
-                    )
-                )
-                .order_by(LearningEventModel.created_at.asc())
-                .all()
-            )
+            from app.db.repository import get_scoped_events
+            rows = [row for row in get_scoped_events(
+                db_events, session_id, subject_id=subject_id, path_id=scope.path_id,
+                stage_id=scope.stage_id, include_legacy_unscoped=scope.include_legacy_unscoped,
+            ) if row.created_at and row.created_at.date() >= thirty_days_ago and row.event_type in {
+                "quiz_result", "quiz_submit", "practice_result", "resource_view", "resource_complete",
+            }]
+            rows.sort(key=lambda row: row.created_at)
             for row in rows:
                 if row.created_at:
                     day_key = row.created_at.strftime("%Y-%m-%d")
@@ -5521,7 +5583,7 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
             "diagnosisVersion": diagnosis_version,
             "diagnosisGeneratedAt": diagnosis_generated_at,
         },
-        session_id=session_id, subject_id=subjectId, source="agent",
+        session_id=session_id, subject_id=subject_id, source="agent",
     )
 
 
@@ -5529,35 +5591,35 @@ import json as _json
 
 
 @router.post("/learning-assessment/generate")
-def generate_learning_assessment(sessionId: str = "") -> dict[str, Any]:
+def generate_learning_assessment(
+    sessionId: str = "", subjectId: str = "", pathId: str = "", stageId: str = "",
+    auth: AuthContext = Depends(require_auth),
+) -> dict[str, Any]:
     """LLM 驱动的多维度学习评估。
 
     汇总画像、行为、诊断、资源反馈等多源数据，
     调用大模型生成结构化评估报告。
     """
-    session_id = _require_session_id(sessionId)
+    scope = resolve_analytics_scope(auth, session_id=sessionId, subject_id=subjectId, path_id=pathId, stage_id=stageId)
+    session_id = scope.session_id
     try:
         from app.services.llm_assessment import run_llm_assessment
-        from app.db.engine import SessionLocal
-        from app.db.repository import get_event_analytics, get_latest_profile, get_latest_learning_path
-        from app.services.conversation_state import conversation_store
+        from app.db.repository import get_event_analytics, get_latest_profile
+        from app.services.diagnosis_snapshot_service import try_get_diagnosis
 
         db = SessionLocal()
         try:
-            analytics = get_event_analytics(db, session_id)
+            analytics = get_event_analytics(
+                db, session_id, subject_id=scope.subject_id, path_id=scope.path_id,
+                stage_id=scope.stage_id, include_legacy_unscoped=scope.include_legacy_unscoped,
+            )
             profile_snapshot = get_latest_profile(db, session_id)
             profile = {"dimensions": profile_snapshot.dimensions} if profile_snapshot else None
+            diagnosis = try_get_diagnosis(db, scope.learner_id, scope.subject_id, session_id)
         finally:
             db.close()
 
         # 从 conversation_state 获取诊断
-        cs = conversation_store.get_state_or_none(session_id)
-        diagnosis = None
-        if cs:
-            lr = cs.last_result
-            if lr:
-                diagnosis = lr.get("diagnosis", lr.get("diagnosis_result"))
-
         result = run_llm_assessment(
             session_id=session_id,
             profile=profile,
