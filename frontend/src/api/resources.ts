@@ -30,6 +30,11 @@ export async function getResourceById(
   return data;
 }
 
+export async function regenerateResource(id: string, params: { sessionId: string; subjectId?: string; operationId: string }): Promise<{ resourceId: string }> {
+  const { data } = await client.post(`/api/resources/${id}/regenerate`, params);
+  return data;
+}
+
 export async function toggleBookmark(
   id: string,
   params: { sessionId: string; subjectId?: string },

@@ -6,7 +6,7 @@ import { useResources } from '../hooks/useResources';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
 import { getCurrentLearner } from '../store/authStore';
-import { getResourceById, updateStudyStatus, autoAdvanceNode, getResourceKnowledgeGraph, batchUpdateStudyStatus, batchSetBookmark, batchExportResources } from '../api/resources';
+import { getResourceById, regenerateResource, updateStudyStatus, autoAdvanceNode, getResourceKnowledgeGraph, batchUpdateStudyStatus, batchSetBookmark, batchExportResources } from '../api/resources';
 import { submitFeedback, logStudyEvent } from '../api/feedback';
 import { getTextbook } from '../api/textbooks';
 import { getGeneratedSectionResources, submitGeneratedSectionResourceFeedback } from '../api/sectionResources';
@@ -141,6 +141,8 @@ function ResourceDetailView({
   const [feedbackSaving, setFeedbackSaving] = useState(false);
   const [feedbackError, setFeedbackError] = useState('');
   const [feedbackSaved, setFeedbackSaved] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
+  const [regenerationError, setRegenerationError] = useState('');
 
   const c = colorMap[resource.type] || { bg: 'bg-surface-100', text: 'text-surface-500' };
   const isGeneratedResource = Boolean(resource.relatedSectionId && generatedResourceTypes.has(resource.taskId || ''));
@@ -209,6 +211,7 @@ function ResourceDetailView({
               <span className="text-xs text-surface-400">· {formatDuration(resource.estimatedMinutes)}</span>
               <span className="text-xs text-surface-400">· {timeAgo(resource.createdAt)}</span>
               <SourceBadge source={resource.source || 'system_inferred'} size="sm" />
+              <span className="text-xs text-surface-400">v{resource.generationVersion || 1}</span>
               {resource.studyStatus === 'completed' && <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-success-50 text-success-600">✅ 已完成</span>}
             </div>
             <p className="text-sm text-surface-500 leading-relaxed">{resource.description}</p>
@@ -261,10 +264,12 @@ function ResourceDetailView({
           {!isReadOnly && (
           <button onClick={() => onComplete(resource)} className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${resource.studyStatus === 'completed' ? 'bg-warning-50 text-warning-700 hover:bg-warning-100' : 'bg-success-50 text-success-700 hover:bg-success-100'}`}><CheckCircle2 className="w-3.5 h-3.5" />{resource.studyStatus === 'completed' ? '撤销完成' : '标记完成'}</button>
           )}
+          {!isReadOnly && <button disabled={regenerating || !sessionId} onClick={async () => { setRegenerating(true); setRegenerationError(''); try { const next = await regenerateResource(resource.id, { sessionId: sessionId!, subjectId, operationId: crypto.randomUUID() }); nav(`/resources/${next.resourceId}`); } catch { setRegenerationError('重新生成失败，已保留当前资源。'); } finally { setRegenerating(false); } }} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-primary-50 text-primary-700 rounded-lg text-xs font-medium disabled:opacity-50">{regenerating ? '重新生成中…' : '重新生成'}</button>}
           <button onClick={() => nav(`/kg?resourceId=${resource.id}`)} className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all bg-surface-50 text-surface-500 hover:bg-primary-50 hover:text-primary-600`}><Network className="w-3.5 h-3.5" />知识图谱</button>
           <button onClick={() => nav('/chat')} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-primary-50 text-primary-700 rounded-lg text-xs font-medium hover:bg-primary-100">✏️ 去提问</button>
           <button onClick={() => nav('/analytics')} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-surface-50 text-surface-500 rounded-lg text-xs font-medium hover:bg-surface-100">📊 学习分析</button>
         </div>
+        {regenerationError && <p className="mt-3 text-xs text-error-600">{regenerationError}</p>}
       </div>
 
       {/* 内容区 */}

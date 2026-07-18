@@ -65,6 +65,8 @@ export interface ReviewIssue {
 
 export interface Resource {
   id: string;
+  generationVersion?: number;
+  supersedesResourceId?: string | null;
   type: ResourceType;
   title: string;
   description: string;
