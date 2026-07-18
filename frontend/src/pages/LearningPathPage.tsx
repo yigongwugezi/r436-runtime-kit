@@ -8,6 +8,7 @@ import { useProfile } from '../hooks/useProfile';
 import PlanningWizard from '../components/learning/PlanningWizard';
 import { PageLoading, PageError } from '../components/common/PageState';
 import { getCurrentLearner } from '../store/authStore';
+import { learningTaskRoute } from '../utils/learningTaskRoute';
 import {
   ArrowRight, BookOpen, Check, CircleDot, Clock3,
   FileText, FlaskConical, Lightbulb, PenLine, Plus, Sparkles, Target, Zap,
@@ -137,6 +138,10 @@ export default function LearningPathPage() {
 
   /* ── 有路径：左侧选中 + 中间单阶段 ── */
   const activeStage = stages.find(s => s.id === activeStageId) || stages[firstIncompleteIdx] || stages[0];
+  const openTask = (task: any, stage: any) => nav(learningTaskRoute(task.type || 'read_doc', {
+    sessionId, subjectId: subject.subject_id, pathId: path?.id, stageId: stage.id,
+    taskId: task.task_id || task.id, sectionId: task.section_id || task.task_id,
+  }));
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto bg-surface-50 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
@@ -317,7 +322,7 @@ export default function LearningPathPage() {
                                 </span>
                               </div>
                               <button type="button" disabled={done}
-                                onClick={(e) => { e.stopPropagation(); nav(`/lecture/section/${encodeURIComponent(task.task_id || task.title)}`); }}
+                                onClick={(e) => { e.stopPropagation(); openTask(task, stage); }}
                                 className={`h-10 shrink-0 rounded-xl px-4 text-xs font-bold transition-all duration-300 ${
                                   done ? 'border border-success-200 bg-success-50 text-success-500' :
                                   prog ? 'bg-gradient-to-r from-primary-500 to-accent-500 text-white shadow-[0_0_20px_rgba(52,120,246,0.3)]' :
