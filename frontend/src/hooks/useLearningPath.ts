@@ -95,7 +95,7 @@ export function useLearningPath() {
       if (force || !hasDataRef.current) setLoading(false);
       initialLoadRef.current = false;
     }
-  }, [sessionId, subjectId]);
+  }, [sessionId, subjectId, path?.id]);
 
   const generatePath = useCallback(async (params: { subjectId?: string; targetTopics?: string[]; planMode?: string; pathMode?: string; totalDays?: number; weekends?: boolean; dynamicAdjust?: boolean; reviewEnabled?: boolean; userMessage?: string }) => {
     setLoading(true); setError(null);
@@ -116,12 +116,12 @@ export function useLearningPath() {
   }, [sessionId, subjectId]);
 
   const updateNode = useCallback(async (nodeId: string, mastery: number) => {
-    await learningPathApi.updateNodeProgress(nodeId, mastery, { sessionId, subjectId });
+    await learningPathApi.updateNodeProgress(nodeId, mastery, { sessionId, subjectId, pathId: path?.id });
     setPath((c) => c ? { ...c, stages: c.stages.map(s => ({ ...s, nodes: s.nodes.map(n => n.id === nodeId ? { ...n, mastery } : n) })) } : c);
-  }, [sessionId, subjectId]);
+  }, [sessionId, subjectId, path?.id]);
 
   const updateNodeStatus = useCallback(async (nodeId: string, status: PathNodeStatus) => {
-    try { await learningPathApi.updateNodeProgress(nodeId, statusToMastery(status), { sessionId, subjectId, status }); } catch {}
+    try { await learningPathApi.updateNodeProgress(nodeId, statusToMastery(status), { sessionId, subjectId, pathId: path?.id, status }); } catch {}
     setPath((c) => {
       if (!c) return c;
       const next: LearningPath = { ...c, stages: c.stages.map(stage => ({
@@ -163,7 +163,7 @@ export function useLearningPath() {
 
   const updateKnowledgePoint = useCallback(async (kpId: string, updates: { mastery?: number; status?: ContentStatus }) => {
     if (updates.status) {
-      try { await learningPathApi.updateNodeProgress(kpId, updates.mastery ?? contentStatusToProgress(updates.status), { sessionId, subjectId, status: updates.status }); } catch {}
+      try { await learningPathApi.updateNodeProgress(kpId, updates.mastery ?? contentStatusToProgress(updates.status), { sessionId, subjectId, pathId: path?.id, status: updates.status }); } catch {}
     }
     setPath((current) => {
       if (!current) return current;
@@ -172,10 +172,10 @@ export function useLearningPath() {
       next.overallProgress = computeOverallProgress(next);
       return next;
     });
-  }, [sessionId, subjectId, cascadeStatus]);
+  }, [sessionId, subjectId, cascadeStatus, path?.id]);
 
   const updateChapterStatus = useCallback(async (chapterId: string, newStatus: ContentStatus) => {
-    try { await learningPathApi.updateNodeProgress(chapterId, contentStatusToProgress(newStatus), { sessionId, subjectId, status: newStatus }); } catch {}
+    try { await learningPathApi.updateNodeProgress(chapterId, contentStatusToProgress(newStatus), { sessionId, subjectId, pathId: path?.id, status: newStatus }); } catch {}
     setPath((current) => {
       if (!current) return current;
       let next = mapPathHierarchy(current, (ch) => ch.id === chapterId ? { ...ch, status: newStatus } : ch, (sec) => sec, (kp) => kp);
@@ -183,10 +183,10 @@ export function useLearningPath() {
       next.overallProgress = computeOverallProgress(next);
       return next;
     });
-  }, [sessionId, subjectId, cascadeStatus]);
+  }, [sessionId, subjectId, cascadeStatus, path?.id]);
 
   const updateSectionStatus = useCallback(async (sectionId: string, newStatus: ContentStatus) => {
-    try { await learningPathApi.updateNodeProgress(sectionId, contentStatusToProgress(newStatus), { sessionId, subjectId, status: newStatus }); } catch {}
+    try { await learningPathApi.updateNodeProgress(sectionId, contentStatusToProgress(newStatus), { sessionId, subjectId, pathId: path?.id, status: newStatus }); } catch {}
     setPath((current) => {
       if (!current) return current;
       let next = mapPathHierarchy(current, (ch) => ch, (sec) => sec.id === sectionId ? { ...sec, status: newStatus } : sec, (kp) => kp);
@@ -194,7 +194,7 @@ export function useLearningPath() {
       next.overallProgress = computeOverallProgress(next);
       return next;
     });
-  }, [sessionId, subjectId, cascadeStatus]);
+  }, [sessionId, subjectId, cascadeStatus, path?.id]);
 
   useEffect(() => { fetchPath(true); }, [sessionId, subjectId]);
   useEffect(() => { if (dataVersion <= 0 || dataVersion === lastVersionRef.current) return; lastVersionRef.current = dataVersion; fetchPath(true); }, [dataVersion, fetchPath]);

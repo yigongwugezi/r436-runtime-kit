@@ -115,8 +115,9 @@ export default function LecturePage() {
     ? searchParams.get('pathMode')
     : '';
   const returnViewStage = searchParams.get('viewStage');
+  const analyticsReturn = searchParams.get('returnTo') === '/analytics';
   const returnToPath = focusedTask
-    ? `/path?sessionId=${encodeURIComponent(routeSessionId)}&subjectId=${encodeURIComponent(focusedSubjectId)}&pathId=${encodeURIComponent(focusedPathId)}&stage=${encodeURIComponent(focusedStageId)}&task=${encodeURIComponent(focusedTaskId)}`
+    ? analyticsReturn ? '/analytics' : `/path?sessionId=${encodeURIComponent(routeSessionId)}&subjectId=${encodeURIComponent(focusedSubjectId)}&pathId=${encodeURIComponent(focusedPathId)}&stage=${encodeURIComponent(focusedStageId)}&task=${encodeURIComponent(focusedTaskId)}`
     : returnPathMode
     ? `/path?mode=${encodeURIComponent(returnPathMode)}${returnViewStage ? `&viewStage=${encodeURIComponent(returnViewStage)}` : ''}`
     : '/path';

@@ -9,6 +9,7 @@ import { useNotificationPoller } from '../hooks/useNotificationPoller';
 import { useChatStore } from '../store/chatStore';
 import type { RecommendationItem } from '../types/analytics';
 import { useSubjectStore } from '../store/subjectStore';
+import { learningTaskRoute } from '../utils/learningTaskRoute';
 
 function Ring({ pct }: { pct: number }) {
   const size = 72; const sw = 5; const r = (size - sw) / 2; const c = r * 2 * Math.PI; const o = c - (pct / 100) * c;
@@ -37,6 +38,14 @@ export default function LearningAnalyticsPage() {
   const eb = analytics.eventBreakdown ?? {};
   const rv = analytics.resourceViewCount ?? eb['resource_view'] ?? 0;
   const rc = analytics.resourceCompleteCount ?? eb['resource_complete'] ?? 0;
+  const pathProgress = analytics.pathProgress;
+  const continuePath = () => {
+    const task = pathProgress?.nextTask;
+    if (!task?.accessible) return;
+    const supported = ['reading', 'document', 'lecture', 'read_doc', 'quiz', 'practice', 'exam', 'do_quiz', 'mindmap', 'resource'];
+    if (!supported.includes(task.taskType)) return window.alert('当前任务类型暂不支持直接进入，请从学习路径查看。');
+    nav(learningTaskRoute(task.taskType, { ...task.routeContext, returnTo: '/analytics' }));
+  };
 
   return (
     <div className="space-y-6 animate-fade-in relative">
@@ -58,6 +67,21 @@ export default function LearningAnalyticsPage() {
           return <div key={s.label} className="bg-white rounded-2xl p-5 shadow-soft hover:shadow-elevated transition-shadow"><div className="flex items-center justify-between mb-3"><div className={`w-10 h-10 rounded-xl ${cls[s.color]} flex items-center justify-center`}>{s.icon}</div></div><p className="text-sm text-surface-500 mb-1">{s.label}</p><p className="text-2xl font-bold text-surface-800">{typeof s.value === 'number' ? s.value : s.value}</p></div>;
         })}
       </div>
+
+      {pathProgress && (
+        <section className="bg-white rounded-2xl p-6 shadow-soft flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h3 className="font-display text-lg font-semibold text-surface-800">学习路径进度</h3>
+            {pathProgress.pathCompleted ? <p className="mt-1 text-sm text-success-600">已完成全部 {pathProgress.totalStageCount} 个阶段</p> : <p className="mt-1 text-sm text-surface-500">{pathProgress.currentStageTitle || '当前阶段'} · 必需任务 {pathProgress.completedRequiredTaskCount}/{pathProgress.totalRequiredTaskCount} · 阶段 {pathProgress.completedStageCount}/{pathProgress.totalStageCount}</p>}
+            <div className="mt-3 h-2 w-full max-w-md overflow-hidden rounded-full bg-surface-100"><div className="h-full bg-primary-500" style={{ width: `${pathProgress.taskProgressPercent}%` }} /></div>
+          </div>
+          {!pathProgress.pathCompleted && pathProgress.nextTask && <button onClick={continuePath} className="rounded-xl bg-primary-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-primary-700">继续当前阶段</button>}
+        </section>
+      )}
+
+      {pathProgress === null && (
+        <section className="bg-white rounded-2xl p-6 shadow-soft text-sm text-surface-500">暂无可分析的学习路径。</section>
+      )}
 
       <div className="grid grid-cols-2 gap-6">
         <div className="bg-white rounded-2xl p-6 shadow-soft">
@@ -94,8 +118,8 @@ export default function LearningAnalyticsPage() {
           <div className="space-y-0">
             {analytics.recentEvents.slice(-6).reverse().map((evt: any, i: number) => (
               <div key={i} className={`flex items-center gap-3 py-2.5 ${i < 5 ? 'border-b border-surface-100' : ''}`}>
-                <span className="text-xs flex-shrink-0">{({resource_view:'👁',resource_complete:'✅',quiz_result:'📝',practice_result:'💻',feedback:'💬'})[evt.event]||'📌'}</span>
-                <div className="flex-1 min-w-0"><p className="text-xs text-surface-700 truncate">{evt.event==='resource_view'?`查看了资源「${evt.metadata?.title||''}」`:evt.event==='resource_complete'?`完成了资源「${evt.metadata?.title||''}」`:evt.event==='quiz_result'?`练习正确 ${evt.metadata?.correct}/${evt.metadata?.total}`:evt.event}</p></div>
+                <span className="text-xs flex-shrink-0">{({resource_view:'👁',resource_complete:'✅',task_complete:'✅',quiz_result:'📝',practice_result:'💻',feedback:'💬'})[evt.event]||'📌'}</span>
+                <div className="flex-1 min-w-0"><p className="text-xs text-surface-700 truncate">{evt.event==='task_complete'?`完成任务「${evt.metadata?.title||''}」`:evt.event==='resource_view'?`查看了资源「${evt.metadata?.title||''}」`:evt.event==='resource_complete'?`完成了资源「${evt.metadata?.title||''}」`:evt.event==='quiz_result'?`练习正确 ${evt.metadata?.correct}/${evt.metadata?.total}`:evt.event}</p></div>
                 <span className="text-[10px] text-surface-400 flex-shrink-0">{(()=>{try{const d=new Date(evt.timestamp);const diff=Date.now()-d.getTime();const m=Math.floor(diff/60000);return m<1?'刚刚':m<60?`${m}分钟前`:`${Math.floor(m/1440)}天前`}catch{return''}})()}</span>
               </div>
             ))}

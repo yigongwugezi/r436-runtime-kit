@@ -22,7 +22,7 @@ export async function generateLearningPath(params: {
 export async function updateNodeProgress(
   nodeId: string,
   mastery: number,
-  params: { sessionId: string; subjectId?: string; status?: string },
+  params: { sessionId: string; subjectId?: string; pathId?: string; status?: string },
 ): Promise<void> {
   await client.patch(`/api/learning-path/nodes/${nodeId}`, { mastery, ...params });
 }

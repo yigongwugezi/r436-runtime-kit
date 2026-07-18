@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+from copy import deepcopy
 import logging
 import os
 import re
@@ -4261,6 +4262,48 @@ def _apply_stage_progress(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return stages
 
 
+def _path_task_context(stages: list[dict[str, Any]], node_id: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    for stage in stages:
+        for item in _stage_items(stage):
+            if node_id in {str(item.get(key) or "") for key in ("id", "task_id", "section_id")}:
+                return stage, item
+    return None
+
+
+def _path_progress(path: LearningPathModel, *, session_id: str, subject_id: str) -> dict[str, Any]:
+    stages = _apply_stage_progress(deepcopy(path.stages or [])) if isinstance(path.stages, list) else []
+    required_items = [(stage, item) for stage in stages for item in _stage_items(stage) if not item.get("optional", False)]
+    current = next((stage for stage in stages if stage.get("progressStatus") == "current"), None)
+    next_item = next((item for stage, item in required_items if stage is current and not _is_complete(item)), None)
+    next_task = None
+    if current and next_item:
+        stage_id = str(current.get("id") or current.get("stage_id") or "")
+        task_id = str(next_item.get("task_id") or next_item.get("id") or next_item.get("section_id") or "")
+        section_id = str(next_item.get("section_id") or next_item.get("id") or task_id)
+        task_type = str(next_item.get("task_type") or next_item.get("type") or next_item.get("content_type") or "lecture")
+        next_task = {
+            "stageId": stage_id, "taskId": task_id, "sectionId": section_id,
+            "taskType": task_type, "title": str(next_item.get("title") or next_item.get("topic") or "学习任务"),
+            "accessible": True,
+            "routeContext": {"sessionId": session_id, "subjectId": subject_id, "pathId": path.id, "stageId": stage_id, "taskId": task_id, "sectionId": section_id},
+        }
+    total_required = len(required_items)
+    completed_required = sum(_is_complete(item) for _, item in required_items)
+    completed_stages = sum(stage.get("progressStatus") == "completed" for stage in stages)
+    return {
+        "pathId": path.id, "subjectId": subject_id, "sessionId": session_id,
+        "totalStageCount": len(stages), "completedStageCount": completed_stages,
+        "currentStageId": str(current.get("id") or current.get("stage_id") or "") if current else None,
+        "currentStageTitle": str(current.get("title") or "") if current else None,
+        "totalRequiredTaskCount": total_required, "completedRequiredTaskCount": completed_required,
+        "taskProgressPercent": round(completed_required * 100 / total_required) if total_required else 0,
+        "stageProgressPercent": round(completed_stages * 100 / len(stages)) if stages else 0,
+        "nextTask": next_task,
+        "pathCompleted": bool(stages) and completed_stages == len(stages),
+        "updatedAt": path.updated_at.isoformat() if path.updated_at else None,
+    }
+
+
 def _require_stage_access(session_id: str, stage_id: str) -> None:
     db = SessionLocal()
     try:
@@ -4666,17 +4709,53 @@ def download_learning_path(
 @router.patch("/learning-path/nodes/{node_id}")
 def update_node_progress(node_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     session_id = _payload_session_id(payload)
+    path_id = str(payload.get("pathId") or payload.get("path_id") or "").strip()
     status = str(payload.get("status", "available"))
     mastery = int(payload.get("mastery", 0))
     db = SessionLocal()
     try:
-        path = repo_get_latest_learning_path(db, session_id)
-        if not path or not isinstance(path.stages, list) or not _set_path_node_progress(path.stages, node_id, status, mastery):
+        path = (
+            db.query(LearningPathModel).filter(
+                LearningPathModel.id == path_id,
+                LearningPathModel.session_id == session_id,
+            ).first()
+            if path_id else repo_get_latest_learning_path(db, session_id)
+        )
+        context = _path_task_context(path.stages, node_id) if path and isinstance(path.stages, list) else None
+        was_complete = bool(context and _is_complete(context[1]))
+        if not path or not isinstance(path.stages, list) or not context or not _set_path_node_progress(path.stages, node_id, status, mastery):
             raise HTTPException(status_code=404, detail="learning path node not found")
         flag_modified(path, "stages")
         db.add(path)
         db.commit()
         db.refresh(path)
+        if not was_complete and _is_complete(_path_task_context(path.stages, node_id)[1]):
+            stage, task = _path_task_context(path.stages, node_id)
+            session = db.get(SessionModel, session_id)
+            metadata = {
+                "eventType": "task_complete", "learnerId": session.learner_id if session else None,
+                "subjectId": str(payload.get("subjectId") or (session.subject_id if session else "") or ""),
+                "sessionId": session_id, "pathId": path.id,
+                "stageId": str(stage.get("id") or stage.get("stage_id") or ""),
+                "taskId": str(task.get("task_id") or task.get("id") or node_id),
+                "sectionId": str(task.get("section_id") or task.get("id") or node_id),
+                "taskType": str(task.get("task_type") or task.get("type") or task.get("content_type") or "lecture"),
+                "title": str(task.get("title") or task.get("topic") or "学习任务"),
+                "completedAt": datetime.now(timezone.utc).isoformat(), "source": "learning_path",
+            }
+            event_resource_id = f"{path.id}:{metadata['taskId']}"
+            exists = db.query(LearningEventModel).filter(
+                LearningEventModel.session_id == session_id,
+                LearningEventModel.event_type == "task_complete",
+                LearningEventModel.resource_id == event_resource_id,
+            ).first()
+            if not exists:
+                db.add(LearningEventModel(
+                    session_id=session_id, learner_id=session.learner_id if session else None,
+                    subject_id=metadata["subjectId"] or None, event_type="task_complete",
+                    resource_id=event_resource_id, metadata_=metadata,
+                ))
+                db.commit()
     finally:
         db.close()
     learning_tracker.log(
@@ -5321,6 +5400,14 @@ def learning_analytics(
             db, session_id, subject_id=subject_id, path_id=scope.path_id,
             stage_id=scope.stage_id, include_legacy_unscoped=scope.include_legacy_unscoped,
         )
+        path = (
+            db.query(LearningPathModel).filter(
+                LearningPathModel.id == scope.path_id,
+                LearningPathModel.session_id == session_id,
+            ).first()
+            if scope.path_id else repo_get_latest_learning_path(db, session_id)
+        )
+        path_progress = _path_progress(path, session_id=session_id, subject_id=subject_id) if path else None
     finally:
         db.close()
     state = conversation_store.get(session_id)
@@ -5502,7 +5589,6 @@ def learning_analytics(
     today_avg_score = round(today_acc_sum / today_questions) if today_questions > 0 else None
 
     # ── M6: 目标追踪 ──
-    learning_path = last_result.get("learning_path", []) if isinstance(last_result, dict) else []
     exam_date_str = last_result.get("examDate") if isinstance(last_result, dict) else None
     days_until_exam = None
     if exam_date_str:
@@ -5519,10 +5605,10 @@ def learning_analytics(
     estimated_percentile = min(99, max(1, avg_mastery + (10 if avg_mastery >= 70 else -5)))
 
     # 进度条：完成阶段数 / 总阶段数
-    stages_total = len(learning_path)
-    stages_done = last_result.get("currentStageIndex", 0) if isinstance(last_result, dict) else 0
-    if isinstance(stages_done, int) and stages_total > 0:
-        progress_pct = round(stages_done / stages_total * 100)
+    stages_total = (path_progress or {}).get("totalStageCount", 0)
+    stages_done = (path_progress or {}).get("completedStageCount", 0)
+    if stages_total > 0:
+        progress_pct = (path_progress or {}).get("stageProgressPercent", 0)
     elif avg_mastery > 0:
         progress_pct = avg_mastery
     else:
@@ -5573,6 +5659,7 @@ def learning_analytics(
     return _product_response(
         {
             **analytics,
+            "pathProgress": path_progress,
             "heatmap": heatmap,
             "weaknessRanking": weakness_ranking,
             "progressCurve": progress_curve,

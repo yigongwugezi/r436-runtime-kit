@@ -5,6 +5,7 @@ export type LearningTaskRouteContext = {
   stageId?: string;
   taskId?: string;
   sectionId?: string;
+  returnTo?: string;
 };
 
 export function learningTaskRoute(type: string, context: LearningTaskRouteContext): string {

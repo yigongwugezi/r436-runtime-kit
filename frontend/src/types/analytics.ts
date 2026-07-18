@@ -173,6 +173,15 @@ export interface AnalyticsSummary {
   studyCalendar?: StudyCalendarDay[];
   goalTracking?: GoalTracking;
   todayCard?: TodayCard;
+  pathProgress?: {
+    pathId: string; subjectId: string; sessionId: string;
+    totalStageCount: number; completedStageCount: number;
+    currentStageId: string | null; currentStageTitle: string | null;
+    totalRequiredTaskCount: number; completedRequiredTaskCount: number;
+    taskProgressPercent: number; stageProgressPercent: number;
+    pathCompleted: boolean; updatedAt: string | null;
+    nextTask: null | { stageId: string; taskId: string; sectionId: string; taskType: string; title: string; accessible: boolean; routeContext: Record<string, string> };
+  };
 }
 
 /** 时间线事件 — 后端 /learning-events/timeline 返回 */
