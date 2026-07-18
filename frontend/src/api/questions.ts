@@ -58,7 +58,7 @@ export interface HistoryRecord {
 
 /** Generate questions via AI for a session. */
 export async function generateQuestions(body: { sessionId: string; message: string }) {
-  const { data } = await client.post('/api/questions/generate', { ...body, learnerId: getStableLearnerId() });
+  const { data } = await client.post('/api/questions/generate', body);
   return data as {
     status: string;
     data: { questionSetId: string; questions: StudentQuestion[]; count: number };

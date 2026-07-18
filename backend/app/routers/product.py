@@ -275,8 +275,6 @@ def _run_agents(
     session_id: str,
     progress_callback: Callable | None = None,
     agents_filter: list[str] | None = None,
-    plan_mode: str = "",
-    path_mode: str = "",
 ) -> dict[str, Any]:
     """Trigger the multi-agent pipeline via AgentService and persist results.
 
@@ -308,8 +306,6 @@ def _run_agents(
         course_id=course_id,
         progress_callback=progress_callback,
         agents_filter=agents_filter,
-        plan_mode=plan_mode,
-        path_mode=path_mode,
     )
     if selected_course and "course" not in result:
         result["course"] = {
@@ -774,8 +770,6 @@ def _chapter_stages_to_frontend(stages: list[dict[str, Any]]) -> list[dict[str, 
             "resourceTypes": [],
             "orderingReason": "",
             # ── Preserve mode markers ──
-            "path_mode": stage.get("path_mode", ""),
-            "plan_mode": stage.get("plan_mode", ""),
             "focus": stage.get("focus", ""),
             "reason": stage.get("reason", ""),
         })
@@ -886,8 +880,6 @@ def _task_stages_to_frontend(stages: list[dict[str, Any]]) -> list[dict[str, Any
             "resourceTypes": stage.get("resource_types", []),
             "orderingReason": stage.get("reason", stage.get("ordering_reason", "")),
             # ── Preserve mode markers ──
-            "path_mode": stage.get("path_mode", ""),
-            "plan_mode": stage.get("plan_mode", ""),
             "focus": stage.get("focus", ""),
             "reason": stage.get("reason", ""),
         })
@@ -3738,44 +3730,24 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
             raise RuntimeError("provider_not_configured")
 
     elif resource_type == "ppt":
-        # Try Presenton (professional AI PPT service) first
+        # Use iFlytek (讯飞智文) for PPT generation — the only supported provider
         pptx_path = None
         ppt_outline = None
         try:
-            from app.services.presenton_provider import PresentonProvider
-            provider = PresentonProvider()
+            from app.services.iflytek_ppt_provider import IflytekPPTProvider
+            provider = IflytekPPTProvider()
             if provider.is_configured():
-                result = provider.run({"topic": topic, "difficulty": request["difficulty"]})
+                ctx = {"topic": topic}
+                gen_opts = request.get("generationOptions") or {}
+                if gen_opts.get("templateId"):
+                    ctx["template_id"] = gen_opts["templateId"]
+                result = provider.run(ctx)
                 if result.get("status") == "success" and result.get("result", {}).get("filepath"):
                     pptx_path = result["result"]["filepath"]
-                    ppt_outline = result["result"].get("outline", [])
-                    logger.info("PPT generated via Presenton: %s", pptx_path)
+                    logger.info("PPT generated via iFlytek: %s", pptx_path)
         except Exception as e:
-            logger.warning("Presenton failed: %s", e)
+            logger.warning("iFlytek failed: %s", e)
 
-        # Try iFlytek (讯飞智文) second — no Docker needed
-        if not pptx_path:
-            try:
-                from app.services.iflytek_ppt_provider import IflytekPPTProvider
-                provider = IflytekPPTProvider()
-                if provider.is_configured():
-                    ctx = {"topic": topic}
-                    gen_opts = request.get("generationOptions") or {}
-                    if gen_opts.get("templateId"):
-                        ctx["template_id"] = gen_opts["templateId"]
-                    result = provider.run(ctx)
-                    if result.get("status") == "success" and result.get("result", {}).get("filepath"):
-                        pptx_path = result["result"]["filepath"]
-                        logger.info("PPT generated via iFlytek: %s", pptx_path)
-            except Exception as e:
-                logger.warning("iFlytek failed: %s", e)
-
-        if not pptx_path:
-            from app.services.ppt_generator import generate_pptx
-            try:
-                pptx_path, ppt_outline = generate_pptx(topic, request["difficulty"], request["sessionId"])
-            except Exception:
-                pptx_path = None
         if not pptx_path:
             resource["quality_status"] = "provider_unavailable"
             resource["content"] = f"# {topic}\n\nPPT 生成服务暂时不可用，请稍后重试。"
@@ -3901,14 +3873,18 @@ def _legacy_generate_resource(payload: dict[str, Any], auth: AuthContext = Depen
     message = "，".join(parts)
 
     if resource_type == "ppt":
-        from app.services.ppt_generator import generate_pptx
         import logging
         _logger = logging.getLogger("ppt_generate")
         pptx_path = None
         try:
-            pptx_path = generate_pptx(topic, difficulty or "medium", session_id)
+            from app.services.iflytek_ppt_provider import IflytekPPTProvider
+            provider = IflytekPPTProvider()
+            if provider.is_configured():
+                result = provider.run({"topic": topic})
+                if result.get("status") == "success" and result.get("result", {}).get("filepath"):
+                    pptx_path = result["result"]["filepath"]
         except Exception as exc:
-            _logger.exception("PPT 文件生成失败: %s", exc)
+            _logger.exception("PPT 生成失败: %s", exc)
             return _product_response(
                 {"error": f"PPT 生成失败: {str(exc)}", "resource": None},
                 session_id=session_id, source="agent",
@@ -4390,15 +4366,11 @@ def _generate_learning_path(payload: dict[str, Any], auth: AuthContext) -> dict[
     _ensure_session_linked(session_id, subject_id=subject_id)
 
     state = conversation_store.get(session_id)
-    plan_mode = str(payload.get("planMode", "")).strip()
-    path_mode = str(payload.get("pathMode", "")).strip()
     message = user_message or conversation_store.profile_prompt(state, latest_message="请生成学习路径")
     result = _run_agents(
         message,
         session_id=session_id,
-        agents_filter=["profile_agent", "planner_agent"],
-        plan_mode=plan_mode,
-        path_mode=path_mode,
+        agents_filter=["profile_agent", "planner_agent", "resource_agent"],
     )
     result["session_id"] = session_id
     path = _to_learning_path(result)
@@ -6995,7 +6967,6 @@ def generate_all_section_resources(section_id: str, payload: dict[str, Any]) -> 
                 "chapters": [{"chapter_id": chapter_id or section_id, "title": section_title,
                     "sections": [{"section_id": section_id, "title": section_title, "goal": section_goal,
                         "knowledge_points": [{"name": n} for n in kp_names]}]}]}],
-            "path_mode": "textbook",
         }
         if requirements:
             resource_ctx["user_message"] = f"生成资源时遵循学生要求：{requirements}"

@@ -306,12 +306,7 @@ class ConversationAgent(BaseAgent):
         self._save_history(user_message, llm_reply, context)
 
         extra = {}
-        plan_mode = rule_result.get("plan_mode", "")
-        path_mode = rule_result.get("path_mode", "")
-        if plan_mode:
-            extra["plan_mode"] = plan_mode
-        if path_mode:
-            extra["path_mode"] = path_mode
+        pass  # plan_mode/path_mode removed
         result = self._make_result(reply=llm_reply, action=action, facts=facts, extra=extra or None)
         result["llm_retry_count"] = llm_retry_count
         if context.get("_llm_proposal"):
@@ -978,17 +973,17 @@ action："""
 
         # Explicit mode keywords — these win over everything
         if has_focus:
-            return self._fallback_result("plan", "focus_plan_request", plan_mode="focus")
+            return self._fallback_result("plan", "focus_plan_request")
         if has_project and not has_textbook:
-            return self._fallback_result("plan", "project_path_request", plan_mode="textbook", path_mode="project")
+            return self._fallback_result("plan", "project_path_request")
         # Daily wins over textbook when both are explicit (user clicked 日课式 in ModePicker)
         if has_daily:
-            return self._fallback_result("plan", "daily_path_request", plan_mode="textbook", path_mode="daily")
+            return self._fallback_result("plan", "daily_path_request")
         if has_textbook:
-            return self._fallback_result("plan", "textbook_plan_request", plan_mode="textbook")
+            return self._fallback_result("plan", "textbook_plan_request")
         # Subject-based hint: language subjects default to daily (but only if no explicit mode)
         if has_lang_subject:
-            return self._fallback_result("plan", "daily_path_request", plan_mode="textbook", path_mode="daily")
+            return self._fallback_result("plan", "daily_path_request")
 
         # ── Explicit multi-word triggers only (no single-char matching) ──
         # NOTE: mode-specific checks above take priority; this catches generic plan
@@ -1057,7 +1052,7 @@ action："""
             "再加", "加一些练习", "多给点", "重新规划", "重新调整",
         ]
         if any(p in compact for p in _ADJUST):
-            return self._fallback_result("plan", "path_adjustment", plan_mode="adjust")
+            return self._fallback_result("plan", "path_adjustment")
 
         # ── Image generation triggers ──
         _GEN_IMAGE = [
@@ -1083,7 +1078,7 @@ action："""
         return self._fallback_result("none", "unclassified_fallback")
 
 
-    def _fallback_result(self, action, reason, needs_clarification=False, plan_mode="", path_mode="", capability=""):
+    def _fallback_result(self, action, reason, needs_clarification=False, capability=""):
         result = {
             "reply": "",
             "action": action,
@@ -1096,10 +1091,7 @@ action："""
             "pipeline_required": action not in ("none", "unsafe"),
             "target_agents": ["full_workflow"] if action == "full_workflow" else [],
         }
-        if plan_mode:
-            result["plan_mode"] = plan_mode
-        if path_mode:
-            result["path_mode"] = path_mode
+        pass  # mode removed
         if capability:
             result["capability"] = capability
         return result

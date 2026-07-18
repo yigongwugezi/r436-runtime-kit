@@ -24,6 +24,16 @@ def make_stage_id(path_id: str, index: int) -> str:
     return f"{path_id}_s{index}"
 
 
+def make_task_id(stage_id: str, index: int) -> str:
+    """Generate a stable task ID.
+
+    Args:
+        stage_id: The parent stage ID.
+        index: 0-based task index within the stage.
+    """
+    return f"{stage_id}_t{index}"
+
+
 def make_chapter_id(stage_id: str, index: int) -> str:
     """Generate a stable chapter ID.
 

@@ -1,134 +1,52 @@
-/** KGPreview — static G6 knowledge graph preview (no interactivity).
-
-Renders a force-directed graph using G6 without behaviors or plugins.
-Animation runs once and settles — no continuous shaking. */
+/** KGPreview — static knowledge graph preview. Big nodes, force layout, no jitter. */
 import { useEffect, useRef } from 'react';
 import { Graph } from '@antv/g6';
 
 interface KGPreviewProps {
-  graphData: {
-    nodes: Array<{ id: string; label: string; type?: string; importance?: number; difficulty?: string }>;
-    edges: Array<{ source: string; target: string; relation?: string }>;
-  };
-  className?: string;
+  graphData: { nodes: Array<{ id: string; label: string }>; edges: Array<{ source: string; target: string; relation?: string }> };
   height?: number;
 }
 
-export default function KGPreview({ graphData, className = '', height = 360 }: KGPreviewProps) {
+export default function KGPreview({ graphData, height = 360 }: KGPreviewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!containerRef.current || !graphData?.nodes?.length) return;
-
     const container = containerRef.current;
     const { width } = container.getBoundingClientRect();
 
     const graph = new Graph({
-      container,
-      width: width || 600,
-      height,
-      autoFit: 'view',
-      animation: false,
-      layout: {
-        type: 'force',
-        preventOverlap: true,
-        nodeSize: (d: any) => 20 + (d.data?.importance || 2) * 4 + 10,
-        nodeStrength: -2000,
-        edgeStrength: 0.8,
-        linkDistance: 400,
-        damping: 0.9,
-        maxSpeed: 20,
-        coulombScale: 2,
-        workerEnabled: true,
-      },
+      container, width: width || 600, height,
+      autoFit: false, animation: false,
+      layout: { type: 'force', preventOverlap: true, nodeSize: 60, nodeStrength: 200, edgeStrength: 10, linkDistance: 800, coulombDisScale: 3, collideStrength: 10, gravity: 2, damping: 0.9, maxSpeed: 500, maxIteration: 3000, minMovement: 0.01 },
       data: {
-        nodes: graphData.nodes.map((n) => ({
-          id: n.id,
-          data: {
-            label: n.label,
-            type: n.type || 'concept',
-            importance: n.importance || 2,
-          },
-          style: {
-            size: 20 + (n.importance || 2) * 4,
-            fill: '#6366f1',
-            stroke: '#fff',
-            lineWidth: 2,
-          },
-        })),
-        edges: graphData.edges.map((e) => ({
-          id: `${e.source}->${e.target}`,
-          source: e.source,
-          target: e.target,
-          data: { relation: e.relation },
-          style: {
-            stroke: '#cbd5e1',
-            lineWidth: 1.5,
-            endArrow: true,
-          },
-        })),
+        nodes: graphData.nodes.map((n) => ({ id: n.id, data: { label: n.label } })),
+        edges: (graphData.edges || []).map((e) => ({ id: `${e.source}->${e.target}`, source: e.source, target: e.target, data: { relation: e.relation || '' } })),
       },
       node: {
-        label: {
-          text: (d: any) => d.data?.label || d.id,
-          fontSize: 12,
-          fill: '#1f2937',
-          fontWeight: 500,
-          position: 'bottom',
-          offset: 6,
-          maxLines: 2,
-        },
         style: {
-          size: (d: any) => 20 + (d.data?.importance || 2) * 4,
-          fill: '#6366f1',
-          stroke: '#fff',
-          lineWidth: 2,
-          labelPlacement: 'bottom',
-          labelOffset: 6,
+          size: 60, fill: '#6366f1', stroke: '#fff', lineWidth: 3, cursor: 'default',
           labelText: (d: any) => d.data?.label || d.id,
-          labelFontSize: 12,
-          labelFill: '#1f2937',
-          labelFontWeight: 500,
+          labelFontSize: 13, labelFill: '#1f2937', labelFontWeight: 600,
         },
       },
       edge: {
-        style: {
-          stroke: '#cbd5e1',
-          lineWidth: 1.5,
-          endArrow: true,
-        },
+        style: { stroke: '#cbd5e1', lineWidth: 2, endArrow: true },
         label: {
           text: (d: any) => {
             const r = d.data?.relation;
-            if (r === 'prerequisite') return '前置';
-            if (r === 'contains') return '包含';
-            if (r === 'related') return '关联';
-            return '';
+            return r === 'prerequisite' ? '前置' : r === 'contains' ? '包含' : '';
           },
-          fontSize: 9,
-          fill: '#94a3b8',
-          background: true,
-          backgroundFill: '#fff',
-          backgroundOpacity: 0.8,
-          padding: [2, 4],
+          fontSize: 10, fill: '#94a3b8', background: true, backgroundFill: '#fff', backgroundOpacity: 0.8, padding: [2, 5],
         },
       },
       behaviors: [],
     });
 
     graph.render();
-
-    return () => {
-      graph.destroy();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    setTimeout(() => { try { graph.fitView({ padding: 60 }); } catch {} }, 100);
+    return () => { graph.destroy(); };
   }, [graphData]);
 
-  return (
-    <div
-      ref={containerRef}
-      className={`bg-white rounded-xl ${className}`}
-      style={{ height, width: '100%' }}
-    />
-  );
+  return <div ref={containerRef} className="bg-white rounded-xl" style={{ height, width: '100%' }} />;
 }

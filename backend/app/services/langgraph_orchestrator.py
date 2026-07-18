@@ -135,22 +135,46 @@ async def _extract_facts_after_chat(
     unknown_block = "\n".join(unknown_lines) if unknown_lines else "（全部已知）"
 
     fact_prompt = (
-        "你是一个信息提取器。请从以下学生和AI助教的对话中，提取关于学生的任何新事实。\n"
-        "注意：你要同时看学生的回答和AI助教的回复——AI可能在分析中指出了学生的对错或理解深度。\n\n"
-        "提取维度：专业/年级背景、想学的课程、已有基础、薄弱点、学习目标、时间安排、学习偏好。\n"
+        "你是一个多相分析提取器。从对话中提取学生的深层信息，每个维度可以有多项独立的分析结果。\n"
+        "注意：结合AI和学生双方的发言综合分析。不仅记录显式信息，还要从回答中推断额外信息。\n\n"
+        "提取维度及每维的分析要求：\n"
         "规则：\n"
-        "- 结合AI的分析来判断学生信息的质量和含义，不要只看学生表面说了什么\n"
-        "- 如果是诊断题/概念解释场景，答对→knowledge_base，答错→weak_points\n"
+        "- 每个维度可以有多个 topics——学生的回答往往包含多层信息，要全部提取出来\n"
+        "- 有交叉推断的单独列一个 topic，confidence 降到 0.3-0.5\n"
         "- 提取时尽量具体——'软件工程大二' 优于 '大学生'，'链式法则卡住了' 优于 '数学薄弱'\n"
-        "- 每个值前面标注 evidence 来源：[探测]（通过诊断验证）、[学生自述]、[行为观察]\n"
-        "- 如果某个维度在对话中没有新的、有深度的信息，就空着不填\n"
+        "- 薄弱点附加 evidence 来源标记：[探测]（诊断验证）、[学生自述]、[行为观察]\n"
+        "- 如果某维度在对话中无新信息，整个维度不输出\n"
         + probe_context + "\n"
         f"## 当前已知\n{known_block}\n\n"
         f"## 尚未了解\n{unknown_block}\n\n"
         f"## 对话\n学生：{user_msg[:500]}\nAI：{assistant_reply[:600]}\n\n"
-        "请输出JSON，优先输出 rich_updates（结构化topic维度），同时保留旧格式的updates字段：\n"
-        '{"updates": {"background": "[学生自述]软件工程大二"}, "rich_updates": {"knowledge_base": {"summary": "有Python基础", "topics": [{"topic": "Python", "level": "intermediate", "detail": "基础语法", "confidence": 0.8, "evidence": "学生自述"}]}}}'
-    )
+        "输出JSON，rich_updates 每个维度的值是一个对象，可包含 summary（字符串）、topics（数组）、gaps_found（数组）：\n"
+        '{"updates": {"background": "[学生自述]软件工程大二"}, "rich_updates": {\n'
+        '  "knowledge_base": {\n'
+        '    "summary": "有C语言基础和二进制概念",\n'
+        '    "topics": [\n'
+        '      {"topic": "C语言", "level": "intermediate", "detail": "变量、函数、指针", "confidence": 0.9, "evidence": "学生自述"},\n'
+        '      {"topic": "二进制", "level": "beginner", "detail": "知道原码反码补码", "confidence": 0.8, "evidence": "学生自述"},\n'
+        '      {"topic": "逻辑门", "level": "beginner", "detail": "知道与或非门", "confidence": 0.7, "evidence": "学生自述"}\n'
+        '    ],\n'
+        '    "gaps_found": ["数字电路设计", "CPU数据通路", "指令集体系结构"]\n'
+        '  },\n'
+        '  "weak_points": {\n'
+        '    "summary": "对网络核心概念有误解",\n'
+        '    "topics": [\n'
+        '      {"topic": "电路交换", "level": "none", "detail": "认为数据传输需要建立专用通路", "confidence": 0.8, "evidence": "[探测]"},\n'
+        '      {"topic": "分组交换", "level": "none", "detail": "不了解分组交换的基本原理", "confidence": 0.6, "evidence": "[推断]"}\n'
+        '    ]\n'
+        '  },\n'
+        '  "time_budget": {\n'
+        '    "summary": "工作日每天3小时，周末休息",\n'
+        '    "topics": [\n'
+        '      {"topic": "每日时长", "level": "", "detail": "工作日每天3小时", "confidence": 0.9, "evidence": "学生自述"},\n'
+        '      {"topic": "周末安排", "level": "", "detail": "周末休息不学习", "confidence": 0.9, "evidence": "学生自述"},\n'
+        '      {"topic": "总时间", "level": "", "detail": "每周约15小时", "confidence": 0.9, "evidence": "学生自述"}\n'
+        '    ]\n'
+        '  }\n'
+        "}}")
 
     try:
         from app.services.deeptutor_facade import deeptutor
@@ -203,6 +227,14 @@ async def _extract_facts_after_chat(
                                 source_text=user_msg,
                                 verified_by=str(t.get("verified_by", "")),
                             )
+                # ── 处理 gaps_found（知识差距）──
+                gaps = data.get("gaps_found", []) if isinstance(data, dict) else []
+                if isinstance(gaps, list) and gaps:
+                    rich_dim = state.rich_facts.setdefault(dim, {"topics": [], "gaps_found": []})
+                    for g in gaps:
+                        g_text = str(g).strip()
+                        if g_text and g_text not in rich_dim.get("gaps_found", []):
+                            rich_dim.setdefault("gaps_found", []).append(g_text)
     except Exception:
         pass  # Fact extraction is best-effort, never blocks the reply
 
@@ -710,13 +742,12 @@ async def _run_conversation_agent(context: dict[str, Any], factory: AgentFactory
             "action": str(result.get("action", "none")),
             "reply": str(result.get("reply", "")),
             "facts": result.get("facts", {}),
-            "plan_mode": str(result.get("plan_mode", "")),
-            "path_mode": str(result.get("path_mode", "")),
+            
             "_llm_proposal": str(result.get("_llm_proposal", "")),
             "needs_clarification": bool(result.get("needs_clarification", False)),
         }
     except Exception:
-        return {"action": "none", "reply": "", "facts": {}, "plan_mode": "", "path_mode": "", "_llm_proposal": "", "needs_clarification": False}
+        return {"action": "none", "reply": "", "facts": {}, "_llm_proposal": "", "needs_clarification": False}
 
 
 def _emit_feedback_signal(state: dict) -> dict[str, Any]:
@@ -832,12 +863,7 @@ async def _intent_node(state: dict) -> dict:
     state["intent"] = ca_result["action"]
     state["_conversation_reply"] = ca_result["reply"]
     state["_conversation_facts"] = ca_result["facts"]
-    plan_mode = ca_result.get("plan_mode", "")
-    path_mode = ca_result.get("path_mode", "")
-    if plan_mode:
-        state["plan_mode"] = plan_mode
-    if path_mode:
-        state["path_mode"] = path_mode
+    pass  # plan_mode/path_mode removed — unified planner
     state.setdefault("agent_steps", []).append({"node": "intent_router", "intent": state["intent"]})
     logger.info("Intent: %s", state["intent"])
     return state
@@ -952,7 +978,7 @@ async def _plan_node(state: dict) -> dict:
         _planning = _s5 and _s5.path_planning_info_mode
     except Exception:
         _planning = False
-    if _planning and (state.get("plan_mode") or state.get("path_mode")):
+    if _planning:
         return await _run_agent("planner", state, state["_factory"])
     state["final_reply"] = (
         "好的！请到「学习路径」页面进行设置和生成，那里可以：\n"
@@ -1105,9 +1131,6 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
     factory = AgentFactory()
     state: dict[str, Any] = dict(**kwargs, _retry_count=0, _factory=factory)
 
-    # 记录调用方是否显式传入了 plan_mode（来自路径页面确认生成按钮）
-    _caller_plan_mode = kwargs.get("plan_mode", "")
-    _caller_path_mode = kwargs.get("path_mode", "")
 
     # ── 确保评估调度器在运行（延迟启动兜底）──
     from app.services.assessment_loop import ensure_scheduler_running
@@ -1131,12 +1154,7 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
                 "feedback_signal": state.get("feedback_signal"),
             }, factory)
             intent = ca_result["action"]
-            plan_mode = ca_result.get("plan_mode", "")
-            path_mode = ca_result.get("path_mode", "")
-            if plan_mode:
-                state["plan_mode"] = plan_mode
-            if path_mode:
-                state["path_mode"] = path_mode
+            pass
     state["intent"] = intent
 
     # ── Chat-only intents — go straight to DeepTutor, no agent overhead ──
@@ -1161,15 +1179,14 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
             except Exception:
                 _collecting = False
 
-            if _collecting and not (_caller_plan_mode or _caller_path_mode):
+            if _collecting:
                 # 画像收集模式：不触发规划器，退回聊天让 persona 收集信息
                 state["intent"] = "none"
                 logger.info("path_planning_info_mode=True, overriding plan intent to chat for session=%s",
                             state.get("session_id", ""))
                 return await _run_chat_only(state, factory)
-            elif _caller_plan_mode or _caller_path_mode:
-                # 路径页面「直接生成路径」按钮显式传入了 plan_mode → 放行规划器
-                pass
+            elif True:
+                            pass
             elif kwargs.get("chat_mode") == "planning":
                 # 规划模式对话走画像收集，不阻塞
                 pass
@@ -1194,7 +1211,7 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
         old_qs = len(state.get("questions") or [])
 
         # ── Load existing path for adjustment mode ──
-        if state.get("plan_mode") == "adjust":
+        if False:  # adjust mode merged into planner
             from app.db.engine import SessionLocal
             from app.db.repository import get_latest_learning_path
             try:

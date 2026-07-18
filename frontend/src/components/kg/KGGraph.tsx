@@ -1,7 +1,5 @@
-/** Knowledge Graph — G6 wrapper component.
-
-Handles rendering the graph, interactions, and events. */
-import { useEffect, useRef, useMemo, useState, useCallback } from 'react';
+/** Knowledge Graph — dagre layout, massive spacing, never moves, click zooms smoothly. */
+import { useEffect, useRef } from 'react';
 import { Graph } from '@antv/g6';
 import type { LayoutOptions } from '@antv/g6';
 import type { KGNode, KGEdge, KGNodeStatus } from '../../types/knowledgeGraph';
@@ -19,147 +17,76 @@ interface KGGraphProps {
   nodes: KGNode[];
   edges: KGEdge[];
   layoutType: LayoutType;
-  selectedNodeId: string | null;
-  onNodeClick: (node: KGNode | null) => void;
   searchTerm: string;
-  filterStatus: KGNodeStatus[];
-  filterChapter: string;
+  onNodeClick: (node: KGNode | null) => void;
 }
 
 const LAYOUTS: Record<LayoutType, LayoutOptions> = {
-  force: {
-    type: 'force',
-    preventOverlap: true,
-    nodeSize: (d: any) => 20 + (d.data?.importance || 2) * 5 + 10,
-    nodeStrength: -2000,
-    edgeStrength: 0.8,
-    linkDistance: 400,
-    damping: 0.9,
-    maxSpeed: 20,
-    coulombScale: 2,
-  },
-  dagre: { type: 'dagre', rankdir: 'LR', nodesep: 120, ranksep: 200 },
-  circular: { type: 'circular', radius: 350, startRadius: 100, endRadius: 400 },
+  dagre: { type: 'dagre', rankdir: 'LR', nodesep: 400, ranksep: 500 },
+  force: { type: 'force', preventOverlap: true, nodeSize: 80, nodeStrength: 500, edgeStrength: 20, linkDistance: 1200, coulombDisScale: 5, collideStrength: 20, gravity: 0.5, damping: 0.95, maxSpeed: 500, maxIteration: 5000, minMovement: 0.001 },
+  circular: { type: 'circular', radius: 600, startRadius: 200, endRadius: 800 },
 };
 
+const NODE_SIZE = 72;
+
 export default function KGGraph({
-  nodes,
-  edges,
-  layoutType,
-  selectedNodeId,
-  onNodeClick,
-  searchTerm,
+  nodes, edges, layoutType, searchTerm, onNodeClick,
 }: KGGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<Graph | null>(null);
-  const nodeClickRef = useRef(onNodeClick);
-  nodeClickRef.current = onNodeClick;
+  const layoutKey = layoutType;
 
-  const [layoutVersion, setLayoutVersion] = useState(0);
-  useEffect(() => { setLayoutVersion((v) => v + 1); }, [layoutType]);
-
-  const dataKey = useMemo(() => {
-    const nIds = nodes.map((n) => n.id).join(',');
-    const eIds = edges.map((e) => `${e.source}->${e.target}`).join(',');
-    return `${nIds}|${eIds}`;
-  }, [nodes, edges]);
-
-  const graphData = useMemo(
-    () => ({
-      nodes: nodes.map((n) => ({
-        id: n.id,
-        data: {
-          label: n.label,
-          status: n.status,
-          mastery: n.mastery,
-          type: n.type,
-          difficulty: n.difficulty,
-          importance: n.importance,
-          chapter: n.chapter,
-          category: n.category,
-        },
-      })),
-      edges: edges.map((e) => ({
-        id: `${e.source}->${e.target}`,
-        source: e.source,
-        target: e.target,
-        data: { relation: e.relation },
-      })),
-    }),
-    [dataKey],
-  );
-
-  // Initialize graph
   useEffect(() => {
-    if (!containerRef.current || nodes.length === 0) return;
+    if (!containerRef.current || !nodes.length) return;
     const container = containerRef.current;
     const { width, height } = container.getBoundingClientRect();
 
-    if (graphRef.current) {
-      graphRef.current.destroy();
-      graphRef.current = null;
-    }
+    if (graphRef.current) { graphRef.current.destroy(); graphRef.current = null; }
 
     const graph = new Graph({
-      container,
-      width,
-      height: height || 600,
-      autoFit: 'view',
-      animation: false,
-      layout: LAYOUTS[layoutType] || LAYOUTS.force,
-      data: graphData,
+      container, width, height: height || 600,
+      autoFit: false,
+      animation: true, // 只影响相机动画（点击飞行），不影响布局稳定性
+      layout: LAYOUTS[layoutKey as LayoutType] || LAYOUTS.dagre,
+      data: {
+        nodes: nodes.map((n) => ({
+          id: n.id,
+          data: { label: n.label, status: n.status, chapter: n.chapter },
+        })),
+        edges: edges.map((e) => ({
+          id: `${e.source}->${e.target}`, source: e.source, target: e.target,
+          data: { relation: e.relation },
+        })),
+      },
       node: {
         style: {
-          size: (d: any) => 20 + (d.data?.importance || 2) * 5,
+          size: NODE_SIZE,
           fill: (d: any) => STATUS_COLORS[d.data?.status as KGNodeStatus] || '#94a3b8',
-          stroke: '#fff',
-          lineWidth: 2,
-          cursor: 'pointer',
+          stroke: '#fff', lineWidth: 3, cursor: 'pointer',
           labelText: (d: any) => d.data?.label || d.id,
-          labelFontSize: 12,
-          labelFill: '#1f2937',
-          labelFontWeight: 500,
-          labelPlacement: 'bottom',
-          labelOffset: 6,
-          labelMaxLines: 2,
+          labelFontSize: 13, labelFill: '#1f2937', labelFontWeight: 600,
         },
         state: {
-          selected: { stroke: '#2563eb', lineWidth: 3, shadowBlur: 8, shadowColor: '#2563eb66' },
-          searched: { stroke: '#f59e0b', lineWidth: 3, shadowBlur: 12, shadowColor: '#f59e0b88' },
+          searched: { stroke: '#f59e0b', lineWidth: 4, shadowBlur: 20, shadowColor: '#f59e0baa' },
         },
       },
       edge: {
-        style: {
-          stroke: '#cbd5e1',
-          lineWidth: 1.5,
-          endArrow: true,
-          radius: 8,
-        },
+        style: { stroke: '#cbd5e1', lineWidth: 2, endArrow: true },
         label: {
           text: (d: any) => {
             const r = d.data?.relation;
             if (r === 'prerequisite') return '前置';
             if (r === 'contains') return '包含';
-            if (r === 'related') return '关联';
             return '';
           },
-          fontSize: 9,
-          fill: '#94a3b8',
-          background: true,
-          backgroundFill: '#fff',
-          backgroundOpacity: 0.8,
-          padding: [2, 4],
-        },
-        state: {
-          highlighted: { stroke: '#2563eb', lineWidth: 2.5 },
-          dimmed: { stroke: '#e2e8f0', opacity: 0.15 },
+          fontSize: 10, fill: '#94a3b8',
+          background: true, backgroundFill: '#fff', backgroundOpacity: 0.8,
+          padding: [2, 5],
         },
       },
       behaviors: [
-        'drag-canvas',
-        'zoom-canvas',
-        'drag-element',
-        { type: 'hover-activate', key: 'hover', degree: 1, enable: (e: any) => e.targetType === 'node' },
+        'drag-canvas', 'zoom-canvas', 'drag-element',
+        { type: 'hover-activate', key: 'hover', degree: 1 },
       ],
       plugins: [
         { type: 'minimap', key: 'minimap', size: [180, 120], padding: 10 },
@@ -167,64 +94,61 @@ export default function KGGraph({
     });
 
     graph.on('node:click', (e: any) => {
-      const nodeId = e.target?.id || e.itemId;
-      if (nodeId) {
-        const original = nodes.find((n) => n.id === nodeId);
-        nodeClickRef.current(original || null);
-      }
+      const nid = e.target?.id || e.itemId;
+      if (!nid) return;
+      const node = nodes.find((n) => n.id === nid);
+      onNodeClick(node || null);
+      // ONE absolute transform: zoom to 4x AND center on node, simultaneous
+      try {
+        const nd = graph.getNodeData(nid);
+        const st = (nd as any).style || (nd as any).data?.style;
+        const sx = parseFloat(st?.x);
+        const sy = parseFloat(st?.y);
+        if (!isNaN(sx) && !isNaN(sy)) {
+          const sz = graph.getSize();
+          const Z = 4;
+          graph.transform({
+            mode: 'absolute', zoom: Z,
+            translate: { x: sz[0] / 2 - sx * Z, y: sz[1] / 2 - sy * Z },
+          }, { duration: 800 });
+          return;
+        }
+      } catch {}
+      graph.focusElement(nid, { duration: 800 });
     });
-    graph.on('canvas:click', () => { nodeClickRef.current(null); });
 
     graph.render();
     graphRef.current = graph;
 
     return () => { graph.destroy(); graphRef.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataKey, layoutVersion]);
+  }, [nodes, edges, layoutKey]);
 
-  // Update data
+  // ── Search ──
   useEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
-    graph.setData(graphData);
-    graph.render();
-  }, [graphData]);
-
-  // Search highlight
-  useEffect(() => {
-    const graph = graphRef.current;
-    if (!graph) return;
-    graph.setElementState({ all: [] });
     if (searchTerm) {
-      const match = nodes.find((n) => n.label.toLowerCase().includes(searchTerm.toLowerCase()));
+      const match = (nodes || []).find((n) =>
+        n.label?.toLowerCase().includes(searchTerm.toLowerCase()),
+      );
       if (match) {
-        graph.setElementState({ [match.id]: 'searched' });
-        graph.focusElement(match.id, { animation: true });
+        graph.setElementState({ all: [], [match.id]: 'searched' });
+        graph.focusElement(match.id, { duration: 800 });
       }
-    } else if (selectedNodeId) {
-      graph.setElementState({ [selectedNodeId]: 'selected' });
-    }
-  }, [searchTerm, selectedNodeId, nodes]);
+    } else { graph.setElementState({ all: [] }); }
+  }, [searchTerm, nodes]);
 
-  // Resize
+  // ── Resize ──
   useEffect(() => {
     const onResize = () => {
-      const graph = graphRef.current;
-      const container = containerRef.current;
-      if (graph && container) {
-        const { width, height } = container.getBoundingClientRect();
-        graph.resize(width, height || 600);
-      }
+      const g = graphRef.current;
+      const c = containerRef.current;
+      if (g && c) { const r = c.getBoundingClientRect(); g.resize(r.width, r.height || 600); }
     };
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  return (
-    <div
-      ref={containerRef}
-      className="w-full h-full bg-surface-50 rounded-2xl"
-      style={{ minHeight: 500 }}
-    />
-  );
+  return <div ref={containerRef} className="w-full h-full bg-surface-50 rounded-2xl" />;
 }

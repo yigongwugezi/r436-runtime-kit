@@ -45,7 +45,7 @@ export default function AppLayout() {
         </aside>
         <div className="flex-1 ml-64 flex flex-col min-h-screen">
           <Header title={info.title} subtitle={info.subtitle} />
-          <main className="p-6 flex-1 flex flex-col"><Outlet /></main>
+          <main className="p-6 flex-1 flex flex-col h-0 min-h-0"><Outlet /></main>
         </div>
       </div>
       {showChat && !chatOpen && (

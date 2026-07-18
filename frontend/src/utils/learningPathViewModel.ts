@@ -260,6 +260,21 @@ export function normalizeLearningPathForClient(raw: any): any {
       chapters: array(stage?.chapters).map(normalizeChapter),
       sections: array(stage?.sections).map(normalizeSection),
       nodes: array(stage?.nodes).map(normalizeNode),
+
+      tasks: array(stage?.tasks || []).map((task: any) => ({
+        ...task,
+        task_id: task.task_id || task.taskId || task.id || "",
+        title: task.title || "",
+        type: task.type || task.task_type || "read_doc",
+        goal: task.goal || task.description || "",
+        estimated_minutes: task.estimated_minutes ?? task.estimatedMinutes ?? 30,
+        required: task.required !== false,
+        resource_types: task.resource_types || task.resourceTypes || [],
+        status: task.status || "pending",
+        source: task.source || "textbook",
+        _adjustment: task._adjustment || "",
+        _adjustment_reason: task._adjustment_reason || "",
+      })),
     })),
   };
 }

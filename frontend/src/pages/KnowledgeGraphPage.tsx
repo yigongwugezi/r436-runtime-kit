@@ -29,7 +29,12 @@ export default function KnowledgeGraphPage() {
   const [error, setError] = useState<string | null>(null);
 
   // ── Interaction state ──
-  const [layoutType, setLayoutType] = useState<LayoutType>('force');
+  const [layoutType, setLayoutType] = useState<LayoutType>(
+    (() => {
+      const saved = localStorage.getItem('kg_layout');
+      return (saved === 'force' || saved === 'dagre' || saved === 'circular') ? saved : 'dagre';
+    })(),
+  );
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedStatuses, setSelectedStatuses] = useState<KGNodeStatusFilter[]>([]);
   const [selectedChapter, setSelectedChapter] = useState('');
@@ -195,7 +200,7 @@ export default function KnowledgeGraphPage() {
   }
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="flex-1 flex flex-col min-h-0">
       {/* ── Header bar ── */}
       <div className="flex-shrink-0 px-6 py-4 border-b border-surface-200 bg-white">
         <div className="flex items-center justify-between flex-wrap gap-3">
@@ -214,7 +219,7 @@ export default function KnowledgeGraphPage() {
               {LAYOUT_OPTIONS.map((opt) => (
                 <button
                   key={opt.value}
-                  onClick={() => setLayoutType(opt.value)}
+                  onClick={() => { setLayoutType(opt.value); localStorage.setItem('kg_layout', opt.value); }}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
                     layoutType === opt.value
                       ? 'bg-white text-primary-700 shadow-sm'
@@ -264,11 +269,8 @@ export default function KnowledgeGraphPage() {
             nodes={filteredNodes}
             edges={filteredEdges}
             layoutType={layoutType}
-            selectedNodeId={selectedNode?.id || null}
             onNodeClick={handleNodeClick}
             searchTerm={searchTerm}
-            filterStatus={selectedStatuses}
-            filterChapter={selectedChapter}
           />
 
           {/* Floating node card */}

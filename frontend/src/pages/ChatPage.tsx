@@ -17,6 +17,7 @@ import ChatClarification from '../components/chat/ChatClarification';
 import PromptTemplates from '../components/chat/PromptTemplates';
 import AgentExecutionDetails from '../components/chat/AgentExecutionDetails';
 import ModePicker, { parseModePickTag, stripModePickTag } from '../components/chat/ModePicker';
+import ProfilePanel from '../components/chat/ProfilePanel';
 
 /** Agent 通用阶段映射 —— 后端 agent_id → 中文标签 */
 const AGENT_LABELS: Record<string, string> = {
@@ -798,9 +799,10 @@ export default function ChatPage() {
     inputRef.current?.focus();
   };
   const handleKeyDown = (e: React.KeyboardEvent) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } };
+  const isPlanning = chatMode === 'planning';
 
   return (
-    <div className="h-[calc(100vh-160px)] flex flex-col bg-white">
+    <div className={`h-[calc(100vh-160px)] flex flex-col bg-white ${isPlanning ? 'relative' : ''}`}>
       {/* ── ChatGPT-style top bar ── */}
       <div className="flex items-center justify-between px-4 py-2 flex-shrink-0">
         <div className="flex items-center gap-2">
@@ -1057,6 +1059,12 @@ export default function ChatPage() {
           </div>
         </div>
       </div>
+
+      {chatMode === 'planning' && (
+        <div className="absolute right-0 top-0 bottom-0 w-80 border-l border-surface-200 bg-white overflow-y-auto p-5">
+          <ProfilePanel sessionId={currentSessionId} />
+        </div>
+      )}
 
       <ChatHistorySidebar
         open={historyOpen}

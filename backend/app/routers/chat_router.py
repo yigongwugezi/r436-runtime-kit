@@ -417,6 +417,14 @@ async def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_a
             search_enabled = bool(payload.get("search_enabled", False))
             deep_think_enabled = bool(payload.get("deep_think_enabled", False))
             chat_mode = str(payload.get("chat_mode", "free"))
+            # ── 规划模式：开启画像收集模式，跳过快速通路 ──
+            if chat_mode == "planning":
+                from app.services.conversation_state import conversation_store as _pcs
+                _pst = _pcs.get(session_id)
+                if _pst:
+                    _pst.path_planning_info_mode = True
+                    _pst.profile_extraction_enabled = True
+
             # ── 自由模式流式直调 ──
             if chat_mode == "free" and message and not any(kw in message for kw in ["生成", "出题", "规划", "路径"]):
                 from app.services.llm_factory import get_chat_client
@@ -471,7 +479,7 @@ async def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_a
                 _ca_result = await _run_conversation_agent(_intent_ctx, AgentFactory())
                 _intent = _ca_result.get("action", "none")
 
-            if not _intent or _intent in chat_only_intents():
+            if (not _intent or _intent in chat_only_intents()) and chat_mode != "planning":
                 # → 纯聊天：直接流式
                 from app.services.llm_factory import get_chat_client
                 client = get_chat_client()

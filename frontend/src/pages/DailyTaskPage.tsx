@@ -396,7 +396,6 @@ export default function DailyTaskPage({ chapterId, sectionId, onBack }: Props) {
     const result: { weekIdx: number; dayIdx: number; weekTitle: string; dayTitle: string; sections: Section[]; completed: number }[] = [];
     let dayCounter = 0;
     for (const stage of path.stages) {
-      if ((stage as any).path_mode !== 'daily') continue;
       for (const ch of (stage.chapters || [])) {
         const sections = (ch.sections || []) as Section[];
         result.push({

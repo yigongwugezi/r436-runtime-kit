@@ -42,14 +42,7 @@ class ResourceAgent(BaseAgent):
                        context.get("profile_facts", {}).get("target_course") or
                        context.get("course_id", "目标课程"))
 
-        # ── Detect path mode for resource type selection ──
-        path_mode = context.get("path_mode", "")
-        if not path_mode:
-            for s in stages:
-                if isinstance(s, dict) and s.get("path_mode"):
-                    path_mode = str(s.get("path_mode"))
-                    break
-        self._path_mode = path_mode  # store for use in prompts
+        
         course_name = str(course_name).strip()
 
         # ── 检测审核反馈，进入修正模式 ──
@@ -361,6 +354,7 @@ class ResourceAgent(BaseAgent):
                     "goal": stage.get("goal"),
                     "tasks": stage.get("tasks", []),
                     "reason": stage.get("reason", ""),
+                    "adjustment_summary": self._section_adjustment_map(stage),
                 }
                 for stage in stages
             ],
@@ -455,7 +449,7 @@ class ResourceAgent(BaseAgent):
 
     def _mode_resource_guide(self) -> str:
         """Return mode-specific resource type instructions for the LLM prompt."""
-        pm = getattr(self, "_path_mode", "") or ""
+        
         if pm == "daily":
             return (
                 "这是语言类/每日学习模式。不要生成讲义！生成以下类型的资源：\n"
@@ -683,10 +677,36 @@ class ResourceAgent(BaseAgent):
     # 规则兜底（完整保留原 ResourceAgent 全部逻辑）
     # ═══════════════════════════════════════════════════════════════
 
+    @staticmethod
+    def _section_adjustment_map(stage: dict) -> dict:
+        """Scan a stage's sections for _adjustment markers and return a summary.
+
+        Returns:
+            dict with keys: strengthened (list), accelerated (list),
+                            remedial (list), mixed (list), normal (list)
+        """
+        result = {"strengthened": [], "accelerated": [], "remedial": [], "mixed": [], "normal": []}
+        for ch in stage.get("chapters", []):
+            for sec in ch.get("sections", []):
+                adj = sec.get("_adjustment", "")
+                title = sec.get("title", "")
+                if adj in result:
+                    result[adj].append(title)
+                else:
+                    result["normal"].append(title)
+        return result
+
     def _build_rule_fallback_for_stage(
         self, course: dict, stage: dict, knowledge_points: list, profile: dict
     ) -> list[dict]:
-        """为单个阶段生成规则兜底资源。按阶段 tasks 数量生成，不固定 2 个。"""
+        """为单个阶段生成规则兜底资源。使用 _adjustment 标记个性化资源。
+
+        根据 section 级别的 _adjustment 调整资源类型：
+        - strengthened: 多生成 practice 辅助强化
+        - accelerated: 只生成 quiz（跳过 lecture/reading）
+        - remedial: 多生成 lecture + practice 打基础
+        - normal/mixed: lecture + reading（默认）
+        """
         resources = []
         stage_id = str(stage.get("stage_id", ""))
         stage_title = str(stage.get("title", ""))
@@ -698,9 +718,24 @@ class ResourceAgent(BaseAgent):
             "difficulty": stage.get("difficulty", "medium"),
         }
 
+        # Check adjustment markers
+        adj = self._section_adjustment_map(stage)
+        has_strengthened = len(adj["strengthened"]) > 0
+        has_accelerated = len(adj["accelerated"]) > 0
+        has_remedial = len(adj["remedial"]) > 0
+
         for i, task in enumerate(tasks, 1):
-            resources.append(self._lecture_for_task(course, binding, profile, task, f"{stage_id}_node_{i}"))
-            resources.append(self._reading_for_task(course, binding, task, stage_id, f"{stage_id}_node_{i}"))
+            task_id = f"{stage_id}_node_{i}"
+            if has_remedial:
+                resources.append(self._lecture_for_task(course, binding, profile, task, task_id))
+                resources.append(self._practice_for_task(course, binding, profile, task, task_id))
+            elif has_accelerated and not has_strengthened:
+                resources.append(self._quiz_for_task(course, binding, profile, task, task_id))
+            else:
+                resources.append(self._lecture_for_task(course, binding, profile, task, task_id))
+                resources.append(self._reading_for_task(course, binding, task, stage_id, task_id))
+                if has_strengthened:
+                    resources.append(self._practice_for_task(course, binding, profile, task, task_id))
         return resources
 
     def _build_rule_fallback(

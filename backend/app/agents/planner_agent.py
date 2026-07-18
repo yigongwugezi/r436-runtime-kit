@@ -64,21 +64,6 @@ class PlannerAgent(BaseAgent):
         total_days = self._infer_days(time_text, profile)
         diag_meta = self._build_diagnosis_meta(diagnosis, weak_points, total_days, profile, time_text)
 
-        # ── Determine planning mode (focus vs textbook) ──
-        plan_mode = context.get("plan_mode", "") or self._detect_plan_mode(
-            context, weak_points, diagnosis,
-        )
-
-        # ── Determine path structure mode ──
-        # textbook: stages→chapters→sections (math, physics, history)
-        # daily:    周→日→任务 (languages, exam prep)
-        # project:  阶段→实操→项目 (coding, design)
-        path_mode = context.get("path_mode", "textbook")
-
-        # ── Mode A: Focused sprint — target specific weak points ──
-        if plan_mode == "focus":
-            return self._run_focus_mode(context, profile, diagnosis, weak_points, total_days)
-
         # ── Load textbook chapters for LLM context (if available) ──
         textbook_chapters = context.get("textbook_chapters")
         if not textbook_chapters:
@@ -93,18 +78,21 @@ class PlannerAgent(BaseAgent):
         else:
             textbook_chapters = None
 
-        # ── Mode B: Generate path with LLM pipeline ──
+        # ── Primary: DeepTutor mastery_path ──
         chapters = None
         try:
-            chapters = self._generate_chapters(
-                context, profile, planning_points, total_days, diag_meta, path_mode,
-            )
+            chapters = self._try_deeptutor_as_structure(context, total_days)
         except Exception:
             pass
 
-        # ── Step 2: If no chapters, try DeepTutor for structure ──
+        # ── Fallback: LLM prompt with web search ──
         if not chapters:
-            chapters = self._try_deeptutor_as_structure(context, total_days)
+            try:
+                chapters = self._generate_chapters(
+                    context, profile, planning_points, total_days, diag_meta,
+                )
+            except Exception:
+                pass
 
         # ── Step 3: LLM pipeline as last resort ──
         if not chapters:
@@ -123,58 +111,10 @@ class PlannerAgent(BaseAgent):
         if textbook_chapters and chapters:
             chapters = self._resolve_textbook_pages(chapters, textbook_chapters)
 
+        chapters = self._validate_prerequisites(chapters, context)
+
         return self._make_chapter_result(chapters, total_days, diag_meta)
 
-
-    # ── Mode detection: textbook vs focus sprint ──
-
-    def _detect_plan_mode(self, context: dict, weak_points: list, diagnosis: dict) -> str:
-        """Auto-detect whether the user wants textbook learning or a focused sprint.
-
-        Focus mode when:
-        - User explicitly asks to strengthen specific weak areas
-        - Diagnosis has clear weak points with high priority
-        - Message contains focus keywords like 强化/补/不会/薄弱/专攻
-
-        Textbook mode when:
-        - User says 学X/入门X/系统学X (learning a whole subject)
-        - No specific weak points identified
-        - Message contains 入门/系统/从头/全面
-        """
-        msg = str(context.get("user_message", "") or "")
-        facts = context.get("profile_facts", {}) or {}
-        user_msg = str(facts.get("_raw_user_message", msg))
-
-        # ── Explicit focus signals ──
-        focus_keywords = [
-            "强化", "补一补", "补一下", "专攻", "重点学", "突击",
-            "不太会", "搞不懂", "不熟练", "总是错", "薄弱",
-            "帮我加强", "专门练", "针对", "就学",
-        ]
-        textbook_keywords = [
-            "入门", "从头", "系统学", "全面", "学完", "学一遍",
-            "开始学", "想学", "我要学", "学这门",
-        ]
-
-        has_focus_signal = any(kw in user_msg for kw in focus_keywords)
-        has_textbook_signal = any(kw in user_msg for kw in textbook_keywords)
-        has_strong_weak_points = any(
-            w.get("priority") == "high" for w in weak_points
-        ) if weak_points else False
-
-        # Clear focus intent → focus mode
-        if has_focus_signal and not has_textbook_signal:
-            return "focus"
-
-        # Clear textbook intent → textbook mode
-        if has_textbook_signal and not has_focus_signal:
-            return "textbook"
-
-        # Both or neither → use weak points as tiebreaker
-        if has_strong_weak_points and weak_points and len(weak_points) >= 2:
-            return "focus"
-
-        return "textbook"
 
     # ── Load textbook chapters from DB if available ──
 
@@ -439,112 +379,41 @@ class PlannerAgent(BaseAgent):
         self, context: dict, profile: dict, diagnosis: dict,
         weak_points: list, total_days: int,
     ) -> dict[str, Any]:
-        """Generate a focused sprint plan targeting specific weak points.
-
-        Skips chapter structure entirely — produces a flat list of
-        sprint stages ordered by priority.
-        """
-        weak_names = [w.get("name", w.get("topic", "")) for w in weak_points[:8]]
-        facts = context.get("profile_facts", {})
-        course = facts.get("target_course", "") or str(context.get("course_id", ""))
-
-        # ── Try DeepTutor for personalised sprint plan ──
-        try:
-            from app.services.deeptutor_client import deeptutor_call
-
-            prompt = (
-                f"学生正在学{course or '一门课'}，发现以下薄弱点需要重点突破：\n"
-                + "\n".join(f"- {n}" for n in weak_names if n)
-                + f"\n\n可用时间：{total_days} 天。"
-                + "请设计一个精进突破计划，不要按教材章节顺序，"
-                + "而是按薄弱点的优先级和依赖关系排列。"
-                + "每个阶段聚焦一个薄弱点，包含：该补什么前置知识、核心练习、检验标准。"
-                + "\n\n输出 JSON："
-                + '{"sprints":[{"title":"阶段标题","focus":"薄弱点名称",'
-                + '"reason":"为什么要先攻克这个","estimated_days":3,'
-                + '"tasks":["具体任务1","具体任务2"],'
-                + '"success_criteria":"怎样算掌握了"}]}'
-            )
-            raw = deeptutor_call("chat", prompt)
-            import json as _json
-            s, e = raw.find("{"), raw.rfind("}") + 1
-            if s >= 0 and e > s:
-                parsed = _json.loads(raw[s:e])
-                sprints = parsed.get("sprints", [])
-                if sprints:
-                    stages = []
-                    for i, sp in enumerate(sprints):
-                        days = int(sp.get("estimated_days", max(1, total_days // max(1, len(sprints)))))
-                        stages.append({
-                            "stage_id": f"sprint_{i}",
-                            "title": sp.get("title", f"突破{sp.get('focus','')}"),
-                            "order": i,
-                            "goal": sp.get("success_criteria", ""),
-                            "duration": f"第{i+1}阶段（{days}天）",
-                            "estimated_days": days,
-                            "tasks": sp.get("tasks", []),
-                            "focus": sp.get("focus", ""),
-                            "reason": sp.get("reason", ""),
-                            "plan_mode": "focus",
-                        })
-                    return {
-                        "learning_path": stages,
-                        "stages": stages,
-                        "estimatedDays": total_days,
-                        "plan_mode": "focus",
-                        "plan_summary": f"精进突破计划：{' → '.join(weak_names[:5])}",
-                        "agent_step": {"agent_id": self.agent_id, "agent_name": self.agent_name, "status": "completed"},
-                    }
-        except Exception as e:
-            logger.debug("Focus mode DeepTutor failed: %s", e)
-
-        # ── Fallback: simple priority-ordered sprint ──
-        stages = []
-        for i, w in enumerate(weak_points[:5]):
-            name = w.get("name", w.get("topic", f"薄弱点{i+1}"))
-            reason = w.get("reason", "")
-            days = max(1, total_days // max(1, len(weak_points[:5])))
-            stages.append({
-                "stage_id": f"sprint_{i}",
-                "title": f"突破：{name}",
-                "order": i,
-                "goal": f"掌握{name}，能做对相关题型",
-                "duration": f"第{i+1}阶段（{days}天）",
-                "estimated_days": days,
-                "tasks": [f"复习{name}的核心概念", f"做{name}的专项练习", "整理错题"],
-                "focus": name,
-                "reason": reason,
-                "plan_mode": "focus",
-            })
-        return {
-            "learning_path": stages,
-            "stages": stages,
-            "estimatedDays": total_days,
-            "plan_mode": "focus",
-            "plan_summary": f"精进突破计划：{' → '.join(weak_names[:5])}",
-            "agent_step": {"agent_id": self.agent_id, "agent_name": self.agent_name, "status": "completed"},
-        }
+        return None
 
     # ── Step 2: DeepTutor as structure source (when chapter generation fails) ──
 
     def _try_deeptutor_as_structure(self, context: dict, total_days: int) -> list | None:
-        """Use DeepTutor mastery_path to generate the initial stage structure."""
+        """Primary planner: DeepTutor mastery_path, flat stages->tasks."""
         try:
             from app.services.deeptutor_client import deeptutor_call
             course = str(context.get("course_id", "") or "")
             message = str(context.get("user_message", "") or "")
-            prompt = (
-                f"为学生规划学习路径。课程：{course}。需求：{message}。"
-                f"请按 stages→chapters→sections→knowledge_points 层级输出，"
-                f"每个 stage 包含多个 chapter，每个 chapter 包含多个 section。"
-            )
+            facts = context.get("profile_facts", {}) or {}
+            analysis = self._analyze_profile(facts)
+            p_parts = []
+            p_parts.append("学习起点：" + analysis["starting_level"] + "，每天可用约" + str(analysis["daily_minutes_est"]) + "分钟")
+            p_parts.append("学习深度：" + analysis["depth"])
+            p_parts.append("内容风格偏好：" + analysis["content_style"])
+            if analysis["focus_areas"]:
+                p_parts.append("重点关注领域：" + "，".join(analysis["focus_areas"]))
+            if analysis["domain_context"]:
+                p_parts.append("专业背景：" + analysis["domain_context"])
+            p_text = chr(10).join(p_parts) if p_parts else ""
+            parts = ["为学生规划学习路径。课程：" + course + "。需求：" + message + "。"]
+            if total_days:
+                parts.append("总学时：" + str(total_days) + "天。")
+            parts.append("请按 stages->tasks 层级输出，每个 stage 包含多个 task，每 stage 约3-8个任务。")
+            if p_text:
+                parts.append(chr(10) * 2 + "【学生画像】" + chr(10) + p_text)
+            prompt = chr(10).join(parts)
             dt_result = deeptutor_call("mastery_path", prompt)
             if dt_result and len(dt_result) > 50:
                 stages = self._parse_mastery_path(dt_result)
                 if stages:
-                    return self._rewrite_chapter_ids(context, stages)
+                    return self._rewrite_stage_ids(context, stages)
         except Exception as e:
-            logger.debug("DeepTutor structure failed: %s", e)
+            logger.debug("DeepTutor mastery_path failed: %s", e)
         return None
 
     # ── Step 3: LLM pipeline fallback ──
@@ -764,103 +633,79 @@ class PlannerAgent(BaseAgent):
         except Exception:
             pass
         return []
-
-    def _generate_chapters(self, context, profile, planning_points, total_days, diag_meta, path_mode="textbook"):
-        course = str(context.get('course_id', '') or '')
-        weak = [p.get('name','') for p in planning_points[:10]]
+    def _generate_chapters(self, context, profile, planning_points, total_days, diag_meta):
+        """Fallback planner: web search + LLM. Flat stages->tasks."""
+        course = str(context.get("course_id", "") or "")
+        weak = [p.get("name", "") for p in planning_points[:10]]
         from app.config import settings
         max_tokens = settings.path_max_tokens
-
-        if path_mode == "daily":
-            prompt = f"""你是课程设计师。为「{course}」设计一份{total_days}天的每日学习计划。
-薄弱知识点：{','.join(weak) if weak else '待诊断'}。
-
-这是语言类/积累型学科，不要按教材章节来。而是按「周→日→任务」组织，每天的学习内容可以并行叠加（如：词汇+听力+阅读可以同一天进行）。
-每天的任务需要标注 task_type：
-- vocabulary: 单词/词汇记忆
-- listening: 听力训练
-- reading: 阅读理解
-- grammar: 语法专项
-- speaking: 口语练习
-- writing: 写作训练
-- review: 复习/测验
-
-按 weeks→days→tasks 层级输出JSON：
-{{"weeks":[{{"week":1,"title":"第1周：xxx","days":[{{"day":1,"tasks":[{{"title":"任务名称","task_type":"vocabulary","estimated_minutes":30,"goal":"学习目标","content":[{{"type":"text","value":"任务描述"}}]}}]}}]}}]}}"""
-        else:
-            textbook_context = str(context.get("textbook_context", ""))
-            textbook_block = f"\n\n{textbook_context}\n" if textbook_context else ""
-            prompt = f"""你是课程设计师。为「{course}」设计一份内容全面、粒度合理的教科书级学习路径。
-总学时：{total_days}天。薄弱知识点：{','.join(weak) if weak else '待诊断'}。{textbook_block}
-小节划分原则：根据内容自然拆分，不要强行合并不相关的概念。比如"数组和广义表"一章可以拆成数组定义、数组实现、矩阵压缩存储、广义表定义、广义表存储、广义表递归算法等——具体情况具体分析。不能太概括，但也不必纠结数量。
-知识点type取：concept|procedure|memory。
-
-每个 section 需要标注 content_type 表示该小节的交互形式：
-- lecture: 讲义/概念讲解（数学推导、历史事件、物理原理等）
-- memory_drill: 记忆训练（单词、化学方程式、历史年代等需要背诵的内容）
-- step_through: 分步推导/渐进式教程（数学解题、代码实现、实验步骤等）
-
-按 stages→chapters→sections→knowledge_points 层级输出JSON：
-{{"stages":[{{"stage_id":"s0","title":"阶段标题","order":0,"chapters":[{{"chapter_id":"ch0","title":"章节标题","order":0,"sections":[{{"section_id":"sec0","title":"1.1 节标题","goal":"学习目标","content_type":"lecture","estimated_minutes":45,"textbook_section_ids":["sec_01_01"],"knowledge_points":[{{"name":"知识点","type":"concept"}},{{"name":"知识点","type":"procedure"}}]}}]}}]}}]}}
-textbook_section_ids 字段为必填——请从教材参考中选取对应小节的ID填入。若该节无对应教材小节，请填 []。"""
+        est = max(3, min(12, total_days // 7))
+        # Profile
+        facts = context.get("profile_facts", {}) or {}
+        analysis = self._analyze_profile(facts)
+        pl = []
+        pl.append("学习起点：" + analysis["starting_level"] + "，每天约" + str(analysis["daily_minutes_est"]) + "分钟")
+        pl.append("学习深度：" + analysis["depth"])
+        pl.append("内容风格偏好：" + analysis["content_style"])
+        if analysis["focus_areas"]:
+            pl.append("重点关注：" + "，".join(analysis["focus_areas"]))
+        pb = (chr(10)*2 + "【学生画像】" + chr(10) + chr(10).join(pl) + chr(10)) if pl else ""
+        wb = (chr(10) + "薄弱知识点（需重点关注）：" + ", ".join(weak) + chr(10)) if weak else ""
+        tb = str(context.get("textbook_context", ""))
+        tbb = (chr(10)*2 + tb + chr(10)) if tb else ""
+        # Web search
+        sb = ""
+        try:
+            from app.services.search_client import get_search_client
+            client = get_search_client("duckduckgo")
+            resp = client.search(course + " 课程大纲 核心知识点 学习路径", max_results=5)
+            if resp and resp.results:
+                items = []
+                for r in resp.results[:5]:
+                    t = (r.title or "").strip()
+                    s = (r.snippet or "").strip()
+                    if t or s: items.append("- " + (t + ": " + s if t and s else (t or s)))
+                if items:
+                    sb = chr(10)*2 + "【网络搜索结果】" + chr(10) + chr(10).join(items) + chr(10)
+        except Exception as exc:
+            logger.debug("Web search failed: %s", exc)
+        # Prompt
+        parts = [
+            "你是课程设计师和学习路径规划专家。请为「%s」设计一份完整、科学的个性化学习路径。" % course,
+            "",
+            "【设计要求】",
+            "- 总学时：%d天" % total_days,
+            "- 请设计约 %d 个阶段（stage）" % est,
+            "- 每个阶段包含 3~8 个任务（task）",
+            "- 总天数越多，阶段和任务数量应相应增加",
+            "- 每个 task 包含：标题(title)、类型(type)、预计分钟数(estimated_minutes)、学习目标(goal)、建议资源类型(resource_types)",
+            "- 任务类型请根据课程特点自行选择，不受限制",
+        ]
+        for b in [tbb, pb, wb, sb]:
+            if b: parts.append(b.strip())
+        parts.extend(["", "【输出格式】",
+            "严格按照以下 JSON 格式输出，不要包含 Markdown 包裹或额外说明：",
+            "{", '  "stages": [', "    {",
+            '      "title": "阶段标题",',
+            '      "theme": "阶段主题说明",',
+            '      "estimated_days": 7,', '      "tasks": [', "        {",
+            '          "title": "任务名称",', '          "type": "read_doc",',
+            '          "estimated_minutes": 45,', '          "goal": "学习目标描述",',
+            '          "required": true,', '          "resource_types": ["lecture"]',
+            "        }", "      ]", "    }", "  ]", "}"])
+        prompt = chr(10).join(parts)
         if self.llm_client:
             try:
                 raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.3, max_tokens=max_tokens)
-                s, e = raw.find("{"), raw.rfind("}") + 1
-                if s >= 0 and e > s:
-                    data = json.loads(raw[s:e])
-                    if path_mode == "daily":
-                        weeks = data.get("weeks", [])
-                        return self._convert_daily_to_stages(context, weeks)
-                    stages = data.get("stages") or data.get("chapters") or []
-                    return self._rewrite_chapter_ids(context, stages)
-            except: pass
+                bs, be = raw.find("{"), raw.rfind("}") + 1
+                if bs >= 0 and be > bs:
+                    data = json.loads(raw[bs:be])
+                    stages = data.get("stages", [])
+                    if not stages: return None
+                    return self._rewrite_stage_ids(context, stages)
+            except Exception:
+                pass
         return None
-
-    def _convert_daily_to_stages(self, context: dict, weeks: list) -> list:
-        """Convert daily-plan weeks→days→tasks into stages→chapters→sections."""
-        stages = []
-        for w in weeks:
-            days = w.get("days", [])
-            stage = {
-                "stage_id": f"week_{w.get('week', 1)}",
-                "title": w.get("title", f"第{w.get('week', 1)}周"),
-                "order": w.get("week", 1) - 1,
-                "chapters": [],
-                "path_mode": "daily",
-            }
-            for d in days:
-                tasks = d.get("tasks", [])
-                chapter = {
-                    "chapter_id": f"day_{w.get('week',1)}_{d.get('day',1)}",
-                    "title": f"Day {d.get('day', 1)}",
-                    "order": d.get("day", 1) - 1,
-                    "sections": [],
-                }
-                for t in tasks:
-                    task_type = t.get("task_type", "vocabulary")
-                    ct_map = {
-                        "vocabulary": "memory_drill", "grammar": "lecture",
-                        "listening": "lecture", "reading": "lecture",
-                        "speaking": "lecture", "writing": "lecture",
-                        "review": "lecture",
-                    }
-                    section = {
-                        "section_id": f"task_{w.get('week',1)}_{d.get('day',1)}_{task_type}",
-                        "title": t.get("title", ""),
-                        "goal": t.get("goal", ""),
-                        "estimated_minutes": t.get("estimated_minutes", 30),
-                        "content_type": ct_map.get(task_type, "lecture"),
-                        "task_type": task_type,
-                        "knowledge_points": [],
-                    }
-                    chapter["sections"].append(section)
-                if chapter["sections"]:
-                    stage["chapters"].append(chapter)
-            if stage["chapters"]:
-                stages.append(stage)
-        return self._rewrite_chapter_ids(context, stages)
-
     def _rewrite_chapter_ids(self, context, chapters: list) -> list:
         """Rewrite LLM-generated IDs with canonical, stable IDs."""
         session_id = str(context.get("session_id", "") or "")
@@ -877,9 +722,6 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
                 "title": stage.get("title", f"阶段 {stage_index + 1}"),
                 "order": stage_index,
                 "chapters": [],
-                # ── Preserve mode markers from upstream ──
-                "path_mode": stage.get("path_mode", ""),
-                "plan_mode": stage.get("plan_mode", ""),
                 "focus": stage.get("focus", ""),
                 "reason": stage.get("reason", ""),
                 "estimated_days": stage.get("estimated_days", stage.get("estimatedDays", 0)),
@@ -970,7 +812,8 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
     def _build_day_plan(stages: list[dict], diag_meta: dict) -> dict:
         """从 stages 生成按天组织的学习计划。"""
         try:
-            return build_day_plan(stages, daily_minutes=60)
+            weekend_off = bool(diag_meta.get("time_basis", {}).get("schedule_limited", False)) if diag_meta else False
+            return build_day_plan(stages, daily_minutes=60, weekend_off=weekend_off)
         except Exception:
             logger.exception("build_day_plan failed")
             return {}
@@ -1251,6 +1094,37 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
         result["consecutive_wrong"] = consecutive_wrong
         return result
 
+
+    # ── Prerequisite validation ──
+
+    def _validate_prerequisites(self, chapters: list, context: dict) -> list:
+        """Reorder sections so prerequisites come before dependents."""
+        adj = {}
+        course = context.get("course", {}) if isinstance(context.get("course"), dict) else {}
+        for ch in course.get("chapters", []):
+            if isinstance(ch, dict):
+                title = str(ch.get("title", ""))
+                prereqs = [str(p) for p in (ch.get("prerequisites", []) or []) if p]
+                if title and prereqs:
+                    adj[title] = prereqs
+        for stage in chapters:
+            for chapter in stage.get("chapters", []):
+                sections = chapter.get("sections", [])
+                titles = [s.get("title", "") for s in sections if s.get("title")]
+                if not adj or not titles:
+                    continue
+                for i in range(len(titles)):
+                    for j in range(i + 1, len(titles)):
+                        deps_of_i = adj.get(titles[i], [])
+                        if titles[j] in deps_of_i:
+                            sections[i], sections[j] = sections[j], sections[i]
+                            titles[i], titles[j] = titles[j], titles[i]
+                            break
+                    else:
+                        continue
+                    break
+        return chapters
+
     @staticmethod
     def _normalize_stage_days(stages: list[dict], total_days: int) -> list[dict]:
         """Ensure stage estimated_days sum to approximately total_days."""
@@ -1379,6 +1253,67 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
             if len(result) >= 5:
                 break
         return result if result else [f"回顾 {stage_title} 的基础知识"]
+
+    @staticmethod
+    def _analyze_profile(facts: dict) -> dict:
+        """Convert raw profile facts into structured planning parameters.
+
+        Instead of just appending profile text to prompts, this extracts
+        quantifiable planning dimensions:
+        - starting_level: beginner / intermediate / advanced
+        - daily_minutes_est: estimated available minutes per day
+        - depth: overview / standard / mastery
+        - focus_areas: list of topics to emphasize
+        - content_style: visual / text / hands-on
+        - domain_context: major/background keywords
+        """
+        result = {
+            "starting_level": "intermediate",
+            "daily_minutes_est": 60,
+            "depth": "standard",
+            "focus_areas": [],
+            "content_style": "text",
+            "domain_context": "",
+        }
+        kb = str(facts.get("knowledge_base", "") or "")
+        if any(w in kb for w in ["初学", "零基础", "入门", "没学过", "beginner", "basic"]):
+            result["starting_level"] = "beginner"
+        elif any(w in kb for w in ["进阶", "提升", "加深", "advanced", "deep"]):
+            result["starting_level"] = "advanced"
+        
+        tb = str(facts.get("time_budget", "") or "")
+        import re
+        nums = re.findall(r'(\d+)\s*小时', tb)
+        if nums:
+            result["daily_minutes_est"] = max(15, min(240, int(nums[0]) * 60))
+        nums = re.findall(r'(\d+)\s*分钟', tb)
+        if nums:
+            result["daily_minutes_est"] = max(15, min(240, int(nums[0])))
+        
+        goal = str(facts.get("learning_goal", "") or "")
+        if any(w in goal for w in ["考试", "考研", "复习", "应试"]):
+            result["depth"] = "exam"
+        elif any(w in goal for w in ["入门", "了解", "概览"]):
+            result["depth"] = "overview"
+        elif any(w in goal for w in ["精通", "掌握", "深入"]):
+            result["depth"] = "mastery"
+        
+        pref = str(facts.get("preference", "") or "")
+        if any(w in pref for w in ["视频", "图解", "图片", "动画"]):
+            result["content_style"] = "visual"
+        elif any(w in pref for w in ["动手", "代码", "实操", "项目"]):
+            result["content_style"] = "hands-on"
+        
+        wp = str(facts.get("weak_points", "") or "")
+        if wp:
+            result["focus_areas"] = [w.strip() for w in re.split(r"[,，、\s]+", wp) if w.strip()][:5]
+        
+        bg = str(facts.get("background", "") or "")
+        if bg:
+            result["domain_context"] = bg
+        
+        return result
+
 
     # ── 知识点收益权重计算（M5）──
 
@@ -1695,26 +1630,25 @@ textbook_section_ids 字段为必填——请从教材参考中选取对应小�
             if value:
                 return str(value)
         return ""
-
     def _fallback_course_points(self, text: str) -> list[dict]:
-        lowered = text.lower()
-        if any(word in text for word in ["微积分", "高等数学"]) or "calculus" in lowered:
-            names = ["函数、极限与连续", "导数与微分", "导数应用", "积分基础", "综合题型与期末复盘"]
-        elif "数据结构" in text or "data structure" in lowered:
-            names = ["复杂度、数组与链表", "栈、队列与递归", "树、二叉树与遍历", "图、查找与排序", "综合练习与错题复盘"]
-        else:
-            return []
-        return [
-            {
-                "point_id": f"course_outline_{i}",
-                "name": name,
-                "title": name,
-                "priority": "high" if i <= 2 else "medium",
-                "difficulty": "medium",
-                "prerequisites": [],
-            }
-            for i, name in enumerate(names, 1)
-        ]
+        """Fallback using web search then generic phases."""
+        try:
+            from app.services.search_client import get_search_client
+            client = get_search_client("duckduckgo")
+            resp = client.search(text + " 课程大纲 核心知识点", max_results=3)
+            if resp and resp.results:
+                titles = [r.title.strip() for r in resp.results if r.title and len(r.title) > 4]
+                if len(titles) >= 3:
+                        return [{"point_id": f"course_outline_{i}", "name": name, "title": name,
+                             "priority": "high" if i <= 2 else "medium", "difficulty": "medium", "prerequisites": []}
+                            for i, name in enumerate(titles[:5], 1)]
+        except Exception:
+            pass
+        names = ["基础概念与入门", "核心知识一", "核心知识二",
+             "综合应用与实践", "复习与提升"]
+        return [{"point_id": f"course_outline_{i}", "name": name, "title": name,
+             "priority": "high" if i <= 2 else "medium", "difficulty": "medium", "prerequisites": []}
+            for i, name in enumerate(names, 1)]
 
     def _prioritize_points(self, course_points: list[dict], weak_points: list[dict],
                            mastery_levels: list[dict] | None = None) -> list[dict]:

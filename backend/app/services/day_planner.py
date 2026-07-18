@@ -32,10 +32,23 @@ def make_day_item_id(day: int, index: int) -> str:
 
 
 def flatten_sections(stages: list[dict]) -> list[dict]:
-    """将 stages→chapters→sections 拍平为便于处理的 section 列表。"""
+    """将 stages→tasks 或 stages→chapters→sections 拍平为学习条目列表。"""
     sections = []
     for stage in stages:
         stage_title = str(stage.get("title", ""))
+        # New format: tasks
+        for t in stage.get("tasks", []):
+            sections.append({
+                "section_id": t.get("task_id", ""),
+                "title": t.get("title", ""),
+                "estimated_minutes": t.get("estimated_minutes", 30),
+                "content_type": t.get("type", "lecture"),
+                "knowledge_points": t.get("knowledge_points", []),
+                "stage_title": stage_title,
+                "adjustment": t.get("_adjustment", ""),
+                "adjustment_reason": t.get("_adjustment_reason", ""),
+            })
+        # Legacy format: sections
         for ch in stage.get("chapters", []):
             for sec in ch.get("sections", []):
                 sections.append({
@@ -145,6 +158,7 @@ def build_day_plan(
     stages: list[dict],
     mastery_map: dict[str, dict] | None = None,
     daily_minutes: int = DEFAULT_DAILY_MINUTES,
+    weekend_off: bool = False,
 ) -> dict:
     """从 stages 生成按天组织的学习计划。
 
@@ -152,6 +166,7 @@ def build_day_plan(
         stages: planner 产出的 stages→chapters→sections 结构
         mastery_map: {kp_name: {score, level}}，来自诊断
         daily_minutes: 每天可用学习分钟数
+        weekend_off: True 则跳过周末（周六、周日不排学习任务）
 
     Returns:
         day_plan dict: {days: [{day, total_minutes, items}], version, generated_at}
@@ -167,32 +182,40 @@ def build_day_plan(
     for sec in sections:
         all_items.extend(classify_section(sec, mastery_map))
 
-    # 分配到天
+    # 分配到天（跳过周末）
     days: list[dict] = []
     current_day_items: list[dict] = []
     current_minutes = 0
-    day_count = 1
+    day_count = 1       # 学习日序号
+    calendar_day = 1    # 日历日序号（含周末）
+    is_weekend = lambda d: weekend_off and (d % 7 == 6 or d % 7 == 0)
 
     for item in all_items:
         mins = item["minutes"]
         if current_minutes + mins > daily_minutes and current_day_items:
+            # 跳过周末
+            while is_weekend(calendar_day):
+                calendar_day += 1
             days.append({
-                "day": day_count,
+                "day": calendar_day,
                 "total_minutes": current_minutes,
-                "items": [dict(item, id=make_day_item_id(day_count, idx))
+                "items": [dict(item, id=make_day_item_id(calendar_day, idx))
                          for idx, item in enumerate(current_day_items)],
             })
             day_count += 1
+            calendar_day += 1
             current_day_items = []
             current_minutes = 0
 
         # 定期插入诊断日
         if day_count % DIAGNOSIS_INTERVAL_DAYS == 0 and not current_day_items:
+            while is_weekend(calendar_day):
+                calendar_day += 1
             days.append({
-                "day": day_count,
+                "day": calendar_day,
                 "total_minutes": 20,
                 "items": [{
-                    "id": make_day_item_id(day_count, 0),
+                    "id": make_day_item_id(calendar_day, 0),
                     "type": "diagnosis",
                     "title": f"第{day_count}天诊断：阶段掌握度测验",
                     "minutes": 20,
@@ -204,12 +227,15 @@ def build_day_plan(
                 }],
             })
             day_count += 1
+            calendar_day += 1
 
         current_day_items.append(item)
         current_minutes += mins
 
     # 最后几天
     if current_day_items:
+        while is_weekend(calendar_day):
+            calendar_day += 1
         days.append({
             "day": day_count,
             "total_minutes": current_minutes,
@@ -221,6 +247,7 @@ def build_day_plan(
         "days": days,
         "version": int(time.time() * 1000),
         "generated_at": time.time(),
+        "weekend_off": weekend_off,
     }
 
 

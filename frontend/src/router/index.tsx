@@ -76,6 +76,7 @@ const router = createBrowserRouter([
       { path: 'resources/:id', element: <RequireStudent><ResourceLibrary /></RequireStudent> },
       { path: 'kg', element: <RequireStudent><KnowledgeGraphPage /></RequireStudent> },
       { path: 'path', element: <RequireStudent><LearningPathPage /></RequireStudent> },
+      { path: 'learning-path', element: <RequireStudent><LearningPathPage /></RequireStudent> },
       { path: 'profile', element: <RequireStudent><ProfilePage /></RequireStudent> },
       { path: 'analytics', element: <RequireStudent><LearningAnalyticsPage /></RequireStudent> },
       { path: 'timeline', element: <RequireStudent><LearningTimelinePage /></RequireStudent> },
