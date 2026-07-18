@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useLearningPath } from '../hooks/useLearningPath';
 import { useChatStore } from '../store/chatStore';
+import { useSubjectStore } from '../store/subjectStore';
 import {
   ArrowLeft, BookOpen, CheckCircle, Clock3, FlaskConical, Loader2,
   Target, Sparkles, FileText, Brain, Puzzle, Video, ChevronRight,
@@ -28,6 +29,7 @@ const TYPE_META: Record<string, { label: string; icon: React.ReactNode; gradient
   mock:       { label: '模拟', icon: <GraduationCap size={18} />, gradient: 'from-cyan-500 to-blue-500' },
   review:     { label: '复盘', icon: <Sparkles size={18} />,     gradient: 'from-amber-500 to-yellow-500' },
 };
+const UNSUPPORTED_META = { label: '暂不支持', icon: <FileText size={18} />, gradient: 'from-slate-500 to-slate-600' };
 
 function findTask(stages: any[], taskId: string): { task: Task; stage: any } | null {
   for (const stage of stages) {
@@ -56,6 +58,7 @@ export default function TaskPage() {
   const nav = useNavigate();
   const { path, updateNodeStatus } = useLearningPath();
   const sessionId = useChatStore((s) => s.dataSessionId);
+  const subjectId = useSubjectStore((s) => s.activeSubject?.id ?? s.activeClassSubject?.subject);
   const [resources, setResources] = useState<Resource[]>([]);
   const [loading, setLoading] = useState(true);
   const [polling, setPolling] = useState(false);
@@ -69,18 +72,25 @@ export default function TaskPage() {
     (s.tasks || []).some((t: any) => t.status !== 'completed' && t.status !== 'mastered')
   ));
   const isDone = task?.status === 'completed' || task?.status === 'mastered';
-  const meta = TYPE_META[task?.type] || TYPE_META.read_doc;
+  const meta = task?.type ? (TYPE_META[task.type] ?? UNSUPPORTED_META) : UNSUPPORTED_META;
 
   const fetchResources = useCallback(async (): Promise<boolean> => {
-    if (!taskId || !sessionId) return false;
+    if (!taskId || !sessionId || !subjectId || !path?.id || !stage?.id) return false;
     try {
-      const r = await fetch(`/api/sections/${encodeURIComponent(taskId)}/generated-resources?sessionId=${encodeURIComponent(sessionId)}`).then(r => r.json());
+      const params = new URLSearchParams({
+        sessionId,
+        subjectId,
+        pathId: path.id,
+        stageId: stage.id,
+        taskId,
+      });
+      const r = await fetch(`/api/sections/${encodeURIComponent(taskId)}/generated-resources?${params}`).then(r => r.json());
       const list = r.resources || [];
       setResources(list);
       if (list.length > 0) return true;
     } catch {}
     return false;
-  }, [taskId, sessionId]);
+  }, [taskId, sessionId, subjectId, path?.id, stage?.id]);
 
   useEffect(() => {
     if (!taskId || !sessionId) return;

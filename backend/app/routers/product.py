@@ -5043,12 +5043,28 @@ def _revision_ensure_session(session_id: str) -> None:
         raise HTTPException(status_code=400, detail="sessionId required")
 
 
+def _revision_scope(
+    session_id: str, subject_id: str, path_id: str, revision_id: str, auth: AuthContext,
+) -> tuple[AnalyticsScope, dict | None]:
+    if not subject_id or not path_id:
+        raise HTTPException(status_code=400, detail="subjectId and pathId required")
+    scope = resolve_analytics_scope(
+        auth, session_id=session_id, subject_id=subject_id, path_id=path_id,
+    )
+    revision = conversation_store.get_pending_revision(scope.session_id)
+    if revision:
+        if revision.get("path_id") != scope.path_id or revision.get("subject_id") != scope.subject_id:
+            raise HTTPException(status_code=403, detail="access denied")
+        if revision_id and revision.get("revision_id") != revision_id:
+            raise HTTPException(status_code=404, detail="revision not found")
+    return scope, revision
+
+
 @router.get("/learning-path/{session_id}/pending-revision")
-def get_pending_revision(session_id: str) -> dict[str, Any]:
+def get_pending_revision(session_id: str, subjectId: str = "", pathId: str = "", auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
     """获取待用户确认的路径调整候选。"""
     _revision_ensure_session(session_id)
-    from app.services.conversation_state import conversation_store
-    rev = conversation_store.get_pending_revision(session_id)
+    _scope, rev = _revision_scope(session_id, subjectId, pathId, "", auth)
     if not rev:
         return _product_response({"pending_revision": None}, session_id=session_id)
     # 不返回完整的 proposed_stages 给前端（太大），前端需要时请求全量path
@@ -5058,10 +5074,14 @@ def get_pending_revision(session_id: str) -> dict[str, Any]:
 
 
 @router.post("/learning-path/{session_id}/pending-revision/accept")
-def accept_pending_revision(session_id: str) -> dict[str, Any]:
+def accept_pending_revision(session_id: str, subjectId: str = "", pathId: str = "", revisionId: str = "", auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     """用户确认路径调整。"""
     _revision_ensure_session(session_id)
-    from app.services.conversation_state import conversation_store
+    if not revisionId:
+        raise HTTPException(status_code=400, detail="revisionId required")
+    _scope, revision = _revision_scope(session_id, subjectId, pathId, revisionId, auth)
+    if revision is None:
+        raise HTTPException(status_code=404, detail="No pending revision found")
     result = conversation_store.apply_pending_revision(session_id)
     if not result:
         raise HTTPException(status_code=404, detail="No pending revision found")
@@ -5134,19 +5154,23 @@ def accept_pending_revision(session_id: str) -> dict[str, Any]:
 
 
 @router.post("/learning-path/{session_id}/pending-revision/reject")
-def reject_pending_revision(session_id: str) -> dict[str, Any]:
+def reject_pending_revision(session_id: str, subjectId: str = "", pathId: str = "", revisionId: str = "", auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     """用户拒绝路径调整。"""
     _revision_ensure_session(session_id)
-    from app.services.conversation_state import conversation_store
+    if not revisionId:
+        raise HTTPException(status_code=400, detail="revisionId required")
+    _scope, revision = _revision_scope(session_id, subjectId, pathId, revisionId, auth)
+    if revision is None:
+        raise HTTPException(status_code=404, detail="No pending revision found")
     conversation_store.reject_pending_revision(session_id)
     return _product_response({"ok": True}, session_id=session_id)
 
 
 @router.get("/learning-path/{session_id}/revisions")
-def list_revisions(session_id: str) -> dict[str, Any]:
+def list_revisions(session_id: str, subjectId: str = "", pathId: str = "", auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
     """获取路径历史版本列表。"""
     _revision_ensure_session(session_id)
-    from app.services.conversation_state import conversation_store
+    _revision_scope(session_id, subjectId, pathId, "", auth)
     state = conversation_store.get(session_id)
     return _product_response({
         "revisions": list(state.path_revisions or []),
@@ -8497,19 +8521,36 @@ def feedback_on_generated_section_resource(section_id: str, resource_type: str, 
 
 
 @router.get("/sections/{section_id}/generated-resources")
-def get_generated_section_resources(section_id: str, sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
+def get_generated_section_resources(
+    section_id: str,
+    sessionId: str = "",
+    subjectId: str = "",
+    pathId: str = "",
+    stageId: str = "",
+    taskId: str = "",
+    auth: AuthContext = Depends(require_auth),
+) -> dict[str, Any]:
     """Read only resources generated for the current section."""
-    session_id = _require_session_id(sessionId)
-    context = _section_path_context(session_id, section_id)
-    _require_stage_access(session_id, stageId or str(context.get("stage_id") or "")) if (stageId or context.get("stage_id")) else None
+    if not stageId:
+        raise HTTPException(status_code=400, detail="stageId required")
+    if not pathId:
+        raise HTTPException(status_code=400, detail="pathId required")
+    if not taskId:
+        raise HTTPException(status_code=400, detail="taskId required")
+    scope = resolve_resource_scope(
+        auth,
+        session_id=sessionId,
+        subject_id=subjectId,
+        path_id=pathId,
+        stage_id=stageId,
+        task_id=taskId,
+        section_id=section_id,
+    )
+    session_id, subject_id = scope.session_id, scope.subject_id
     from app.services.section_generated_resources import SectionGeneratedResourcesService
     from app.services.structured_multimodal_resources import STRUCTURED_RESOURCE_DEFINITIONS, normalized_resource_title
     try:
         db = SessionLocal()
-        session = db.get(SessionModel, session_id)
-        subject_id = str(subjectId or (session.subject_id if session else "") or "")
-        if subject_id:
-            _require_matching_subject(session_id, subject_id)
         rows = db.query(ResourceModel).filter(
             ResourceModel.session_id == session_id,
             ResourceModel.related_section_id == section_id,
