@@ -229,6 +229,22 @@ class DiagnosisSnapshotModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
+class LearningAssessmentSnapshotModel(Base):
+    """Cached AI learning assessment; diagnosis remains the mastery source."""
+    __tablename__ = "learning_assessment_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    learner_id: Mapped[str] = mapped_column(String(64), index=True)
+    subject_id: Mapped[str] = mapped_column(String(64), index=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    path_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    metrics_version: Mapped[str] = mapped_column(String(64), index=True)
+    content: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    status: Mapped[str] = mapped_column(String(24), default="ready")
+    error_code: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
+    generated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
 # ── Diagnosis Evidence (spec §4.2) ──────────────────────────────────────
 
 

@@ -7,6 +7,7 @@ import { useLearningAnalytics } from '../hooks/useLearningAnalytics';
 import { useNotificationPoller } from '../hooks/useNotificationPoller';
 import { useChatStore } from '../store/chatStore';
 import type { RecommendationItem } from '../types/analytics';
+import type { AssessmentResult } from '../api/learningAssessment';
 import { useSubjectStore } from '../store/subjectStore';
 import { learningTaskRoute } from '../utils/learningTaskRoute';
 
@@ -26,7 +27,7 @@ export default function LearningAnalyticsPage() {
   const subjectId = useSubjectStore(s => s.activeSubject?.id ?? s.activeClassSubject?.subject);
   const sessionId = useChatStore(s => s.dataSessionId);
   const { analytics, loading, error, refetch } = useLearningAnalytics();
-  const [aiAssessment, setAiAssessment] = useState<any>(null);
+  const [aiAssessment, setAiAssessment] = useState<AssessmentResult | null>(null);
   // Poll for closed-loop assessment notifications
   useNotificationPoller(sessionId || '');
   if (!subjectId) return <PageEmpty icon={<TrendingUp className="w-8 h-8" />} title="请先选择科目" description="在左侧边栏选择一个科目后查看学习分析" />;
@@ -459,10 +460,10 @@ export default function LearningAnalyticsPage() {
           <button onClick={async () => {
             try {
               const { generateAssessment } = await import('../api/learningAssessment');
-              const result = await generateAssessment(sessionId || '');
+              const result = await generateAssessment({ sessionId: sessionId || '', subjectId });
               if (result?.data) setAiAssessment(result.data);
-            } catch (e: any) {
-              setAiAssessment({ status: 'error', summary: e?.message || '评估生成失败，请稍后重试' });
+            } catch {
+              setAiAssessment({ status: 'failed', errorCode: 'generation_failed', summary: '评估生成失败，请重试。' });
             }
           }} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-brand-500 bg-brand-50 hover:bg-brand-100 transition-colors">
             <Zap size={14} />生成评估
@@ -470,7 +471,8 @@ export default function LearningAnalyticsPage() {
         </div>
         {(() => {
           if (!aiAssessment) return <p className="text-sm text-surface-400 text-center py-6">点击「生成评估」获取 AI 多维度分析报告</p>;
-          if (aiAssessment.status === 'insufficient_data') return <p className="text-sm text-surface-400 text-center py-6">{aiAssessment.summary}</p>;
+          if (aiAssessment.status === 'insufficient_data') return <p className="text-sm text-surface-400 text-center py-6">数据不足，完成已评分练习后再生成。</p>;
+          if (aiAssessment.status === 'failed') return <p className="text-sm text-error-500 text-center py-6">{aiAssessment.summary || '评估生成失败，请重试。'}</p>;
           const scores = aiAssessment.scores || {};
           const dimLabels: Record<string, string> = {
             knowledge_mastery: '知识掌握', learning_progress: '学习进度', learning_efficiency: '学习效率',

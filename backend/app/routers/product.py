@@ -5716,6 +5716,7 @@ def generate_learning_assessment(
     try:
         from app.services.llm_assessment import run_llm_assessment
         from app.db.repository import get_event_analytics, get_latest_profile
+        from app.db.models import LearningAssessmentSnapshotModel
         from app.services.diagnosis_snapshot_service import try_get_diagnosis
 
         db = SessionLocal()
@@ -5727,6 +5728,19 @@ def generate_learning_assessment(
             profile_snapshot = get_latest_profile(db, session_id)
             profile = {"dimensions": profile_snapshot.dimensions} if profile_snapshot else None
             diagnosis = try_get_diagnosis(db, scope.learner_id, scope.subject_id, session_id)
+            if not analytics.get("assessmentCount"):
+                return _product_response({"status": "insufficient_data", "errorCode": "insufficient_data"}, session_id=session_id, source="assessment_snapshot")
+            metrics_version = hashlib.sha256(json.dumps(analytics, sort_keys=True, default=str).encode()).hexdigest()[:32]
+            cached = db.query(LearningAssessmentSnapshotModel).filter(
+                LearningAssessmentSnapshotModel.learner_id == scope.learner_id,
+                LearningAssessmentSnapshotModel.subject_id == scope.subject_id,
+                LearningAssessmentSnapshotModel.session_id == session_id,
+                LearningAssessmentSnapshotModel.path_id == (scope.path_id or None),
+                LearningAssessmentSnapshotModel.metrics_version == metrics_version,
+                LearningAssessmentSnapshotModel.status == "ready",
+            ).order_by(LearningAssessmentSnapshotModel.generated_at.desc()).first()
+            if cached:
+                return _product_response({**(cached.content or {}), "cached": True, "generatedAt": cached.generated_at.isoformat()}, session_id=session_id, source="assessment_snapshot")
         finally:
             db.close()
 
@@ -5737,11 +5751,24 @@ def generate_learning_assessment(
             analytics=analytics,
             diagnosis=diagnosis,
         )
-        return _product_response(result, session_id=session_id, source="llm_assessment")
+        if not isinstance(result, dict) or not (result.get("summary") or result.get("scores")):
+            raise ValueError("invalid_output")
+        db = SessionLocal()
+        try:
+            db.add(LearningAssessmentSnapshotModel(
+                learner_id=scope.learner_id, subject_id=scope.subject_id, session_id=session_id,
+                path_id=scope.path_id or None, metrics_version=metrics_version, content=result, status="ready",
+            ))
+            db.commit()
+        finally:
+            db.close()
+        return _product_response({**result, "cached": False}, session_id=session_id, source="assessment_snapshot")
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Learning assessment failed")
         return _product_response(
-            {"status": "failed", "error": str(exc)[:200]},
+            {"status": "failed", "errorCode": "invalid_output" if str(exc) == "invalid_output" else "generation_failed"},
             status="error", message="评估生成失败",
             session_id=session_id, source="llm_assessment",
         )
