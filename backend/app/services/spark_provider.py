@@ -8,7 +8,9 @@ import hmac
 import json
 import logging
 import time
+import uuid as _uuid
 from datetime import datetime, timezone
+from pathlib import Path as _Path
 from typing import Any
 from urllib import request, parse, error as urllib_error
 
@@ -71,8 +73,8 @@ def _request(url: str, body: dict) -> dict | None:
 
 def generate_image(
     prompt: str,
-    width: int = 1280,
-    height: int = 1280,
+    width: int = 1024,
+    height: int = 1024,
 ) -> dict[str, Any]:
     """星火绘画：文本生成图片，返回 base64 图片数据。"""
     if not SPARK_APP_ID or not SPARK_API_KEY:
@@ -84,7 +86,7 @@ def generate_image(
             "header": {"app_id": SPARK_APP_ID},
             "parameter": {
                 "chat": {
-                    "domain": "general",
+                    "domain": "generalv3.5",
                     "width": width,
                     "height": height,
                 }
@@ -139,4 +141,16 @@ class SparkImageProvider:
             or f"为「{context.get('subject_name', '学习内容')}」生成一张教学配图"
         )[:500]
         result = generate_image(prompt)
+        if result.get("status") == "success" and result.get("image_base64"):
+            img_dir = _Path(__file__).resolve().parents[3] / "outputs" / "ppt" / "images"
+            img_dir.mkdir(parents=True, exist_ok=True)
+            fname = f"spark_{_uuid.uuid4().hex}.png"
+            fpath = img_dir / fname
+            fpath.write_bytes(base64.b64decode(result["image_base64"]))
+            rel = f"outputs/ppt/images/{fname}"
+            return {
+                "status": "success",
+                "provider": "spark_image",
+                "result": {"image_urls": [f"/api/multimodal/file/{rel}"]},
+            }
         return result

@@ -1,9 +1,9 @@
 // @ts-nocheck
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useLearningPath } from '../hooks/useLearningPath';
 import { useChatStore } from '../store/chatStore';
-import { enableProfileExtraction, listPlanningDrafts } from '../api/learningPath';
+import { enableProfileExtraction, listPlanningDrafts, getWorkflowTask } from '../api/learningPath';
 import { useProfile } from '../hooks/useProfile';
 import PlanningWizard from '../components/learning/PlanningWizard';
 import RevisionProposalCard from '../components/learning/RevisionProposalCard';
@@ -54,11 +54,28 @@ function renderChapters(chapters: any[], nav: any) {
 
 export default function LearningPathPage() {
   const nav = useNavigate();
-  const { path, loading, error, fetchPath, generatePath } = useLearningPath();
+  const location = useLocation();
+  const { path, loading, error, fetchPath, generatePath, applyPathFromWorkflow } = useLearningPath();
   const { profileV2 } = useProfile();
   const subject = profileV2?.subject_context || {};
   const [existingDraft, setExistingDraft] = useState<any>(null);
   const [draftLoading, setDraftLoading] = useState(true);
+  const [pathGenerating, setPathGenerating] = useState(false);
+  const [generatingStatus, setGeneratingStatus] = useState<string>('');
+
+  // ── 从 ProfilePanel 跳转过来时携带的生成任务 ID（通过 sessionStorage 传递）──
+  const [generatingTaskId] = useState<string>(() => {
+    const tid = sessionStorage.getItem('_pending_gen_task_id') || '';
+    console.log('[LearningPathPage] sessionStorage generatingTaskId:', tid || '(空)');
+    // 不要立即清除！React StrictMode 会导致 double-mount，第二次 mount 时 key 已被清除
+    // 延迟到任务完成后在 poll 中清除
+    return tid;
+  });
+  const [generatingSessionId] = useState<string>(() => {
+    const sid = sessionStorage.getItem('_pending_gen_session_id') || '';
+    if (sid) sessionStorage.removeItem('_pending_gen_session_id');
+    return sid;
+  });
   const [activeStageId, setActiveStageId] = useState<string | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const sessionId = useChatStore((s) => s.currentSessionId);
@@ -71,7 +88,7 @@ export default function LearningPathPage() {
   const progress = path?.overallProgress ?? (totalNodes > 0 ? Math.round((masteredNodes / totalNodes) * 100) : 0);
   const estimatedDays = path?.estimatedDays ?? 14;
   const hasProfile = stages.length > 0 && stages.some(s =>
-    (s.tasks || []).length > 0 || (s.nodes || []).length > 0 || (s.chapters || []).length > 0
+    (s.tasks || []).length > 0 || (s.nodes || []).length > 0 || (s.chapters || []).length > 0 || (s.sections || []).length > 0
   );
 
   const allTasks = stages.flatMap(s => (s.tasks || []).map(t => ({ ...t, stageTitle: s.title, stageId: s.id })));
@@ -113,6 +130,51 @@ export default function LearningPathPage() {
     }
   }, [stages.length]);
 
+  // ── 路径有真实内容时停止生成转圈 ──
+  useEffect(() => { if (path && path.stages?.length && hasProfile) { setPathGenerating(false); setGeneratingStatus(''); } }, [path, hasProfile]);
+
+  // ── 处理从 ProfilePanel 跳转过来的生成任务 ──
+  useEffect(() => {
+    if (!generatingTaskId) return;
+    console.log('[LearningPathPage] 开始轮询:', generatingTaskId);
+    setPathGenerating(true);
+    setGeneratingStatus('正在创建学习路径…');
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const task: any = await getWorkflowTask(generatingTaskId);
+        if (cancelled) return;
+        if (task && task.task_id) {
+          setGeneratingStatus(task.current_stage || task.status || '生成中…');
+          if (task.status === 'completed') {
+            console.log('[LearningPathPage] 任务完成，清除sessionStorage');
+            sessionStorage.removeItem('_pending_gen_task_id');
+            sessionStorage.removeItem('_pending_gen_session_id');
+            const rawPath = task.result?.data?.path;
+            if (rawPath && rawPath.stages?.length) {
+              applyPathFromWorkflow(rawPath);
+            } else {
+              fetchPath(true, generatingSessionId || undefined);
+            }
+            return;
+          }
+          if (task.status === 'failed' || task.status === 'cancelled' || task.status === 'expired') {
+            sessionStorage.removeItem('_pending_gen_task_id');
+            sessionStorage.removeItem('_pending_gen_session_id');
+            setPathGenerating(false);
+            setGeneratingStatus('');
+            return;
+          }
+          setTimeout(() => { if (!cancelled) poll(); }, 2000);
+        }
+      } catch {
+        if (!cancelled) setTimeout(() => poll(), 3000);
+      }
+    };
+    poll();
+    return () => { cancelled = true; };
+  }, [generatingTaskId]);
+
   const selectStage = (id: string) => {
     setActiveStageId(id);
     requestAnimationFrame(() => stageRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
@@ -127,7 +189,12 @@ export default function LearningPathPage() {
       return <PlanningWizard sessionId={useChatStore.getState().dataSessionId || sessionId || ''}
         subjectId={subject.subject_id || ''} subjectName={subject.subject_name || ''}
         profileV2={profileV2} onPathGenerated={(id: string) => { setExistingDraft(null); fetchPath(); }} />;
-    if (draftLoading) return <div className="flex-1 flex items-center justify-center"><Loader2 size={24} className="animate-spin text-primary-500" /></div>;
+    if (draftLoading || pathGenerating) return (
+      <div className="flex-1 flex flex-col items-center justify-center gap-4">
+        <Loader2 size={32} className="animate-spin text-primary-500" />
+        <p className="text-sm text-surface-500">{generatingStatus || '正在准备…'}</p>
+      </div>
+    );
     return (
       <div className="flex-1 flex items-center justify-center bg-surface-50">
         <div className="relative text-center max-w-sm px-6">

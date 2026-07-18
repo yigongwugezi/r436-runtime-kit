@@ -291,14 +291,9 @@ export function normalizeLearningPathForClient(raw: any): any {
       sections: array(stage?.sections).map(normalizeSection),
       nodes: array(stage?.nodes).map(normalizeNode),
 
-      // ── 展平 days.tasks 到 tasks（后端 _task_stages_to_frontend 丢弃了 days 字段）──
+      // 后端 _task_stages_to_frontend 已展平 days.tasks → 前端不再重复展平
       days: array(stage?.days),
-      tasks: [
-        // 直接挂 stage 上的 tasks
-        ...array(stage?.tasks || []),
-        // days 里嵌套的 tasks
-        ...array(stage?.days || []).flatMap((d: any) => array(d?.tasks || [])),
-      ].map((task: any) => ({
+      tasks: array(stage?.tasks || []).map((task: any) => ({
         ...task,
         task_id: task.task_id || task.taskId || task.id || "",
         title: task.title || "",
