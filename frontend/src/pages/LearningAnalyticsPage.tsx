@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { TrendingUp, TrendingDown, Zap, Target, BookOpen, Clock, Brain, AlertCircle, Star, RefreshCw, BarChart3, Activity, CheckCircle2 } from 'lucide-react';
@@ -58,10 +57,10 @@ export default function LearningAnalyticsPage() {
       </div>
 
       <div className="grid grid-cols-4 gap-5">
-        {[{ icon: <Clock className="w-5 h-5 text-primary-600" />, label: '学习时长', value: formatDuration(analytics.totalStudyMinutes), color: 'primary' },
-          { icon: <BookOpen className="w-5 h-5 text-accent-600" />, label: '查看资源', value: rv, color: 'accent' },
-          { icon: <CheckCircle2 className="w-5 h-5 text-success-600" />, label: '完成资源', value: rc, color: 'success' },
-          { icon: <Target className="w-5 h-5 text-warning-600" />, label: '正确率', value: analytics.quizAccuracy != null ? `${analytics.quizAccuracy}%` : '--', color: 'warning' },
+        {[{ icon: <Clock className="w-5 h-5 text-primary-600" />, label: '已追踪时长', value: formatDuration(analytics.trackedStudyDuration ?? 0), color: 'primary' },
+          { icon: <BookOpen className="w-5 h-5 text-accent-600" />, label: '已评分测验', value: analytics.assessmentCount ?? 0, color: 'accent' },
+          { icon: <CheckCircle2 className="w-5 h-5 text-success-600" />, label: '已答题目', value: analytics.questionAnsweredCount ?? 0, color: 'success' },
+          { icon: <Target className="w-5 h-5 text-warning-600" />, label: '正确率', value: analytics.quizAccuracy != null ? `${analytics.quizAccuracy}%` : '暂无数据', color: 'warning' },
         ].map(s => {
           const cls: Record<string, string> = { primary: 'bg-primary-50 ring-1 ring-primary-100', accent: 'bg-accent-50 ring-1 ring-accent-100', warning: 'bg-warning-50 ring-1 ring-warning-100', success: 'bg-success-50 ring-1 ring-success-100' };
           return <div key={s.label} className="bg-white rounded-2xl p-5 shadow-soft hover:shadow-elevated transition-shadow"><div className="flex items-center justify-between mb-3"><div className={`w-10 h-10 rounded-xl ${cls[s.color]} flex items-center justify-center`}>{s.icon}</div></div><p className="text-sm text-surface-500 mb-1">{s.label}</p><p className="text-2xl font-bold text-surface-800">{typeof s.value === 'number' ? s.value : s.value}</p></div>;
@@ -86,7 +85,7 @@ export default function LearningAnalyticsPage() {
       <div className="grid grid-cols-2 gap-6">
         <div className="bg-white rounded-2xl p-6 shadow-soft">
           <div className="flex items-center justify-between mb-5"><h3 className="font-display text-lg font-semibold text-surface-800">练习正确率</h3></div>
-          <div className="flex items-center gap-5"><Ring pct={analytics.quizAccuracy ?? 0} /><div className="text-sm text-surface-500">{analytics.quizAccuracy == null ? '完成练习后统计' : analytics.quizAccuracy >= 80 ? '优秀，继续保持' : analytics.quizAccuracy >= 60 ? '不错，有进步空间' : '需要更多练习'}<p className="text-surface-400 mt-1 text-xs">基于 {eb['quiz_result'] || 0} 次练习</p></div></div>
+          <div className="flex items-center gap-5">{analytics.quizAccuracy == null ? <span className="text-sm text-surface-400">暂无足够作答数据</span> : <Ring pct={analytics.quizAccuracy} />}<div className="text-sm text-surface-500">{analytics.quizAccuracy == null ? '完成练习后统计' : analytics.quizAccuracy >= 80 ? '优秀，继续保持' : analytics.quizAccuracy >= 60 ? '不错，有进步空间' : '需要更多练习'}<p className="text-surface-400 mt-1 text-xs">基于 {analytics.questionAnsweredCount ?? 0} 道已作答题目</p><p className="text-surface-400 mt-1 text-xs">最近 {analytics.latestQuizScore?.accuracy ?? '--'}% · 最佳 {analytics.bestQuizScore?.accuracy ?? '--'}%</p></div></div>
         </div>
 
         <div className="bg-white rounded-2xl p-6 shadow-soft">
@@ -95,7 +94,7 @@ export default function LearningAnalyticsPage() {
             <div className="space-y-3">
               {Object.entries(analytics.eventBreakdown).sort(([, a], [, b]) => b - a).slice(0, 5).map(([k, v]) => {
                 const max = Math.max(...Object.values(analytics.eventBreakdown));
-                return <div key={k} className="space-y-1.5"><div className="flex items-center justify-between text-sm"><span className="text-surface-600">{({resource_view:'查看资源',resource_complete:'完成资源',quiz_result:'练习结果',feedback:'评价',practice_result:'实操'})[k]||k}</span><span className="text-surface-500">{v}</span></div><div className="h-2 bg-surface-100 rounded-full overflow-hidden"><div className="h-full bg-primary-500 rounded-full transition-all duration-700" style={{ width: `${Math.max((v / max) * 100, 4)}%` }} /></div></div>;
+                return <div key={k} className="space-y-1.5"><div className="flex items-center justify-between text-sm"><span className="text-surface-600">{({resource_view:'查看资源',resource_complete:'完成资源',quiz_result:'练习结果',feedback:'评价',practice_result:'实操'} as Record<string, string>)[k] || k}</span><span className="text-surface-500">{v}</span></div><div className="h-2 bg-surface-100 rounded-full overflow-hidden"><div className="h-full bg-primary-500 rounded-full transition-all duration-700" style={{ width: `${Math.max((v / max) * 100, 4)}%` }} /></div></div>;
               })}
             </div>
           )}
@@ -116,11 +115,11 @@ export default function LearningAnalyticsPage() {
         <div className="bg-white rounded-2xl p-6 shadow-soft">
           <h3 className="font-display text-lg font-semibold text-surface-800 mb-4">最近学习行为</h3>
           <div className="space-y-0">
-            {analytics.recentEvents.slice(-6).reverse().map((evt: any, i: number) => (
+            {analytics.recentEvents.slice(-6).reverse().map((evt, i: number) => (
               <div key={i} className={`flex items-center gap-3 py-2.5 ${i < 5 ? 'border-b border-surface-100' : ''}`}>
-                <span className="text-xs flex-shrink-0">{({resource_view:'👁',resource_complete:'✅',task_complete:'✅',quiz_result:'📝',practice_result:'💻',feedback:'💬'})[evt.event]||'📌'}</span>
+                <span className="text-xs flex-shrink-0">{({resource_view:'👁',resource_complete:'✅',task_complete:'✅',quiz_result:'📝',practice_result:'💻',feedback:'💬'} as Record<string, string>)[evt.event] || '📌'}</span>
                 <div className="flex-1 min-w-0"><p className="text-xs text-surface-700 truncate">{evt.event==='task_complete'?`完成任务「${evt.metadata?.title||''}」`:evt.event==='resource_view'?`查看了资源「${evt.metadata?.title||''}」`:evt.event==='resource_complete'?`完成了资源「${evt.metadata?.title||''}」`:evt.event==='quiz_result'?`练习正确 ${evt.metadata?.correct}/${evt.metadata?.total}`:evt.event}</p></div>
-                <span className="text-[10px] text-surface-400 flex-shrink-0">{(()=>{try{const d=new Date(evt.timestamp);const diff=Date.now()-d.getTime();const m=Math.floor(diff/60000);return m<1?'刚刚':m<60?`${m}分钟前`:`${Math.floor(m/1440)}天前`}catch{return''}})()}</span>
+                <span className="text-[10px] text-surface-400 flex-shrink-0">{(()=>{try{const d=new Date(evt.timestamp ?? 0);const diff=Date.now()-d.getTime();const m=Math.floor(diff/60000);return m<1?'刚刚':m<60?`${m}分钟前`:`${Math.floor(m/1440)}天前`}catch{return''}})()}</span>
               </div>
             ))}
           </div>
@@ -327,13 +326,13 @@ export default function LearningAnalyticsPage() {
       )}
 
       {/* ── 学习规律评分 ── */}
-      {analytics.regularityScore != null && (
+      {analytics.regularityMetric && (
         <div className="bg-white rounded-2xl p-6 shadow-soft">
           <div className="flex items-center gap-2 mb-4"><Activity size={18} className="text-accent-500" /><h3 className="font-display text-lg font-semibold text-surface-800">学习规律</h3></div>
           <div className="flex items-center gap-5">
-            <Ring pct={analytics.regularityScore} />
+            {analytics.regularityScore == null ? <span className="text-sm text-surface-400">数据不足</span> : <Ring pct={analytics.regularityScore} />}
             <div className="text-sm text-surface-500">
-              {analytics.regularityScore >= 70 ? '学习规律性强，建议继续保持' :
+              {analytics.regularityScore == null ? '至少需要 3 个真实学习日期后才能计算规律性。' : analytics.regularityScore >= 70 ? '学习规律性强，建议继续保持' :
                analytics.regularityScore >= 40 ? '学习有一定规律，可以尝试固定时间' :
                '学习间隔不规律，建议每天固定时间学习'}
               <p className="text-xs text-surface-400 mt-1">基于学习日期间隔的规律性计算</p>
@@ -394,15 +393,6 @@ export default function LearningAnalyticsPage() {
               {analytics.goalTracking.examDate && (
                 <p className="text-[10px] text-surface-400 mt-0.5">{analytics.goalTracking.examDate}</p>
               )}
-            </div>
-            {/* 预估达成分位 */}
-            <div className="text-center p-3 bg-surface-50 rounded-xl">
-              <p className="text-2xl font-bold text-accent-600">
-                {analytics.goalTracking.estimatedPercentile != null
-                  ? `前 ${analytics.goalTracking.estimatedPercentile}%`
-                  : '--'}
-              </p>
-              <p className="text-xs text-surface-500">预估达成分位</p>
             </div>
             {/* 已完成题目 */}
             <div className="text-center p-3 bg-surface-50 rounded-xl">

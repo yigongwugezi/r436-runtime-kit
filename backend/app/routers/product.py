@@ -5437,6 +5437,8 @@ def learning_analytics(
                          "reason": w["reason"], "suggested_action": w.get("recommendedAction")}
                         for w in _dto.get("weaknesses", [])
                     ],
+                    "evidenceCount": _dto.get("evidenceCount", 0),
+                    "confidence": _dto.get("confidence"),
                 }
                 diagnosis_version = _dto.get("version")
                 diagnosis_generated_at = _dto.get("createdAt")
@@ -5474,11 +5476,24 @@ def learning_analytics(
             suggested = {"high": "优先攻克，建议每日专项练习", "medium": "按学习路径顺序逐步强化", "low": "在完成主要任务后选择性复习"}.get(p, "建议针对性练习")
         weakness_ranking.append({
             "name": w.get("name", ""),
-            "priority": w.get("priority", "medium"),
+            "priority": w.get("priority", "medium") if (diagnosis.get("evidenceCount", 0) or 0) >= 3 else "medium",
             "reason": w.get("reason", ""),
             "suggested_action": suggested,
             "resourceIds": resource_ids[:3] if isinstance(resource_ids, list) else [],
+            "sampleCount": diagnosis.get("evidenceCount", 0) or 0,
+            "status": "available" if (diagnosis.get("evidenceCount", 0) or 0) >= 3 else "insufficient_data",
+            "source": "diagnosis_snapshot",
+            "confidence": diagnosis.get("confidence"),
         })
+
+    if not weakness_ranking:
+        for weak in analytics.get("weakTopics", [])[:5]:
+            weakness_ranking.append({
+                "name": weak.get("topic", ""), "priority": weak.get("priority", "medium"),
+                "reason": "需要更多练习" if weak.get("status") == "insufficient_data" else "近期答题表现偏弱",
+                "sampleCount": weak.get("sampleCount", 0), "status": weak.get("status", "insufficient_data"),
+                "source": "event_fallback", "confidence": weak.get("risk"), "resourceIds": [],
+            })
 
     # ── M6: 从 DB 拉取近30天的学习事件用于按日统计 ──
     from datetime import datetime, timedelta, date as date_type
@@ -5539,6 +5554,19 @@ def learning_analytics(
     except Exception as e:
         logger.warning(f"Failed to query DB for daily stats: {e}")
 
+    # Completed attempts, not event clicks, define daily question metrics.
+    for stats in daily_stats.values():
+        stats["questionCount"] = 0
+        stats["accuracySum"] = 0.0
+    for score in analytics.get("scoreTrend", []):
+        stats = daily_stats.get(score.get("date"))
+        if not stats:
+            continue
+        count = int(score.get("answeredCount", 0) or 0)
+        stats["questionCount"] += count
+        stats["accuracySum"] += float(score.get("accuracy") or 0) * count
+        stats["active"] = True
+
     # ── M6: 进步曲线（近30天正确率+做题量）──
     progress_curve = []
     for day_offset in range(29, -1, -1):
@@ -5598,11 +5626,8 @@ def learning_analytics(
         except (ValueError, TypeError):
             pass
 
-    # 预估达成分位：基于掌握度加权
     mastery_scores = [m.get("score", 0) for m in mastery_levels if isinstance(m, dict)]
     avg_mastery = int(sum(mastery_scores) / max(1, len(mastery_scores)))
-    # 简单估算：掌握度每10分一档，映射到分位
-    estimated_percentile = min(99, max(1, avg_mastery + (10 if avg_mastery >= 70 else -5)))
 
     # 进度条：完成阶段数 / 总阶段数
     stages_total = (path_progress or {}).get("totalStageCount", 0)
@@ -5616,13 +5641,12 @@ def learning_analytics(
 
     goal_tracking = {
         "estimatedDays": last_result.get("estimatedDays", 14) if isinstance(last_result, dict) else 14,
-        "questionsCompleted": sum(ds.get("questionCount", 0) for ds in daily_stats.values()),
+        "questionsCompleted": analytics.get("questionAnsweredCount", 0),
         "masteryPercentage": avg_mastery,
         "stagesCompleted": stages_done if isinstance(stages_done, int) else 0,
         "stagesTotal": stages_total,
         "examDate": exam_date_str,
         "daysUntilExam": days_until_exam,
-        "estimatedPercentile": estimated_percentile,
         "progressPercent": progress_pct,
     }
 

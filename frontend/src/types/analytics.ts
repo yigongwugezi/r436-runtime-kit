@@ -16,6 +16,8 @@ export interface WeakTopic {
   mastery?: number;
   /** 推荐原因 */
   reason?: string;
+  sampleCount?: number;
+  status?: 'available' | 'insufficient_data' | 'unavailable';
 }
 
 /** 热门资源 */
@@ -37,6 +39,18 @@ export interface QuizTrendPoint {
   accuracy: number;
   topic: string;
   timestamp: string;
+  attemptId?: string;
+  answeredCount?: number;
+  correctCount?: number;
+  source?: 'attempt' | 'legacy_event';
+}
+
+export interface MetricDetail {
+  value: number | null;
+  status: 'available' | 'insufficient_data' | 'unavailable';
+  sampleCount: number;
+  source: string;
+  updatedAt: string | null;
 }
 
 /** 最近事件 */
@@ -122,7 +136,6 @@ export interface GoalTracking {
   stagesTotal: number;
   examDate?: string | null;
   daysUntilExam?: number | null;
-  estimatedPercentile?: number;
   progressPercent?: number;
 }
 
@@ -154,11 +167,23 @@ export interface AnalyticsSummary {
   completedResources: number;
   /** 实践次数 */
   practiceCount: number;
+  assessmentCount?: number;
+  questionAnsweredCount?: number;
+  correctQuestionCount?: number;
   /** 最近学习时间（epoch ms，后端直接返回） */
   lastStudyTime?: number | null;
   eventBreakdown: Record<string, number>;
   topResources: TopResource[];
   quizAccuracy: number | null;
+  latestQuizScore?: QuizTrendPoint | null;
+  bestQuizScore?: QuizTrendPoint | null;
+  scoreTrend?: QuizTrendPoint[];
+  metricDetails?: Record<string, MetricDetail>;
+  trackedStudyDuration?: number;
+  durationDataQuality?: MetricDetail;
+  timezoneUsed?: string;
+  regularityScore?: number | null;
+  regularityMetric?: MetricDetail;
   weakTopics: WeakTopic[];
   recommendations: RecommendationItem[];
   completionTrend: CompletionTrendPoint[];
@@ -166,6 +191,8 @@ export interface AnalyticsSummary {
   resourceTypeBreakdown: Record<string, number>;
   recentEvents: RecentEvent[];
   summary: string;
+  assessmentSummary?: string;
+  topicMasteryTrend?: { topic: string; points: QuizTrendPoint[] }[];
   // ── M6 面板数据 ──
   heatmap?: HeatmapItem[];
   weaknessRanking?: WeaknessRankingItem[];
