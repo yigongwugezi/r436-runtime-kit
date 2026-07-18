@@ -4332,6 +4332,62 @@ def _path_task_context(stages: list[dict[str, Any]], node_id: str) -> tuple[dict
     return None
 
 
+def complete_path_task(
+    db, *, session_id: str, subject_id: str, path_id: str, stage_id: str,
+    task_id: str, source: str = "learning_path",
+) -> dict[str, Any]:
+    """Persist one verified path task completion using the lecture semantics."""
+    path = db.query(LearningPathModel).filter(
+        LearningPathModel.id == path_id, LearningPathModel.session_id == session_id,
+    ).first()
+    if not path or not isinstance(path.stages, list):
+        raise HTTPException(status_code=404, detail="learning path not found")
+    stages = path.stages
+    stage = next((s for s in stages if str(s.get("id") or s.get("stage_id") or "") == stage_id), None)
+    context = _path_task_context(stages, task_id)
+    if not stage or not context or context[0] is not stage:
+        raise HTTPException(status_code=404, detail="learning path task not found")
+    if _apply_stage_progress(deepcopy(stages))[stages.index(stage)].get("progressStatus") == "locked":
+        raise HTTPException(status_code=403, detail="please complete the current stage first")
+
+    _, task = context
+    was_complete = _is_complete(task)
+    if not was_complete:
+        task["status"], task["mastery"] = "completed", 100
+        task["completedAt"] = datetime.now(timezone.utc).isoformat()
+        task["completionSource"] = source
+        flag_modified(path, "stages")
+        db.add(path)
+        db.flush()
+
+        event_resource_id = f"{path.id}:{task_id}"
+        exists = db.query(LearningEventModel).filter(
+            LearningEventModel.session_id == session_id,
+            LearningEventModel.event_type == "task_complete",
+            LearningEventModel.resource_id == event_resource_id,
+        ).first()
+        if not exists:
+            session = db.get(SessionModel, session_id)
+            db.add(LearningEventModel(
+                session_id=session_id, learner_id=session.learner_id if session else None,
+                subject_id=subject_id or None, event_type="task_complete", resource_id=event_resource_id,
+                metadata_={"eventType": "task_complete", "sessionId": session_id, "subjectId": subject_id,
+                           "pathId": path.id, "stageId": stage_id, "taskId": task_id,
+                           "taskType": str(task.get("task_type") or task.get("type") or "lecture"),
+                           "completedAt": task["completedAt"], "source": source},
+            ))
+    db.flush()
+    progress = _path_progress(path, session_id=session_id, subject_id=subject_id)
+    derived = _apply_stage_progress(deepcopy(path.stages))
+    completed_stage = next((s for s in derived if str(s.get("id") or s.get("stage_id") or "") == stage_id), {})
+    return {
+        "pathTaskCompleted": not was_complete,
+        "stageCompleted": completed_stage.get("progressStatus") == "completed",
+        "nextStageUnlocked": bool(progress.get("currentStageId") and progress.get("currentStageId") != stage_id),
+        "pathProgress": progress,
+    }
+
+
 def _path_progress(path: LearningPathModel, *, session_id: str, subject_id: str) -> dict[str, Any]:
     stages = _apply_stage_progress(deepcopy(path.stages or [])) if isinstance(path.stages, list) else []
     required_items = [(stage, item) for stage in stages for item in _stage_items(stage) if not item.get("optional", False)]

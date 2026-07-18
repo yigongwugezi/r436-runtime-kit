@@ -178,6 +178,9 @@ def init_db() -> None:
         },
         "attempts": {
             "subject_id": "VARCHAR(64)",
+            "path_id": "VARCHAR(128)",
+            "stage_id": "VARCHAR(128)",
+            "task_id": "VARCHAR(128)",
             "idempotency_key": "VARCHAR(128)",
             "attempt_number": "INTEGER DEFAULT 1",
             "graded_at": "DATETIME",

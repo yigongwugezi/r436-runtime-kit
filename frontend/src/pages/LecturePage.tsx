@@ -255,6 +255,7 @@ export default function LecturePage() {
 
   const [quizState, setQuizState] = useState<'idle' | 'generating' | 'answering' | 'submitted'>('idle');
   const [quizSuggestion, setQuizSuggestion] = useState('');
+  const [quizPathCompletion, setQuizPathCompletion] = useState<{ task?: boolean; unlocked?: boolean }>({});
   const [quizWeakPoints, setQuizWeakPoints] = useState<WeakPoint[]>([]);
 
   // Reset quiz & viewing state when section changes
@@ -645,12 +646,16 @@ export default function LecturePage() {
         sessionId: sessionId || `lecture_${activeSectionId}`,
         answers,
         idempotencyKey: quizSubmitIdempotencyKeyRef.current,
+        pathId: focusedTask ? focusedPathId : (path?.id || ''),
+        stageId: focusedTask ? focusedStageId : (chapterCtx?.stage.id || ''),
+        taskId: focusedTask ? focusedTaskId : activeSectionId,
       }) as any;
       const data = res?.data || res;
       if (data?.results && data.results.length > 0) {
         setQuizResults(data.results);
         setQuizTotalScore(data.totalScore ?? null);
         setQuizSuggestion(data.sectionStatusSuggestion || '');
+        setQuizPathCompletion({ task: data.pathTaskCompleted, unlocked: data.nextStageUnlocked });
         setQuizWeakPoints(data.weakPoints || []);
         setQuizState('submitted');
         // 更新 store 中的答题结果
@@ -953,6 +958,7 @@ export default function LecturePage() {
                       <p className="text-xs text-surface-500">
                         建议状态：{quizSuggestion === 'mastered' ? '已掌握' : quizSuggestion === 'in_progress' ? '学习中' : '需复习'}
                       </p>
+                      {quizPathCompletion.task && <p className="mt-1 text-xs text-success-700">学习路径任务已完成{quizPathCompletion.unlocked ? '，下一阶段已解锁' : ''}</p>}
                     </div>
                   </div>
                 </div>

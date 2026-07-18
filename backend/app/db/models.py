@@ -776,6 +776,9 @@ class AttemptModel(Base):
     attempt_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     session_id: Mapped[str] = mapped_column(String(64), index=True)
     subject_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    path_id: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
+    stage_id: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
+    task_id: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
 
     # ── Polymorphic parent ────────────────────────────────────
     quiz_id: Mapped[str | None] = mapped_column(
