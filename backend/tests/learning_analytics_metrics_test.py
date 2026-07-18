@@ -31,13 +31,13 @@ def main() -> None:
         db.commit()
         events = db.query(LearningEventModel).all()
         metrics = get_assessment_metrics(db, "s", "math", events)
-        assert metrics["assessmentCount"] == 3  # two attempts plus one legacy event
+        assert metrics["assessmentCount"] == 2  # only graded/completed attempts
         assert metrics["questionAnsweredCount"] == 5 and metrics["correctQuestionCount"] == 3
         assert metrics["quizAccuracy"] == 60
         assert metrics["latestQuizScore"]["accuracy"] == 50 and metrics["bestQuizScore"]["accuracy"] == 100
         assert metrics["metricDetails"]["accuracy"]["status"] == "available"
         analytics = get_event_analytics(db, "s", subject_id="math")
-        assert analytics["practiceCount"] == 3 and analytics["trackedStudyDuration"] == 0
+        assert analytics["practiceCount"] == 2 and analytics["trackedStudyDuration"] == 0
         assert analytics["regularityScore"] is None and analytics["regularityMetric"]["status"] == "insufficient_data"
     finally:
         db.close()

@@ -1048,12 +1048,12 @@ def get_assessment_metrics(
     score_outcomes = [item for item in outcomes if item["accuracy"] is not None]
     detail = lambda value, count, source: {"value": value, "status": "available" if value is not None else "insufficient_data", "sampleCount": count, "source": source, "updatedAt": outcomes[-1]["timestamp"] if outcomes else None}
     return {
-        "assessmentCount": len(outcomes), "questionAnsweredCount": answered, "correctQuestionCount": correct,
+        "assessmentCount": len(attempts), "questionAnsweredCount": answered, "correctQuestionCount": correct,
         "quizAccuracy": accuracy, "latestQuizScore": score_outcomes[-1] if score_outcomes else None,
         "bestQuizScore": max(score_outcomes, key=lambda item: item["accuracy"]) if score_outcomes else None,
-        "quizTrend": outcomes[-30:], "scoreTrend": outcomes[-30:], "practiceCount": len(outcomes),
+        "quizTrend": outcomes[-30:], "scoreTrend": outcomes[-30:], "practiceCount": len(attempts),
         "metricDetails": {
-            "assessmentCount": detail(len(outcomes), len(outcomes), "attempt" if attempts else "legacy_event"),
+            "assessmentCount": detail(len(attempts) if attempts else None, len(attempts), "attempt"),
             "questionAnsweredCount": detail(answered if outcomes else None, answered, "attempt" if attempts else "legacy_event"),
             "correctQuestionCount": detail(correct if outcomes else None, answered, "attempt" if attempts else "legacy_event"),
             "accuracy": detail(accuracy, answered, "attempt" if attempts else "legacy_event"),
