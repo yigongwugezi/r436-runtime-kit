@@ -591,9 +591,13 @@ class ConversationStore:
         reason: str = "",
         path_id: str = "",
         subject_id: str = "",
-    ) -> None:
+        trigger_source: str = "",
+        trigger_id: str = "",
+    ) -> dict:
         """存储候选路径供用户确认，不覆盖当前 active path。"""
         state = self.get(session_id)
+        if state.pending_revision:
+            return state.pending_revision
         revision = {
             "revision_id": f"rev_{int(time.time() * 1000)}",
             "created_at": time.time(),
@@ -605,6 +609,8 @@ class ConversationStore:
             "diagnosis_snapshot_id": f"diag_{int(time.time() * 1000)}",
             "path_id": path_id,
             "subject_id": subject_id,
+            "trigger_source": trigger_source,
+            "trigger_id": trigger_id,
         }
         state.pending_revision = revision
         state.updated_at = time.time()
@@ -643,6 +649,7 @@ class ConversationStore:
                 logging.getLogger(__name__).warning("set_pending_revision DB failed: %s", exc)
             finally:
                 db.close()
+        return revision
 
     def apply_pending_revision(self, session_id: str) -> dict | None:
         """用户确认候选路径，将 proposed_stages 写入 active path。"""

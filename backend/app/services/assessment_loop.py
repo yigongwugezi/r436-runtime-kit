@@ -568,6 +568,8 @@ def run_post_quiz_assessment(
                                 proposed_stages=adjusted_path,
                                 diff=diff,
                                 reason=f"基于小测「{quiz_title}」结果调整学习路径",
+                                trigger_source="assessment",
+                                trigger_id=str(quiz_title or "post_quiz"),
                             )
                             path_adjusted = True
                             logger.info(
@@ -958,6 +960,8 @@ def run_periodic_reassessment(session_id: str) -> dict[str, Any]:
                                 proposed_stages=adjusted_path,
                                 diff=diff,
                                 reason="定期诊断发现掌握度变化",
+                                trigger_source="assessment",
+                                trigger_id="periodic_reassessment",
                             )
                             path_adjusted = True
             except Exception:

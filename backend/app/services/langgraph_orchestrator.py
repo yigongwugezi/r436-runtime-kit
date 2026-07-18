@@ -1260,6 +1260,8 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
                             state["session_id"], proposed, compute_diff(active.stages, proposed),
                             reason="用户明确请求调整学习路径", path_id=active.id,
                             subject_id=str(active.session.subject_id or ""),
+                            trigger_source="user_request",
+                            trigger_id=str(state.get("message_id") or state.get("operation_id") or state.get("user_message", "")),
                         )
                         proposal = conversation_store.get_pending_revision(state["session_id"])
                     state["learning_path"] = active.stages
