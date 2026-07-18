@@ -137,11 +137,26 @@ def _user_key(service: str, field: str = "apiKey", *fallback_services: str) -> s
 
     ``fallback_services`` are tried in order when the primary service has no
     value (e.g. Wan video falls back to the shared DashScope/Qwen key).
+
+    Falls back to environment variables (``SERVICE_API_KEY`` etc.) when no
+    user config is available (single-user / dev convenience).
     """
     from app.services.user_ai_config import get_credential
 
     for svc in (service, *fallback_services):
         value = get_credential(svc, field)
+        if value:
+            return value
+
+    # Env var fallback: ARK_API_KEY, QWEN_API_KEY, etc.
+    import os
+    env_names = [
+        f"{service.upper()}_API_KEY",
+        f"{service.upper()}_KEY",
+        f"{service.upper()}_API_TOKEN",
+    ]
+    for name in env_names:
+        value = os.getenv(name, "")
         if value:
             return value
     return ""

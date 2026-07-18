@@ -79,6 +79,7 @@ class Settings(BaseSettings):
 
     # Web search provider settings
     search_provider: str = "mock"       # "mock" | "duckduckgo" | "tavily"（tavily key 为每用户配置）
+    tavily_api_key: str = ""            # 全局 fallback，用户未配置时使用
     search_max_results: int = 5
     search_timeout: int = 10            # seconds for HTTP request
     search_total_timeout: int = 15      # seconds across all real search backends

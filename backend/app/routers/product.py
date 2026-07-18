@@ -3261,12 +3261,13 @@ def recommend_resources_for_learning(payload: dict[str, Any]) -> dict[str, Any]:
     state = conversation_store.get(session_id)
     lr = state.last_result or {}
     path = lr.get("learning_path", []) or lr.get("path", {}).get("stages", [])
-    # 找到目标 stage
+    # 找到目标 stage（兼容 id 和 stage_id）
     target_stage = None
     for s in path:
-        if isinstance(s, dict) and s.get("stage_id", "") == stage_id:
-            target_stage = s
-            break
+        if isinstance(s, dict):
+            if s.get("stage_id", "") == stage_id or s.get("id", "") == stage_id:
+                target_stage = s
+                break
     if not target_stage:
         target_stage = path[0] if path and isinstance(path[0], dict) else {}
 

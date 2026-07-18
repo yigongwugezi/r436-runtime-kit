@@ -19,6 +19,7 @@ export interface LearningPath {
   estimatedDays: number;
   source?: 'agent_generated' | 'system_inferred' | 'none';
   stageResourceStats?: Record<string, { total: number; completed: number }>;
+  day_plan?: { days: { day: number; total_minutes: number; items: { id?: string; type: string; title: string; minutes: number; source_section_id?: string; source_stage?: string; description?: string; adjustment?: string | null; weak_kps?: string[]; status?: string }[] }[]; version: number; generated_at?: number; _adjusted_days?: number[] } | null;
 }
 
 export type StageStatus = 'not_started' | 'in_progress' | 'completed';

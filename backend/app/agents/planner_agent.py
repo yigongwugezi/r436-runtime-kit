@@ -299,123 +299,83 @@ class PlannerAgent(BaseAgent):
         total_days: int,
         diag_meta: dict,
     ) -> list[dict] | None:
-        """Convert imported textbook chapter structure into learning path stages.
-
-        Each textbook chapter becomes a path stage containing one chapter
-        with the textbook's sections as its learning sections.
-
-        Textbook chapter JSON schema (from chapters_json):
-          [{chapter_id, title, order, start_page, end_page,
-            sections: [{section_id, title, order, start_page, end_page,
-                        estimated_minutes, knowledge_points}]}]
-        """
         if not textbook_chapters:
             return None
 
-        stages = []
+        # ── 多样任务类型轮转 ──
+        _task_variants = [
+            {"ct": "read_doc",   "rtypes": ["lecture","reading"],    "label": "阅读理解", "est": 30},
+            {"ct": "watch_video","rtypes": ["video"],                 "label": "视频学习", "est": 25},
+            {"ct": "quiz_prac",  "rtypes": ["quiz","homework"],       "label": "练习测验", "est": 35},
+            {"ct": "mind_map",   "rtypes": ["mindmap"],               "label": "思维导图", "est": 20},
+            {"ct": "hands_on",   "rtypes": ["lab","code","project"],  "label": "实操练习", "est": 40},
+            {"ct": "review",     "rtypes": ["quiz","reading"],        "label": "阶段复习", "est": 25},
+        ]
+
+        # ── 先平铺所有 section ──
+        all_sections = []
+        chapter_bounds = []  # (ch_title, sec_start_idx, sec_end_idx)
         for ch in textbook_chapters:
             ch_title = ch.get("title", "")
-            ch_order = ch.get("order", len(stages))
-            ch_id = ch.get("chapter_id", f"tb_ch_{ch_order:02d}")
-
-            sections = []
+            ch_order = ch.get("order", len(chapter_bounds))
+            start_idx = len(all_sections)
             for sec in ch.get("sections", []):
                 sec_title = sec.get("title", "")
-                sec_order = sec.get("order", len(sections))
-                sec_id = sec.get("section_id", f"{ch_id}_sec_{sec_order:02d}")
-
-                # Build section ID using the canonical factory
-                section_factory_id = make_section_id(
-                    make_chapter_id(
-                        make_stage_id(make_path_id("textbook"), ch_order),
-                        0,
-                    ),
-                    sec_order,
-                )
+                sec_order = sec.get("order", len(all_sections) - start_idx)
+                sec_id_orig = sec.get("section_id", f"tb_s_{len(all_sections):03d}")
 
                 kps = []
                 for kp_idx, kp_name in enumerate(sec.get("knowledge_points", [])):
                     if isinstance(kp_name, str) and kp_name.strip():
-                        kps.append({
-                            "id": make_kp_id(section_factory_id, kp_idx),
-                            "name": kp_name.strip(),
-                            "type": "concept",
-                            "mastery": 0,
-                            "status": "not_started",
-                        })
+                        kps.append({"id": f"{sec_id_orig}_kp_{kp_idx:02d}", "name": kp_name.strip(), "type": "concept", "mastery": 0, "status": "not_started"})
 
-                sections.append({
-                    "id": section_factory_id,
-                    "title": sec_title,
+                variant = _task_variants[len(all_sections) % len(_task_variants)]
+                all_sections.append({
+                    "id": sec_id_orig,
+                    "title": f"{sec_title} · {variant['label']}",
                     "goal": sec.get("goal", "") or f"掌握{sec_title}的核心内容",
-                    "estimatedMinutes": sec.get("estimated_minutes", 45),
+                    "estimatedMinutes": sec.get("estimated_minutes", variant["est"]),
                     "knowledge_points": kps,
                     "lectureIds": [],
-                    "contentType": "lecture",
+                    "contentType": variant["ct"],
                     "status": "not_started",
-                    # Textbook-specific fields
+                    "task_type": variant["ct"],
+                    "required_resource_types": variant["rtypes"],
                     "textbookPageStart": sec.get("start_page", 1),
                     "textbookPageEnd": sec.get("end_page", 1),
-                    "textbookSectionId": sec_id,
+                    "textbookSectionId": sec_id_orig,
                 })
+            chapter_bounds.append((ch_title, start_idx, len(all_sections)))
 
-            if not sections:
-                # Chapter with no sections: create one default section
-                sec_id = make_section_id(
-                    make_chapter_id(
-                        make_stage_id(make_path_id("textbook"), ch_order), 0,
-                    ), 0,
-                )
-                sections.append({
-                    "id": sec_id,
-                    "title": ch_title,
-                    "goal": f"掌握{ch_title}的核心内容",
-                    "estimatedMinutes": 60,
-                    "knowledgePoints": [
-                        {
-                            "id": make_kp_id(sec_id, 0),
-                            "name": ch_title,
-                            "type": "concept",
-                            "mastery": 0,
-                            "status": "not_started",
-                        }
-                    ],
-                    "lectureIds": [],
-                    "contentType": "lecture",
+        # ── 按章拆成多个阶段：每 2~3 个小节一个阶段 ──
+        stages = []
+        stage_global_order = 0
+        for ch_title, sec_a, sec_b in chapter_bounds:
+            ch_secs = all_sections[sec_a:sec_b]
+            if not ch_secs:
+                continue
+            # chunk: 至少2个, 最多4个 section 一个阶段
+            chunk_sz = max(2, min(4, len(ch_secs)))
+            for g in range(0, len(ch_secs), chunk_sz):
+                chunk = ch_secs[g:g + chunk_sz]
+                s_id = make_stage_id(make_path_id("textbook"), stage_global_order)
+                c_id = make_chapter_id(s_id, 0)
+                suffix = "·上" if g == 0 else ("·中" if g + chunk_sz < len(ch_secs) else "·下")
+                stages.append({
+                    "id": s_id,
+                    "title": f"{ch_title}{suffix if len(ch_secs) > chunk_sz else ''}",
+                    "order": stage_global_order,
+                    "description": f"学习{ch_title}第{g//chunk_sz + 1}部分",
                     "status": "not_started",
-                    "textbookPageStart": ch.get("start_page", 1),
-                    "textbookPageEnd": ch.get("end_page", 1),
-                    "textbookSectionId": ch_id,
+                    "nodes": [],
+                    "chapters": [{"id": c_id, "title": ch_title, "order": 0, "sections": chunk, "status": "not_started", "mindmapId": None}],
+                    "objective": f"完成{ch_title}第{g//chunk_sz + 1}部分的学习",
+                    "estimatedDays": max(1, min(5, total_days // max(1, len(ch_secs) * len(textbook_chapters) // max(2, chunk_sz)))),
                 })
+                stage_global_order += 1
 
-            stage_id = make_stage_id(make_path_id("textbook"), ch_order)
-            chapter_id = make_chapter_id(stage_id, 0)
-
-            stages.append({
-                "id": stage_id,
-                "title": ch_title,
-                "order": ch_order,
-                "description": f"学习{ch_title}",
-                "status": "not_started",
-                "nodes": [],
-                "chapters": [{
-                    "id": chapter_id,
-                    "title": ch_title,
-                    "order": 0,
-                    "status": "not_started",
-                    "sections": sections,
-                    "mindmapId": None,
-                }],
-                "objective": f"完成{ch_title}的学习",
-                "estimatedDays": max(1, total_days // max(1, len(textbook_chapters))),
-            })
-
-        logger.info(
-            "Built textbook-driven path: %d stages, %d sections",
-            len(stages),
-            sum(len(s.get("chapters", [{}])[0].get("sections", [])) for s in stages),
-        )
-        return stages
+        logger.info("Built textbook-driven path: %d stages, %d sections (diversified)", len(stages), len(all_sections))
+        return stages if stages else None
 
     # ── Mode A: Focus sprint ──
 
@@ -447,7 +407,9 @@ class PlannerAgent(BaseAgent):
             parts = ["为学生规划学习路径。课程：" + course + "。需求：" + message + "。"]
             if total_days:
                 parts.append("总学时：" + str(total_days) + "天。")
-            parts.append("请按 stages->tasks 层级输出，每个 stage 根据知识点数量包含相应任务。")
+            parts.append("请按 stages->tasks 层级输出，每个 stage 直接包含 tasks。")
+            parts.append("任务类型必须多样化，从以下选取（每阶段至少3种）：read_doc(阅读讲义)|watch_video(视频)|quiz_prac(练习)|mind_map(导图)|hands_on(实操)|review(复习)")
+            parts.append("阶段数量根据知识点自然聚类决定，不设上限。")
             if p_text:
                 parts.append(chr(10) * 2 + "【学生画像】" + chr(10) + p_text)
             prompt = chr(10).join(parts)
@@ -619,7 +581,7 @@ class PlannerAgent(BaseAgent):
         try:
             stages_json = json.dumps(architect_plan.get("stages", []), ensure_ascii=False)
             prompt = f"""细化学习阶段：{stages_json}
-每个阶段：根据知识点数量灵活细化tasks，明确resource_types，total_days匹配{total_days}天。
+每个阶段：根据知识点数量灵活细化tasks，任务类型必须多样化（至少包含read_doc/quiz_prac/hands_on/watch_video/mind_map中3种），明确resource_types，total_days匹配{total_days}天。
 输出JSON：{{"stages":[...]}}"""
             raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.3, max_tokens=2500)
             s, e = raw.find("{"), raw.rfind("}") + 1
@@ -718,24 +680,29 @@ class PlannerAgent(BaseAgent):
             "",
             "【设计要求】",
             "- 总学时：%d天，共%d个知识点" % (total_days, kp_total),
-            "- 请根据知识点自然分组设计阶段数量，不设上限",
-            "- 按 stages->days->tasks 三级：每个 stage 多个 day，每个 day 的任务数根据知识点密度灵活决定",
-            "- 总天数越多，阶段和任务数量应相应增加",
-            "- 每天的任务数根据知识点密度和学生可用时间灵活决定。每个 task 含 title/type/estimated_minutes/goal/resource_types",
-            "- 任务类型请根据课程特点自行选择，不受限制",
+            "- 请根据知识点自然分组设计阶段数量，不设阶段数上限",
+            "- 按 stages->tasks 层级：每个 stage 直接包含 tasks",
+            "- 任务类型必须多样化，根据课程内容特点从以下选取（每个阶段至少3种）：",
+            "  read_doc(讲义阅读) | watch_video(视频学习) | quiz_prac(练习测验) | mind_map(思维导图) | hands_on(实操练习) | review(阶段复习)",
+            "- 每条 task 必填：title（任务名）、type（从上述选）、estimated_minutes（分钟）、goal（目标）、resource_types（如[\"lecture\",\"quiz\"]）",
+            "- 每天的任务数根据知识点密度和学生可用时间灵活决定",
         ]
         for b in [tbb, pb, wb, sb]:
             if b: parts.append(b.strip())
         parts.extend(["", "【输出格式】",
             "严格按照以下 JSON 格式输出，不要包含 Markdown 包裹或额外说明：",
             "{", '  "stages": [', "    {",
-            '      "title": "阶段标题",',
+            '      "title": "阶段标题（如：逻辑代数基础·上）",',
             '      "theme": "阶段主题说明",',
-            '      "estimated_days": 7,', '      "tasks": [', "        {",
-            '          "title": "任务名称",', '          "type": "read_doc",',
-            '          "estimated_minutes": 45,', '          "goal": "学习目标描述",',
-            '          "required": true,', '          "resource_types": ["lecture"]',
-            "        }", "      ]", "    }", "  ]", "}"])
+            '      "estimated_days": 3,', '      "tasks": [', '        {',
+            '          "title": "阅读讲义",', '          "type": "read_doc",',
+            '          "estimated_minutes": 30,', '          "goal": "理解核心概念",',
+            '          "required": true,', '          "resource_types": ["lecture","reading"]',
+            '        },', '        {',
+            '          "title": "巩固练习",', '          "type": "quiz_prac",',
+            '          "estimated_minutes": 35,', '          "goal": "通过做题检验理解",',
+            '          "required": true,', '          "resource_types": ["quiz","homework"]',
+            '        }', '      ]', '    }', '  ]', '}'])
         prompt = chr(10).join(parts)
         if self.llm_client:
             try:
@@ -749,6 +716,30 @@ class PlannerAgent(BaseAgent):
             except Exception:
                 pass
         return None
+    def _ensure_task_diversity(self, tasks: list, stage_title: str, stage_id: str) -> list:
+        """确保每个阶段至少3种任务类型。"""
+        if len(tasks) >= 12:
+            return tasks
+        _all = [
+            ("read_doc","阅读：{t}核心内容",["lecture","reading"],30),
+            ("watch_video","视频：{t}教学视频",["video"],25),
+            ("quiz_prac","练习：{t}巩固测验",["quiz","homework"],35),
+            ("mind_map","导图：{t}思维整理",["mindmap"],20),
+            ("hands_on","实操：{t}动手练习",["lab","code"],40),
+            ("review","复习：{t}阶段回顾",["quiz","reading"],25),
+        ]
+        existing = {str(t.get("type","")).strip() for t in tasks if t.get("type")}
+        if len(existing) >= 3:
+            return tasks
+        out = list(tasks)
+        st = stage_title or "当前阶段"
+        for tt, tmpl, rts, est in _all:
+            if tt not in existing and len(out) < 12:
+                out.append({"task_id":f"{stage_id}_auto_{tt}","title":tmpl.replace("{t}",st),"type":tt,"estimated_minutes":est,"goal":f"通过{tt}方式巩固{st}的学习","required":False,"resource_types":rts,"status":"pending","source":"diversity_ensured"})
+                existing.add(tt)
+            if len(existing) >= 3:
+                break
+        return out
     def _rewrite_stage_ids(self, context: dict, stages: list) -> list:
         """Rewrite IDs for stages->days->tasks format."""
         session_id = str(context.get("session_id", "") or "")
@@ -784,6 +775,9 @@ class PlannerAgent(BaseAgent):
                         "textbook_section_ids": t.get("textbook_section_ids", []),
                     })
                 day_list.append({"day": day_num, "tasks": task_list})
+            # 确保多样性
+            task_list = self._ensure_task_diversity(task_list, str(stage.get("title","")), stage_id)
+            day_list = [{"day": day_list[0]["day"] if day_list else 1, "tasks": task_list}]
             rewritten.append({
                 "stage_id": stage_id,
                 "title": str(stage.get("title", "")),
@@ -882,6 +876,7 @@ class PlannerAgent(BaseAgent):
             "learning_path": stages_with_chapters,
             "stages": stages_with_chapters,
             "chapters": stages_with_chapters,
+            "day_plan": day_plan,
             "estimatedDays": total_days,
             "estimated_minutes_total": estimated_minutes_total,
             "version": int(time.time() * 1000),

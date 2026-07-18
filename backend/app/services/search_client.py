@@ -585,9 +585,11 @@ def get_search_client(provider: str = "mock") -> BaseSearchClient:
     if provider == "tavily":
         from app.services.user_ai_config import get_credential
 
-        # Tavily key 来自每用户配置（系统设置 → AI 模型配置），不再读 .env
+        # Tavily key：优先每用户 DB 配置，fallback 到全局 settings
+        from app.config import settings
+        api_key = get_credential("tavily") or settings.tavily_api_key
         return TavilySearchClient(
-            api_key=get_credential("tavily"),
+            api_key=api_key,
             timeout=min(settings.search_timeout, int(settings.search_provider_hard_timeout_seconds)),
         )
     raise ValueError(f"Unsupported search provider: {provider}")
