@@ -6,6 +6,7 @@ from collections import defaultdict
 from threading import Lock
 import unicodedata
 import uuid
+import re
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -25,6 +26,7 @@ from app.db.models import (
 # before scaling subject creation across multiple application processes.
 _CREATE_LOCK = Lock()
 _TRAILING_SEPARATOR = "、，。,:;；："
+_LEGACY_SUBJECT_ID_RE = re.compile(r"^subject_\d{13}_[a-z0-9]{6}$")
 
 
 def canonical_subject_name(value: str) -> str:
@@ -34,14 +36,27 @@ def canonical_subject_name(value: str) -> str:
 
 
 def get_or_create_personal_subject(
-    db: Session, learner_id: str, name: str, description: str | None = None,
+    db: Session,
+    learner_id: str,
+    name: str,
+    description: str | None = None,
+    legacy_subject_id: str | None = None,
 ) -> tuple[PersonalSubjectModel, bool]:
     """Return one learner-scoped subject, serializing legacy SQLite writes too."""
     canonical_name = canonical_subject_name(name)
     if not canonical_name:
         raise ValueError("subject name is required")
+    legacy_id = str(legacy_subject_id or "")
+    if not _LEGACY_SUBJECT_ID_RE.fullmatch(legacy_id):
+        legacy_id = ""
 
     with _CREATE_LOCK:
+        if legacy_id:
+            existing_by_id = db.get(PersonalSubjectModel, legacy_id)
+            if existing_by_id is not None:
+                if existing_by_id.learner_id == learner_id:
+                    return existing_by_id, False
+                legacy_id = ""
         rows = (
             db.query(PersonalSubjectModel)
             .filter(PersonalSubjectModel.learner_id == learner_id)
@@ -53,7 +68,7 @@ def get_or_create_personal_subject(
             return existing, False
 
         subject = PersonalSubjectModel(
-            id=f"ps_{uuid.uuid4().hex[:12]}", learner_id=learner_id,
+            id=legacy_id or f"ps_{uuid.uuid4().hex[:12]}", learner_id=learner_id,
             name=canonical_name, description=description,
         )
         db.add(subject)

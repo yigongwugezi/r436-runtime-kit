@@ -9,6 +9,7 @@ import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
 import { getKnowledgeGraph, getNodeDetail } from '../api/knowledgeGraph';
 import type { KnowledgeGraphData, KGNode, KGNodeDetail } from '../types/knowledgeGraph';
+import { adaptKnowledgeGraph } from '../utils/knowledgeGraphAdapter';
 
 const LAYOUT_OPTIONS: Array<{ value: LayoutType; label: string; icon: React.ReactNode }> = [
   { value: 'force', label: '力导向', icon: <Network size={14} /> },
@@ -50,10 +51,10 @@ export default function KnowledgeGraphPage() {
     setError(null);
     try {
       const params: { sessionId: string; subjectId?: string; chapter?: string } = { sessionId };
-      if (activeSubject) params.subjectId = activeSubject;
+      if (activeSubject) params.subjectId = activeSubject.id;
       if (chapter) params.chapter = chapter;
       const data = await getKnowledgeGraph(params);
-      setGraphData(data);
+      setGraphData(adaptKnowledgeGraph(data));
     } catch (err) {
       setError('加载知识图谱失败，请稍后重试');
       console.error('[KG] Failed to load graph:', err);
@@ -129,7 +130,7 @@ export default function KnowledgeGraphPage() {
     setDetailLoading(true);
     try {
       const params: { sessionId: string; subjectId?: string } = { sessionId };
-      if (activeSubject) params.subjectId = activeSubject;
+      if (activeSubject) params.subjectId = activeSubject.id;
       const detail = await getNodeDetail(nodeId, params);
       setSelectedNodeDetail(detail);
     } catch (err) {

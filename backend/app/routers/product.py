@@ -36,7 +36,7 @@ from app.agents.diagnosis_agent import DiagnosisAgent
 from app.agents.multimodal_agent import MultimodalAgent
 from app.config import settings
 from app.db.engine import SessionLocal
-from app.db.models import AnswerRecordModel, DailyTaskModel, LearnerModel, LearningEventModel, PlanningDraftModel, PracticeQuestionModel, ResourceModel, SessionModel
+from app.db.models import AnswerRecordModel, DailyTaskModel, LearnerModel, LearningEventModel, PersonalSubjectModel, PlanningDraftModel, PracticeQuestionModel, ResourceModel, SessionModel
 from app.db.repository import (
     get_bookmarked_ids,
     get_daily_tasks as repo_get_daily_tasks,
@@ -2045,6 +2045,22 @@ def list_sessions(subjectId: str = "", learnerId: str = "", auth: AuthContext = 
             learner_id=resolved_learner_id,
             subject_id=resolved_subject_id,
         )
+        if resolved_subject_id:
+            legacy_sessions = (
+                db.query(SessionModel)
+                .join(PersonalSubjectModel, SessionModel.subject_id == PersonalSubjectModel.id)
+                .filter(
+                    SessionModel.learner_id.is_(None),
+                    PersonalSubjectModel.id == resolved_subject_id,
+                    PersonalSubjectModel.learner_id == resolved_learner_id,
+                )
+                .all()
+            )
+            sessions = sorted(
+                [*sessions, *legacy_sessions],
+                key=lambda item: item.updated_at or datetime.min,
+                reverse=True,
+            )
         return _product_response(
             {"sessions": [
                 {
@@ -2076,6 +2092,10 @@ def get_chat_session(session_id: str, learnerId: str = "", auth: AuthContext = D
                 db.commit()
             else:
                 raise HTTPException(status_code=403, detail="session belongs to another learner")
+        if session and not session.learner_id:
+            legacy_subject = db.get(PersonalSubjectModel, session.subject_id) if session.subject_id else None
+            if not learner_id or legacy_subject is None or legacy_subject.learner_id != learner_id:
+                raise HTTPException(status_code=403, detail="session ownership cannot be verified")
         messages = repo_get_messages(db, session_id)
         return _product_response(
             {
@@ -2597,10 +2617,21 @@ def get_profile(sessionId: str = "", subjectId: str = "", learnerId: str = "", a
     subject_id = str(subjectId).strip()
     logger.info("get_profile: session=%s subject=%s auth_ok=%s", session_id, subject_id, auth.is_authenticated)
     if auth.is_authenticated:
+        db = None
         try:
-            _ensure_session_linked(session_id, subject_id=subject_id, learner_id=auth.learner_id)
+            db = SessionLocal()
+            session = db.get(SessionModel, session_id)
+            if session is not None and not session.learner_id:
+                legacy_subject = db.get(PersonalSubjectModel, session.subject_id) if session.subject_id else None
+                if legacy_subject is None or legacy_subject.learner_id != auth.learner_id:
+                    raise HTTPException(status_code=403, detail="session ownership cannot be verified")
+            else:
+                _ensure_session_linked(session_id, subject_id=subject_id, learner_id=auth.learner_id)
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail="session belongs to another learner") from exc
+        finally:
+            if db is not None:
+                db.close()
 
     # Default preferences (safe for frontend)
     _default_prefs = {"preferredFormats": ["text"], "paceMinutes": 45, "difficulty": "beginner", "explainStyle": "text"}

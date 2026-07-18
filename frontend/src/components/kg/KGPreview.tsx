@@ -31,13 +31,16 @@ export default function KGPreview({ graphData, height = 360 }: KGPreviewProps) {
         },
       },
       edge: {
-        style: { stroke: '#cbd5e1', lineWidth: 2, endArrow: true },
-        label: {
-          text: (d: any) => {
+        style: {
+          stroke: '#cbd5e1',
+          lineWidth: 1.5,
+          endArrow: true,
+          labelText: (d: any) => {
             const r = d.data?.relation;
             return r === 'prerequisite' ? '前置' : r === 'contains' ? '包含' : '';
           },
-          fontSize: 10, fill: '#94a3b8', background: true, backgroundFill: '#fff', backgroundOpacity: 0.8, padding: [2, 5],
+          labelFontSize: 9,
+          labelFill: '#94a3b8',
         },
       },
       behaviors: [],

@@ -71,17 +71,23 @@ export default function KGGraph({
         },
       },
       edge: {
-        style: { stroke: '#cbd5e1', lineWidth: 2, endArrow: true },
-        label: {
-          text: (d: any) => {
+        style: {
+          stroke: '#cbd5e1',
+          lineWidth: 1.5,
+          endArrow: true,
+          radius: 8,
+          labelText: (d: any) => {
             const r = d.data?.relation;
             if (r === 'prerequisite') return '前置';
             if (r === 'contains') return '包含';
             return '';
           },
-          fontSize: 10, fill: '#94a3b8',
-          background: true, backgroundFill: '#fff', backgroundOpacity: 0.8,
-          padding: [2, 5],
+          labelFontSize: 9,
+          labelFill: '#94a3b8',
+        },
+        state: {
+          highlighted: { stroke: '#2563eb', lineWidth: 2.5 },
+          dimmed: { stroke: '#e2e8f0', opacity: 0.15 },
         },
       },
       behaviors: [
@@ -133,8 +139,8 @@ export default function KGGraph({
         n.label?.toLowerCase().includes(searchTerm.toLowerCase()),
       );
       if (match) {
-        graph.setElementState({ all: [], [match.id]: 'searched' });
-        graph.focusElement(match.id, { duration: 800 });
+        graph.setElementState({ [match.id]: 'searched' });
+        graph.focusElement(match.id, { duration: 300 });
       }
     } else { graph.setElementState({ all: [] }); }
   }, [searchTerm, nodes]);

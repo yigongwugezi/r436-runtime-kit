@@ -56,7 +56,9 @@ def main() -> None:
         assert not product._profile_v2("empty")["subject_context"].get("subject_id")
 
         # An explicit current message creates/reuses one learner-owned subject.
-        _, result = asyncio.run(chat_router._run_chat("我想学习数据结构", "explicit"))
+        reply, thinking, result = asyncio.run(chat_router._run_chat("我想学习数据结构", "explicit"))
+        assert reply == "recorded"
+        assert thinking == ""
         bound = result.get("current_subject") or {}
         assert bound.get("name") == "数据结构"
         db = factory()
@@ -77,7 +79,9 @@ def main() -> None:
             db.close()
 
         # The same visible name is private to its learner.
-        _, other = asyncio.run(chat_router._run_chat("我想学习数据结构", "other-learner"))
+        other_reply, other_thinking, other = asyncio.run(chat_router._run_chat("我想学习数据结构", "other-learner"))
+        assert other_reply == "recorded"
+        assert other_thinking == ""
         assert other["current_subject"]["id"] != bound["id"]
     finally:
         product.SessionLocal, product.ag_get_profile = old_product_session, old_profile
