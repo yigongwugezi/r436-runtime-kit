@@ -15,6 +15,7 @@ import Markdown from '../../utils/markdown';
 import MarkmapDiagram from '../../utils/markmap';
 import ChatClarification from './ChatClarification';
 import PromptTemplates from './PromptTemplates';
+import VoiceInputButton from '../common/VoiceInputButton';
 
 /* ===================================================================
  * 生成流程管线定义
@@ -614,6 +615,20 @@ export default function ChatPanel({ open, onClose, panelWidth = 420, onWidthChan
     }
   };
 
+  const handleVoiceResult = (text: string) => {
+    console.log('[ChatPanel] handleVoiceResult called, text:', text);
+    setInput((prev) => {
+      const sep = prev && !prev.endsWith(' ') && !prev.endsWith('\n') ? ' ' : '';
+      return prev + sep + text;
+    });
+    if (inputRef.current) {
+      inputRef.current.value = inputRef.current.value
+        ? inputRef.current.value + (inputRef.current.value && !inputRef.current.value.endsWith(' ') && !inputRef.current.value.endsWith('\n') ? ' ' : '') + text
+        : text;
+    }
+    inputRef.current?.focus();
+  };
+
   const handleRetry = () => {
     const lastUser = [...messages].reverse().find((m) => m.role === 'user');
     if (lastUser) send(lastUser.content);
@@ -778,6 +793,11 @@ export default function ChatPanel({ open, onClose, panelWidth = 420, onWidthChan
             </select>
           </div>
           <div className="flex items-end gap-1.5 mt-1">
+            <VoiceInputButton
+              onResult={handleVoiceResult}
+              disabled={isStreaming}
+              size="sm"
+            />
             <textarea
               ref={inputRef}
               value={input}

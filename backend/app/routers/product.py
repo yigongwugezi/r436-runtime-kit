@@ -3790,8 +3790,18 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
 
     # ── 真实生成路径：优先调用项目已有的 AI 能力，失败后降级为模板 ──
     from app.services.deeptutor_client import deeptutor_call, generate_mindmap, generate_quiz, generate_research
+    from app.services.workflow_tasks import workflow_task_manager
+
+    def _emit(label: str, stage: str = "generation", **meta: Any) -> None:
+        if workflow_task is not None:
+            try:
+                workflow_task_manager.check_cancelled(workflow_task)
+                workflow_task_manager.emit(workflow_task, "stage_progress", stage, "running", label=label, **meta)
+            except Exception:
+                pass
 
     if resource_type == "lecture":
+        _emit("正在生成学习文档…")
         try:
             content = deeptutor_call("chat",
                 f"为「{topic}」生成一份专业课程讲义。\n"
@@ -3812,6 +3822,7 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
             resource["content"] = f"# {topic}\n\n## 学习目标\n理解 {topic} 的核心概念、关键过程和常见误区。\n\n## 核心讲解\n从定义开始，结合一个小例子逐步说明概念之间的关系。\n\n## 自测\n用自己的话复述关键步骤，并完成一道对应练习。"
 
     elif resource_type == "mindmap":
+        _emit("正在生成思维导图…")
         try:
             mm = generate_mindmap(topic)
             if mm and len(mm) > 50:
@@ -3828,6 +3839,7 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
             resource["content_format"] = "mermaid"
 
     elif resource_type == "quiz":
+        _emit("正在生成练习题库…")
         try:
             quiz_content = generate_quiz(topic, count=5)
             if quiz_content and len(quiz_content) > 50:
@@ -3843,6 +3855,7 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
             ]
 
     elif resource_type == "reading":
+        _emit("正在生成拓展阅读…")
         try:
             content = generate_research(topic)
             if content and len(content) > 100:
@@ -3854,6 +3867,7 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
             resource["content"] = f"# {topic} 拓展阅读\n\n先阅读定义与背景，再将关键术语整理为自己的笔记，最后用一个例子验证理解。"
 
     elif resource_type == "practice":
+        _emit("正在生成实操案例…")
         try:
             content = deeptutor_call("chat",
                 f"为「{topic}」生成一个实操练习。\n"
@@ -3874,6 +3888,7 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
             resource["code_blocks"] = [{"language": "python", "code": "def solve(value):\n    if value is None:\n        raise ValueError('value is required')\n    return value", "explanation": "从输入校验开始，再补充与主题对应的处理逻辑。"}]
 
     elif resource_type == "image":
+        _emit("正在生成知识图解…")
         from app.services.multimodal_registry import default_registry
         _, tool = default_registry().select_tool("image_generation")
         if tool is None or not tool.is_configured():
@@ -3893,6 +3908,7 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
             raise RuntimeError("provider_not_configured")
 
     elif resource_type == "ppt":
+        _emit("正在准备PPT生成…", "ppt_prepare")
         # Use iFlytek (讯飞智文) for PPT generation — the only supported provider
         pptx_path = None
         ppt_outline = None
@@ -3904,7 +3920,10 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
                 gen_opts = request.get("generationOptions") or {}
                 if gen_opts.get("templateId"):
                     ctx["template_id"] = gen_opts["templateId"]
-                result = provider.run(ctx)
+                # Build on_progress callback wired to workflow events
+                def _ppt_progress(label: str, stage: str = "ppt_generation", **meta: Any) -> None:
+                    _emit(label, stage, **meta)
+                result = provider.run(ctx, on_progress=_ppt_progress)
                 if result.get("status") == "success" and result.get("result", {}).get("filepath"):
                     pptx_path = result["result"]["filepath"]
                     logger.info("PPT generated via iFlytek: %s", pptx_path)
@@ -3916,7 +3935,10 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
             resource["content"] = f"# {topic}\n\nPPT 生成服务暂时不可用，请稍后重试。"
             resource["format"] = "text"
         else:
-            rel_path = pptx_path.replace(str(settings.project_root), "").replace("\\", "/").lstrip("/")
+            rel_path = pptx_path.replace("\\", "/")
+            idx = rel_path.find("outputs/")
+            if idx >= 0:
+                rel_path = rel_path[idx:]
             resource["content"] = f"/api/multimodal/file/{rel_path}"
             resource["format"] = "pptx"
             resource["ppt_outline"] = ppt_outline or []
@@ -4060,7 +4082,10 @@ def _legacy_generate_resource(payload: dict[str, Any], auth: AuthContext = Depen
                 session_id=session_id, source="agent",
             )
 
-        rel_path = pptx_path.replace(str(settings.project_root), "").replace("\\", "/").lstrip("/")
+        rel_path = pptx_path.replace("\\", "/")
+        idx = rel_path.find("outputs/")
+        if idx >= 0:
+            rel_path = rel_path[idx:]
         resource = {
             "id": f"ppt_{uuid.uuid4().hex}",
             "type": "ppt",
@@ -5018,12 +5043,28 @@ def _revision_ensure_session(session_id: str) -> None:
         raise HTTPException(status_code=400, detail="sessionId required")
 
 
+def _revision_scope(
+    session_id: str, subject_id: str, path_id: str, revision_id: str, auth: AuthContext,
+) -> tuple[AnalyticsScope, dict | None]:
+    if not subject_id or not path_id:
+        raise HTTPException(status_code=400, detail="subjectId and pathId required")
+    scope = resolve_analytics_scope(
+        auth, session_id=session_id, subject_id=subject_id, path_id=path_id,
+    )
+    revision = conversation_store.get_pending_revision(scope.session_id)
+    if revision:
+        if revision.get("path_id") != scope.path_id or revision.get("subject_id") != scope.subject_id:
+            raise HTTPException(status_code=403, detail="access denied")
+        if revision_id and revision.get("revision_id") != revision_id:
+            raise HTTPException(status_code=404, detail="revision not found")
+    return scope, revision
+
+
 @router.get("/learning-path/{session_id}/pending-revision")
-def get_pending_revision(session_id: str) -> dict[str, Any]:
+def get_pending_revision(session_id: str, subjectId: str = "", pathId: str = "", auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
     """获取待用户确认的路径调整候选。"""
     _revision_ensure_session(session_id)
-    from app.services.conversation_state import conversation_store
-    rev = conversation_store.get_pending_revision(session_id)
+    _scope, rev = _revision_scope(session_id, subjectId, pathId, "", auth)
     if not rev:
         return _product_response({"pending_revision": None}, session_id=session_id)
     # 不返回完整的 proposed_stages 给前端（太大），前端需要时请求全量path
@@ -5033,10 +5074,14 @@ def get_pending_revision(session_id: str) -> dict[str, Any]:
 
 
 @router.post("/learning-path/{session_id}/pending-revision/accept")
-def accept_pending_revision(session_id: str) -> dict[str, Any]:
+def accept_pending_revision(session_id: str, subjectId: str = "", pathId: str = "", revisionId: str = "", auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     """用户确认路径调整。"""
     _revision_ensure_session(session_id)
-    from app.services.conversation_state import conversation_store
+    if not revisionId:
+        raise HTTPException(status_code=400, detail="revisionId required")
+    _scope, revision = _revision_scope(session_id, subjectId, pathId, revisionId, auth)
+    if revision is None:
+        raise HTTPException(status_code=404, detail="No pending revision found")
     result = conversation_store.apply_pending_revision(session_id)
     if not result:
         raise HTTPException(status_code=404, detail="No pending revision found")
@@ -5109,19 +5154,23 @@ def accept_pending_revision(session_id: str) -> dict[str, Any]:
 
 
 @router.post("/learning-path/{session_id}/pending-revision/reject")
-def reject_pending_revision(session_id: str) -> dict[str, Any]:
+def reject_pending_revision(session_id: str, subjectId: str = "", pathId: str = "", revisionId: str = "", auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     """用户拒绝路径调整。"""
     _revision_ensure_session(session_id)
-    from app.services.conversation_state import conversation_store
+    if not revisionId:
+        raise HTTPException(status_code=400, detail="revisionId required")
+    _scope, revision = _revision_scope(session_id, subjectId, pathId, revisionId, auth)
+    if revision is None:
+        raise HTTPException(status_code=404, detail="No pending revision found")
     conversation_store.reject_pending_revision(session_id)
     return _product_response({"ok": True}, session_id=session_id)
 
 
 @router.get("/learning-path/{session_id}/revisions")
-def list_revisions(session_id: str) -> dict[str, Any]:
+def list_revisions(session_id: str, subjectId: str = "", pathId: str = "", auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
     """获取路径历史版本列表。"""
     _revision_ensure_session(session_id)
-    from app.services.conversation_state import conversation_store
+    _revision_scope(session_id, subjectId, pathId, "", auth)
     state = conversation_store.get(session_id)
     return _product_response({
         "revisions": list(state.path_revisions or []),
@@ -8473,19 +8522,36 @@ def feedback_on_generated_section_resource(section_id: str, resource_type: str, 
 
 
 @router.get("/sections/{section_id}/generated-resources")
-def get_generated_section_resources(section_id: str, sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
+def get_generated_section_resources(
+    section_id: str,
+    sessionId: str = "",
+    subjectId: str = "",
+    pathId: str = "",
+    stageId: str = "",
+    taskId: str = "",
+    auth: AuthContext = Depends(require_auth),
+) -> dict[str, Any]:
     """Read only resources generated for the current section."""
-    session_id = _require_session_id(sessionId)
-    context = _section_path_context(session_id, section_id)
-    _require_stage_access(session_id, stageId or str(context.get("stage_id") or "")) if (stageId or context.get("stage_id")) else None
+    if not stageId:
+        raise HTTPException(status_code=400, detail="stageId required")
+    if not pathId:
+        raise HTTPException(status_code=400, detail="pathId required")
+    if not taskId:
+        raise HTTPException(status_code=400, detail="taskId required")
+    scope = resolve_resource_scope(
+        auth,
+        session_id=sessionId,
+        subject_id=subjectId,
+        path_id=pathId,
+        stage_id=stageId,
+        task_id=taskId,
+        section_id=section_id,
+    )
+    session_id, subject_id = scope.session_id, scope.subject_id
     from app.services.section_generated_resources import SectionGeneratedResourcesService
     from app.services.structured_multimodal_resources import STRUCTURED_RESOURCE_DEFINITIONS, normalized_resource_title
     try:
         db = SessionLocal()
-        session = db.get(SessionModel, session_id)
-        subject_id = str(subjectId or (session.subject_id if session else "") or "")
-        if subject_id:
-            _require_matching_subject(session_id, subject_id)
         rows = db.query(ResourceModel).filter(
             ResourceModel.session_id == session_id,
             ResourceModel.related_section_id == section_id,

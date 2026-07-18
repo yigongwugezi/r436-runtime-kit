@@ -86,8 +86,8 @@ def _request(url: str, body: dict, app_id: str, api_key: str) -> dict | None:
 
 def generate_image(
     prompt: str,
-    width: int = 1024,
-    height: int = 1024,
+    width: int = 1280,
+    height: int = 1280,
 ) -> dict[str, Any]:
     """星火绘画：文本生成图片，返回 base64 图片数据。"""
     app_id, api_key, api_secret = _spark_credentials()

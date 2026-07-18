@@ -142,6 +142,7 @@ SERVICE_FIELDS: dict[str, list[str]] = {
     "qwen": ["apiKey"],
     "spark": ["appId", "apiKey", "apiSecret"],
     "sparkVision": ["appId", "apiKey", "apiSecret"],
+    "asr": ["appId", "apiKey", "apiSecret"],
     "wan": ["apiKey"],
     "ark": ["apiKey"],
     "aippt": ["appId", "apiSecret"],

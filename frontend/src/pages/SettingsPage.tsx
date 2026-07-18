@@ -925,6 +925,11 @@ function AIConfigSection() {
           <CredentialField label="星火识图 API Key" {...fieldProps('sparkVision', 'apiKey')} />
           <CredentialField label="星火识图 API Secret" {...fieldProps('sparkVision', 'apiSecret')} />
 
+          <p className="text-xs text-gray-400 dark:text-gray-500 font-semibold uppercase tracking-wider px-1 pt-2">语音识别 · 讯飞语音听写</p>
+          <CredentialField label="语音听写 App ID" description="聊天输入框的语音转文字功能使用" {...fieldProps('asr', 'appId')} />
+          <CredentialField label="语音听写 API Key" {...fieldProps('asr', 'apiKey')} />
+          <CredentialField label="语音听写 API Secret" {...fieldProps('asr', 'apiSecret')} />
+
           <p className="text-xs text-gray-400 dark:text-gray-500 font-semibold uppercase tracking-wider px-1 pt-2">视频与图像扩展</p>
           <CredentialField label="Wan 视频 API Key" description="可选；留空时回退使用通义 / DashScope Key" {...fieldProps('wan', 'apiKey')} />
           <CredentialField label="ARK API Key（Seedream 图像）" description="火山方舟密钥；主模型为 DeepSeek 时自动启用提示词优化" {...fieldProps('ark', 'apiKey')} />

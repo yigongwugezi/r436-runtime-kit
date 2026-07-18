@@ -18,6 +18,7 @@ import PromptTemplates from '../components/chat/PromptTemplates';
 import AgentExecutionDetails from '../components/chat/AgentExecutionDetails';
 import ModePicker, { parseModePickTag, stripModePickTag } from '../components/chat/ModePicker';
 import ProfilePanel from '../components/chat/ProfilePanel';
+import VoiceInputButton from '../components/common/VoiceInputButton';
 
 /** Agent 通用阶段映射 —— 后端 agent_id → 中文标签 */
 const AGENT_LABELS: Record<string, string> = {
@@ -799,6 +800,22 @@ export default function ChatPage() {
     inputRef.current?.focus();
   };
   const handleKeyDown = (e: React.KeyboardEvent) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } };
+  const handleVoiceResult = (text: string) => {
+    console.log('[ChatPage] handleVoiceResult called, text:', text);
+    setInputValue((prev) => {
+      const sep = prev && !prev.endsWith(' ') && !prev.endsWith('\n') ? ' ' : '';
+      const next = prev + sep + text;
+      console.log('[ChatPage] setInputValue:', JSON.stringify(prev), '+', JSON.stringify(text), '=', JSON.stringify(next));
+      return next;
+    });
+    // 同步更新 DOM ref，确保 send 时能读到最新值
+    if (inputRef.current) {
+      inputRef.current.value = inputRef.current.value
+        ? inputRef.current.value + (inputRef.current.value && !inputRef.current.value.endsWith(' ') && !inputRef.current.value.endsWith('\n') ? ' ' : '') + text
+        : text;
+    }
+    inputRef.current?.focus();
+  };
   const isPlanning = chatMode === 'planning';
 
   return (
@@ -996,6 +1013,11 @@ export default function ChatPage() {
               >
                 <ImagePlus size={18} />
               </button>
+              <VoiceInputButton
+                onResult={handleVoiceResult}
+                disabled={isStreaming}
+                size="sm"
+              />
               <textarea
                 ref={inputRef}
                 value={inputValue}

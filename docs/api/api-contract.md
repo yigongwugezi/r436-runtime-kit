@@ -388,6 +388,7 @@ Response:
     "qwen":        { "apiKey": "", "configured": false },
     "spark":       { "appId": "", "apiKey": "", "apiSecret": "", "configured": false },
     "sparkVision": { "appId": "", "apiKey": "", "apiSecret": "", "configured": false },
+    "asr":         { "appId": "", "apiKey": "", "apiSecret": "", "configured": false },
     "wan":         { "apiKey": "", "configured": false },
     "ark":         { "apiKey": "", "configured": false },
     "aippt":       { "appId": "", "apiSecret": "", "configured": false },
@@ -450,6 +451,32 @@ Response:
   "imageConfigured": false
 }
 ```
+
+### GET /api/learner/me/ai-config/asr-ws-url
+
+> **Added v1.1.0** — 语音输入（讯飞语音听写 IAT）。浏览器直连讯飞 WebSocket，
+> 但 HMAC 签名在后端完成：`asr.apiKey` / `asr.apiSecret` 永不下发前端。
+
+Purpose: 获取讯飞语音听写的预签名 WebSocket URL。需要登录。签名 URL 含时间戳，
+有效期约 5 分钟——前端每次开始录音前重新获取。
+
+Request: (none)
+
+Response:
+
+```json
+{
+  "url": "wss://iat-api.xfyun.cn/v2/iat?authorization=...&date=...&host=iat-api.xfyun.cn",
+  "appId": "f6b33305"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `url` | string | yes | 预签名 wss 地址，前端直接 `new WebSocket(url)` |
+| `appId` | string | yes | 首帧 `common.app_id` 所需的非机密应用标识 |
+
+未配置 `asr` 凭据时返回 `409 AI_CONFIG_MISSING`（统一错误信封）。
 
 错误码（AI 配置相关，适用于所有触发 AI 调用的端点）:
 

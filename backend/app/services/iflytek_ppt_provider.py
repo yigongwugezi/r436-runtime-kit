@@ -34,6 +34,15 @@ _MAX_POLL_SECONDS = 300  # 5 min max wait
 _POLL_INTERVAL = 3       # check every 3s
 
 
+def _extract_preview(detail_image: str) -> str:
+    """Extract a preview image URL from the detailImage JSON string."""
+    try:
+        info = json.loads(detail_image) if detail_image else {}
+        return info.get("titleCoverImageLarge") or info.get("titleCoverImage") or ""
+    except (json.JSONDecodeError, TypeError):
+        return ""
+
+
 class IflytekPPTProvider:
     name = "IflytekPPTProvider"
     provider = "iflytek_ppt"
@@ -63,23 +72,41 @@ class IflytekPPTProvider:
 
     @staticmethod
     def get_template_list(pay_type: str = "free", page_size: int = 20) -> list[dict]:
-        """Fetch available PPT templates."""
+        """Fetch available PPT templates (multi-page, API caps at ~10/page)."""
         if not IflytekPPTProvider.is_configured():
             return []
-        try:
-            resp = requests.get(
-                f"{_BASE_URL}/api/ppt/v2/template/list",
-                headers=IflytekPPTProvider._headers(),
-                params={"payType": pay_type, "pageNum": 1, "pageSize": page_size},
-                timeout=10,
-            )
-            if resp.status_code != 200:
-                return []
-            data = resp.json()
-            return data.get("data", {}).get("list", [])
-        except Exception as e:
-            logger.warning("Iflytek: get template list failed: %s", e)
-            return []
+        all_records: list[dict] = []
+        seen: set[str] = set()
+        for page in range(1, 6):  # up to 5 pages → ~50 templates
+            try:
+                resp = requests.get(
+                    f"{_BASE_URL}/api/ppt/v2/template/list",
+                    headers=IflytekPPTProvider._headers(),
+                    params={"payType": pay_type, "pageNum": page, "pageSize": 10},
+                    timeout=10,
+                )
+                if resp.status_code != 200:
+                    break
+                data = resp.json()
+                records = data.get("data", {}).get("records", [])
+                if not records:
+                    break
+                for r in records:
+                    tid = r.get("templateIndexId", "")
+                    if tid and tid not in seen:
+                        seen.add(tid)
+                        all_records.append({
+                            "templateId": tid,
+                            "name": f"{r.get('industry', '通用')} · {r.get('style', '标准')}",
+                            "style": r.get("style", ""),
+                            "color": r.get("color", ""),
+                            "preview": _extract_preview(r.get("detailImage", "")),
+                        })
+                if len(records) < 10:
+                    break  # last page
+            except Exception:
+                break
+        return all_records[:page_size]
 
     @staticmethod
     def _get_free_template() -> str | None:
@@ -92,11 +119,14 @@ class IflytekPPTProvider:
         return None
 
     @staticmethod
-    def run(context: dict[str, Any]) -> dict[str, Any]:
+    def run(context: dict[str, Any], on_progress: Any = None) -> dict[str, Any]:
         """Generate a PPT via 讯飞智文 API.
 
         Context keys:
           topic (str)  — The topic/subject for the presentation.
+          template_id (str) — Optional template ID.
+
+        on_progress — Optional callback(label: str, stage: str, meta: dict) for workflow events.
 
         Returns:
           dict with keys:
@@ -115,8 +145,16 @@ class IflytekPPTProvider:
         if not template_id:
             return {"status": "failed", "result": None, "warnings": ["no template available"]}
 
+        def _progress(label: str, stage: str = "ppt_generation", **meta: Any) -> None:
+            if on_progress:
+                try:
+                    on_progress(label, stage, meta)
+                except Exception:
+                    pass
+
         # Create task
         try:
+            _progress("正在创建PPT任务…", "creating")
             logger.info("Iflytek: creating PPT task for topic=%s", topic[:60])
             form_data = {
                 "query": topic,
@@ -145,7 +183,9 @@ class IflytekPPTProvider:
 
         # Poll for completion
         try:
+            _progress("讯飞智文正在生成PPT…", "generating", poll_seconds=_MAX_POLL_SECONDS)
             deadline = time.time() + _MAX_POLL_SECONDS
+            last_progress_at = time.time()
             while time.time() < deadline:
                 time.sleep(_POLL_INTERVAL)
                 resp = requests.get(
@@ -157,11 +197,20 @@ class IflytekPPTProvider:
                 if resp.status_code != 200:
                     continue
                 data = resp.json()
-                status = data.get("data", {}).get("status")
-                if status == 3:  # completed
+                info = data.get("data", {})
+                ppt_status = str(info.get("pptStatus") or "").lower()
+                # Push periodic progress (time-based, since API doesn't expose page counts)
+                now = time.time()
+                if now - last_progress_at >= 5:  # every 5s
+                    elapsed = now - (deadline - _MAX_POLL_SECONDS)
+                    pct = min(99, int(elapsed / _MAX_POLL_SECONDS * 100))
+                    _progress(f"讯飞智文生成中…{pct}%", "generating", completed_units=pct, total_units=100)
+                    last_progress_at = now
+                if ppt_status in ("done", "success", "completed") or info.get("pptUrl"):
                     download_url = data.get("data", {}).get("pptUrl") or data.get("data", {}).get("downloadUrl")
                     if download_url:
                         # Download the PPTX
+                        _progress("正在下载PPT文件…", "downloading")
                         dl = requests.get(download_url, timeout=120)
                         if dl.status_code == 200:
                             OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -171,7 +220,7 @@ class IflytekPPTProvider:
                             logger.info("Iflytek: PPT saved to %s", local)
                             return {"status": "success", "result": {"filepath": local}, "provider": "iflytek_ppt"}
                     return {"status": "failed", "result": None, "warnings": ["download URL not found"]}
-                elif status in (4, 5):  # failed
+                elif ppt_status in ("failed", "error"):
                     return {"status": "failed", "result": None, "warnings": [f"task failed (status={status})"]}
                 # else status 0 or 1 or 2 → still running
             return {"status": "failed", "result": None, "warnings": ["timeout"]}
