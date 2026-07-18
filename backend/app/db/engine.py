@@ -97,6 +97,8 @@ def init_db() -> None:
             "current_version": "INTEGER DEFAULT 0",
         },
         "resources": {
+            "learner_id": "VARCHAR(64)", "subject_id": "VARCHAR(64)", "path_id": "VARCHAR(64)",
+            "generation_version": "INTEGER DEFAULT 1", "supersedes_resource_id": "VARCHAR(128)",
             "knowledge_points": "JSON",
             "tags": "JSON",
             "difficulty": "VARCHAR(16) DEFAULT 'easy'",

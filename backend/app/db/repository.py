@@ -530,11 +530,17 @@ def upsert_resource(
     session_id: str,
     resource_data: dict[str, Any],
 ) -> ResourceModel:
+    session = db.get(SessionModel, session_id)
     get_or_create_session(db, session_id)
 
     res = ResourceModel(
         id=resource_data.get("id", f"res_{_utcnow().timestamp()}"),
         session_id=session_id,
+        learner_id=resource_data.get("learner_id") or resource_data.get("learnerId") or (session.learner_id if session else None),
+        subject_id=resource_data.get("subject_id") or resource_data.get("subjectId") or (session.subject_id if session else None),
+        path_id=resource_data.get("path_id") or resource_data.get("pathId"),
+        generation_version=int(resource_data.get("generation_version") or resource_data.get("generationVersion") or 1),
+        supersedes_resource_id=resource_data.get("supersedes_resource_id") or resource_data.get("supersedesResourceId"),
         type=resource_data.get("type", "lecture"),
         title=resource_data.get("title", "学习资源"),
         description=resource_data.get("description"),
@@ -585,6 +591,12 @@ def upsert_resource(
         existing.study_status = res.study_status
         existing.completed_at = res.completed_at
         existing.source = res.source
+        if res.learner_id:
+            existing.learner_id = res.learner_id
+        if res.subject_id:
+            existing.subject_id = res.subject_id
+        if res.path_id:
+            existing.path_id = res.path_id
         existing.related_stage_id = res.related_stage_id
         existing.related_chapter_id = res.related_chapter_id
         existing.related_section_id = res.related_section_id

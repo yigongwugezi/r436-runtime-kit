@@ -324,6 +324,11 @@ class ResourceModel(Base):
     session_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("sessions.id", ondelete="CASCADE"), index=True
     )
+    learner_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    subject_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    path_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    generation_version: Mapped[int] = mapped_column(Integer, default=1)
+    supersedes_resource_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     # ── Core metadata ─────────────────────────────────────────────────
     type: Mapped[str] = mapped_column(String(32), default="lecture")  # lecture|mindmap|quiz|reading|practice|multimodal|case_study|video|ppt
