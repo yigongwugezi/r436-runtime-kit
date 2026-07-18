@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLearningPath } from '../hooks/useLearningPath';
 import { useChatStore } from '../store/chatStore';
@@ -82,6 +82,18 @@ export default function LearningPathPage() {
   ));
   const circumference = 100.53;
 
+  // ── 任务级锁：计算当前可操作的任务位置 ──
+  const { currentStageIdx, currentTaskIdx } = useMemo(() => {
+    for (let si = 0; si < stages.length; si++) {
+      const tasks = stages[si].tasks || [];
+      for (let ti = 0; ti < tasks.length; ti++) {
+        if (tasks[ti].status !== 'completed' && tasks[ti].status !== 'mastered')
+          return { currentStageIdx: si, currentTaskIdx: ti };
+      }
+    }
+    return { currentStageIdx: stages.length, currentTaskIdx: -1 };
+  }, [stages]);
+
   const firstIncompleteIdx = stages.findIndex(s => (s.tasks || []).some(t => t.status !== 'completed' && t.status !== 'mastered'));
   const completedStages = stages.filter(s => (s.tasks || []).length > 0 && (s.tasks || []).every((t: any) => t.status === 'completed' || t.status === 'mastered')).length;
 
@@ -138,6 +150,7 @@ export default function LearningPathPage() {
 
   /* ── 有路径：左侧选中 + 中间单阶段 ── */
   const activeStage = stages.find(s => s.id === activeStageId) || stages[firstIncompleteIdx] || stages[0];
+  const activeStageIdx = stages.findIndex(s => s.id === activeStage?.id);
   const openTask = (task: any, stage: any) => nav(learningTaskRoute(task.type || 'read_doc', {
     sessionId, subjectId: subject.subject_id, pathId: path?.id, stageId: stage.id,
     taskId: task.task_id || task.id, sectionId: task.section_id || task.task_id,
@@ -207,10 +220,10 @@ export default function LearningPathPage() {
         {/* ── 左侧导航 + 中间单阶段 + 右侧面板 ── */}
         <div className="grid gap-8 xl:grid-cols-[minmax(200px,0.9fr)_minmax(0,1.55fr)_minmax(260px,0.82fr)] xl:items-start">
           {/* ═══ 左栏：阶段选择器 ═══ */}
-          <aside className="min-w-0 space-y-5 xl:sticky xl:top-8">
+          <aside className="min-w-0 space-y-5 max-h-[calc(100vh-16rem)] overflow-y-auto overscroll-contain">
             <section className="rounded-[20px] border border-surface-200 bg-white/80 backdrop-blur-sm p-5 shadow-sm">
               <p className="mb-5 text-xs font-semibold uppercase tracking-[0.24em] text-surface-400">阶段导航</p>
-              <div className="max-h-[calc(100vh-13rem)] space-y-2 overflow-y-auto overscroll-contain pr-1">
+              <div className="space-y-2 pr-1">
                 {stages.map((stage: any, si: number) => {
                   const tasks = stage.tasks || [];
                   const tDone = tasks.filter((t: any) => t.status === 'completed' || t.status === 'mastered').length;
@@ -246,7 +259,7 @@ export default function LearningPathPage() {
           </aside>
 
           {/* ═══ 中栏：只展示选中的阶段（始终展开） ═══ */}
-          <section className="min-w-0 max-h-[calc(100vh-10rem)] space-y-4 overflow-y-auto overscroll-contain" ref={stageRef}>
+          <section className="min-w-0 max-h-[calc(100vh-16rem)] space-y-4 overflow-y-auto overscroll-contain" ref={stageRef}>
             {activeStage && (() => {
               const stage = activeStage;
               const tasks = stage.tasks || [];
@@ -321,7 +334,7 @@ export default function LearningPathPage() {
                                   </span>
                                 </span>
                               </div>
-                              <button type="button" disabled={done}
+                              <button type="button" disabled={done || (activeStageIdx > currentStageIdx || (activeStageIdx === currentStageIdx && ti > currentTaskIdx))}
                                 onClick={(e) => { e.stopPropagation(); openTask(task, stage); }}
                                 className={`h-10 shrink-0 rounded-xl px-4 text-xs font-bold transition-all duration-300 ${
                                   done ? 'border border-success-200 bg-success-50 text-success-500' :
@@ -348,7 +361,7 @@ export default function LearningPathPage() {
           </section>
 
           {/* ═══ 右栏：立即开始 + 学习分析 + 练习 ═══ */}
-          <aside className="space-y-5 xl:sticky xl:top-8">
+          <aside className="space-y-5 max-h-[calc(100vh-16rem)] overflow-y-auto overscroll-contain">
             {nextTask && (
               <section className="overflow-hidden rounded-[20px] border border-surface-200 bg-white/80 backdrop-blur-sm shadow-sm">
                 <div className="h-20 bg-gradient-to-r from-primary-500 to-accent-500" />
