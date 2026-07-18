@@ -589,6 +589,8 @@ class ConversationStore:
         proposed_stages: list[dict],
         diff: dict,
         reason: str = "",
+        path_id: str = "",
+        subject_id: str = "",
     ) -> None:
         """存储候选路径供用户确认，不覆盖当前 active path。"""
         state = self.get(session_id)
@@ -601,6 +603,8 @@ class ConversationStore:
             "diff": diff,
             "proposed_stages": proposed_stages,
             "diagnosis_snapshot_id": f"diag_{int(time.time() * 1000)}",
+            "path_id": path_id,
+            "subject_id": subject_id,
         }
         state.pending_revision = revision
         state.updated_at = time.time()
@@ -611,7 +615,15 @@ class ConversationStore:
                 from app.db.models import LearningPathModel
                 from app.db.repository import get_or_create_session
                 get_or_create_session(db, session_id)
-                existing = db.get(LearningPathModel, f"path_{session_id}")
+                existing = (
+                    db.query(LearningPathModel)
+                    .filter(LearningPathModel.session_id == session_id)
+                    .order_by(LearningPathModel.updated_at.desc())
+                    .first()
+                )
+                if existing:
+                    revision["path_id"] = revision["path_id"] or existing.id
+                    revision["subject_id"] = revision["subject_id"] or str(getattr(existing.session, "subject_id", "") or "")
                 if existing:
                     existing.pending_revision = revision
                 else:
@@ -665,7 +677,12 @@ class ConversationStore:
             try:
                 db = self._db_session()
                 from app.db.models import LearningPathModel
-                existing = db.get(LearningPathModel, f"path_{session_id}")
+                existing = (
+                    db.query(LearningPathModel)
+                    .filter(LearningPathModel.session_id == session_id)
+                    .order_by(LearningPathModel.updated_at.desc())
+                    .first()
+                )
                 if existing:
                     existing.pending_revision = None
                     existing.path_revisions = state.path_revisions
@@ -687,6 +704,23 @@ class ConversationStore:
             state.pending_revision["decided_at"] = time.time()
             state.pending_revision = None
             state.updated_at = time.time()
+            if self._db_enabled:
+                db = None
+                try:
+                    db = self._db_session()
+                    from app.db.models import LearningPathModel
+                    path = (
+                        db.query(LearningPathModel)
+                        .filter(LearningPathModel.session_id == session_id)
+                        .order_by(LearningPathModel.updated_at.desc())
+                        .first()
+                    )
+                    if path:
+                        path.pending_revision = None
+                        db.commit()
+                finally:
+                    if db is not None:
+                        db.close()
 
     def get_pending_revision(self, session_id: str) -> dict | None:
         """获取待确认的候选路径（内存优先，DB 兜底）。"""

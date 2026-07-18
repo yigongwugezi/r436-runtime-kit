@@ -419,6 +419,9 @@ def run_post_quiz_assessment(
     profile_updated = False
     path_adjusted = False
     resources_generated = 0
+    adjusted_path: list[dict[str, Any]] = []
+    existing_path: list[dict[str, Any]] = []
+    apply_silently = False
 
     try:
         # ═══════════════════════════════════════════════════════════
@@ -577,7 +580,7 @@ def run_post_quiz_assessment(
         # ════════════════════════
         # Step 4.5: auto-generate resources for newly inserted stages
         # ════════════════════════
-        if adjusted_path and existing_path:
+        if adjusted_path and existing_path and apply_silently:
             old_ids = {s.get("stage_id","") for s in existing_path if isinstance(s,dict)}
             new_ids = {s.get("stage_id","") for s in adjusted_path if isinstance(s,dict)}
             added_ids = new_ids - old_ids
@@ -846,6 +849,9 @@ def run_periodic_reassessment(session_id: str) -> dict[str, Any]:
 
     profile_updated = False
     path_adjusted = False
+    adjusted_path: list[dict[str, Any]] = []
+    existing_path: list[dict[str, Any]] = []
+    apply_silently2 = False
 
     try:
         # 1. Build context and run diagnosis (with LLM)
@@ -958,7 +964,7 @@ def run_periodic_reassessment(session_id: str) -> dict[str, Any]:
                 logger.exception("PlannerAgent failed in periodic reassessment")
 
         # 7.5 — 为新 stage 自动生成资源
-        if path_adjusted and adjusted_path and existing_path:
+        if path_adjusted and adjusted_path and existing_path and apply_silently2:
             try:
                 oids = {s.get("stage_id","") for s in existing_path if isinstance(s,dict)}
                 nids = {s.get("stage_id","") for s in adjusted_path if isinstance(s,dict)}
