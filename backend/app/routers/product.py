@@ -4276,6 +4276,53 @@ def _require_stage_access(session_id: str, stage_id: str) -> None:
         db.close()
 
 
+def _require_task_stage_access(
+    session_id: str, stage_id: str, section_id: str, path_id: str = "", task_id: str = "",
+) -> None:
+    """Validate a task URL against the persisted path before serving its content."""
+    db = SessionLocal()
+    try:
+        path = repo_get_latest_learning_path(db, session_id)
+        if not path or not isinstance(path.stages, list):
+            raise HTTPException(status_code=404, detail="learning path not found")
+        if path_id and path.id != path_id:
+            raise HTTPException(status_code=404, detail="learning path not found")
+        stages = _apply_stage_progress(path.stages)
+        stage = next((item for item in stages if str(item.get("stage_id") or item.get("id") or "") == stage_id), None)
+        if not stage:
+            raise HTTPException(status_code=404, detail="learning path stage not found")
+        item_ids = {
+            str(item.get(key) or "")
+            for item in _stage_items(stage)
+            for key in ("task_id", "section_id", "id")
+        }
+        item_ids.update(
+            str(section.get("section_id") or section.get("id") or "")
+            for chapter in stage.get("chapters", [])
+            for section in chapter.get("sections", [])
+            if isinstance(section, dict)
+        )
+        if section_id not in item_ids or (task_id and task_id not in item_ids):
+            raise HTTPException(status_code=404, detail="learning path task not found")
+        if stage["progressStatus"] == "locked":
+            raise HTTPException(status_code=403, detail="请先完成当前阶段")
+    finally:
+        db.close()
+
+
+def _require_session_learner(session_id: str, auth: AuthContext) -> None:
+    """Authenticated users may only use their own learning session."""
+    if not auth.is_authenticated:
+        return
+    db = SessionLocal()
+    try:
+        session = db.get(SessionModel, session_id)
+        if session and session.learner_id and session.learner_id != auth.learner_id:
+            raise HTTPException(status_code=403, detail="无权访问该会话")
+    finally:
+        db.close()
+
+
 def _apply_node_progress(stages: list[dict[str, Any]], session_id: str = "") -> list[dict[str, Any]]:
     if not session_id:
         return stages
@@ -6101,8 +6148,15 @@ def _fallback_section_lecture(section_title: str, section_goal: str, knowledge_p
 
 
 @router.get("/sections/{section_id}/lecture")
-def get_section_lecture(section_id: str, sessionId: str = "", stageId: str = "") -> dict[str, Any]:
+def get_section_lecture(
+    section_id: str, sessionId: str = "", stageId: str = "", pathId: str = "", taskId: str = "",
+    auth: AuthContext = Depends(get_auth),
+) -> dict[str, Any]:
     """Read existing lecture for a section. Returns None if not generated yet."""
+    if sessionId:
+        _require_session_learner(sessionId, auth)
+    if stageId:
+        _require_task_stage_access(_require_session_id(sessionId), stageId, section_id, pathId, taskId)
     try:
         db = SessionLocal()
         query = db.query(ResourceModel).filter(
@@ -6655,6 +6709,24 @@ def _generate_section_lecture(section_id: str, payload: dict[str, Any], workflow
 
     if not section_title:
         return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
+    if stage_id:
+        _require_task_stage_access(session_id, stage_id, section_id, path_id, str(payload.get("taskId") or ""))
+    db = SessionLocal()
+    try:
+        existing = db.query(ResourceModel).filter(
+            ResourceModel.session_id == session_id,
+            ResourceModel.related_section_id == section_id,
+            ResourceModel.type == "lecture",
+        ).order_by(ResourceModel.updated_at.desc()).first()
+        if existing and existing.content and not _is_profile_json(existing.content):
+            return _product_response({"lecture": {
+                "id": existing.id, "title": existing.title or "", "content": existing.content,
+                "sectionId": section_id, "chapterId": existing.related_chapter_id or "",
+                "stageId": existing.related_stage_id or stage_id,
+                "createdAt": int(existing.created_at.timestamp() * 1000) if existing.created_at else 0,
+            }}, session_id=session_id, source="db")
+    finally:
+        db.close()
 
     # Build knowledge point list for prompt
     kp_lines = ""
@@ -6804,6 +6876,7 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
             "related_stage_id": stage_id,
             "related_chapter_id": chapter_id,
             "related_section_id": section_id,
+            "task_id": str(payload.get("taskId") or section_id),
             "knowledge_points": [kp.get("name", str(kp)) if isinstance(kp, dict) else str(kp) for kp in (knowledge_points or [])],
         }
         _attach_personalization_metadata(resource_dict, session_id, subject_id)
@@ -6824,7 +6897,8 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
 
 
 @router.post("/sections/{section_id}/lecture/generate")
-def generate_section_lecture(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def generate_section_lecture(section_id: str, payload: dict[str, Any], auth: AuthContext = Depends(get_auth)) -> dict[str, Any]:
+    _require_session_learner(_payload_session_id(payload), auth)
     return _generate_section_lecture(section_id, payload)
 
 
@@ -7175,7 +7249,7 @@ def generate_all_section_resources(section_id: str, payload: dict[str, Any]) -> 
 
 
 @router.post("/sections/{section_id}/tutor/ask")
-def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def tutor_ask(section_id: str, payload: dict[str, Any], auth: AuthContext = Depends(get_auth)) -> dict[str, Any]:
     """智辅问答：注入学生画像 + 诊断数据，返回 Markdown 格式回答。"""
     session_id = _payload_session_id(payload)
     question = str(payload.get("question", "")).strip()
@@ -7185,6 +7259,12 @@ def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     knowledge_points = payload.get("knowledgePoints", [])
     lecture_excerpt = str(payload.get("lectureExcerpt", ""))[:1000]
     action_type = str(payload.get("actionType") or payload.get("action_type") or "").strip()
+    _require_session_learner(session_id, auth)
+    stage_id = str(payload.get("stageId") or "").strip()
+    if stage_id:
+        _require_task_stage_access(
+            session_id, stage_id, section_id, str(payload.get("pathId") or ""), str(payload.get("taskId") or ""),
+        )
 
     # Combine quoted text into question if provided
     if quoted and not question:
@@ -7222,6 +7302,9 @@ def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         pass
 
     kp_names = ", ".join(kp.get("name", str(kp)) if isinstance(kp, dict) else str(kp) for kp in (knowledge_points or [])[:8])
+    task_context = ""
+    if stage_id:
+        task_context = f"\n路径任务：阶段 {stage_id}；任务 {str(payload.get('taskId') or section_id)}"
 
     # ── Detect tutoring mode from student's course ──
     tutor_persona = "你是 EduAgent 智能助教，请为学生解答问题。"
@@ -7337,6 +7420,7 @@ def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
 - 小节：{section_title}
 - 目标：{section_goal}
 - 知识点：{kp_names}
+{task_context}
 {chr(10) + '文档片段：' + chr(10) + lecture_excerpt if lecture_excerpt else ""}
 
 学生问题：{question}{diagram_hint}

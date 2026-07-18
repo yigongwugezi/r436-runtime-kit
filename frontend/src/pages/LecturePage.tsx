@@ -4,7 +4,7 @@ import { useLearningPath } from '../hooks/useLearningPath';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
 import { useLectureStore } from '../store/lectureStore';
-import { ChevronLeft, ChevronRight, Sparkles, MessageCircle, Send, Brain, BookOpen, ArrowLeft, ArrowRight, Target, Lightbulb, Layers, Clock, GraduationCap, Hash, CheckCircle2, Check, X, Loader2, HelpCircle, RefreshCw, FileText, FileDown } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Sparkles, MessageCircle, Send, Brain, BookOpen, ArrowLeft, ArrowRight, Target, Lightbulb, Layers, Clock, GraduationCap, Hash, CheckCircle2, Check, X, Loader2, HelpCircle, RefreshCw, FileText, FileDown, Lock } from 'lucide-react';
 import Markdown from '../utils/markdown';
 import MermaidDiagram from '../utils/mermaid';
 import { generateSectionQuiz, submitQuizAttempt } from '../api/assessment';
@@ -102,13 +102,22 @@ export default function LecturePage() {
   const { chapterId, sectionId } = useParams<{ chapterId?: string; sectionId?: string }>();
   const nav = useNavigate();
   const [searchParams] = useSearchParams();
-  const { path, updateKnowledgePoint } = useLearningPath();
-  const sessionId = useChatStore((s) => s.dataSessionId);
+  const { path, updateKnowledgePoint, fetchPath } = useLearningPath();
+  const storedSessionId = useChatStore((s) => s.dataSessionId);
+  const routeSessionId = searchParams.get('sessionId') || '';
+  const sessionId = routeSessionId || storedSessionId;
+  const focusedTaskId = searchParams.get('taskId') || sectionId || '';
+  const focusedStageId = searchParams.get('stageId') || '';
+  const focusedPathId = searchParams.get('pathId') || '';
+  const focusedSubjectId = searchParams.get('subjectId') || '';
+  const focusedTask = Boolean(routeSessionId && focusedPathId && focusedStageId && focusedTaskId);
   const returnPathMode = ['textbook', 'daily', 'project', 'focus'].includes(searchParams.get('pathMode') || '')
     ? searchParams.get('pathMode')
     : '';
   const returnViewStage = searchParams.get('viewStage');
-  const returnToPath = returnPathMode
+  const returnToPath = focusedTask
+    ? `/path?sessionId=${encodeURIComponent(routeSessionId)}&subjectId=${encodeURIComponent(focusedSubjectId)}&pathId=${encodeURIComponent(focusedPathId)}&stage=${encodeURIComponent(focusedStageId)}&task=${encodeURIComponent(focusedTaskId)}`
+    : returnPathMode
     ? `/path?mode=${encodeURIComponent(returnPathMode)}${returnViewStage ? `&viewStage=${encodeURIComponent(returnViewStage)}` : ''}`
     : '/path';
 
@@ -156,6 +165,9 @@ export default function LecturePage() {
   };
 
   const [activeSectionId, setActiveSectionId] = useState(sectionId || '');
+  const [focusedAccessDenied, setFocusedAccessDenied] = useState(false);
+  const [focusedCompleting, setFocusedCompleting] = useState(false);
+  const focusedGenerationRef = useRef('');
 
   // ── 本地临时状态 ──
   const [lectureLoaded, setLectureLoaded] = useState(false);
@@ -337,8 +349,18 @@ export default function LecturePage() {
     const key = `${sessionId}:${activeSectionId}`;
     if (store.lectureCache[key]) { setLectureLoaded(true); return; }
     setLectureLoaded(false);
-    fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/lecture?sessionId=${encodeURIComponent(sessionId)}`)
-      .then(r => r.json())
+    const params = new URLSearchParams({ sessionId });
+    if (focusedTask) {
+      params.set('pathId', focusedPathId);
+      params.set('stageId', focusedStageId);
+      params.set('taskId', focusedTaskId);
+    }
+    const token = localStorage.getItem('edu_token') || '';
+    fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/lecture?${params}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+      .then(async r => {
+        if (r.status === 403) setFocusedAccessDenied(true);
+        return r.ok ? r.json() : null;
+      })
       .then(d => {
         store.markLoaded(activeSectionId);
         if (d?.data?.lecture?.content) {
@@ -348,7 +370,7 @@ export default function LecturePage() {
       })
       .catch(() => store.markLoaded(activeSectionId))
       .finally(() => setLectureLoaded(true));
-  }, [activeSectionId, sessionId]);
+  }, [activeSectionId, sessionId, focusedTask, focusedPathId, focusedStageId, focusedTaskId]);
 
   const totalKps = chapterCtx?.chapter.sections?.reduce((s, sec) => s + (sec.knowledgePoints?.length ?? 0), 0) ?? 0;
   const masteredKps = chapterCtx?.chapter.sections?.reduce((s, sec) => s + (sec.knowledgePoints?.filter(k => k.status === 'mastered').length ?? 0), 0) ?? 0;
@@ -371,7 +393,9 @@ export default function LecturePage() {
           sectionGoal: currentSection.goal || '',
           chapterId: chapterCtx?.chapter.id || '',
           stageId: chapterCtx?.stage.id || '',
-          pathId: path?.id || '',
+          pathId: focusedTask ? focusedPathId : path?.id || '',
+          taskId: focusedTask ? focusedTaskId : activeSectionId,
+          subjectId: focusedSubjectId || undefined,
           courseId: path?.courseName || '',
           knowledgePoints: currentSection.knowledgePoints || [],
           requirements: requirements || '',
@@ -398,7 +422,7 @@ export default function LecturePage() {
       if (error instanceof DOMException && error.name === 'AbortError') return;
       generatePanelRef.current?.updateRecord(cid, { status: 'error' });
     } finally { setGenerating(false); }
-  }, [currentSection, activeSectionId, sessionId, chapterCtx, path]);
+  }, [currentSection, activeSectionId, sessionId, chapterCtx, path, focusedTask, focusedPathId, focusedTaskId, focusedSubjectId]);
 
   const cancelLectureGeneration = useCallback(async () => {
     if (!lectureWorkflow || !sessionId) return;
@@ -448,7 +472,7 @@ export default function LecturePage() {
     }
     try {
       const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/tutor/ask`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...(localStorage.getItem('edu_token') ? { Authorization: `Bearer ${localStorage.getItem('edu_token')}` } : {}) },
         body: JSON.stringify({
           sessionId, question,
           quoted: quotedText || '',
@@ -457,13 +481,18 @@ export default function LecturePage() {
           knowledgePoints: currentSection.knowledgePoints || [],
           lectureExcerpt,
           actionType,
+          pathId: focusedTask ? focusedPathId : path?.id || '',
+          stageId: focusedTask ? focusedStageId : chapterCtx?.stage.id || '',
+          taskId: focusedTask ? focusedTaskId : activeSectionId,
+          subjectId: focusedSubjectId || undefined,
         }),
       });
+      if (res.status === 403) { setFocusedAccessDenied(true); return; }
       const data = await res.json();
       if (data?.data?.reply) store.setChatReply(ck, data.data.reply);
       else if (data?.status === 'error') store.setChatReply(ck, `出错了：${data.message}`);
     } catch {} finally { setChatLoading(false); }
-  }, [sessionId, currentSection, activeSectionId, lecture, isTextbookMode, activeSubject?.id]);
+  }, [sessionId, currentSection, activeSectionId, lecture, isTextbookMode, activeSubject?.id, focusedTask, focusedPathId, focusedStageId, focusedTaskId, focusedSubjectId, path?.id, chapterCtx?.stage.id]);
 
   const handleGenerateVideo = useCallback(async (cardId?: string, requirements?: string) => {
     if (!sessionId || !currentSection) return;
@@ -630,9 +659,83 @@ export default function LecturePage() {
     }
   };
 
+  useEffect(() => {
+    if (!focusedTask || !currentSection || !sessionId || !lectureLoaded || lecture || generating) return;
+    const key = `${sessionId}:${focusedStageId}:${activeSectionId}`;
+    if (focusedGenerationRef.current === key) return;
+    focusedGenerationRef.current = key;
+    void handleGenerate();
+  }, [focusedTask, currentSection, sessionId, lectureLoaded, lecture, generating, focusedStageId, activeSectionId, handleGenerate]);
+
+  const completeFocusedTask = async () => {
+    if (!focusedTaskId || focusedCompleting) return;
+    setFocusedCompleting(true);
+    try {
+      await updateKnowledgePoint(focusedTaskId, { status: 'mastered', mastery: 100 });
+      await fetchPath(true);
+    } finally {
+      setFocusedCompleting(false);
+    }
+  };
+
   const typeLabel = (t: string) => t === 'choice' ? '选择题' : t === 'truefalse' ? '判断题' : t === 'fill' ? '填空题' : '简答题';
 
   // ── Mode delegation ──
+  if (focusedTask) {
+    const completed = currentSection?.status === 'mastered';
+    return (
+      <div className="min-h-screen -m-6 bg-surface-50">
+        <div className="mx-auto flex min-h-screen max-w-6xl flex-col">
+          <header className="flex items-center justify-between gap-3 border-b border-surface-200 bg-white px-5 py-3">
+            <button onClick={() => nav(returnToPath)} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-surface-600 hover:bg-surface-100"><ArrowLeft size={14} />返回学习路径</button>
+            <span className="text-xs text-surface-400">{chapterCtx?.stage.title || '当前阶段'}</span>
+          </header>
+          {focusedAccessDenied ? (
+            <main className="m-auto max-w-sm rounded-2xl bg-white p-8 text-center shadow-soft">
+              <Lock size={28} className="mx-auto mb-3 text-amber-500" />
+              <h1 className="font-bold text-surface-900">请先完成当前阶段</h1>
+              <p className="mt-2 text-sm text-surface-500">此任务会在前一阶段完成后自动解锁。</p>
+              <button onClick={() => nav(returnToPath)} className="mt-5 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white">返回学习路径</button>
+            </main>
+          ) : !currentSection ? (
+            <main className="m-auto flex items-center gap-2 text-sm text-surface-500"><Loader2 size={16} className="animate-spin" />正在读取任务…</main>
+          ) : (
+            <main className="grid flex-1 min-h-0 gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_280px]">
+              <article className="min-w-0 overflow-y-auto rounded-2xl bg-white p-5 shadow-soft">
+                <div className="mb-5 flex items-start justify-between gap-3">
+                  <div>
+                    <p className="mb-1 text-xs text-primary-600">{chapterCtx?.stage.title || '当前阶段'}</p>
+                    <h1 className="text-xl font-bold text-surface-900">{currentSection.title}</h1>
+                    {currentSection.goal && <p className="mt-2 flex items-start gap-1.5 text-sm text-surface-500"><Target size={15} className="mt-0.5 text-amber-500" />{currentSection.goal}</p>}
+                  </div>
+                  <span className={`rounded-full px-2.5 py-1 text-xs ${completed ? 'bg-emerald-50 text-emerald-600' : 'bg-blue-50 text-blue-600'}`}>{completed ? '已完成' : '进行中'}</span>
+                </div>
+                {currentSection.knowledgePoints?.length > 0 && <div className="mb-5 flex flex-wrap gap-2">{currentSection.knowledgePoints.map(kp => <span key={kp.id} className="rounded-full bg-surface-100 px-2.5 py-1 text-xs text-surface-600">{kp.name}</span>)}</div>}
+                {!lectureLoaded || generating ? <div className="flex min-h-48 items-center justify-center gap-2 text-sm text-surface-500"><Loader2 size={16} className="animate-spin" />正在准备真实讲义…</div>
+                  : effectiveLectureContent ? <Markdown content={effectiveLectureContent} />
+                  : <div className="rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">讲义暂不可用。<button onClick={() => { focusedGenerationRef.current = ''; void handleGenerate(); }} className="ml-2 font-medium underline">重新加载</button></div>}
+                <div className="mt-8 border-t border-surface-100 pt-4">
+                  <button disabled={completed || focusedCompleting} onClick={completeFocusedTask} className="flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"><Check size={15} />{completed ? '任务已完成' : focusedCompleting ? '保存中…' : '标记完成'}</button>
+                </div>
+              </article>
+              <aside className="flex min-h-0 flex-col overflow-hidden rounded-2xl bg-white shadow-soft">
+                <div className="flex items-center gap-2 border-b border-surface-100 px-4 py-3 text-sm font-semibold text-surface-800"><MessageCircle size={16} className="text-violet-600" />智能辅导</div>
+                <div className="flex-1 overflow-y-auto p-4">
+                  {chatLoading ? <div className="flex items-center gap-2 text-sm text-surface-500"><Loader2 size={15} className="animate-spin" />思考中…</div>
+                    : chatReply ? <Markdown content={chatReply} />
+                    : <p className="text-sm leading-6 text-surface-500">我会结合本阶段、任务目标、知识点和当前讲义回答你的问题。</p>}
+                </div>
+                <div className="flex gap-2 border-t border-surface-100 p-3">
+                  <input value={chatMsg} onChange={e => setChatMsg(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') void handleSendChat(); }} placeholder="问问本节内容…" className="min-w-0 flex-1 rounded-lg border border-surface-200 px-3 py-2 text-sm" />
+                  <button onClick={() => void handleSendChat()} disabled={chatLoading || !chatMsg.trim()} className="rounded-lg bg-violet-600 px-3 text-white disabled:opacity-50"><Send size={15} /></button>
+                </div>
+              </aside>
+            </main>
+          )}
+        </div>
+      </div>
+    );
+  }
   if (pathMode === 'daily') {
     return (
       <DailyTaskPage
