@@ -3,9 +3,9 @@
 Calls 讯飞智文 PPT API to generate professionally formatted PPTX with templates.
 No Docker required — pure HTTP API.
 
-Environment variables:
-  AIPPT_APP_ID     — 讯飞智文应用 ID
-  AIPPT_API_SECRET — 讯飞智文 API 密钥
+Credentials (per-user, 系统设置 → AI 模型配置):
+  aippt.appId     — 讯飞智文应用 ID
+  aippt.apiSecret — 讯飞智文 API 密钥
 """
 
 from __future__ import annotations
@@ -23,6 +23,8 @@ from typing import Any
 
 import requests
 
+from app.services.user_ai_config import get_credential
+
 logger = logging.getLogger(__name__)
 
 OUTPUT_DIR = Path(__file__).resolve().parents[3] / "outputs" / "ppt"
@@ -38,12 +40,12 @@ class IflytekPPTProvider:
 
     @staticmethod
     def is_configured() -> bool:
-        return bool(os.environ.get("AIPPT_APP_ID")) and bool(os.environ.get("AIPPT_API_SECRET"))
+        return bool(get_credential("aippt", "appId")) and bool(get_credential("aippt", "apiSecret"))
 
     @staticmethod
     def _sign(ts: int) -> str:
-        app_id = os.environ.get("AIPPT_APP_ID", "")
-        secret = os.environ.get("AIPPT_API_SECRET", "")
+        app_id = get_credential("aippt", "appId")
+        secret = get_credential("aippt", "apiSecret")
         auth = hashlib.md5((app_id + str(ts)).encode()).hexdigest()
         return base64.b64encode(
             hmac.new(secret.encode(), auth.encode(), hashlib.sha1).digest()
@@ -53,7 +55,7 @@ class IflytekPPTProvider:
     def _headers(content_type: str = "application/json; charset=utf-8") -> dict:
         ts = int(time.time())
         return {
-            "appId": os.environ["AIPPT_APP_ID"],
+            "appId": get_credential("aippt", "appId"),
             "timestamp": str(ts),
             "signature": IflytekPPTProvider._sign(ts),
             "Content-Type": content_type,
@@ -106,7 +108,7 @@ class IflytekPPTProvider:
             return {"status": "failed", "result": None, "warnings": ["missing topic"]}
 
         if not IflytekPPTProvider.is_configured():
-            return {"status": "failed", "result": None, "warnings": ["AIPPT_APP_ID or AIPPT_API_SECRET not set"]}
+            return {"status": "failed", "result": None, "warnings": ["讯飞智文 PPT 未配置，请在「系统设置 → AI 模型配置」填写 AIPPT 应用 ID 与密钥"]}
 
         # Get template
         template_id = context.get("template_id") or IflytekPPTProvider._get_free_template()

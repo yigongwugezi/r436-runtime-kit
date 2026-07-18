@@ -11,6 +11,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.db.engine import SessionLocal
 from app.db.models import LearnerModel
+from app.services.user_ai_config import set_current_learner
 from app.utils.auth import verify_token
 
 logger = logging.getLogger(__name__)
@@ -68,11 +69,13 @@ async def get_auth(
     Routes that require auth should check ``auth.is_authenticated``.
     """
     if credentials is None:
+        set_current_learner("")  # anonymous — empty AI config context
         return AuthContext()
 
     token = credentials.credentials
     payload = verify_token(token)
     if payload is None:
+        set_current_learner("")
         return AuthContext()
 
     learner_id = payload.get("sub", "")
@@ -81,6 +84,9 @@ async def get_auth(
     # Attach to request state for downstream middleware/handlers
     request.state.learner_id = learner_id
     request.state.role = role
+
+    # Bind per-user AI credential context (lazy — no DB access here)
+    set_current_learner(learner_id)
 
     # Optionally load full learner record
     learner = None

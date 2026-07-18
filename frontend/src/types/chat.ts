@@ -23,6 +23,8 @@ export interface ChatMessage {
   progress?: GenerationProgress;
   /** 错误信息 */
   error?: string;
+  /** 机器可读错误码（如 AI_CONFIG_MISSING → 引导用户去系统设置配置密钥） */
+  errorCode?: string;
   /** 低置信度意图标记 — 前端需展示 clarification 交互面板 */
   isClarification?: boolean;
   attachments?: ChatAttachment[];

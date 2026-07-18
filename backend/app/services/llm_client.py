@@ -332,36 +332,62 @@ class DeepSeekLLMClient(BaseLLMClient):
 
 # ── Factory ────────────────────────────────────────────────────────────────
 
-# Module-level cache: one LLM client per provider, reused across all callers.
-# AgentFactory uses this same factory so the whole process shares a single
-# HTTP connection pool / mock instance.
-_llm_client_cache: dict[str, BaseLLMClient] = {}
+# NOTE: 早期版本在此处按 provider 做模块级缓存（进程内所有用户共享同一个
+# client）。凭据改为每用户配置后，这种缓存必然造成跨用户串扰，已移除——
+# OpenAI SDK 客户端构造开销极小，AgentFactory 每次流水线运行各持有一个实例。
 
 
-def get_llm_client(provider: str | None = None) -> BaseLLMClient:
-    """Return a cached LLM client for agents.
+class UnconfiguredLLMClient(BaseLLMClient):
+    """Placeholder client returned when the current user has no LLM key.
 
-    Now delegates to llm_factory.UnifiedChatClient which reads
-    LLM_API_KEY / LLM_BASE_URL / LLM_MODEL from .env.
+    Construction always succeeds (factories may build clients on paths that
+    never call the LLM); any actual invocation raises
+    :class:`AIConfigMissingError` so the standard error envelope guides the
+    user to 系统设置 → AI 模型配置.
     """
-    if provider is None:
-        provider = settings.llm_provider
 
-    if provider in _llm_client_cache:
-        return _llm_client_cache[provider]
+    def __init__(self, provider: str = "llm") -> None:
+        self._provider = provider
 
-    if provider == "mock":
-        client: BaseLLMClient = MockLLMClient()
-    else:
-        try:
-            from app.services.llm_factory import get_chat_client
-            client = get_chat_client()
-        except ImportError:
-            logger.warning("Optional OpenAI-compatible client unavailable; using mock client")
-            client = MockLLMClient()
-        if not client.is_available():
-            logger.warning("No LLM API key configured, falling back to mock")
-            client = MockLLMClient()
+    def chat(self, messages: list[dict[str, str]], **kwargs) -> str:
+        from app.utils.errors import AIConfigMissingError
 
-    _llm_client_cache[provider] = client
-    return client
+        raise AIConfigMissingError(service="llm", provider=self._provider)
+
+    def stream_chat(self, messages: list[dict[str, str]], **kwargs):
+        from app.utils.errors import AIConfigMissingError
+
+        raise AIConfigMissingError(service="llm", provider=self._provider)
+
+    def is_available(self) -> bool:
+        return False
+
+
+def get_llm_client(provider: str | None = None, config: dict | None = None) -> BaseLLMClient:
+    """Return an LLM client bound to the current user's credentials.
+
+    The ``provider`` argument is legacy (callers pass ``settings.llm_provider``)
+    and no longer decides anything — resolution lives entirely in
+    ``user_ai_config.get_llm_credentials``:
+    1. A configured per-user key always wins → real ``UnifiedChatClient``.
+    2. No user key + ``LLM_PROVIDER=mock`` → deterministic
+       :class:`MockLLMClient` — automated-test escape hatch.
+    3. No user key otherwise → :class:`UnconfiguredLLMClient`, which raises
+       ``AIConfigMissingError`` on first use; it never silently falls back
+       to mock content.
+    """
+    from app.services.user_ai_config import get_llm_credentials
+
+    creds = get_llm_credentials(config=config)
+
+    if creds["provider"] == "mock":
+        return MockLLMClient()
+    if not creds["api_key"]:
+        return UnconfiguredLLMClient(provider=creds["provider"])
+
+    try:
+        from app.services.llm_factory import get_chat_client
+    except ImportError:
+        logger.warning("Optional OpenAI-compatible client unavailable")
+        return UnconfiguredLLMClient(provider=creds["provider"])
+    return get_chat_client(config=config)

@@ -20,6 +20,8 @@ from app.db.models import SessionModel
 from app.db.repository import get_or_create_session
 from app.middleware.auth import AuthContext, get_auth
 from app.services.subject_identity import bind_explicit_subject_to_session
+from app.services.user_ai_config import get_config_snapshot
+from app.utils.errors import AIConfigMissingError
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["chat"])
@@ -183,7 +185,7 @@ def _bind_current_subject_from_message(state_obj: Any) -> dict[str, Any] | None:
         db.close()
 
 
-async def _run_chat(message: str, session_id: str, search_enabled: bool = False, deep_think_enabled: bool = False, chat_mode: str = "free", intent: str = "") -> tuple[str, str, dict[str, Any]]:
+async def _run_chat(message: str, session_id: str, search_enabled: bool = False, deep_think_enabled: bool = False, chat_mode: str = "free", intent: str = "", ai_config: dict | None = None) -> tuple[str, str, dict[str, Any]]:
     # ── 自由模式：纯问答，零副作用，不走任何 Agent 管道 ──
     if chat_mode == "free" and _is_likely_chat(message, {}):
         from app.services.deeptutor_facade import deeptutor
@@ -191,7 +193,7 @@ async def _run_chat(message: str, session_id: str, search_enabled: bool = False,
             if deep_think_enabled:
                 from app.config import settings
                 from app.services.llm_client import get_llm_client
-                raw = get_llm_client(settings.llm_provider).chat(messages=[{"role": "user", "content": message}], temperature=0.7, reasoning=True)
+                raw = get_llm_client(settings.llm_provider, config=ai_config).chat(messages=[{"role": "user", "content": message}], temperature=0.7, reasoning=True)
                 reply = raw
                 thinking = ""
                 s = raw.find("<thinking>")
@@ -201,6 +203,8 @@ async def _run_chat(message: str, session_id: str, search_enabled: bool = False,
                     reply = raw[e + 11:].strip()
             else:
                 reply = await deeptutor.chat(message, [], profile_context="", persona_context="")
+        except AIConfigMissingError:
+            raise  # 未配置 key → 引导用户去系统设置，不能用兜底文案掩盖
         except Exception:
             reply = "你好！我是EduAgent，有什么可以帮你的？"
             thinking = ""
@@ -255,6 +259,7 @@ async def _run_chat(message: str, session_id: str, search_enabled: bool = False,
         "deep_think_enabled": deep_think_enabled,
         "intent": intent,
         "chat_mode": chat_mode,
+        "_ai_config": ai_config if ai_config is not None else get_config_snapshot(),
     }
     try:
         from app.routers.product import _profile_v2
@@ -395,6 +400,9 @@ async def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_a
 
     _ensure_session(session_id, _learner_id(payload, auth), _subject_id(payload))
 
+    # SSE 生成器可能在请求上下文结束后执行——先捕获当前用户的凭据快照
+    ai_config = get_config_snapshot()
+
     async def event_stream():
         try:
             multimodal_payload = _try_multimodal_chat(message, session_id, payload)
@@ -428,7 +436,7 @@ async def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_a
             # ── 自由模式流式直调 ──
             if chat_mode == "free" and message and not any(kw in message for kw in ["生成", "出题", "规划", "路径"]):
                 from app.services.llm_factory import get_chat_client
-                client = get_chat_client()
+                client = get_chat_client(config=ai_config)
                 deep_think = bool(payload.get("deep_think_enabled", False))
                 # ── 统一使用流式调用 ──
                 # deep_think → 推理模型（如 deepseek-reasoner），实时流式输出思考过程和结果
@@ -454,6 +462,10 @@ async def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_a
                                 token_buf = ""
                     if token_buf:
                         yield f"data: {json.dumps({'type': 'messages', 'content': token_buf}, ensure_ascii=False)}\n\n"
+                except AIConfigMissingError as e:
+                    yield f"data: {json.dumps({'type': 'error', 'code': 'AI_CONFIG_MISSING', 'message': e.message, 'action': 'navigate_to_settings'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps(_done_event(session_id, {}, e.message), ensure_ascii=False)}\n\n"
+                    return
                 except Exception as e:
                     logger.error("Stream chat failed: %s", e, exc_info=e)
                     yield f"data: {json.dumps({'type': 'error', 'message': '对话生成失败'}, ensure_ascii=False)}\n\n"
@@ -476,13 +488,13 @@ async def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_a
                         for m in (_state_obj.messages[-10:] if _state_obj else [])
                     ],
                 }
-                _ca_result = await _run_conversation_agent(_intent_ctx, AgentFactory())
+                _ca_result = await _run_conversation_agent(_intent_ctx, AgentFactory(config=ai_config))
                 _intent = _ca_result.get("action", "none")
 
             if (not _intent or _intent in chat_only_intents()) and chat_mode != "planning":
                 # → 纯聊天：直接流式
                 from app.services.llm_factory import get_chat_client
-                client = get_chat_client()
+                client = get_chat_client(config=ai_config)
                 deep_think = bool(payload.get("deep_think_enabled", False))
                 token_buf = ""
                 full_reply = ""
@@ -504,6 +516,10 @@ async def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_a
                                 token_buf = ""
                     if token_buf:
                         yield f"data: {json.dumps({'type': 'messages', 'content': token_buf}, ensure_ascii=False)}\n\n"
+                except AIConfigMissingError as e:
+                    yield f"data: {json.dumps({'type': 'error', 'code': 'AI_CONFIG_MISSING', 'message': e.message, 'action': 'navigate_to_settings'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps(_done_event(session_id, {}, e.message), ensure_ascii=False)}\n\n"
+                    return
                 except Exception as e:
                     logger.error("Stream chat failed: %s", e, exc_info=e)
                     yield f"data: {json.dumps({'type': 'error', 'message': '对话生成失败'}, ensure_ascii=False)}\n\n"
@@ -515,13 +531,16 @@ async def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_a
                 return
 
             # ── 需要调智能体 → 走原有 pipeline（跳过重复意图分类） ──
-            reply, thinking, result = await _run_chat(message, session_id, search_enabled=search_enabled, deep_think_enabled=deep_think_enabled, chat_mode=chat_mode, intent=_intent)
+            reply, thinking, result = await _run_chat(message, session_id, search_enabled=search_enabled, deep_think_enabled=deep_think_enabled, chat_mode=chat_mode, intent=_intent, ai_config=ai_config)
             thinking = result.get("_conversation_thinking", "") or ""
             if thinking:
                 yield f"data: {json.dumps({'reasoning': thinking}, ensure_ascii=False)}\n\n"
             for chunk in reply.splitlines(keepends=True):
                 yield f"data: {json.dumps({'type': 'messages', 'content': chunk}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps(_done_event(session_id, result), ensure_ascii=False)}\n\n"
+        except AIConfigMissingError as exc:
+            yield f"data: {json.dumps({'type': 'error', 'code': 'AI_CONFIG_MISSING', 'message': exc.message, 'action': 'navigate_to_settings'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps(_done_event(session_id, {}, exc.message), ensure_ascii=False)}\n\n"
         except Exception as exc:
             logger.error("Stream error: %s", exc, exc_info=exc)
             error_message = "学习方案生成失败，请稍后重试。"
@@ -580,6 +599,8 @@ async def send_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_aut
             },
             **_done_event(session_id, result),
         }
+    except AIConfigMissingError:
+        raise  # 全局 AppError 处理器返回 409 + AI_CONFIG_MISSING 信封
     except Exception as exc:
         logger.error("Chat send error: %s", exc, exc_info=exc)
         return {"sessionId": session_id, "reply": None, "error": "学习方案生成失败，请稍后重试。"}

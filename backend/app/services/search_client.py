@@ -347,7 +347,7 @@ class TavilySearchClient(BaseSearchClient):
     Uses ``urllib.request`` directly (no external HTTP dependency),
     matching the pattern of ``DeepSeekLLMClient``.
 
-    Requires ``TAVILY_API_KEY`` to be set in ``.env``.
+    Requires the per-user Tavily key（系统设置 → AI 模型配置 → 联网搜索）.
     """
 
     def __init__(self, api_key: str, timeout: int = 10) -> None:
@@ -357,7 +357,7 @@ class TavilySearchClient(BaseSearchClient):
 
     def search(self, query: str, max_results: int = 5, **kwargs) -> SearchResponse:
         if not self.api_key:
-            raise SearchError("TAVILY_API_KEY is not configured.")
+            raise SearchError("Tavily key 未配置（系统设置 → AI 模型配置）。")
 
         payload: dict[str, object] = {
             "api_key": self.api_key,
@@ -583,8 +583,11 @@ def get_search_client(provider: str = "mock") -> BaseSearchClient:
             total_timeout=settings.search_provider_hard_timeout_seconds,
         )
     if provider == "tavily":
+        from app.services.user_ai_config import get_credential
+
+        # Tavily key 来自每用户配置（系统设置 → AI 模型配置），不再读 .env
         return TavilySearchClient(
-            api_key=settings.tavily_api_key,
+            api_key=get_credential("tavily"),
             timeout=min(settings.search_timeout, int(settings.search_provider_hard_timeout_seconds)),
         )
     raise ValueError(f"Unsupported search provider: {provider}")

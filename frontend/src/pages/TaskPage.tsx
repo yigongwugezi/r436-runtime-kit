@@ -69,7 +69,7 @@ export default function TaskPage() {
     (s.tasks || []).some((t: any) => t.status !== 'completed' && t.status !== 'mastered')
   ));
   const isDone = task?.status === 'completed' || task?.status === 'mastered';
-  const meta = TYPE_META[task?.type] || TYPE_META.read_doc;
+  const meta = TYPE_META[task?.type ?? ''] || TYPE_META.read_doc;
 
   const fetchResources = useCallback(async (): Promise<boolean> => {
     if (!taskId || !sessionId) return false;

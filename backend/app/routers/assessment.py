@@ -397,7 +397,10 @@ def _trigger_post_submit_assessment(
                 "Post-submit assessment failed for session=%s", session_id,
             )
 
-    threading.Thread(target=_run, daemon=True).start()
+    from app.services.user_ai_config import copy_context_wrap
+
+    # copy_context_wrap: 后台线程带入当前用户的 AI 凭据上下文
+    threading.Thread(target=copy_context_wrap(_run), daemon=True).start()
 
 
 def _create_diagnosis_refresh_task(

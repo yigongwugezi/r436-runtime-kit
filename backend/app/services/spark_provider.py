@@ -1,4 +1,9 @@
-"""科大讯飞 星火多模态 Provider — 图片生成 + 视频生成."""
+"""科大讯飞 星火多模态 Provider — 图片生成 + 视频生成.
+
+凭据来自每用户配置（系统设置 → AI 模型配置，spark 服务条目），在调用时
+解析——不再使用 import 时绑定的模块级常量（那会把进程启动时的一份凭据
+共享给所有用户）。仅图像端点 URL 作为技术项保留在 settings。
+"""
 
 from __future__ import annotations
 
@@ -16,16 +21,26 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-SPARK_IMAGE_URL = settings.spark_image_host_url
-SPARK_APP_ID = settings.spark_app_id
-SPARK_API_KEY = settings.spark_api_key
-SPARK_API_SECRET = settings.spark_api_secret
+
+def _spark_credentials() -> tuple[str, str, str]:
+    """当前用户的星火三元组 (app_id, api_key, api_secret)。"""
+    from app.services.user_ai_config import get_credential
+
+    return (
+        get_credential("spark", "appId"),
+        get_credential("spark", "apiKey"),
+        get_credential("spark", "apiSecret"),
+    )
 
 
 def _build_auth_url(host_url: str, api_key: str = "", api_secret: str = "") -> str:
     """构建带 HMAC 签名的请求 URL."""
-    key = api_key or SPARK_API_KEY
-    secret = api_secret or SPARK_API_SECRET
+    if not api_key or not api_secret:
+        _, user_key, user_secret = _spark_credentials()
+        api_key = api_key or user_key
+        api_secret = api_secret or user_secret
+    key = api_key
+    secret = api_secret
     url_parsed = parse.urlparse(host_url)
     host = url_parsed.hostname or ""
     path = url_parsed.path or "/"
@@ -51,11 +66,11 @@ def _build_auth_url(host_url: str, api_key: str = "", api_secret: str = "") -> s
     return f"{host_url}?authorization={quote(auth)}&date={quote(date_str)}&host={quote(host)}"
 
 
-def _request(url: str, body: dict) -> dict | None:
+def _request(url: str, body: dict, app_id: str, api_key: str) -> dict | None:
     """带重试的 HTTP POST."""
     req = request.Request(url, data=json.dumps(body).encode(), headers={
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {SPARK_API_KEY}:{SPARK_APP_ID}",
+        "Authorization": f"Bearer {api_key}:{app_id}",
     })
     for attempt in range(3):
         try:
@@ -75,13 +90,14 @@ def generate_image(
     height: int = 1024,
 ) -> dict[str, Any]:
     """星火绘画：文本生成图片，返回 base64 图片数据。"""
-    if not SPARK_APP_ID or not SPARK_API_KEY:
+    app_id, api_key, api_secret = _spark_credentials()
+    if not app_id or not api_key:
         return {"status": "provider_not_configured", "provider": "spark_image"}
 
     try:
-        url = _build_auth_url(SPARK_IMAGE_URL)
+        url = _build_auth_url(settings.spark_image_host_url, api_key=api_key, api_secret=api_secret)
         body = {
-            "header": {"app_id": SPARK_APP_ID},
+            "header": {"app_id": app_id},
             "parameter": {
                 "chat": {
                     "domain": "general",
@@ -97,7 +113,7 @@ def generate_image(
                 }
             },
         }
-        result = _request(url, body)
+        result = _request(url, body, app_id, api_key)
         if result and result.get("header", {}).get("code") == 0:
             payload = result.get("payload", {})
             choices = payload.get("choices", {})
@@ -127,8 +143,8 @@ class SparkImageProvider:
 
     @staticmethod
     def is_configured() -> bool:
-        from app.config import settings
-        return bool(settings.spark_app_id) and bool(settings.spark_api_key)
+        app_id, api_key, _ = _spark_credentials()
+        return bool(app_id) and bool(api_key)
 
     def __init__(self) -> None:
         pass

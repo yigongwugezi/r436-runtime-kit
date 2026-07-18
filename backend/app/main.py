@@ -1,5 +1,4 @@
 import logging
-import os
 import uuid
 from contextlib import asynccontextmanager
 
@@ -11,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.db import init_db
 from app.routers import admin, assessment, auth, class_subjects, courses, diagnosis_snapshots, health, history, learner, product, questions, subjects
+from app.routers.ai_config_router import router as ai_config_router
 from app.routers.chat_router import router as chat_router
 from app.routers.knowledge_graph import router as knowledge_graph_router
 from app.routers.workflows import router as workflows_router
@@ -42,17 +42,8 @@ async def lifespan(app: FastAPI):
     conversation_store.enable_db()
     learning_tracker.enable_db()
 
-    # Push settings to os.environ for multimodal providers that read via os.getenv
-    for key in (
-        "QWEN_API_KEY", "QWEN_BASE_URL", "QWEN_VL_MODEL", "QWEN_IMAGE_MODEL",
-        "WAN_API_KEY", "WAN_VIDEO_MODEL",
-        "SPARK_APP_ID", "SPARK_API_KEY", "SPARK_API_SECRET",
-        "SPARK_VISION_APP_ID", "SPARK_VISION_API_KEY", "SPARK_VISION_API_SECRET",
-        "DASHSCOPE_API_KEY",
-    ):
-        val = getattr(settings, key.lower(), "") or ""
-        if val and not os.environ.get(key):
-            os.environ[key] = val
+    # NOTE: AI credentials are per-user (user_ai_config table) and are never
+    # pushed into os.environ — see app/services/user_ai_config.py.
 
     # ── RAG background init (non-blocking) ──────────────────────────
     if settings.rag_enabled:
@@ -194,6 +185,7 @@ async def generic_error_handler(request: Request, exc: Exception) -> JSONRespons
 app.include_router(admin.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(learner.router, prefix="/api")
+app.include_router(ai_config_router, prefix="/api")
 app.include_router(history.router, prefix="/api")
 app.include_router(health.router, prefix="/api")
 app.include_router(courses.router, prefix="/api")

@@ -8280,7 +8280,8 @@ def stream_section_resource_recommendations(section_id: str, payload: dict[str, 
             finally:
                 events.put(None)
 
-        threading.Thread(target=worker, daemon=True, name=f"search-{search_task_id[:8]}").start()
+        from app.services.user_ai_config import copy_context_wrap
+        threading.Thread(target=copy_context_wrap(worker), daemon=True, name=f"search-{search_task_id[:8]}").start()
         try:
             while True:
                 event = events.get()
@@ -8727,12 +8728,14 @@ def _recommend_and_generate_v2(session_id: str, subject_id: str = "") -> dict[st
 
     from concurrent.futures import ThreadPoolExecutor
 
+    from app.services.user_ai_config import copy_context_wrap
+
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures: dict[str, Any] = {}
 
         # Task 1: DB recommendations (existing engine)
         futures["db"] = executor.submit(
-            generate_recommendations,
+            copy_context_wrap(generate_recommendations),
             session_id=session_id, weak_topics=weak_topics_raw,
             resources=resources, learning_path=path, profile=profile, db=None,
         )
@@ -8740,13 +8743,13 @@ def _recommend_and_generate_v2(session_id: str, subject_id: str = "") -> dict[st
         # Task 2: Online search (transient external links)
         if seeds:
             futures["search"] = executor.submit(
-                _search_topics_online, seeds, course_name,
+                copy_context_wrap(_search_topics_online), seeds, course_name,
             )
 
         # Task 3: AI generation — generate diverse types per seed
         if seeds:
             futures["generate"] = executor.submit(
-                _generate_diverse_resources, seeds, session_id, subject_id,
+                copy_context_wrap(_generate_diverse_resources), seeds, session_id, subject_id,
             )
 
         results = {}

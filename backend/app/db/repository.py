@@ -297,6 +297,60 @@ def save_user_preferences(
     return prefs.preferences
 
 
+# ── User AI Config (per-learner AI credentials) ──────────────────────────
+
+
+def get_user_ai_config(db: Session, learner_id: str) -> dict[str, Any]:
+    """Get the AI credential config JSON blob for a learner, or empty dict."""
+    from app.db.models import UserAIConfigModel
+
+    if not learner_id:
+        return {}
+    row = db.get(UserAIConfigModel, learner_id)
+    return row.config if row and isinstance(row.config, dict) else {}
+
+
+def merge_user_ai_config(
+    db: Session, learner_id: str, partial: dict[str, Any]
+) -> dict[str, Any]:
+    """Merge a partial per-service update into the learner's AI config.
+
+    Semantics (per field inside each service block):
+      - value containing ``****`` or ``None`` → ignored (masked placeholder
+        echoed back by the frontend must never be persisted);
+      - empty string → the field is cleared;
+      - anything else → stripped and stored.
+    Service blocks left empty after the merge are removed entirely.
+    """
+    from app.db.models import UserAIConfigModel
+
+    row = db.get(UserAIConfigModel, learner_id)
+    if row is None:
+        row = UserAIConfigModel(learner_id=learner_id, config={})
+        db.add(row)
+    current: dict[str, Any] = dict(row.config) if isinstance(row.config, dict) else {}
+    for service, fields in (partial or {}).items():
+        if not isinstance(fields, dict):
+            continue
+        block = dict(current.get(service) or {})
+        for field, value in fields.items():
+            if value is None or "****" in str(value):
+                continue  # masked placeholder / no-op
+            text = str(value).strip()
+            if text == "":
+                block.pop(field, None)
+            else:
+                block[field] = text
+        if block:
+            current[service] = block
+        else:
+            current.pop(service, None)
+    row.config = current
+    db.commit()
+    db.refresh(row)
+    return row.config
+
+
 # ── Messages ─────────────────────────────────────────────────────────────
 
 def save_message(

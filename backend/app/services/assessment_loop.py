@@ -813,8 +813,9 @@ def run_post_quiz_assessment(
         assessment_tracker.record_diagnosis(session_id, new_mastery)
 
         # ── Step 9: LLM 多维度学习评估（异步触发，不阻塞主流程）──
+        from app.services.user_ai_config import copy_context_wrap
         _th = threading.Thread(
-            target=_trigger_llm_assessment,
+            target=copy_context_wrap(_trigger_llm_assessment),
             args=(session_id,),
             daemon=True,
         )
@@ -1299,12 +1300,40 @@ def _increment_event_counter(session_id: str) -> None:
     assessment_tracker.record_event(session_id, "generic")
 
 
+def _bind_session_ai_context(session_id: str) -> None:
+    """Request-less background jobs: bind the session owner's AI credential context.
+
+    The periodic scheduler has no HTTP request (hence no auth ContextVar);
+    resolve the session's learner and bind it so LLM calls use that
+    learner's own keys.  Sessions without an owner get an empty config and
+    surface ``AI_CONFIG_MISSING`` — by design.
+    """
+    from app.services.user_ai_config import set_current_learner
+
+    learner_id = ""
+    try:
+        from app.db.engine import SessionLocal
+        from app.db.models import SessionModel
+
+        db = SessionLocal()
+        try:
+            sess = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+            learner_id = sess.learner_id if sess and sess.learner_id else ""
+        finally:
+            db.close()
+    except Exception:
+        learner_id = ""
+    set_current_learner(learner_id)
+
+
 async def _periodic_reassessment_loop(stop_event: threading.Event, interval: int = 600) -> None:
     """Background loop that periodically checks for stale sessions.
 
     Runs every `interval` seconds (default 10 min).  For each stale session,
     runs a lightweight re-assessment.
     """
+    from app.services.user_ai_config import set_current_learner
+
     logger.info("Background re-assessment scheduler started (interval=%ss)", interval)
     while not stop_event.is_set():
         try:
@@ -1313,9 +1342,11 @@ async def _periodic_reassessment_loop(stop_event: threading.Event, interval: int
                 logger.info("Found %d stale session(s) for re-assessment", len(stale_sessions))
                 for sid in stale_sessions[:5]:  # Limit per cycle to avoid overload
                     try:
+                        _bind_session_ai_context(sid)  # per-session owner credentials
                         run_periodic_reassessment(sid)
                     except Exception:
                         logger.exception("Re-assessment failed for session=%s", sid)
+                set_current_learner("")  # hygiene: drop the last learner's context
         except Exception:
             logger.exception("Error in periodic re-assessment loop")
 

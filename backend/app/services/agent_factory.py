@@ -29,15 +29,20 @@ class AgentFactory:
       ``factory.get("conversation_agent")``).
     """
 
-    def __init__(self, llm_client: BaseLLMClient | None = None) -> None:
+    def __init__(
+        self,
+        llm_client: BaseLLMClient | None = None,
+        config: dict | None = None,
+    ) -> None:
         self._llm: BaseLLMClient | None = llm_client
+        self._config = config  # per-user AI config snapshot (None → ContextVar)
         self._instances: dict[str, BaseAgent] = {}
 
     @property
     def llm(self) -> BaseLLMClient | None:
-        """The shared LLM client (lazy-init from settings on first access)."""
+        """The shared LLM client (lazy-init from the user's config on first access)."""
         if self._llm is None:
-            self._llm = get_llm_client(settings.llm_provider)
+            self._llm = get_llm_client(settings.llm_provider, config=self._config)
         return self._llm
 
     def get(self, agent_id: str) -> BaseAgent | None:
