@@ -2989,11 +2989,11 @@ def get_resources(
     studyStatus: str = "",
     bookmarked: str = "",
     sortBy: str = "default",
+    auth: AuthContext = Depends(require_auth),
 ) -> dict[str, Any]:
     """Read resources from DB. Supports multi-condition combined filtering and sorting."""
-    session_id = _resolve_session_id(sessionId, subjectId)
-    subject_id = str(subjectId).strip()
-    _ensure_session_linked(session_id, subject_id=subject_id)
+    scope = resolve_resource_scope(auth, session_id=sessionId, subject_id=subjectId, stage_id=relatedStageId, task_id=taskId)
+    session_id, subject_id = scope.session_id, scope.subject_id
     _resource_id_set: set[str] = set()
     _resource_id_suffixes: set[str] = set()
     _bookmarked_filter: bool | None = None
@@ -3307,9 +3307,10 @@ def save_online_search_result(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.get("/resources/{resource_id}")
-def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
+def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "", auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
     """Get a single resource by ID — tries DB first, then in-memory fallback."""
-    session_id = _resolve_session_id(sessionId, subjectId)
+    scope = resolve_resource_scope(auth, session_id=sessionId, subject_id=subjectId, resource_id=resource_id)
+    session_id = scope.session_id
 
     db_resources = ag_get_resources(session_id)
     db_match = next((r for r in db_resources if r["id"] == resource_id), None)
@@ -3969,6 +3970,11 @@ def _legacy_generate_resource(payload: dict[str, Any], auth: AuthContext = Depen
 @router.post("/resources/generate")
 def generate_resource(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     """Legacy synchronous endpoint with the same validated type contract as the workflow path."""
+    resolve_resource_scope(
+        auth, session_id=_payload_session_id(payload), subject_id=_payload_subject_id(payload),
+        path_id=str(payload.get("pathId") or ""), stage_id=str(payload.get("stageId") or ""),
+        task_id=str(payload.get("taskId") or ""), section_id=str(payload.get("sectionId") or ""),
+    )
     return _generate_general_resource(payload)
 
 
@@ -5332,6 +5338,46 @@ class AnalyticsScope:
     path_id: str = ""
     stage_id: str = ""
     include_legacy_unscoped: bool = False
+
+
+@dataclass
+class ResourceScope:
+    learner_id: str
+    session_id: str
+    subject_id: str
+    path_id: str = ""
+    stage_id: str = ""
+    task_id: str = ""
+    section_id: str = ""
+
+
+def resolve_resource_scope(
+    auth: AuthContext, *, session_id: str, subject_id: str = "", path_id: str = "", stage_id: str = "",
+    task_id: str = "", section_id: str = "", resource_id: str = "",
+) -> ResourceScope:
+    """Resolve owned resource scope before any resource read, write, or provider call."""
+    if not isinstance(auth, AuthContext):  # direct unit callers are not HTTP entry points
+        return ResourceScope("", session_id, subject_id, path_id, stage_id, task_id, section_id)
+    base = resolve_analytics_scope(auth, session_id=session_id, subject_id=subject_id, path_id=path_id, stage_id=stage_id)
+    if stage_id and (section_id or task_id):
+        _require_task_stage_access(base.session_id, stage_id, section_id or task_id, path_id, task_id)
+    if resource_id:
+        db = SessionLocal()
+        try:
+            row = db.query(ResourceModel).filter(ResourceModel.id == resource_id, ResourceModel.session_id == base.session_id).first()
+            if row is None:
+                raise HTTPException(status_code=404, detail="resource not found")
+            metadata = row.resource_metadata if isinstance(row.resource_metadata, dict) else {}
+            resource_subject = str(metadata.get("subject_id") or "")
+            if resource_subject and resource_subject != base.subject_id:
+                raise HTTPException(status_code=403, detail="access denied")
+            if stage_id and row.related_stage_id and row.related_stage_id != stage_id:
+                raise HTTPException(status_code=403, detail="access denied")
+            if row.related_stage_id:
+                _require_task_stage_access(base.session_id, row.related_stage_id, row.related_section_id or row.task_id, path_id, row.task_id)
+        finally:
+            db.close()
+    return ResourceScope(base.learner_id, base.session_id, base.subject_id, path_id, stage_id, task_id, section_id)
 
 
 def resolve_analytics_scope(
