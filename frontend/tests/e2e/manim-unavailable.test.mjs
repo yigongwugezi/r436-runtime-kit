@@ -102,10 +102,8 @@ test('real Edge shows a safe Manim-unavailable result without a fake resource', 
     await waitForBrowser(cdp, "location.pathname === '/'", 'authenticated home');
 
     await cdp.evaluate("location.assign('/generate?q=' + encodeURIComponent('Manim 安全测试') + '&types=manim')");
-    await waitForBrowser(cdp, "document.body.innerText.includes('Manim 动画')", 'Manim generation option');
-    await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.includes('开始生成')).click()");
-    await waitForBrowser(cdp, "document.body.innerText.includes('未生成伪造资源')", 'safe unavailable result');
-    assert.equal(await cdp.evaluate("document.body.innerText.includes('已完成')"), false);
+    await waitForBrowser(cdp, "document.body.innerText.includes('动画演示')", 'Manim generation option');
+    assert.equal(await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.includes('动画演示')).disabled"), true);
   } finally {
     socket?.close(); await stop(edge); await stop(frontend); await stop(backend);
     await rm(tempDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });

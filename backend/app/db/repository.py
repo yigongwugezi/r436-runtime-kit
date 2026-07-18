@@ -530,11 +530,17 @@ def upsert_resource(
     session_id: str,
     resource_data: dict[str, Any],
 ) -> ResourceModel:
+    session = db.get(SessionModel, session_id)
     get_or_create_session(db, session_id)
 
     res = ResourceModel(
         id=resource_data.get("id", f"res_{_utcnow().timestamp()}"),
         session_id=session_id,
+        learner_id=resource_data.get("learner_id") or resource_data.get("learnerId") or (session.learner_id if session else None),
+        subject_id=resource_data.get("subject_id") or resource_data.get("subjectId") or (session.subject_id if session else None),
+        path_id=resource_data.get("path_id") or resource_data.get("pathId"),
+        generation_version=int(resource_data.get("generation_version") or resource_data.get("generationVersion") or 1),
+        supersedes_resource_id=resource_data.get("supersedes_resource_id") or resource_data.get("supersedesResourceId"),
         type=resource_data.get("type", "lecture"),
         title=resource_data.get("title", "学习资源"),
         description=resource_data.get("description"),
@@ -585,6 +591,12 @@ def upsert_resource(
         existing.study_status = res.study_status
         existing.completed_at = res.completed_at
         existing.source = res.source
+        if res.learner_id:
+            existing.learner_id = res.learner_id
+        if res.subject_id:
+            existing.subject_id = res.subject_id
+        if res.path_id:
+            existing.path_id = res.path_id
         existing.related_stage_id = res.related_stage_id
         existing.related_chapter_id = res.related_chapter_id
         existing.related_section_id = res.related_section_id
@@ -934,9 +946,148 @@ def get_events(
     return q.all()
 
 
-def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
+def _event_in_analytics_scope(
+    event: LearningEventModel,
+    *,
+    subject_id: str = "",
+    path_id: str = "",
+    stage_id: str = "",
+    include_legacy_unscoped: bool = False,
+) -> bool:
+    """Keep legacy metadata events readable without mixing explicit scopes."""
+    metadata = event.metadata_ or {}
+    event_subject = str(event.subject_id or metadata.get("subjectId") or metadata.get("subject_id") or "")
+    if subject_id and event_subject != subject_id:
+        if not (include_legacy_unscoped and not event_subject):
+            return False
+    if path_id and str(metadata.get("pathId") or metadata.get("path_id") or "") != path_id:
+        return False
+    if stage_id and str(metadata.get("stageId") or metadata.get("stage_id") or "") != stage_id:
+        return False
+    return True
+
+
+def get_scoped_events(
+    db: Session,
+    session_id: str,
+    *,
+    subject_id: str = "",
+    path_id: str = "",
+    stage_id: str = "",
+    include_legacy_unscoped: bool = False,
+) -> list[LearningEventModel]:
+    return [
+        event for event in get_events(db, session_id)
+        if _event_in_analytics_scope(
+            event,
+            subject_id=subject_id,
+            path_id=path_id,
+            stage_id=stage_id,
+            include_legacy_unscoped=include_legacy_unscoped,
+        )
+    ]
+
+
+def _normalized_score(total_score: Any, max_score: Any) -> int | None:
+    try:
+        maximum = float(max_score)
+        return round(float(total_score) * 100 / maximum) if maximum > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def get_assessment_metrics(
+    db: Session, session_id: str, subject_id: str, events: list[LearningEventModel],
+) -> dict[str, Any]:
+    """Use completed attempts as the authoritative assessment metric source."""
+    attempts = db.query(AttemptModel).filter(
+        AttemptModel.session_id == session_id,
+        AttemptModel.status.in_(("graded", "completed")),
+    )
+    if subject_id:
+        attempts = attempts.filter((AttemptModel.subject_id == subject_id) | AttemptModel.subject_id.is_(None))
+    attempts = attempts.order_by(AttemptModel.submitted_at, AttemptModel.attempt_id).all()
+    attempt_ids = {attempt.attempt_id for attempt in attempts}
+    outcomes: list[dict[str, Any]] = []
+    answered = correct = 0
+
+    for attempt in attempts:
+        records = db.query(AnswerRecordModel).filter(AnswerRecordModel.attempt_id == attempt.attempt_id).all()
+        if records:
+            response_count = sum(bool(str(record.student_answer or "").strip()) for record in records)
+            correct_count = sum(bool(record.total_score and record.total_score > 0) for record in records)
+        else:
+            answers = attempt.answers if isinstance(attempt.answers, list) else []
+            response_count = sum(bool(str(item.get("answer") or item.get("student_answer") or "").strip()) for item in answers if isinstance(item, dict))
+            correct_count = sum(bool(item.get("score", 0)) for item in answers if isinstance(item, dict))
+        score = _normalized_score(attempt.total_score, attempt.max_score)
+        answered += response_count
+        correct += correct_count
+        outcomes.append({
+            "attemptId": attempt.attempt_id, "date": (attempt.submitted_at or attempt.graded_at or attempt.created_at).strftime("%Y-%m-%d"),
+            "timestamp": (attempt.submitted_at or attempt.graded_at or attempt.created_at).isoformat(),
+            "accuracy": score, "answeredCount": response_count, "correctCount": correct_count, "source": "attempt",
+        })
+
+    seen_legacy: set[str] = set()
+    for event in events:
+        meta = event.metadata_ or {}
+        legacy_attempt_id = str(event.attempt_id or meta.get("attemptId") or "")
+        if event.event_type not in {"quiz_result", "quiz_submit", "practice_result"} or legacy_attempt_id in attempt_ids:
+            continue
+        key = legacy_attempt_id or str(event.event_id)
+        if key in seen_legacy:
+            continue
+        try:
+            total = int(meta.get("totalQuestions", meta.get("total", 0)) or 0)
+            right = int(meta.get("correct", 0) or 0)
+        except (TypeError, ValueError):
+            total = right = 0
+        score = meta.get("normalizedScore", meta.get("accuracy", meta.get("score")))
+        try:
+            score = round(float(score) * 100) if float(score) <= 1 else round(float(score))
+        except (TypeError, ValueError):
+            score = _normalized_score(right, total)
+        if total <= 0:
+            continue
+        seen_legacy.add(key)
+        answered += total
+        correct += right
+        outcomes.append({"attemptId": legacy_attempt_id or key, "date": event.created_at.strftime("%Y-%m-%d"), "timestamp": event.created_at.isoformat(), "accuracy": score, "answeredCount": total, "correctCount": right, "source": "legacy_event"})
+
+    outcomes.sort(key=lambda item: item["timestamp"])
+    accuracy = round(correct * 100 / answered) if answered else None
+    score_outcomes = [item for item in outcomes if item["accuracy"] is not None]
+    detail = lambda value, count, source: {"value": value, "status": "available" if value is not None else "insufficient_data", "sampleCount": count, "source": source, "updatedAt": outcomes[-1]["timestamp"] if outcomes else None}
+    return {
+        "assessmentCount": len(attempts), "questionAnsweredCount": answered, "correctQuestionCount": correct,
+        "quizAccuracy": accuracy, "latestQuizScore": score_outcomes[-1] if score_outcomes else None,
+        "bestQuizScore": max(score_outcomes, key=lambda item: item["accuracy"]) if score_outcomes else None,
+        "quizTrend": outcomes[-30:], "scoreTrend": outcomes[-30:], "practiceCount": len(attempts),
+        "metricDetails": {
+            "assessmentCount": detail(len(attempts) if attempts else None, len(attempts), "attempt"),
+            "questionAnsweredCount": detail(answered if outcomes else None, answered, "attempt" if attempts else "legacy_event"),
+            "correctQuestionCount": detail(correct if outcomes else None, answered, "attempt" if attempts else "legacy_event"),
+            "accuracy": detail(accuracy, answered, "attempt" if attempts else "legacy_event"),
+        },
+    }
+
+
+def get_event_analytics(
+    db: Session,
+    session_id: str,
+    *,
+    subject_id: str = "",
+    path_id: str = "",
+    stage_id: str = "",
+    include_legacy_unscoped: bool = False,
+) -> dict[str, Any]:
     """Compute analytics summary from learning events (mirrors LearningTracker.summary)."""
-    events = get_events(db, session_id)
+    events = get_scoped_events(
+        db, session_id, subject_id=subject_id, path_id=path_id,
+        stage_id=stage_id, include_legacy_unscoped=include_legacy_unscoped,
+    )
+    assessment_metrics = get_assessment_metrics(db, session_id, subject_id, events)
 
     total_minutes = 0
     resource_counts: dict[str, int] = {}
@@ -1157,7 +1308,9 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
             "totalCount": topic_total.get(topic, 1),
             "risk": round(wrong / max(1, topic_total.get(topic, 1)), 2),
             "source": sorted(topic_sources.get(topic, ["diagnosis"])),
-            "priority": "high" if wrong / max(1, topic_total.get(topic, 1)) > 0.5 else "medium",
+            "sampleCount": topic_total.get(topic, 1),
+            "status": "available" if topic_total.get(topic, 1) >= 3 else "insufficient_data",
+            "priority": "high" if topic_total.get(topic, 1) >= 3 and wrong / max(1, topic_total.get(topic, 1)) > 0.5 else "medium",
         }
         for topic, wrong in ranked[:5]
         if wrong > 0
@@ -1166,11 +1319,16 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
     # ── Structured recommendations from 5 sources ──
     try:
         session_resources = get_resources(db, session_id)
+        if stage_id:
+            session_resources = [r for r in session_resources if r.related_stage_id == stage_id]
     except SQLAlchemyError:
         session_resources = []
 
     try:
-        session_path = get_latest_learning_path(db, session_id)
+        session_path = (
+            db.query(LearningPathModel).filter(LearningPathModel.id == path_id).first()
+            if path_id else get_latest_learning_path(db, session_id)
+        )
     except SQLAlchemyError:
         session_path = None
 
@@ -1312,7 +1470,7 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
             if d not in active_days:
                 active_days.append(d)
     active_days.sort()
-    regularity_score = 50  # 默认中等
+    regularity_score: int | None = None
     if len(active_days) >= 3:
         gaps = [(active_days[i+1] - active_days[i]).days for i in range(len(active_days)-1)]
         if gaps:
@@ -1334,9 +1492,9 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
             assessment_parts.append("掌握情况中等，有提升空间")
         else:
             assessment_parts.append("基础较薄弱，建议从核心概念开始复习")
-    if regularity_score >= 70:
+    if regularity_score is not None and regularity_score >= 70:
         assessment_parts.append("学习规律性强")
-    elif regularity_score <= 30 and len(active_days) >= 3:
+    elif regularity_score is not None and regularity_score <= 30 and len(active_days) >= 3:
         assessment_parts.append("学习间隔不规律，建议固定每天的学习时间")
     if weak_topics:
         topics_str = "、".join([w["topic"] for w in weak_topics[:3]])
@@ -1346,13 +1504,16 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
     return {
         "eventCount": len(events),
         "totalStudyMinutes": total_minutes,
+        "trackedStudyDuration": total_minutes,
+        "durationDataQuality": {"value": total_minutes, "status": "available" if total_minutes else "insufficient_data", "sampleCount": sum(1 for event in events if (event.metadata_ or {}).get("duration") or (event.metadata_ or {}).get("durationMinutes")), "source": "learning_events", "updatedAt": None},
+        "timezoneUsed": "UTC",
         "todayStudyMinutes": today_study_minutes,
         "streak": streak,
         "activeResourceCount": len(resource_counts),
         "modeMetrics": mode_metrics if mode_metrics else None,
         "viewedResources": event_counts.get("resource_view", 0),
         "completedResources": event_counts.get("resource_complete", 0),
-        "practiceCount": event_counts.get("practice_result", 0),
+        **assessment_metrics,
         "resourceViewCount": event_counts.get("resource_view", 0),
         "resourceCompleteCount": event_counts.get("resource_complete", 0),
         "lastStudyTime": int(last_study_ts * 1000) if last_study_ts else None,
@@ -1360,14 +1521,13 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
         "topResources": [
             {"resourceId": rid, "count": cnt, "title": resource_titles.get(rid, "")} for rid, cnt in top_resources
         ],
-        "quizAccuracy": quiz_accuracy,
         "weakTopics": weak_topics,
         "recommendations": recommendations,
         "completionTrend": completion_trend,
-        "quizTrend": daily_quiz[-20:],  # last 20 quiz results
+        "quizTrend": assessment_metrics["quizTrend"],
         # Quiz latest/best for explicit clarity (requirement: "latest / best 要清楚")
-        "latestQuizScore": latest_quiz_score,
-        "bestQuizScore": best_quiz_score,
+        "latestQuizScore": assessment_metrics["latestQuizScore"],
+        "bestQuizScore": assessment_metrics["bestQuizScore"],
         # Feedback explainable stats (requirement: "统计要可解释")
         "feedbackStats": feedback_stats,
         "resourceTypeBreakdown": dict(sorted(resource_type_counts.items(), key=lambda x: x[1], reverse=True)),
@@ -1382,6 +1542,7 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
         ],
         "assessmentSummary": assessment_summary,
         "regularityScore": regularity_score,
+        "regularityMetric": {"value": regularity_score, "status": "available" if regularity_score is not None else "insufficient_data", "sampleCount": len(active_days), "source": "learning_events", "updatedAt": None},
         "topicMasteryTrend": topic_mastery_trend,
     }
 
@@ -1779,6 +1940,9 @@ def create_attempt(db: Session, attempt_data: dict) -> AttemptModel:
         attempt_id=attempt_data.get("attempt_id", f"att_{uuid.uuid4().hex[:12]}"),
         session_id=attempt_data.get("session_id", ""),
         subject_id=attempt_data.get("subject_id"),
+        path_id=attempt_data.get("path_id"),
+        stage_id=attempt_data.get("stage_id"),
+        task_id=attempt_data.get("task_id"),
         quiz_id=attempt_data.get("quiz_id"),
         exam_set_id=attempt_data.get("exam_set_id"),
         max_score=attempt_data.get("max_score", 100),

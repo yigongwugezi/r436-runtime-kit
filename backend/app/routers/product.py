@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+from copy import deepcopy
 import logging
 import os
 import re
@@ -22,6 +23,8 @@ from queue import Queue, Empty
 from threading import Event
 import uuid
 from typing import Any, Callable
+from dataclasses import dataclass
+from sqlalchemy.orm.attributes import flag_modified
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +39,7 @@ from app.agents.diagnosis_agent import DiagnosisAgent
 from app.agents.multimodal_agent import MultimodalAgent
 from app.config import settings
 from app.db.engine import SessionLocal
-from app.db.models import AnswerRecordModel, DailyTaskModel, LearnerModel, LearningEventModel, PersonalSubjectModel, PlanningDraftModel, PracticeQuestionModel, ResourceModel, SessionModel
+from app.db.models import AnswerRecordModel, DailyTaskModel, LearnerModel, LearningEventModel, LearningPathModel, PersonalSubjectModel, PlanningDraftModel, PracticeQuestionModel, ResourceModel, SessionModel
 from app.db.repository import (
     get_bookmarked_ids,
     get_daily_tasks as repo_get_daily_tasks,
@@ -3000,11 +3003,11 @@ def get_resources(
     studyStatus: str = "",
     bookmarked: str = "",
     sortBy: str = "default",
+    auth: AuthContext = Depends(require_auth),
 ) -> dict[str, Any]:
     """Read resources from DB. Supports multi-condition combined filtering and sorting."""
-    session_id = _resolve_session_id(sessionId, subjectId)
-    subject_id = str(subjectId).strip()
-    _ensure_session_linked(session_id, subject_id=subject_id)
+    scope = resolve_resource_scope(auth, session_id=sessionId, subject_id=subjectId, stage_id=relatedStageId, task_id=taskId)
+    session_id, subject_id = scope.session_id, scope.subject_id
     _resource_id_set: set[str] = set()
     _resource_id_suffixes: set[str] = set()
     _bookmarked_filter: bool | None = None
@@ -3306,9 +3309,14 @@ _ONLINE_SEARCH_RESOURCE_TYPES = {"article", "video", "course", "document", "pape
 
 
 @router.post("/resources/search-results/save")
-def save_online_search_result(payload: dict[str, Any]) -> dict[str, Any]:
+def save_online_search_result(payload: dict[str, Any], auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
     """Save one already-ranked external result; this never starts a generator."""
-    session_id = _payload_session_id(payload)
+    scope = resolve_resource_scope(
+        auth, session_id=_payload_session_id(payload), subject_id=str(payload.get("subjectId") or ""),
+        path_id=str(payload.get("pathId") or ""), stage_id=str(payload.get("stageId") or ""),
+        task_id=str(payload.get("taskId") or ""), section_id=str(payload.get("sectionId") or ""),
+    )
+    session_id = scope.session_id
     item = payload.get("resource") if isinstance(payload.get("resource"), dict) else {}
     resource_type = str(item.get("resource_type") or item.get("resourceType") or "").lower().strip()
     if resource_type not in _ONLINE_SEARCH_RESOURCE_TYPES:
@@ -3340,6 +3348,9 @@ def save_online_search_result(payload: dict[str, Any]) -> dict[str, Any]:
         resource_id = f"online-{hashlib.sha256(f'{session_id}|{canonical_url}'.encode('utf-8')).hexdigest()[:24]}"
         resource_dict = {
             "id": resource_id,
+            "learner_id": scope.learner_id,
+            "subject_id": resolved_subject,
+            "path_id": scope.path_id,
             "type": resource_type,
             "title": str(item.get("title") or canonical_topic)[:256],
             "description": str(item.get("snippet") or item.get("reason") or "")[:1000],
@@ -3377,9 +3388,10 @@ def save_online_search_result(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.get("/resources/{resource_id}")
-def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
+def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "", auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
     """Get a single resource by ID — tries DB first, then in-memory fallback."""
-    session_id = _resolve_session_id(sessionId, subjectId)
+    scope = resolve_resource_scope(auth, session_id=sessionId, subject_id=subjectId, resource_id=resource_id)
+    session_id = scope.session_id
 
     db_resources = ag_get_resources(session_id)
     db_match = next((r for r in db_resources if r["id"] == resource_id), None)
@@ -3419,6 +3431,8 @@ def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "") -> 
                 "qualityStatus": metadata.get("quality_status", ""),
                 "sourceType": metadata.get("generation_source", ""),
                 "generationMode": metadata.get("generation_mode", ""),
+                "generationVersion": db_match.get("generation_version") or 1,
+                "supersedesResourceId": db_match.get("supersedes_resource_id"),
                 "resourceMetadata": metadata,
             }},
             session_id=session_id, subject_id=subjectId, source="db",
@@ -3434,23 +3448,51 @@ def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "") -> 
         if match:
             return _product_response({"resource": match}, session_id=session_id, subject_id=subjectId, source="memory")
 
-    return _product_response(
-        {"resource": {
-            "id": resource_id,
-            "type": "lecture",
-            "title": "资源未找到",
-            "description": "",
-            "content": "",
-            "source": "none",
-        }},
-        session_id=session_id, subject_id=subjectId, source="none",
-    )
+    raise HTTPException(status_code=404, detail="resource not found")
+
+
+@router.post("/resources/{resource_id}/regenerate")
+def regenerate_resource(resource_id: str, payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
+    """Create one explicit successor; retries with the same operationId reuse it."""
+    scope = resolve_resource_scope(auth, session_id=_payload_session_id(payload), subject_id=_payload_subject_id(payload), resource_id=resource_id)
+    operation_id = str(payload.get("operationId") or "").strip()
+    if not operation_id:
+        raise HTTPException(status_code=422, detail="operationId required")
+    db = SessionLocal()
+    try:
+        original = db.query(ResourceModel).filter(ResourceModel.id == resource_id, ResourceModel.session_id == scope.session_id).first()
+        if not original or not original.learner_id or original.learner_id != scope.learner_id or not original.subject_id or original.subject_id != scope.subject_id:
+            raise HTTPException(status_code=403, detail="access denied")
+        if original.path_id and original.related_stage_id:
+            _require_task_stage_access(scope.session_id, original.related_stage_id, original.related_section_id or original.task_id, original.path_id, original.task_id)
+        for candidate in db.query(ResourceModel).filter(ResourceModel.supersedes_resource_id == original.id).all():
+            metadata = candidate.resource_metadata if isinstance(candidate.resource_metadata, dict) else {}
+            if metadata.get("regeneration_operation_id") == operation_id:
+                return _product_response({"resourceId": candidate.id, "generationVersion": candidate.generation_version, "reused": True}, session_id=scope.session_id, subject_id=scope.subject_id, source="db")
+        metadata = original.resource_metadata if isinstance(original.resource_metadata, dict) else {}
+        resource_type = str(metadata.get("resource_type") or original.type or "").replace("case_study", "practice")
+        if resource_type not in GENERAL_RESOURCE_TYPES:
+            raise HTTPException(status_code=422, detail="resource type cannot be regenerated")
+        if resource_type != "mindmap":
+            from app.config import runtime_capabilities
+            if not runtime_capabilities()["llmConfigured"]:
+                return _product_response({"errorCode": "provider_not_configured", "resource": None}, session_id=scope.session_id, status="error", message="provider_not_configured", source="agent")
+        topic = str((original.knowledge_points or [original.title])[0] or original.title).strip()
+        request = normalize_general_resource_request({"sessionId": scope.session_id, "subjectId": scope.subject_id, "pathId": original.path_id or "", "stageId": original.related_stage_id or "", "chapterId": original.related_chapter_id or "", "sectionId": original.related_section_id or "", "topic": topic, "resourceType": resource_type, "difficulty": original.difficulty or "medium", "operation": "regenerate", "mode": "general_resource_regeneration"})
+        resource = _general_resource_payload(request)
+        resource.update({"id": f"regen_{uuid.uuid4().hex}", "learner_id": original.learner_id, "subject_id": original.subject_id, "path_id": original.path_id, "related_stage_id": original.related_stage_id, "related_chapter_id": original.related_chapter_id, "related_section_id": original.related_section_id, "task_id": original.task_id, "generation_version": int(original.generation_version or 1) + 1, "supersedes_resource_id": original.id})
+        resource["resource_metadata"] = {**(resource.get("resource_metadata") or {}), "regeneration_operation_id": operation_id}
+        from app.db.repository import upsert_resource
+        saved = upsert_resource(db, scope.session_id, resource)
+        return _product_response({"resourceId": saved.id, "generationVersion": saved.generation_version, "supersedesResourceId": saved.supersedes_resource_id, "reused": False}, session_id=scope.session_id, subject_id=scope.subject_id, source="agent")
+    finally:
+        db.close()
 
 
 @router.delete("/resources/{resource_id}")
-def delete_resource(resource_id: str, sessionId: str = "") -> dict[str, Any]:
+def delete_resource(resource_id: str, sessionId: str = "", subjectId: str = "", auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
     """Delete a resource only from its owning session."""
-    session_id = _resolve_session_id(sessionId, "")
+    session_id = resolve_resource_scope(auth, session_id=sessionId, subject_id=subjectId, resource_id=resource_id).session_id
     db = SessionLocal()
     try:
         from app.db.repository import delete_resource as repo_delete_resource
@@ -3473,8 +3515,11 @@ def delete_resource(resource_id: str, sessionId: str = "") -> dict[str, Any]:
 
 
 @router.post("/resources/{resource_id}/bookmark")
-def bookmark_resource(resource_id: str, sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
-    session_id = _resolve_session_id(sessionId, subjectId)
+def bookmark_resource(resource_id: str, payload: dict[str, Any] | None = None, sessionId: str = "", subjectId: str = "", auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
+    # FastAPI registers this dynamic route before /resources/batch/bookmark.
+    if resource_id == "batch":
+        return batch_set_bookmark(payload or {}, auth)
+    session_id = resolve_resource_scope(auth, session_id=sessionId, subject_id=subjectId, resource_id=resource_id).session_id
     try:
         db = SessionLocal()
         from app.db.repository import get_resource as repo_get_resource, upsert_resource as repo_upsert_resource
@@ -3512,9 +3557,12 @@ def bookmark_resource(resource_id: str, sessionId: str = "", subjectId: str = ""
 
 
 @router.patch("/resources/{resource_id}/study-status")
-def update_resource_study_status(resource_id: str, payload: dict[str, Any], sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
+def update_resource_study_status(resource_id: str, payload: dict[str, Any], sessionId: str = "", subjectId: str = "", auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
     """Update the study status of a resource. Only updates existing DB records."""
-    session_id = _resolve_session_id(sessionId, subjectId)
+    # Same route-shape collision as the bookmark endpoint above.
+    if resource_id == "batch":
+        return batch_update_study_status(payload, auth)
+    session_id = resolve_resource_scope(auth, session_id=sessionId, subject_id=subjectId, resource_id=resource_id).session_id
     study_status = str(payload.get("studyStatus", "completed"))
     db = SessionLocal()
     try:
@@ -3566,13 +3614,16 @@ def update_resource_study_status(resource_id: str, payload: dict[str, Any], sess
 
 
 @router.post("/resources/batch/study-status")
-def batch_update_study_status(payload: dict[str, Any]) -> dict[str, Any]:
+def batch_update_study_status(payload: dict[str, Any], auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
     """Batch update study status for multiple resources in a session."""
-    session_id = _payload_session_id(payload)
+    scope = resolve_resource_scope(auth, session_id=_payload_session_id(payload), subject_id=str(payload.get("subjectId") or ""))
+    session_id = scope.session_id
     resource_ids: list[str] = payload.get("resourceIds", [])
     study_status = str(payload.get("studyStatus", "completed"))
     if not resource_ids:
         return _product_response({"ok": False, "updated": 0}, session_id=session_id, status="error", message="resourceIds is required", source="user_action")
+    for resource_id in resource_ids:
+        resolve_resource_scope(auth, session_id=session_id, subject_id=scope.subject_id, resource_id=str(resource_id))
     try:
         db = SessionLocal()
         from app.db.repository import batch_update_study_status as repo_batch_status
@@ -3583,13 +3634,16 @@ def batch_update_study_status(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.post("/resources/batch/bookmark")
-def batch_set_bookmark(payload: dict[str, Any]) -> dict[str, Any]:
+def batch_set_bookmark(payload: dict[str, Any], auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
     """Batch bookmark or un-bookmark multiple resources in a session."""
-    session_id = _payload_session_id(payload)
+    scope = resolve_resource_scope(auth, session_id=_payload_session_id(payload), subject_id=str(payload.get("subjectId") or ""))
+    session_id = scope.session_id
     resource_ids: list[str] = payload.get("resourceIds", [])
     bookmarked = bool(payload.get("bookmarked", True))
     if not resource_ids:
         return _product_response({"ok": False, "updated": 0}, session_id=session_id, status="error", message="resourceIds is required", source="user_action")
+    for resource_id in resource_ids:
+        resolve_resource_scope(auth, session_id=session_id, subject_id=scope.subject_id, resource_id=str(resource_id))
     try:
         db = SessionLocal()
         from app.db.repository import batch_set_bookmark as repo_batch_bookmark
@@ -3600,10 +3654,14 @@ def batch_set_bookmark(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.post("/resources/batch/export")
-def batch_export_resources(payload: dict[str, Any]) -> dict[str, Any]:
+def batch_export_resources(payload: dict[str, Any], auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
     """Export resource titles as a text list. Optionally filter by resourceIds."""
-    session_id = _payload_session_id(payload)
+    scope = resolve_resource_scope(auth, session_id=_payload_session_id(payload), subject_id=str(payload.get("subjectId") or ""))
+    session_id = scope.session_id
     resource_ids: list[str] | None = payload.get("resourceIds")
+    if resource_ids:
+        for resource_id in resource_ids:
+            resolve_resource_scope(auth, session_id=session_id, subject_id=scope.subject_id, resource_id=str(resource_id))
 
     db_resources = ag_get_resources(session_id)
     db_map: dict[str, dict[str, Any]] = {r["id"]: r for r in db_resources}
@@ -3765,7 +3823,8 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
             pass
         if not resource.get("mermaid_def"):
             resource["content"] = f"## {topic} 知识结构\n\n- 定义\n- 关键步骤\n- 常见误区\n- 自测"
-            resource["mermaid_def"] = sanitize_mermaid(f"mindmap\n  root(({safe_topic}))\n    定义\n    关键步骤\n    常见误区\n    自测")
+            fallback_mermaid = f"mindmap\n  root(({safe_topic}))\n    定义\n    关键步骤\n    常见误区\n    自测"
+            resource["mermaid_def"] = sanitize_mermaid(fallback_mermaid) or fallback_mermaid
             resource["content_format"] = "mermaid"
 
     elif resource_type == "quiz":
@@ -3867,29 +3926,30 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
         capability = "manim_generation" if resource_type in {"animation", "manim"} else "video_generation"
         _, tool = default_registry().select_tool(capability)
         if tool is None:
-            resource["quality_status"] = "provider_unavailable"
-            resource["content"] = f"# {topic}\n\n{resource_type} 生成服务未配置或不可用。"
-            resource["format"] = "text"
+            raise RuntimeError("provider_not_configured")
         else:
             try:
                 result = tool.run({"topic": topic, "subject_name": topic, "user_message": f"Generate {resource_type} for {topic}"})
                 output = result.get("result") if isinstance(result, dict) else {}
                 if result.get("status") != "success" or not isinstance(output, dict) or not (output.get("video_url") or output.get("url")):
-                    resource["quality_status"] = "provider_unavailable"
-                    resource["content"] = f"# {topic}\n\n{resource_type} 生成失败，请稍后重试。"
-                    resource["format"] = "text"
+                    raise RuntimeError("provider_not_configured")
                 else:
                     resource["content"] = str(output.get("video_url") or output.get("url"))
             except Exception:
-                resource["quality_status"] = "provider_unavailable"
-                resource["content"] = f"# {topic}\n\n{resource_type} 生成服务异常，请稍后重试。"
-                resource["format"] = "text"
+                raise RuntimeError("provider_not_configured")
     return resource
 
 
 def _generate_general_resource(payload: dict[str, Any], workflow_task: Any = None) -> dict[str, Any]:
     request = normalize_general_resource_request(payload)
     _ensure_session_linked(request["sessionId"], subject_id=request["subjectId"])
+    if request["resourceType"] not in {"video", "ppt", "image"}:
+        from app.config import runtime_capabilities
+        if not runtime_capabilities()["llmConfigured"]:
+            return _product_response(
+                {"errorCode": "provider_not_configured", "resource": None},
+                session_id=request["sessionId"], status="error", message="provider_not_configured", source="agent",
+            )
     resource = _general_resource_payload(request, workflow_task)
     if workflow_task is not None:
         from app.services.workflow_tasks import workflow_task_manager
@@ -3904,7 +3964,7 @@ def _generate_general_resource(payload: dict[str, Any], workflow_task: Any = Non
         item = {
             "resource_id": saved.id, "type": saved.type, "title": saved.title, "description": saved.description,
             "content": saved.content, "knowledge_points": saved.knowledge_points, "difficulty": saved.difficulty,
-            "estimatedMinutes": saved.estimated_minutes, "format": saved.format, "mermaid_def": saved.mermaid_def,
+            "estimatedMinutes": saved.estimated_minutes, "format": saved.format, "content_format": saved.content_format, "mermaid_def": saved.mermaid_def,
             "code_blocks": saved.code_blocks, "questions": saved.questions, "ppt_outline": saved.ppt_outline,
             "source": saved.source, "task_id": saved.task_id,
         }
@@ -4037,6 +4097,11 @@ def _legacy_generate_resource(payload: dict[str, Any], auth: AuthContext = Depen
 @router.post("/resources/generate")
 def generate_resource(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     """Legacy synchronous endpoint with the same validated type contract as the workflow path."""
+    resolve_resource_scope(
+        auth, session_id=_payload_session_id(payload), subject_id=_payload_subject_id(payload),
+        path_id=str(payload.get("pathId") or ""), stage_id=str(payload.get("stageId") or ""),
+        task_id=str(payload.get("taskId") or ""), section_id=str(payload.get("sectionId") or ""),
+    )
     return _generate_general_resource(payload)
 
 
@@ -4251,12 +4316,246 @@ def resource_knowledge_graph_legacy(resource_id: str) -> dict[str, Any]:
     )
 
 
-# ── In-memory node progress store ────────────────────────────────────
+# ── Node progress ────────────────────────────────────────────────────
+# Legacy in-memory entries are only retained for paths generated before their
+# first persistence.  New updates are written into LearningPathModel.stages.
 _node_progress_store: dict[str, dict[str, Any]] = {}
 
 
 def _nkey(session_id: str, node_id: str) -> str:
     return f"{session_id}:{node_id}"
+
+
+def _set_path_node_progress(stages: list[dict[str, Any]], node_id: str, status: str, mastery: int) -> bool:
+    """Update one existing task/chapter/section/KP in the persisted path."""
+    for stage in stages:
+        for task in stage.get("tasks", []):
+            if isinstance(task, dict) and str(task.get("task_id") or task.get("id") or "") == node_id:
+                task["status"], task["mastery"] = status, mastery
+                return True
+        for node in stage.get("nodes", []):
+            if str(node.get("id") or "") == node_id:
+                node["status"], node["mastery"] = status, mastery
+                return True
+        for chapter in stage.get("chapters", []):
+            if str(chapter.get("chapter_id") or chapter.get("id") or "") == node_id:
+                chapter["status"], chapter["mastery"] = status, mastery
+                return True
+            for section in chapter.get("sections", []):
+                if str(section.get("section_id") or section.get("id") or "") == node_id:
+                    section["status"], section["mastery"] = status, mastery
+                    return True
+                for point in section.get("knowledge_points", section.get("knowledgePoints", [])):
+                    if str(point.get("kp_id") or point.get("id") or "") == node_id:
+                        point["status"], point["mastery"] = status, mastery
+                        return True
+    return False
+
+
+def _stage_items(stage: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return executable items only; containers never complete a stage."""
+    if stage.get("tasks"):
+        return [item for item in stage["tasks"] if isinstance(item, dict)]
+    if stage.get("nodes"):
+        return [item for item in stage["nodes"] if isinstance(item, dict)]
+    items: list[dict[str, Any]] = []
+    for chapter in stage.get("chapters", []):
+        for section in chapter.get("sections", []):
+            points = section.get("knowledge_points", section.get("knowledgePoints", []))
+            items.extend(item for item in points if isinstance(item, dict))
+            if not points and isinstance(section, dict):
+                items.append(section)
+    return items
+
+
+def _is_complete(item: dict[str, Any]) -> bool:
+    return item.get("status") in {"completed", "mastered"} or int(item.get("mastery") or 0) >= 100
+
+
+def _apply_stage_progress(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Derive the only stage-access state from persisted path JSON."""
+    current_seen = False
+    for stage in stages:
+        items = _stage_items(stage)
+        required = [item for item in items if not item.get("optional", False)]
+        done = sum(_is_complete(item) for item in required)
+        if not required:
+            status = "current" if not current_seen else "locked"
+        elif done == len(required):
+            status = "completed"
+        elif not current_seen:
+            status = "current"
+        else:
+            status = "locked"
+        if status == "current":
+            current_seen = True
+        stage["progressStatus"] = status
+        stage["completedTaskCount"] = done
+        stage["requiredTaskCount"] = len(required)
+        stage["progressPercent"] = round(done * 100 / len(required)) if required else 0
+        stage["accessible"] = status != "locked"
+    return stages
+
+
+def _path_task_context(stages: list[dict[str, Any]], node_id: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    for stage in stages:
+        for item in _stage_items(stage):
+            if node_id in {str(item.get(key) or "") for key in ("id", "task_id", "section_id")}:
+                return stage, item
+    return None
+
+
+def complete_path_task(
+    db, *, session_id: str, subject_id: str, path_id: str, stage_id: str,
+    task_id: str, source: str = "learning_path",
+) -> dict[str, Any]:
+    """Persist one verified path task completion using the lecture semantics."""
+    path = db.query(LearningPathModel).filter(
+        LearningPathModel.id == path_id, LearningPathModel.session_id == session_id,
+    ).first()
+    if not path or not isinstance(path.stages, list):
+        raise HTTPException(status_code=404, detail="learning path not found")
+    stages = path.stages
+    stage = next((s for s in stages if str(s.get("id") or s.get("stage_id") or "") == stage_id), None)
+    context = _path_task_context(stages, task_id)
+    if not stage or not context or context[0] is not stage:
+        raise HTTPException(status_code=404, detail="learning path task not found")
+    if _apply_stage_progress(deepcopy(stages))[stages.index(stage)].get("progressStatus") == "locked":
+        raise HTTPException(status_code=403, detail="please complete the current stage first")
+
+    _, task = context
+    was_complete = _is_complete(task)
+    if not was_complete:
+        task["status"], task["mastery"] = "completed", 100
+        task["completedAt"] = datetime.now(timezone.utc).isoformat()
+        task["completionSource"] = source
+        flag_modified(path, "stages")
+        db.add(path)
+        db.flush()
+
+        event_resource_id = f"{path.id}:{task_id}"
+        exists = db.query(LearningEventModel).filter(
+            LearningEventModel.session_id == session_id,
+            LearningEventModel.event_type == "task_complete",
+            LearningEventModel.resource_id == event_resource_id,
+        ).first()
+        if not exists:
+            session = db.get(SessionModel, session_id)
+            db.add(LearningEventModel(
+                session_id=session_id, learner_id=session.learner_id if session else None,
+                subject_id=subject_id or None, event_type="task_complete", resource_id=event_resource_id,
+                metadata_={"eventType": "task_complete", "sessionId": session_id, "subjectId": subject_id,
+                           "pathId": path.id, "stageId": stage_id, "taskId": task_id,
+                           "taskType": str(task.get("task_type") or task.get("type") or "lecture"),
+                           "completedAt": task["completedAt"], "source": source},
+            ))
+    db.flush()
+    progress = _path_progress(path, session_id=session_id, subject_id=subject_id)
+    derived = _apply_stage_progress(deepcopy(path.stages))
+    completed_stage = next((s for s in derived if str(s.get("id") or s.get("stage_id") or "") == stage_id), {})
+    return {
+        "pathTaskCompleted": not was_complete,
+        "stageCompleted": completed_stage.get("progressStatus") == "completed",
+        "nextStageUnlocked": bool(progress.get("currentStageId") and progress.get("currentStageId") != stage_id),
+        "pathProgress": progress,
+    }
+
+
+def _path_progress(path: LearningPathModel, *, session_id: str, subject_id: str) -> dict[str, Any]:
+    stages = _apply_stage_progress(deepcopy(path.stages or [])) if isinstance(path.stages, list) else []
+    required_items = [(stage, item) for stage in stages for item in _stage_items(stage) if not item.get("optional", False)]
+    current = next((stage for stage in stages if stage.get("progressStatus") == "current"), None)
+    next_item = next((item for stage, item in required_items if stage is current and not _is_complete(item)), None)
+    next_task = None
+    if current and next_item:
+        stage_id = str(current.get("id") or current.get("stage_id") or "")
+        task_id = str(next_item.get("task_id") or next_item.get("id") or next_item.get("section_id") or "")
+        section_id = str(next_item.get("section_id") or next_item.get("id") or task_id)
+        task_type = str(next_item.get("task_type") or next_item.get("type") or next_item.get("content_type") or "lecture")
+        next_task = {
+            "stageId": stage_id, "taskId": task_id, "sectionId": section_id,
+            "taskType": task_type, "title": str(next_item.get("title") or next_item.get("topic") or "学习任务"),
+            "accessible": True,
+            "routeContext": {"sessionId": session_id, "subjectId": subject_id, "pathId": path.id, "stageId": stage_id, "taskId": task_id, "sectionId": section_id},
+        }
+    total_required = len(required_items)
+    completed_required = sum(_is_complete(item) for _, item in required_items)
+    completed_stages = sum(stage.get("progressStatus") == "completed" for stage in stages)
+    return {
+        "pathId": path.id, "subjectId": subject_id, "sessionId": session_id,
+        "totalStageCount": len(stages), "completedStageCount": completed_stages,
+        "currentStageId": str(current.get("id") or current.get("stage_id") or "") if current else None,
+        "currentStageTitle": str(current.get("title") or "") if current else None,
+        "totalRequiredTaskCount": total_required, "completedRequiredTaskCount": completed_required,
+        "taskProgressPercent": round(completed_required * 100 / total_required) if total_required else 0,
+        "stageProgressPercent": round(completed_stages * 100 / len(stages)) if stages else 0,
+        "nextTask": next_task,
+        "pathCompleted": bool(stages) and completed_stages == len(stages),
+        "updatedAt": path.updated_at.isoformat() if path.updated_at else None,
+    }
+
+
+def _require_stage_access(session_id: str, stage_id: str) -> None:
+    db = SessionLocal()
+    try:
+        path = repo_get_latest_learning_path(db, session_id)
+        if not path or not isinstance(path.stages, list):
+            raise HTTPException(status_code=404, detail="learning path not found")
+        stages = _apply_stage_progress(path.stages)
+        stage = next((item for item in stages if str(item.get("stage_id") or item.get("id") or "") == stage_id), None)
+        if not stage:
+            raise HTTPException(status_code=404, detail="learning path stage not found")
+        if stage["progressStatus"] == "locked":
+            raise HTTPException(status_code=403, detail="请先完成当前阶段")
+    finally:
+        db.close()
+
+
+def _require_task_stage_access(
+    session_id: str, stage_id: str, section_id: str, path_id: str = "", task_id: str = "",
+) -> None:
+    """Validate a task URL against the persisted path before serving its content."""
+    db = SessionLocal()
+    try:
+        path = repo_get_latest_learning_path(db, session_id)
+        if not path or not isinstance(path.stages, list):
+            raise HTTPException(status_code=404, detail="learning path not found")
+        if path_id and path.id != path_id:
+            raise HTTPException(status_code=404, detail="learning path not found")
+        stages = _apply_stage_progress(path.stages)
+        stage = next((item for item in stages if str(item.get("stage_id") or item.get("id") or "") == stage_id), None)
+        if not stage:
+            raise HTTPException(status_code=404, detail="learning path stage not found")
+        item_ids = {
+            str(item.get(key) or "")
+            for item in _stage_items(stage)
+            for key in ("task_id", "section_id", "id")
+        }
+        item_ids.update(
+            str(section.get("section_id") or section.get("id") or "")
+            for chapter in stage.get("chapters", [])
+            for section in chapter.get("sections", [])
+            if isinstance(section, dict)
+        )
+        if section_id not in item_ids or (task_id and task_id not in item_ids):
+            raise HTTPException(status_code=404, detail="learning path task not found")
+        if stage["progressStatus"] == "locked":
+            raise HTTPException(status_code=403, detail="请先完成当前阶段")
+    finally:
+        db.close()
+
+
+def _require_session_learner(session_id: str, auth: AuthContext) -> None:
+    """Authenticated users may only use their own learning session."""
+    if not auth.is_authenticated:
+        return
+    db = SessionLocal()
+    try:
+        session = db.get(SessionModel, session_id)
+        if session and session.learner_id and session.learner_id != auth.learner_id:
+            raise HTTPException(status_code=403, detail="无权访问该会话")
+    finally:
+        db.close()
 
 
 def _apply_node_progress(stages: list[dict[str, Any]], session_id: str = "") -> list[dict[str, Any]]:
@@ -4292,10 +4591,6 @@ def _apply_node_progress(stages: list[dict[str, Any]], session_id: str = "") -> 
             elif completed > 0:
                 node["status"] = "in_progress"
                 node["mastery"] = 60
-            elif _nkey(session_id, nid) in _node_progress_store:
-                saved = _node_progress_store[_nkey(session_id, nid)]
-                node["status"] = saved.get("status", node["status"])
-                node["mastery"] = 0
             if node.get("mastery", 0) >= 100 and node.get("status") != "mastered":
                 node["mastery"] = 60
 
@@ -4309,34 +4604,17 @@ def _apply_node_progress(stages: list[dict[str, Any]], session_id: str = "") -> 
             next_nodes = next_stage.get("nodes", [])
             if next_nodes and next_nodes[0].get("status") not in ("mastered", "in_progress"):
                 first_next = next_nodes[0]["id"]
-                if _nkey(session_id, first_next) not in _node_progress_store:
-                    _node_progress_store[_nkey(session_id, first_next)] = {
-                        "status": "available", "mastery": 0,
-                        "updatedAt": time.time(),
-                    }
-                    _log_node_progress(session_id, first_next, "available")
                 next_nodes[0]["status"] = "available"
 
     # Apply saved progress to chapter hierarchy
     for stage in stages:
         for chapter in stage.get("chapters", []):
             ch_id = chapter.get("chapter_id") or chapter.get("id", "")
-            if ch_id and _nkey(session_id, ch_id) in _node_progress_store:
-                saved = _node_progress_store[_nkey(session_id, ch_id)]
-                chapter["status"] = saved.get("status", chapter.get("status", "not_started"))
             for section in chapter.get("sections", []):
                 sec_id = section.get("section_id") or section.get("id", "")
-                if sec_id and _nkey(session_id, sec_id) in _node_progress_store:
-                    saved = _node_progress_store[_nkey(session_id, sec_id)]
-                    section["status"] = saved.get("status", section.get("status", "not_started"))
                 for kp in section.get("knowledge_points", []):
                     kp_id = kp.get("kp_id") or kp.get("id", "")
-                    if kp_id and _nkey(session_id, kp_id) in _node_progress_store:
-                        saved = _node_progress_store[_nkey(session_id, kp_id)]
-                        kp["status"] = saved.get("status", kp.get("status", "not_started"))
-                        kp["mastery"] = saved.get("mastery", kp.get("mastery", 0))
-
-    return stages
+    return _apply_stage_progress(stages)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -4674,11 +4952,55 @@ def download_learning_path(
 @router.patch("/learning-path/nodes/{node_id}")
 def update_node_progress(node_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     session_id = _payload_session_id(payload)
-    _node_progress_store[_nkey(session_id, node_id)] = {
-        "status": payload.get("status", "available"),
-        "mastery": payload.get("mastery", 0),
-        "updatedAt": time.time(),
-    }
+    path_id = str(payload.get("pathId") or payload.get("path_id") or "").strip()
+    status = str(payload.get("status", "available"))
+    mastery = int(payload.get("mastery", 0))
+    db = SessionLocal()
+    try:
+        path = (
+            db.query(LearningPathModel).filter(
+                LearningPathModel.id == path_id,
+                LearningPathModel.session_id == session_id,
+            ).first()
+            if path_id else repo_get_latest_learning_path(db, session_id)
+        )
+        context = _path_task_context(path.stages, node_id) if path and isinstance(path.stages, list) else None
+        was_complete = bool(context and _is_complete(context[1]))
+        if not path or not isinstance(path.stages, list) or not context or not _set_path_node_progress(path.stages, node_id, status, mastery):
+            raise HTTPException(status_code=404, detail="learning path node not found")
+        flag_modified(path, "stages")
+        db.add(path)
+        db.commit()
+        db.refresh(path)
+        if not was_complete and _is_complete(_path_task_context(path.stages, node_id)[1]):
+            stage, task = _path_task_context(path.stages, node_id)
+            session = db.get(SessionModel, session_id)
+            metadata = {
+                "eventType": "task_complete", "learnerId": session.learner_id if session else None,
+                "subjectId": str(payload.get("subjectId") or (session.subject_id if session else "") or ""),
+                "sessionId": session_id, "pathId": path.id,
+                "stageId": str(stage.get("id") or stage.get("stage_id") or ""),
+                "taskId": str(task.get("task_id") or task.get("id") or node_id),
+                "sectionId": str(task.get("section_id") or task.get("id") or node_id),
+                "taskType": str(task.get("task_type") or task.get("type") or task.get("content_type") or "lecture"),
+                "title": str(task.get("title") or task.get("topic") or "学习任务"),
+                "completedAt": datetime.now(timezone.utc).isoformat(), "source": "learning_path",
+            }
+            event_resource_id = f"{path.id}:{metadata['taskId']}"
+            exists = db.query(LearningEventModel).filter(
+                LearningEventModel.session_id == session_id,
+                LearningEventModel.event_type == "task_complete",
+                LearningEventModel.resource_id == event_resource_id,
+            ).first()
+            if not exists:
+                db.add(LearningEventModel(
+                    session_id=session_id, learner_id=session.learner_id if session else None,
+                    subject_id=metadata["subjectId"] or None, event_type="task_complete",
+                    resource_id=event_resource_id, metadata_=metadata,
+                ))
+                db.commit()
+    finally:
+        db.close()
     learning_tracker.log(
         {"event": "node_progress", "resourceId": node_id, "metadata": payload},
         session_id=session_id,
@@ -5294,13 +5616,134 @@ def _mastery_level_name(score: float) -> str:
     return "未学"
 
 
-@router.get("/learning-analytics")
-def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
-    session_id = _resolve_session_id(sessionId, subjectId)
-    subject_id = str(subjectId).strip()
-    _ensure_session_linked(session_id, subject_id=subject_id)
+@dataclass(frozen=True)
+class AnalyticsScope:
+    learner_id: str
+    session_id: str
+    subject_id: str
+    path_id: str = ""
+    stage_id: str = ""
+    include_legacy_unscoped: bool = False
 
-    analytics = ag_get_analytics(session_id)
+
+@dataclass
+class ResourceScope:
+    learner_id: str
+    session_id: str
+    subject_id: str
+    path_id: str = ""
+    stage_id: str = ""
+    task_id: str = ""
+    section_id: str = ""
+
+
+def resolve_resource_scope(
+    auth: AuthContext, *, session_id: str, subject_id: str = "", path_id: str = "", stage_id: str = "",
+    task_id: str = "", section_id: str = "", resource_id: str = "",
+) -> ResourceScope:
+    """Resolve owned resource scope before any resource read, write, or provider call."""
+    if not isinstance(auth, AuthContext):  # direct unit callers are not HTTP entry points
+        return ResourceScope("", session_id, subject_id, path_id, stage_id, task_id, section_id)
+    base = resolve_analytics_scope(auth, session_id=session_id, subject_id=subject_id, path_id=path_id, stage_id=stage_id)
+    if stage_id and (section_id or task_id):
+        _require_task_stage_access(base.session_id, stage_id, section_id or task_id, path_id, task_id)
+    if resource_id:
+        db = SessionLocal()
+        try:
+            row = db.query(ResourceModel).filter(ResourceModel.id == resource_id, ResourceModel.session_id == base.session_id).first()
+            if row is None:
+                raise HTTPException(status_code=404, detail="resource not found")
+            metadata = row.resource_metadata if isinstance(row.resource_metadata, dict) else {}
+            resource_subject = str(metadata.get("subject_id") or "")
+            if resource_subject and resource_subject != base.subject_id:
+                raise HTTPException(status_code=403, detail="access denied")
+            if stage_id and row.related_stage_id and row.related_stage_id != stage_id:
+                raise HTTPException(status_code=403, detail="access denied")
+            if row.related_stage_id:
+                _require_task_stage_access(base.session_id, row.related_stage_id, row.related_section_id or row.task_id, path_id, row.task_id)
+        finally:
+            db.close()
+    return ResourceScope(base.learner_id, base.session_id, base.subject_id, path_id, stage_id, task_id, section_id)
+
+
+def resolve_analytics_scope(
+    auth: AuthContext, *, session_id: str, subject_id: str = "", path_id: str = "", stage_id: str = "",
+) -> AnalyticsScope:
+    """Resolve one owned analytics scope before any query or provider call."""
+    session_id = _require_session_id(session_id)
+    subject_id, path_id, stage_id = (str(value or "").strip() for value in (subject_id, path_id, stage_id))
+    db = SessionLocal()
+    try:
+        session = db.get(SessionModel, session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="resource not found")
+        known_subjects = {str(session.subject_id or "")}
+        for event in db.query(LearningEventModel).filter(LearningEventModel.session_id == session_id).all():
+            metadata = event.metadata_ or {}
+            known_subjects.add(str(event.subject_id or metadata.get("subjectId") or metadata.get("subject_id") or ""))
+        known_subjects.discard("")
+        if not subject_id:
+            if len(known_subjects) != 1:
+                raise HTTPException(status_code=400, detail="subjectId required for an ambiguous session")
+            subject_id = known_subjects.pop()
+        subject = db.get(PersonalSubjectModel, subject_id)
+        if subject is None or subject.learner_id != auth.learner_id:
+            raise HTTPException(status_code=403, detail="access denied")
+        if session.learner_id not in (auth.learner_id, None):
+            raise HTTPException(status_code=403, detail="access denied")
+        if session.subject_id and session.subject_id != subject_id:
+            raise HTTPException(status_code=409, detail="session subject does not match subjectId")
+        if session.learner_id is None and session.subject_id != subject_id:
+            raise HTTPException(status_code=403, detail="access denied")
+        path = None
+        if path_id:
+            path = db.query(LearningPathModel).filter(
+                LearningPathModel.id == path_id, LearningPathModel.session_id == session_id,
+            ).first()
+            if path is None:
+                raise HTTPException(status_code=403, detail="access denied")
+            if not session.subject_id:
+                raise HTTPException(status_code=400, detail="path scope requires a subject-bound session")
+        if stage_id:
+            if path is None:
+                raise HTTPException(status_code=400, detail="stageId requires pathId")
+            stages = path.stages or []
+            if isinstance(stages, dict):
+                stages = stages.get("stages", [])
+            if not any(str(stage.get("id") or stage.get("stage_id") or "") == stage_id for stage in stages if isinstance(stage, dict)):
+                raise HTTPException(status_code=403, detail="access denied")
+        return AnalyticsScope(
+            auth.learner_id, session_id, subject_id, path_id, stage_id,
+            include_legacy_unscoped=bool(session.subject_id == subject_id),
+        )
+    finally:
+        db.close()
+
+
+@router.get("/learning-analytics")
+def learning_analytics(
+    sessionId: str = "", subjectId: str = "", pathId: str = "", stageId: str = "",
+    auth: AuthContext = Depends(require_auth),
+) -> dict[str, Any]:
+    scope = resolve_analytics_scope(auth, session_id=sessionId, subject_id=subjectId, path_id=pathId, stage_id=stageId)
+    session_id, subject_id = scope.session_id, scope.subject_id
+    from app.db.repository import get_event_analytics
+    db = SessionLocal()
+    try:
+        analytics = get_event_analytics(
+            db, session_id, subject_id=subject_id, path_id=scope.path_id,
+            stage_id=scope.stage_id, include_legacy_unscoped=scope.include_legacy_unscoped,
+        )
+        path = (
+            db.query(LearningPathModel).filter(
+                LearningPathModel.id == scope.path_id,
+                LearningPathModel.session_id == session_id,
+            ).first()
+            if scope.path_id else repo_get_latest_learning_path(db, session_id)
+        )
+        path_progress = _path_progress(path, session_id=session_id, subject_id=subject_id) if path else None
+    finally:
+        db.close()
     state = conversation_store.get(session_id)
     last_result = state.last_result or {}
 
@@ -5314,7 +5757,7 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
         from app.services.diagnosis_snapshot_service import try_get_diagnosis
         _db = AnalyticsSessionLocal()
         try:
-            _dto = try_get_diagnosis(_db, learner_id=None, subject_id=subject_id or None, session_id=session_id)
+            _dto = try_get_diagnosis(_db, learner_id=scope.learner_id, subject_id=subject_id, session_id=session_id)
             if _dto:
                 diagnosis = {
                     "mastery_levels": [
@@ -5328,6 +5771,8 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
                          "reason": w["reason"], "suggested_action": w.get("recommendedAction")}
                         for w in _dto.get("weaknesses", [])
                     ],
+                    "evidenceCount": _dto.get("evidenceCount", 0),
+                    "confidence": _dto.get("confidence"),
                 }
                 diagnosis_version = _dto.get("version")
                 diagnosis_generated_at = _dto.get("createdAt")
@@ -5336,8 +5781,6 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
     except Exception:
         pass
 
-    if not diagnosis:
-        diagnosis = last_result.get("diagnosis", {}) if isinstance(last_result, dict) else {}
     mastery_levels = diagnosis.get("mastery_levels", []) or []
     heatmap = [
         {"knowledgePoint": m.get("name", ""), "mastery": m.get("score", 50),
@@ -5367,11 +5810,24 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
             suggested = {"high": "优先攻克，建议每日专项练习", "medium": "按学习路径顺序逐步强化", "low": "在完成主要任务后选择性复习"}.get(p, "建议针对性练习")
         weakness_ranking.append({
             "name": w.get("name", ""),
-            "priority": w.get("priority", "medium"),
+            "priority": w.get("priority", "medium") if (diagnosis.get("evidenceCount", 0) or 0) >= 3 else "medium",
             "reason": w.get("reason", ""),
             "suggested_action": suggested,
             "resourceIds": resource_ids[:3] if isinstance(resource_ids, list) else [],
+            "sampleCount": diagnosis.get("evidenceCount", 0) or 0,
+            "status": "available" if (diagnosis.get("evidenceCount", 0) or 0) >= 3 else "insufficient_data",
+            "source": "diagnosis_snapshot",
+            "confidence": diagnosis.get("confidence"),
         })
+
+    if not weakness_ranking:
+        for weak in analytics.get("weakTopics", [])[:5]:
+            weakness_ranking.append({
+                "name": weak.get("topic", ""), "priority": weak.get("priority", "medium"),
+                "reason": "需要更多练习" if weak.get("status") == "insufficient_data" else "近期答题表现偏弱",
+                "sampleCount": weak.get("sampleCount", 0), "status": weak.get("status", "insufficient_data"),
+                "source": "event_fallback", "confidence": weak.get("risk"), "resourceIds": [],
+            })
 
     # ── M6: 从 DB 拉取近30天的学习事件用于按日统计 ──
     from datetime import datetime, timedelta, date as date_type
@@ -5388,24 +5844,14 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
     try:
         try:
             db_events = SessionLocal()
-            from app.db.models import LearningEventModel
-            from sqlalchemy import and_
-
-            rows = (
-                db_events.query(LearningEventModel)
-                .filter(
-                    and_(
-                        LearningEventModel.session_id == session_id,
-                        LearningEventModel.created_at >= thirty_days_ago,
-                        LearningEventModel.event_type.in_([
-                            "quiz_result", "quiz_submit", "practice_result",
-                            "resource_view", "resource_complete",
-                        ]),
-                    )
-                )
-                .order_by(LearningEventModel.created_at.asc())
-                .all()
-            )
+            from app.db.repository import get_scoped_events
+            rows = [row for row in get_scoped_events(
+                db_events, session_id, subject_id=subject_id, path_id=scope.path_id,
+                stage_id=scope.stage_id, include_legacy_unscoped=scope.include_legacy_unscoped,
+            ) if row.created_at and row.created_at.date() >= thirty_days_ago and row.event_type in {
+                "quiz_result", "quiz_submit", "practice_result", "resource_view", "resource_complete",
+            }]
+            rows.sort(key=lambda row: row.created_at)
             for row in rows:
                 if row.created_at:
                     day_key = row.created_at.strftime("%Y-%m-%d")
@@ -5441,6 +5887,19 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
             db_events.close()
     except Exception as e:
         logger.warning(f"Failed to query DB for daily stats: {e}")
+
+    # Completed attempts, not event clicks, define daily question metrics.
+    for stats in daily_stats.values():
+        stats["questionCount"] = 0
+        stats["accuracySum"] = 0.0
+    for score in analytics.get("scoreTrend", []):
+        stats = daily_stats.get(score.get("date"))
+        if not stats:
+            continue
+        count = int(score.get("answeredCount", 0) or 0)
+        stats["questionCount"] += count
+        stats["accuracySum"] += float(score.get("accuracy") or 0) * count
+        stats["active"] = True
 
     # ── M6: 进步曲线（近30天正确率+做题量）──
     progress_curve = []
@@ -5492,7 +5951,6 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
     today_avg_score = round(today_acc_sum / today_questions) if today_questions > 0 else None
 
     # ── M6: 目标追踪 ──
-    learning_path = last_result.get("learning_path", []) if isinstance(last_result, dict) else []
     exam_date_str = last_result.get("examDate") if isinstance(last_result, dict) else None
     days_until_exam = None
     if exam_date_str:
@@ -5502,17 +5960,14 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
         except (ValueError, TypeError):
             pass
 
-    # 预估达成分位：基于掌握度加权
     mastery_scores = [m.get("score", 0) for m in mastery_levels if isinstance(m, dict)]
     avg_mastery = int(sum(mastery_scores) / max(1, len(mastery_scores)))
-    # 简单估算：掌握度每10分一档，映射到分位
-    estimated_percentile = min(99, max(1, avg_mastery + (10 if avg_mastery >= 70 else -5)))
 
     # 进度条：完成阶段数 / 总阶段数
-    stages_total = len(learning_path)
-    stages_done = last_result.get("currentStageIndex", 0) if isinstance(last_result, dict) else 0
-    if isinstance(stages_done, int) and stages_total > 0:
-        progress_pct = round(stages_done / stages_total * 100)
+    stages_total = (path_progress or {}).get("totalStageCount", 0)
+    stages_done = (path_progress or {}).get("completedStageCount", 0)
+    if stages_total > 0:
+        progress_pct = (path_progress or {}).get("stageProgressPercent", 0)
     elif avg_mastery > 0:
         progress_pct = avg_mastery
     else:
@@ -5520,13 +5975,12 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
 
     goal_tracking = {
         "estimatedDays": last_result.get("estimatedDays", 14) if isinstance(last_result, dict) else 14,
-        "questionsCompleted": sum(ds.get("questionCount", 0) for ds in daily_stats.values()),
+        "questionsCompleted": analytics.get("questionAnsweredCount", 0),
         "masteryPercentage": avg_mastery,
         "stagesCompleted": stages_done if isinstance(stages_done, int) else 0,
         "stagesTotal": stages_total,
         "examDate": exam_date_str,
         "daysUntilExam": days_until_exam,
-        "estimatedPercentile": estimated_percentile,
         "progressPercent": progress_pct,
     }
 
@@ -5563,6 +6017,7 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
     return _product_response(
         {
             **analytics,
+            "pathProgress": path_progress,
             "heatmap": heatmap,
             "weaknessRanking": weakness_ranking,
             "progressCurve": progress_curve,
@@ -5573,7 +6028,7 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
             "diagnosisVersion": diagnosis_version,
             "diagnosisGeneratedAt": diagnosis_generated_at,
         },
-        session_id=session_id, subject_id=subjectId, source="agent",
+        session_id=session_id, subject_id=subject_id, source="agent",
     )
 
 
@@ -5581,46 +6036,73 @@ import json as _json
 
 
 @router.post("/learning-assessment/generate")
-def generate_learning_assessment(sessionId: str = "") -> dict[str, Any]:
+def generate_learning_assessment(
+    sessionId: str = "", subjectId: str = "", pathId: str = "", stageId: str = "",
+    auth: AuthContext = Depends(require_auth),
+) -> dict[str, Any]:
     """LLM 驱动的多维度学习评估。
 
     汇总画像、行为、诊断、资源反馈等多源数据，
     调用大模型生成结构化评估报告。
     """
-    session_id = _require_session_id(sessionId)
+    scope = resolve_analytics_scope(auth, session_id=sessionId, subject_id=subjectId, path_id=pathId, stage_id=stageId)
+    session_id = scope.session_id
     try:
         from app.services.llm_assessment import run_llm_assessment
-        from app.db.engine import SessionLocal
-        from app.db.repository import get_event_analytics, get_latest_profile, get_latest_learning_path
-        from app.services.conversation_state import conversation_store
+        from app.db.repository import get_event_analytics, get_latest_profile
+        from app.db.models import LearningAssessmentSnapshotModel
+        from app.services.diagnosis_snapshot_service import try_get_diagnosis
 
         db = SessionLocal()
         try:
-            analytics = get_event_analytics(db, session_id)
+            analytics = get_event_analytics(
+                db, session_id, subject_id=scope.subject_id, path_id=scope.path_id,
+                stage_id=scope.stage_id, include_legacy_unscoped=scope.include_legacy_unscoped,
+            )
             profile_snapshot = get_latest_profile(db, session_id)
             profile = {"dimensions": profile_snapshot.dimensions} if profile_snapshot else None
+            diagnosis = try_get_diagnosis(db, scope.learner_id, scope.subject_id, session_id)
+            if not analytics.get("eventCount"):
+                return _product_response({"status": "insufficient_data", "errorCode": "insufficient_data"}, session_id=session_id, source="assessment_snapshot")
+            metrics_version = hashlib.sha256(json.dumps(analytics, sort_keys=True, default=str).encode()).hexdigest()[:32]
+            cached = db.query(LearningAssessmentSnapshotModel).filter(
+                LearningAssessmentSnapshotModel.learner_id == scope.learner_id,
+                LearningAssessmentSnapshotModel.subject_id == scope.subject_id,
+                LearningAssessmentSnapshotModel.session_id == session_id,
+                LearningAssessmentSnapshotModel.path_id == (scope.path_id or None),
+                LearningAssessmentSnapshotModel.metrics_version == metrics_version,
+                LearningAssessmentSnapshotModel.status == "ready",
+            ).order_by(LearningAssessmentSnapshotModel.generated_at.desc()).first()
+            if cached:
+                return _product_response({**(cached.content or {}), "cached": True, "generatedAt": cached.generated_at.isoformat()}, session_id=session_id, source="assessment_snapshot")
         finally:
             db.close()
 
         # 从 conversation_state 获取诊断
-        cs = conversation_store.get_state_or_none(session_id)
-        diagnosis = None
-        if cs:
-            lr = cs.last_result
-            if lr:
-                diagnosis = lr.get("diagnosis", lr.get("diagnosis_result"))
-
         result = run_llm_assessment(
             session_id=session_id,
             profile=profile,
             analytics=analytics,
             diagnosis=diagnosis,
         )
-        return _product_response(result, session_id=session_id, source="llm_assessment")
+        if not isinstance(result, dict) or not (result.get("summary") or result.get("scores")):
+            raise ValueError("invalid_output")
+        db = SessionLocal()
+        try:
+            db.add(LearningAssessmentSnapshotModel(
+                learner_id=scope.learner_id, subject_id=scope.subject_id, session_id=session_id,
+                path_id=scope.path_id or None, metrics_version=metrics_version, content=result, status="ready",
+            ))
+            db.commit()
+        finally:
+            db.close()
+        return _product_response({**result, "cached": False}, session_id=session_id, source="assessment_snapshot")
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Learning assessment failed")
         return _product_response(
-            {"status": "failed", "error": str(exc)[:200]},
+            {"status": "failed", "errorCode": "invalid_output" if str(exc) == "invalid_output" else "generation_failed"},
             status="error", message="评估生成失败",
             session_id=session_id, source="llm_assessment",
         )
@@ -6200,8 +6682,15 @@ def _fallback_section_lecture(section_title: str, section_goal: str, knowledge_p
 
 
 @router.get("/sections/{section_id}/lecture")
-def get_section_lecture(section_id: str, sessionId: str = "") -> dict[str, Any]:
+def get_section_lecture(
+    section_id: str, sessionId: str = "", stageId: str = "", pathId: str = "", taskId: str = "",
+    auth: AuthContext = Depends(get_auth),
+) -> dict[str, Any]:
     """Read existing lecture for a section. Returns None if not generated yet."""
+    if sessionId:
+        _require_session_learner(sessionId, auth)
+    if stageId:
+        _require_task_stage_access(_require_session_id(sessionId), stageId, section_id, pathId, taskId)
     try:
         db = SessionLocal()
         query = db.query(ResourceModel).filter(
@@ -6754,6 +7243,24 @@ def _generate_section_lecture(section_id: str, payload: dict[str, Any], workflow
 
     if not section_title:
         return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
+    if stage_id:
+        _require_task_stage_access(session_id, stage_id, section_id, path_id, str(payload.get("taskId") or ""))
+    db = SessionLocal()
+    try:
+        existing = db.query(ResourceModel).filter(
+            ResourceModel.session_id == session_id,
+            ResourceModel.related_section_id == section_id,
+            ResourceModel.type == "lecture",
+        ).order_by(ResourceModel.updated_at.desc()).first()
+        if existing and existing.content and not _is_profile_json(existing.content):
+            return _product_response({"lecture": {
+                "id": existing.id, "title": existing.title or "", "content": existing.content,
+                "sectionId": section_id, "chapterId": existing.related_chapter_id or "",
+                "stageId": existing.related_stage_id or stage_id,
+                "createdAt": int(existing.created_at.timestamp() * 1000) if existing.created_at else 0,
+            }}, session_id=session_id, source="db")
+    finally:
+        db.close()
 
     # Build knowledge point list for prompt
     kp_lines = ""
@@ -6903,6 +7410,7 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
             "related_stage_id": stage_id,
             "related_chapter_id": chapter_id,
             "related_section_id": section_id,
+            "task_id": str(payload.get("taskId") or section_id),
             "knowledge_points": [kp.get("name", str(kp)) if isinstance(kp, dict) else str(kp) for kp in (knowledge_points or [])],
         }
         _attach_personalization_metadata(resource_dict, session_id, subject_id)
@@ -6923,7 +7431,8 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
 
 
 @router.post("/sections/{section_id}/lecture/generate")
-def generate_section_lecture(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def generate_section_lecture(section_id: str, payload: dict[str, Any], auth: AuthContext = Depends(get_auth)) -> dict[str, Any]:
+    _require_session_learner(_payload_session_id(payload), auth)
     return _generate_section_lecture(section_id, payload)
 
 
@@ -7274,7 +7783,7 @@ def generate_all_section_resources(section_id: str, payload: dict[str, Any]) -> 
 
 
 @router.post("/sections/{section_id}/tutor/ask")
-def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def tutor_ask(section_id: str, payload: dict[str, Any], auth: AuthContext = Depends(get_auth)) -> dict[str, Any]:
     """智辅问答：注入学生画像 + 诊断数据，返回 Markdown 格式回答。"""
     session_id = _payload_session_id(payload)
     question = str(payload.get("question", "")).strip()
@@ -7284,6 +7793,12 @@ def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     knowledge_points = payload.get("knowledgePoints", [])
     lecture_excerpt = str(payload.get("lectureExcerpt", ""))[:1000]
     action_type = str(payload.get("actionType") or payload.get("action_type") or "").strip()
+    _require_session_learner(session_id, auth)
+    stage_id = str(payload.get("stageId") or "").strip()
+    if stage_id:
+        _require_task_stage_access(
+            session_id, stage_id, section_id, str(payload.get("pathId") or ""), str(payload.get("taskId") or ""),
+        )
 
     # Combine quoted text into question if provided
     if quoted and not question:
@@ -7321,6 +7836,10 @@ def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         pass
 
     kp_names = ", ".join(kp.get("name", str(kp)) if isinstance(kp, dict) else str(kp) for kp in (knowledge_points or [])[:8])
+    course_context = str(payload.get("courseName") or payload.get("courseId") or payload.get("subjectId") or "").strip()
+    task_context = ""
+    if stage_id:
+        task_context = f"\n路径任务：课程 {course_context or '当前课程'}；阶段 {stage_id}；任务 {str(payload.get('taskId') or section_id)}"
 
     # ── Detect tutoring mode from student's course ──
     tutor_persona = "你是 EduAgent 智能助教，请为学生解答问题。"
@@ -7436,6 +7955,7 @@ def tutor_ask(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
 - 小节：{section_title}
 - 目标：{section_goal}
 - 知识点：{kp_names}
+{task_context}
 {chr(10) + '文档片段：' + chr(10) + lecture_excerpt if lecture_excerpt else ""}
 
 学生问题：{question}{diagram_hint}
@@ -7827,6 +8347,9 @@ def _generate_section_resource(section_id: str, payload: dict[str, Any], workflo
         _require_matching_subject(session_id, subject_id)
     resource_type = str(payload.get("resourceType") or "").strip()
     context = _section_path_context(session_id, section_id)
+    stage_id = str(payload.get("stageId") or context.get("stage_id") or "")
+    if stage_id:
+        _require_stage_access(session_id, stage_id)
     section_title = str(payload.get("sectionTitle") or context.get("section_title") or "").strip()
     if not section_title:
         return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
@@ -7843,7 +8366,7 @@ def _generate_section_resource(section_id: str, payload: dict[str, Any], workflo
         ).order_by(ResourceModel.updated_at.desc()).first()
         resource = service.generate(
             session_id=session_id, path_id=str(payload.get("pathId") or context.get("path_id") or ""),
-            stage_id=str(payload.get("stageId") or context.get("stage_id") or ""),
+        stage_id=stage_id,
             chapter_id=str(payload.get("chapterId") or context.get("chapter_id") or ""),
             section_id=section_id, section_title=section_title,
             lecture_content=str(payload.get("lectureContent") or (lecture.content if lecture else "") or ""),
@@ -7952,6 +8475,8 @@ def feedback_on_generated_section_resource(section_id: str, resource_type: str, 
 def get_generated_section_resources(section_id: str, sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
     """Read only resources generated for the current section."""
     session_id = _require_session_id(sessionId)
+    context = _section_path_context(session_id, section_id)
+    _require_stage_access(session_id, stageId or str(context.get("stage_id") or "")) if (stageId or context.get("stage_id")) else None
     from app.services.section_generated_resources import SectionGeneratedResourcesService
     from app.services.structured_multimodal_resources import STRUCTURED_RESOURCE_DEFINITIONS, normalized_resource_title
     try:

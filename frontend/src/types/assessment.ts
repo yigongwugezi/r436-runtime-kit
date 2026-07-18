@@ -89,6 +89,9 @@ export interface Attempt {
   attemptId: string;
   sessionId: string;
   subjectId?: string | null;
+  pathId?: string | null;
+  stageId?: string | null;
+  taskId?: string | null;
   quizId?: string | null;
   examSetId?: string | null;
   learnerId?: string | null;
@@ -148,6 +151,9 @@ export interface QuizSubmitRequest {
   answersRevealed?: boolean;
   /** Client-side timestamp of submission intent. */
   clientSubmittedAt?: string;
+  pathId?: string;
+  stageId?: string;
+  taskId?: string;
 }
 
 /** Response from quiz submission. */
@@ -166,6 +172,11 @@ export interface QuizSubmitResponse {
   processingTaskId?: string | null;
   /** Workflow task ID for diagnosis snapshot refresh (SSE-pollable). */
   diagnosisTaskId?: string | null;
+  assessmentCompleted?: boolean;
+  pathTaskCompleted?: boolean;
+  stageCompleted?: boolean;
+  nextStageUnlocked?: boolean;
+  pathProgress?: unknown;
 }
 
 /** Per-knowledge-point result computed from a graded answer. */

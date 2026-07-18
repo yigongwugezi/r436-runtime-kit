@@ -353,8 +353,12 @@ def get_llm_client(provider: str | None = None) -> BaseLLMClient:
     if provider == "mock":
         client: BaseLLMClient = MockLLMClient()
     else:
-        from app.services.llm_factory import get_chat_client
-        client = get_chat_client()
+        try:
+            from app.services.llm_factory import get_chat_client
+            client = get_chat_client()
+        except ImportError:
+            logger.warning("Optional OpenAI-compatible client unavailable; using mock client")
+            client = MockLLMClient()
         if not client.is_available():
             logger.warning("No LLM API key configured, falling back to mock")
             client = MockLLMClient()

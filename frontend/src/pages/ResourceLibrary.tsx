@@ -6,7 +6,7 @@ import { useResources } from '../hooks/useResources';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
 import { getCurrentLearner } from '../store/authStore';
-import { getResourceById, updateStudyStatus, autoAdvanceNode, getResourceKnowledgeGraph, batchUpdateStudyStatus, batchSetBookmark, batchExportResources } from '../api/resources';
+import { getResourceById, regenerateResource, updateStudyStatus, autoAdvanceNode, getResourceKnowledgeGraph, batchUpdateStudyStatus, batchSetBookmark, batchExportResources } from '../api/resources';
 import { submitFeedback, logStudyEvent } from '../api/feedback';
 import { getTextbook } from '../api/textbooks';
 import { getGeneratedSectionResources, submitGeneratedSectionResourceFeedback } from '../api/sectionResources';
@@ -54,6 +54,9 @@ const resourceLabel = (resource: Resource) => RESOURCE_TYPE_LABELS[resource.task
 const resourceIcon = (resource: Resource) => icons[resource.taskId || ''] || icons[resource.type];
 const generatedResourceTypes = new Set(['summary_card', 'concept_comparison', 'worked_example', 'mistake_checklist', 'review_notes', 'knowledge_map', 'process_flow', 'concept_diagram', 'execution_trace', 'code_trace']);
 const visibleTags = (tags: string[] = []) => tags.filter((tag) => !generatedResourceTypes.has(tag) && !['section_generated', 'p4_multimodal', 'textbook'].includes(tag) && !tag.startsWith('path_session_'));
+const isSafeExternalUrl = (value?: string) => {
+  try { return ['http:', 'https:'].includes(new URL(value || '').protocol); } catch { return false; }
+};
 
 function QuizAnswerer({ questions, resourceId }: { questions: any[]; resourceId: string }) {
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -138,6 +141,8 @@ function ResourceDetailView({
   const [feedbackSaving, setFeedbackSaving] = useState(false);
   const [feedbackError, setFeedbackError] = useState('');
   const [feedbackSaved, setFeedbackSaved] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
+  const [regenerationError, setRegenerationError] = useState('');
 
   const c = colorMap[resource.type] || { bg: 'bg-surface-100', text: 'text-surface-500' };
   const isGeneratedResource = Boolean(resource.relatedSectionId && generatedResourceTypes.has(resource.taskId || ''));
@@ -206,6 +211,7 @@ function ResourceDetailView({
               <span className="text-xs text-surface-400">· {formatDuration(resource.estimatedMinutes)}</span>
               <span className="text-xs text-surface-400">· {timeAgo(resource.createdAt)}</span>
               <SourceBadge source={resource.source || 'system_inferred'} size="sm" />
+              <span className="text-xs text-surface-400">v{resource.generationVersion || 1}</span>
               {resource.studyStatus === 'completed' && <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-success-50 text-success-600">✅ 已完成</span>}
             </div>
             <p className="text-sm text-surface-500 leading-relaxed">{resource.description}</p>
@@ -258,10 +264,12 @@ function ResourceDetailView({
           {!isReadOnly && (
           <button onClick={() => onComplete(resource)} className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${resource.studyStatus === 'completed' ? 'bg-warning-50 text-warning-700 hover:bg-warning-100' : 'bg-success-50 text-success-700 hover:bg-success-100'}`}><CheckCircle2 className="w-3.5 h-3.5" />{resource.studyStatus === 'completed' ? '撤销完成' : '标记完成'}</button>
           )}
+          {!isReadOnly && <button disabled={regenerating || !sessionId} onClick={async () => { setRegenerating(true); setRegenerationError(''); try { const next = await regenerateResource(resource.id, { sessionId: sessionId!, subjectId, operationId: crypto.randomUUID() }); nav(`/resources/${next.resourceId}`); } catch { setRegenerationError('重新生成失败，已保留当前资源。'); } finally { setRegenerating(false); } }} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-primary-50 text-primary-700 rounded-lg text-xs font-medium disabled:opacity-50">{regenerating ? '重新生成中…' : '重新生成'}</button>}
           <button onClick={() => nav(`/kg?resourceId=${resource.id}`)} className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all bg-surface-50 text-surface-500 hover:bg-primary-50 hover:text-primary-600`}><Network className="w-3.5 h-3.5" />知识图谱</button>
           <button onClick={() => nav('/chat')} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-primary-50 text-primary-700 rounded-lg text-xs font-medium hover:bg-primary-100">✏️ 去提问</button>
           <button onClick={() => nav('/analytics')} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-surface-50 text-surface-500 rounded-lg text-xs font-medium hover:bg-surface-100">📊 学习分析</button>
         </div>
+        {regenerationError && <p className="mt-3 text-xs text-error-600">{regenerationError}</p>}
       </div>
 
       {/* 内容区 */}
@@ -405,6 +413,7 @@ function ResourceListView({
   onToggleBookmark,
   onApplyFilter,
   sessionId,
+  subjectId,
   activeTaskId,
   activeStageId,
   isReadOnly,
@@ -417,6 +426,7 @@ function ResourceListView({
   onToggleBookmark: (id: string) => Promise<void>;
   onApplyFilter: (u: any) => void;
   sessionId: string | null;
+  subjectId?: string;
   activeTaskId?: string;
   activeStageId?: string;
   isReadOnly?: boolean;
@@ -450,10 +460,10 @@ function ResourceListView({
     const ids = Array.from(selectedIds);
     if (!ids.length) return;
     try {
-      if (action === 'complete') await batchUpdateStudyStatus(useChatStore.getState().currentSessionId, ids, 'completed');
-      else if (action === 'bookmark') await batchSetBookmark(useChatStore.getState().currentSessionId, ids, true);
+      if (action === 'complete') await batchUpdateStudyStatus(sessionId || '', ids, 'completed', subjectId);
+      else if (action === 'bookmark') await batchSetBookmark(sessionId || '', ids, true, subjectId);
       else if (action === 'export') {
-        const r = await batchExportResources(useChatStore.getState().currentSessionId, ids);
+        const r = await batchExportResources(sessionId || '', ids, subjectId);
         const blob = new Blob([r.export], { type: 'text/plain' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a'); a.href = url; a.download = 'resources_export.txt'; a.click();
@@ -782,6 +792,7 @@ export default function ResourceLibrary() {
         onToggleBookmark={toggleBookmark}
         onApplyFilter={applyFilter}
         sessionId={sessionId}
+        subjectId={activeSubject?.id}
         activeTaskId={searchParams.get('taskId') || undefined}
         activeStageId={searchParams.get('relatedStageId') || undefined}
         isReadOnly={isParent}

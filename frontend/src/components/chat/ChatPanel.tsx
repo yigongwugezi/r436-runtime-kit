@@ -131,6 +131,11 @@ function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onCla
                   <MarkmapDiagram definition={msg.multimodalResult.result.mermaid} />
                 </div>
               )}
+              {msg.multimodalResult && msg.multimodalResult.status !== 'completed' && (
+                <div className="mt-2 rounded-lg border border-amber-100 bg-amber-50 p-2 text-[10px] text-amber-700">
+                  {msg.multimodalResult.user_message || (msg.multimodalResult.status === 'provider_not_configured' ? '当前未配置对应生成服务。' : '多模态结果暂不可用，请稍后重试。')}
+                </div>
+              )}
               {msg.streaming && msg.content && (
                 <span className="inline-block w-1 h-3 bg-brand-500 animate-pulse rounded ml-0.5 align-text-bottom" />
               )}

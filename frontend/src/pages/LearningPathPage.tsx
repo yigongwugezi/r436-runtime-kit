@@ -1,19 +1,18 @@
 // @ts-nocheck
-import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLearningPath } from '../hooks/useLearningPath';
 import { useChatStore } from '../store/chatStore';
 import { enableProfileExtraction, listPlanningDrafts } from '../api/learningPath';
-import DayPlanView from '../components/learning/DayPlanView';
-import MasteryBarGroup from '../components/learning/MasteryBarGroup';
 import { useProfile } from '../hooks/useProfile';
 import PlanningWizard from '../components/learning/PlanningWizard';
 import { PageLoading, PageError } from '../components/common/PageState';
 import { getCurrentLearner } from '../store/authStore';
+import { learningTaskRoute } from '../utils/learningTaskRoute';
 import {
   ArrowRight, BookOpen, Check, CircleDot, Clock3,
   FileText, FlaskConical, Lightbulb, PenLine, Plus, Sparkles, Target, Zap,
-  Loader2, ChevronRight
+  Loader2, ChevronRight, Lock
 } from 'lucide-react';
 
 /* ── 任务类型图标与标签 ──────────────────── */
@@ -81,21 +80,6 @@ export default function LearningPathPage() {
   const hasInj = stages.some(s => (s.tasks || []).some((t: any) =>
     t.source === 'remedial' || t._adjustment === 'remedial' || t._adjustment === 'strengthened'
   ));
-
-  // ── Lock + tab + recommendation state ──
-  const { currentStageIdx, currentTaskIdx } = useMemo(() => {
-    for (let si = 0; si < stages.length; si++) {
-      const tasks = stages[si].tasks || [];
-      for (let ti = 0; ti < tasks.length; ti++) {
-        if (tasks[ti].status !== 'completed' && tasks[ti].status !== 'mastered')
-          return { currentStageIdx: si, currentTaskIdx: ti };
-      }
-    }
-    return { currentStageIdx: stages.length, currentTaskIdx: -1 };
-  }, [stages]);
-  const [middleTab, setMiddleTab] = useState<'tasks' | 'recommendations'>('tasks');
-  const [recommendedResources, setRecommendedResources] = useState<any[]>([]);
-  const [recommendLoading, setRecommendLoading] = useState(false);
   const circumference = 100.53;
 
   const firstIncompleteIdx = stages.findIndex(s => (s.tasks || []).some(t => t.status !== 'completed' && t.status !== 'mastered'));
@@ -120,24 +104,6 @@ export default function LearningPathPage() {
     setActiveStageId(id);
     requestAnimationFrame(() => stageRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   };
-
-  /* ── Hooks that must precede any conditional return ── */
-  const fetchRecommendations = useCallback(async () => {
-    if (!sessionId || !activeStageId) return;
-    setRecommendLoading(true);
-    try {
-      const r = await fetch('/api/resources/recommendations/for-learning', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId, stageId: activeStageId }),
-      }).then(res => res.json());
-      setRecommendedResources(r?.data?.recommendations?.resources || []);
-    } catch { setRecommendedResources([]); }
-    finally { setRecommendLoading(false); }
-  }, [sessionId, activeStageId]);
-
-  useEffect(() => {
-    if (middleTab === 'recommendations') fetchRecommendations();
-  }, [middleTab, fetchRecommendations]);
 
   /* ── Loading / Empty ── */
   if (loading) return <PageLoading text="加载学习路径中…" />;
@@ -172,12 +138,16 @@ export default function LearningPathPage() {
 
   /* ── 有路径：左侧选中 + 中间单阶段 ── */
   const activeStage = stages.find(s => s.id === activeStageId) || stages[firstIncompleteIdx] || stages[0];
-  const activeStageIdx = stages.findIndex(s => s.id === activeStage?.id);
+  const openTask = (task: any, stage: any) => nav(learningTaskRoute(task.type || 'read_doc', {
+    sessionId, subjectId: subject.subject_id, pathId: path?.id, stageId: stage.id,
+    taskId: task.task_id || task.id, sectionId: task.section_id || task.task_id,
+  }));
 
   return (
-    <div className="flex-1 flex flex-col bg-surface-50 px-4 py-6 sm:px-6 lg:px-8 lg:py-8 min-h-0">
-      {/* ── Header ── */}
-      <header className="flex-shrink-0 flex flex-col gap-6">
+    <div className="min-h-0 flex-1 overflow-y-auto bg-surface-50 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+      <div className="mx-auto w-full max-w-[1440px] flex flex-col gap-8">
+        {/* ── Header ── */}
+        <header className="flex flex-col gap-6">
           <div className="flex items-center justify-between gap-4">
             <p className="text-xs font-semibold uppercase tracking-[0.22em] text-surface-400">学习路径</p>
             {!isParent && (
@@ -195,7 +165,7 @@ export default function LearningPathPage() {
         </header>
 
         {/* ── 进度概览 ── */}
-        <section className="flex-shrink-0 rounded-[20px] border border-surface-200 bg-white/80 backdrop-blur-sm p-5 sm:p-6 shadow-sm">
+        <section className="rounded-[20px] border border-surface-200 bg-white/80 backdrop-blur-sm p-5 sm:p-6 shadow-sm">
           <div className="grid gap-6 xl:grid-cols-[1fr_300px] xl:items-center">
             <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4 lg:gap-0">
               <div className="lg:border-r lg:border-surface-200 lg:pr-6">
@@ -235,30 +205,31 @@ export default function LearningPathPage() {
         </section>
 
         {/* ── 左侧导航 + 中间单阶段 + 右侧面板 ── */}
-        <div className="flex-1 min-h-0 flex flex-col xl:flex-row gap-8">
+        <div className="grid gap-8 xl:grid-cols-[minmax(200px,0.9fr)_minmax(0,1.55fr)_minmax(260px,0.82fr)] xl:items-start">
           {/* ═══ 左栏：阶段选择器 ═══ */}
-          <aside className="space-y-5 xl:flex-[0.9_1_0%] xl:min-w-[200px] min-w-0 min-h-0 overflow-y-auto">
+          <aside className="min-w-0 space-y-5 xl:sticky xl:top-8">
             <section className="rounded-[20px] border border-surface-200 bg-white/80 backdrop-blur-sm p-5 shadow-sm">
               <p className="mb-5 text-xs font-semibold uppercase tracking-[0.24em] text-surface-400">阶段导航</p>
-              <div className="space-y-2">
+              <div className="max-h-[calc(100vh-13rem)] space-y-2 overflow-y-auto overscroll-contain pr-1">
                 {stages.map((stage: any, si: number) => {
                   const tasks = stage.tasks || [];
                   const tDone = tasks.filter((t: any) => t.status === 'completed' || t.status === 'mastered').length;
                   const tTotal = tasks.length;
                   const selected = stage.id === activeStage?.id;
                   const allDone = tTotal > 0 && tasks.every((t: any) => t.status === 'completed' || t.status === 'mastered');
+                  const locked = stage.progressStatus === 'locked';
                   return (
-                    <button key={stage.id || si} type="button" onClick={() => selectStage(stage.id)}
+                    <button key={stage.id || si} type="button" disabled={locked} onClick={() => selectStage(stage.id)}
                       className={`group flex w-full items-center gap-3 rounded-2xl border px-3 py-3 text-left transition-all duration-300 ${
                         selected ? 'border-primary-200 bg-primary-50/50 shadow-[inset_3px_0_0_#3478f6]' :
                         allDone ? 'border-transparent bg-transparent opacity-60' :
-                        'border-transparent bg-transparent hover:border-surface-200 hover:bg-surface-50'
+                        locked ? 'border-transparent bg-surface-50 opacity-50 cursor-not-allowed' : 'border-transparent bg-transparent hover:border-surface-200 hover:bg-surface-50'
                       }`}>
                       <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold ${
                         selected ? 'bg-primary-500 text-white shadow-[0_0_12px_rgba(52,120,246,0.35)]' :
                         allDone ? 'bg-success-100 text-success-600' :
                         'border border-surface-300 text-surface-400'
-                      }`}>{allDone ? <Check size={12} /> : si + 1}</span>
+                      }`}>{locked ? <Lock size={12} /> : allDone ? <Check size={12} /> : si + 1}</span>
                       <span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-surface-800">{stage.title}</span></span>
                       <span className="text-xs font-semibold text-surface-400">{tDone}/{tTotal}</span>
                     </button>
@@ -275,7 +246,7 @@ export default function LearningPathPage() {
           </aside>
 
           {/* ═══ 中栏：只展示选中的阶段（始终展开） ═══ */}
-          <section className="space-y-4 xl:flex-[1.55_1_0%] min-w-0 min-h-0 overflow-y-auto" ref={stageRef}>
+          <section className="min-w-0 max-h-[calc(100vh-10rem)] space-y-4 overflow-y-auto overscroll-contain" ref={stageRef}>
             {activeStage && (() => {
               const stage = activeStage;
               const tasks = stage.tasks || [];
@@ -284,8 +255,8 @@ export default function LearningPathPage() {
               const pct = tTotal > 0 ? Math.round((tDone / tTotal) * 100) : 0;
               const allDone = tTotal > 0 && tasks.every((t: any) => t.status === 'completed' || t.status === 'mastered');
               const dashOffset = circumference - (circumference * pct) / 100;
-              return (<React.Fragment>
-                <article className="scroll-mt-8 overflow-hidden rounded-[20px] border bg-white/80 backdrop-blur-sm shadow-sm shrink-0"
+              return (
+                <article className="scroll-mt-8 overflow-hidden rounded-[20px] border bg-white/80 backdrop-blur-sm shadow-sm"
                   style={{ borderColor: allDone ? '#31b16f' : '#3478f6', boxShadow: allDone ? 'none' : '0 0 0 1px rgba(52,120,246,0.3), 0 8px 32px rgba(52,120,246,0.08)' }}>
                   {/* 阶段头 —— 纯展示，不可点击 */}
                   <div className="flex w-full items-center gap-4 p-5 text-left sm:p-6">
@@ -309,19 +280,8 @@ export default function LearningPathPage() {
                       <span className="w-10 text-right text-xs font-semibold text-surface-400">{tDone}/{tTotal}</span>
                     </span>
                   </div>
-                  {/* ── 标签切换 ── */}
-                  <div className="flex gap-2 px-5 pt-4 sm:px-6">
-                    <button type="button" onClick={() => setMiddleTab('tasks')}
-                      className={'text-[11px] font-medium tracking-wide pb-1 border-b-2 ' + (middleTab==='tasks'?'border-primary-400 text-surface-700':'border-transparent text-surface-400 hover:text-surface-500')}
-                    >任务</button>
-                    <button type="button" onClick={() => setMiddleTab('recommendations')}
-                      className={'text-[11px] font-medium tracking-wide pb-1 border-b-2 ' + (middleTab==='recommendations'?'border-primary-400 text-surface-700':'border-transparent text-surface-400 hover:text-surface-500')}
-                    >推荐资源</button>
-                  </div>
                   {/* 阶段体 —— 始终展开 */}
                   <div className="border-t border-surface-200 px-5 pb-5 pt-5 sm:px-6 sm:pb-6 space-y-4">
-                    {middleTab === 'tasks' ? (
-                    <>
                     <p className="max-w-2xl text-sm leading-7 text-surface-500">{stage.objective || stage.theme || ''}</p>
                     <div className="space-y-3">
                       {tasks.length > 0 ? tasks.map((task: any, ti: number) => {
@@ -361,8 +321,8 @@ export default function LearningPathPage() {
                                   </span>
                                 </span>
                               </div>
-                              <button type="button" disabled={done || (activeStageIdx > currentStageIdx || (activeStageIdx === currentStageIdx && ti > currentTaskIdx))}
-                                onClick={(e) => { e.stopPropagation(); nav(`/lecture/section/${encodeURIComponent(task.task_id || task.title)}`); }}
+                              <button type="button" disabled={done}
+                                onClick={(e) => { e.stopPropagation(); openTask(task, stage); }}
                                 className={`h-10 shrink-0 rounded-xl px-4 text-xs font-bold transition-all duration-300 ${
                                   done ? 'border border-success-200 bg-success-50 text-success-500' :
                                   prog ? 'bg-gradient-to-r from-primary-500 to-accent-500 text-white shadow-[0_0_20px_rgba(52,120,246,0.3)]' :
@@ -381,45 +341,14 @@ export default function LearningPathPage() {
                       ))}
                       {allDone && tTotal > 0 && <div className="text-center py-3 text-sm text-success-500 font-medium">🎉 本阶段已全部完成</div>}
                     </div>
-                  </>
-                ) : (
-                  <div className="space-y-4">
-                    {recommendLoading ? (
-                      <div className="flex items-center justify-center py-10">
-                        <Loader2 size={24} className="animate-spin text-surface-300" />
-                        <span className="ml-3 text-sm text-surface-400">正在搜索推荐资源...</span>
-                      </div>
-                    ) : recommendedResources.length === 0 ? (
-                      <div className="text-center py-10">
-                        <BookOpen size={40} className="mx-auto mb-3 text-surface-300" />
-                        <p className="text-sm text-surface-500">暂无推荐资源</p>
-                        <button onClick={fetchRecommendations} className="mt-3 text-xs text-primary-500 hover:underline">点击重试</button>
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-1 gap-3">
-                        {recommendedResources.map((r: any, i: number) => (
-                          <a key={i} href={r.url || '#'} target="_blank" rel="noopener noreferrer"
-                            className="flex items-start gap-3 rounded-xl border border-surface-100 p-3 hover:border-primary-200 hover:bg-primary-50/30 transition-all h-[72px] overflow-hidden">
-                            <span className="mt-0.5 shrink-0 text-lg">{r.type==='video'?'🎬':r.type==='article'?'📄':r.type==='course'?'🎓':'📖'}</span>
-                            <span className="min-w-0 flex-1">
-                              <span className="block text-sm font-semibold text-surface-800 truncate">{r.title}</span>
-                              <span className="mt-1 block text-xs text-surface-400 line-clamp-2">{r.snippet || r.description || ''}</span>
-                            </span>
-                          </a>
-                        ))}
-                      </div>
-                    )}
-              </div>
-            )}
-              </div>
+                  </div>
                 </article>
-                </React.Fragment>
               );
             })()}
           </section>
 
           {/* ═══ 右栏：立即开始 + 学习分析 + 练习 ═══ */}
-          <aside className="space-y-5 xl:flex-[0.82_1_0%] xl:min-w-[260px] min-w-0 min-h-0 overflow-y-auto">
+          <aside className="space-y-5 xl:sticky xl:top-8">
             {nextTask && (
               <section className="overflow-hidden rounded-[20px] border border-surface-200 bg-white/80 backdrop-blur-sm shadow-sm">
                 <div className="h-20 bg-gradient-to-r from-primary-500 to-accent-500" />
@@ -435,11 +364,6 @@ export default function LearningPathPage() {
                 </div>
               </section>
             )}
-            {path?.day_plan && (
-              <section className="rounded-[20px] border border-surface-200 bg-white/80 backdrop-blur-sm p-5 shadow-sm">
-                <DayPlanView dayPlan={path.day_plan} totalDays={estimatedDays} currentDay={1} />
-              </section>
-            )}
             <section className="rounded-[20px] border border-surface-200 bg-white/80 backdrop-blur-sm p-5 shadow-sm">
               <p className="mb-4 text-xs font-semibold uppercase tracking-[0.24em] text-surface-400">学习分析</p>
               <ul className="space-y-4 text-sm leading-6 text-surface-600">
@@ -447,9 +371,6 @@ export default function LearningPathPage() {
                 <li className="flex gap-3"><span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-warning-400 shadow-[0_0_12px_rgba(251,191,36,0.4)]" />共 {stages.length} 个阶段，{completedStages} 个已完成</li>
                 {nextTask?.stageTitle && <li className="flex gap-3"><span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-accent-500 shadow-[0_0_12px_rgba(141,107,255,0.45)]" />当前阶段：{nextTask.stageTitle}</li>}
               </ul>
-              {path?.diagnosis?.mastery_levels && (
-                <MasteryBarGroup items={path.diagnosis.mastery_levels as any[]} max={5} />
-              )}
             </section>
             <section className="rounded-[20px] border border-surface-200 bg-white/80 backdrop-blur-sm p-5 shadow-sm">
               <p className="mb-4 text-xs font-semibold uppercase tracking-[0.24em] text-surface-400">练习</p>
@@ -466,6 +387,7 @@ export default function LearningPathPage() {
             </section>
           </aside>
         </div>
+      </div>
     </div>
   );
 }

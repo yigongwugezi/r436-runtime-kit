@@ -1,6 +1,13 @@
 import client from './client';
 import type { Resource, ResourceFilter } from '../types/resource';
 
+export type ProviderCapabilityStatus = 'available' | 'not_configured' | 'dependency_missing' | 'network_unavailable' | 'provider_error' | 'unsupported' | 'disabled';
+
+export async function getResourceCapabilities(): Promise<{ providerStatus?: Record<string, ProviderCapabilityStatus> }> {
+  const { data } = await client.get('/api/health/capabilities');
+  return data;
+}
+
 export interface ResourceListResponse {
   resources: Resource[];
   total: number;
@@ -20,6 +27,11 @@ export async function getResourceById(
   params: { sessionId: string; subjectId?: string },
 ): Promise<{ resource: Resource }> {
   const { data } = await client.get(`/api/resources/${id}`, { params });
+  return data;
+}
+
+export async function regenerateResource(id: string, params: { sessionId: string; subjectId?: string; operationId: string }): Promise<{ resourceId: string }> {
+  const { data } = await client.post(`/api/resources/${id}/regenerate`, params);
   return data;
 }
 
@@ -74,8 +86,8 @@ export async function startGeneralResourceGeneration(params: GeneralResourceGene
   return data;
 }
 
-export async function deleteResource(resourceId: string, sessionId: string): Promise<void> {
-  await client.delete(`/api/resources/${resourceId}`, { params: { sessionId } });
+export async function deleteResource(resourceId: string, sessionId: string, subjectId?: string): Promise<void> {
+  await client.delete(`/api/resources/${resourceId}`, { params: { sessionId, subjectId } });
 }
 
 export interface OnlineSearchResultToSave {
@@ -131,9 +143,11 @@ export async function batchUpdateStudyStatus(
   sessionId: string,
   resourceIds: string[],
   studyStatus: string,
+  subjectId?: string,
 ): Promise<BatchResult> {
   const { data } = await client.post('/api/resources/batch/study-status', {
     sessionId,
+    subjectId,
     resourceIds,
     studyStatus,
   });
@@ -145,9 +159,11 @@ export async function batchSetBookmark(
   sessionId: string,
   resourceIds: string[],
   bookmarked: boolean,
+  subjectId?: string,
 ): Promise<BatchResult> {
   const { data } = await client.post('/api/resources/batch/bookmark', {
     sessionId,
+    subjectId,
     resourceIds,
     bookmarked,
   });
@@ -158,9 +174,11 @@ export async function batchSetBookmark(
 export async function batchExportResources(
   sessionId: string,
   resourceIds?: string[],
+  subjectId?: string,
 ): Promise<BatchExportResult> {
   const { data } = await client.post('/api/resources/batch/export', {
     sessionId,
+    subjectId,
     resourceIds: resourceIds || undefined,
   });
   return data;
@@ -171,10 +189,11 @@ export async function updateStudyStatus(
   resourceId: string,
   studyStatus: string,
   sessionId: string,
+  subjectId?: string,
 ): Promise<{ ok: boolean; studyStatus: string }> {
   const { data } = await client.patch(`/api/resources/${resourceId}/study-status`, {
     studyStatus,
-  }, { params: { sessionId } });
+  }, { params: { sessionId, subjectId } });
   return data;
 }
 

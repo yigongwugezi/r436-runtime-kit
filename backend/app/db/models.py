@@ -229,6 +229,22 @@ class DiagnosisSnapshotModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
+class LearningAssessmentSnapshotModel(Base):
+    """Cached AI learning assessment; diagnosis remains the mastery source."""
+    __tablename__ = "learning_assessment_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    learner_id: Mapped[str] = mapped_column(String(64), index=True)
+    subject_id: Mapped[str] = mapped_column(String(64), index=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    path_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    metrics_version: Mapped[str] = mapped_column(String(64), index=True)
+    content: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    status: Mapped[str] = mapped_column(String(24), default="ready")
+    error_code: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
+    generated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
 # ── Diagnosis Evidence (spec §4.2) ──────────────────────────────────────
 
 
@@ -308,6 +324,11 @@ class ResourceModel(Base):
     session_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("sessions.id", ondelete="CASCADE"), index=True
     )
+    learner_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    subject_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    path_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    generation_version: Mapped[int] = mapped_column(Integer, default=1)
+    supersedes_resource_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     # ── Core metadata ─────────────────────────────────────────────────
     type: Mapped[str] = mapped_column(String(32), default="lecture")  # lecture|mindmap|quiz|reading|practice|multimodal|case_study|video|ppt
@@ -755,6 +776,9 @@ class AttemptModel(Base):
     attempt_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     session_id: Mapped[str] = mapped_column(String(64), index=True)
     subject_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    path_id: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
+    stage_id: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
+    task_id: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
 
     # ── Polymorphic parent ────────────────────────────────────
     quiz_id: Mapped[str | None] = mapped_column(

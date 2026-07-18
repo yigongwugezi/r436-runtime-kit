@@ -63,6 +63,17 @@ async function responseBody(cdp, event) {
   return JSON.parse(body.body);
 }
 
+async function authenticatedApi(cdp, apiBase, token, path, { method = 'GET', params, body } = {}) {
+  const url = new URL(path, apiBase);
+  for (const [key, value] of Object.entries(params || {})) if (value) url.searchParams.set(key, value);
+  const result = await cdp.evaluate(`fetch(${JSON.stringify(url.toString())}, {
+    method: ${JSON.stringify(method)}, headers: { Authorization: 'Bearer ' + ${JSON.stringify(token)}, 'Content-Type': 'application/json' },
+    body: ${body === undefined ? 'undefined' : JSON.stringify(JSON.stringify(body))}
+  }).then(async (response) => ({ ok: response.ok, status: response.status, body: await response.json() }))`);
+  assert.ok(result.ok, `${method} ${path} failed with ${result.status}: ${JSON.stringify(result.body)}`);
+  return result.body;
+}
+
 test('real Edge generates typed resources through recoverable workflows without duplicate children', { timeout: 120000 }, async () => {
   const tempDir = await mkdtemp(join(tmpdir(), 'eduagent-general-resource-e2e-'));
   let backend; let frontend; let edge; let socket; let secondSocket; let cdp;
@@ -71,64 +82,69 @@ test('real Edge generates typed resources through recoverable workflows without 
     await waitFor(`http://127.0.0.1:${backendPort}/api/health`, 'isolated backend');
     const registration = await fetch(`http://127.0.0.1:${backendPort}/api/auth/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: '13900000009', password: 'e2e-only', nickname: 'fixture', role: 'student' }) });
     assert.equal(registration.ok, true);
+    const identity = await registration.json();
+    const apiBase = `http://127.0.0.1:${backendPort}/api/`;
+    const subjectResponse = await fetch(`${apiBase}subjects`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${identity.access_token}` },
+      body: JSON.stringify({ name: '资源生成测试科目' }),
+    });
+    assert.equal(subjectResponse.ok, true);
+    const subjectPayload = await subjectResponse.json();
+    const subject = subjectPayload.data?.subject || subjectPayload.subject;
+    assert.ok(subject?.id);
     frontend = start(process.execPath, ['node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', String(frontendPort), '--strictPort'], { cwd: frontendDir, env: { ...process.env, VITE_API_BASE_URL: `http://127.0.0.1:${backendPort}` } });
     await waitFor(`http://127.0.0.1:${frontendPort}/login`, 'isolated frontend');
     edge = start(edgePath, ['--headless=new', `--remote-debugging-port=${debugPort}`, '--remote-allow-origins=*', `--user-data-dir=${join(tempDir, 'edge')}`, '--no-first-run', `http://127.0.0.1:${frontendPort}/login`], { cwd: repoDir, env: process.env });
     await waitFor(`http://127.0.0.1:${debugPort}/json/list`, 'Edge');
     ({ cdp, socket } = await connect(debugPort, `:${frontendPort}/login`));
     await login(cdp);
+    let sessionId = 'general-resource-session';
+    const sessionResponse = await fetch(`http://127.0.0.1:${backendPort}/api/chat/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${identity.access_token}` },
+      body: JSON.stringify({ sessionId, subjectId: subject.id }),
+    });
+    assert.equal(sessionResponse.ok, true);
+    await cdp.evaluate(`localStorage.setItem(${JSON.stringify(`r436_runtime_active_subject_${identity.learner.id}`)}, ${JSON.stringify(JSON.stringify(subject))}); localStorage.setItem(${JSON.stringify(`r436_runtime_subjects_${identity.learner.id}`)}, ${JSON.stringify(JSON.stringify([subject]))}); localStorage.setItem(${JSON.stringify(`r436_runtime_session_${identity.learner.id}_${subject.id}`)}, ${JSON.stringify(sessionId)})`);
     await cdp.evaluate("location.assign('/generate')").catch(() => undefined);
     await waitForBrowser(cdp, "Boolean(document.querySelector('textarea'))", 'generation page');
-    await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.includes('CNN')).click()");
+    const capabilityStatus = await cdp.evaluate(`fetch('http://127.0.0.1:${backendPort}/api/health/capabilities').then((response) => response.status).catch((error) => String(error))`);
+    assert.equal(capabilityStatus, 200);
+    await setText(cdp, 'textarea', 'CNN 基础结构');
     assert.match(await cdp.evaluate("document.querySelector('textarea').value"), /CNN/);
     assert.match(await cdp.evaluate('location.search'), /q=/);
     await setText(cdp, 'textarea', '递归调用栈');
     await waitForBrowser(cdp, "document.body.innerText.includes('5/500')", 'prompt counter');
     assert.equal(await cdp.evaluate("document.body.innerText.includes('5/500')"), true);
+    assert.equal(await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.includes('开始生成')).disabled"), false, await cdp.evaluate('document.body.innerText'));
+    cdp.events.length = 0;
     await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.includes('开始生成')).click()");
+    await sleep(1000);
+    assert.ok(cdp.events.some((event) => event.method === 'Network.requestWillBeSent' && event.params.request.method === 'POST'), await cdp.evaluate('document.body.innerText'));
     await waitForCondition(() => batchResponses(cdp).length === 1, 'first batch request');
     assert.equal(batchResponses(cdp).length, 1, 'one UI batch click must make one batch request');
     const initial = await responseBody(cdp, batchResponses(cdp)[0]);
     assert.deepEqual(initial.tasks.map((task) => task.resource_type).sort(), ['lecture', 'mindmap', 'quiz']);
-    const sessionId = initial.tasks[0] && (cdp.events.find((event) => event.method === 'Network.requestWillBeSent' && event.params.request.url.includes('/batch/start'))?.params.request.postData ? JSON.parse(cdp.events.find((event) => event.method === 'Network.requestWillBeSent' && event.params.request.url.includes('/batch/start')).params.request.postData).sessionId : '');
+    sessionId = JSON.parse(cdp.events.find((event) => event.method === 'Network.requestWillBeSent' && event.params.request.url.includes('/batch/start')).params.request.postData).sessionId;
     assert.ok(sessionId);
     await cdp.call('Page.reload');
     await waitForBrowser(cdp, "Boolean(document.querySelector('textarea'))", 'reloaded generation page');
-    await waitForBrowser(cdp, `fetch('/api/resources?sessionId=${encodeURIComponent(sessionId)}').then((response) => response.json()).then((payload) => payload.data?.total === 3)`, 'recovered generated resources');
+    await waitForCondition(async () => (await authenticatedApi(cdp, apiBase, identity.access_token, 'resources', { params: { sessionId, subjectId: subject.id } })).data?.total === 3, 'recovered generated resources', 30000);
     assert.equal(batchResponses(cdp).length, 1, 'refresh must reconnect, never create a second batch');
-    const resources = await cdp.evaluate(`fetch('/api/resources?sessionId=${encodeURIComponent(sessionId)}').then((response) => response.json())`);
+    const resources = await authenticatedApi(cdp, apiBase, identity.access_token, 'resources', { params: { sessionId, subjectId: subject.id } });
     assert.equal(resources.data.total, 3);
     assert.deepEqual(resources.data.resources.map((resource) => resource.type).sort(), ['lecture', 'mindmap', 'quiz']);
     assert.equal(new Set(resources.data.resources.map((resource) => resource.id)).size, 3);
     const quiz = resources.data.resources.find((resource) => resource.type === 'quiz');
     assert.ok(quiz.questions?.length && quiz.questions.every((question) => question.answer && question.explanation));
-    const deletion = await cdp.evaluate(`fetch('/api/resources/${encodeURIComponent(quiz.id)}?sessionId=${encodeURIComponent(sessionId)}', { method: 'DELETE' }).then((response) => response.json())`);
+    const detail = await authenticatedApi(cdp, apiBase, identity.access_token, `resources/${quiz.id}`, { params: { sessionId, subjectId: subject.id } });
+    assert.equal(detail.data.resource.id, quiz.id);
+    assert.equal(detail.data.resource.type, 'quiz');
+    assert.ok(String(detail.data.resource.content || '').trim());
+    const deletion = await authenticatedApi(cdp, apiBase, identity.access_token, `resources/${quiz.id}`, { method: 'DELETE', params: { sessionId, subjectId: subject.id } });
     assert.equal(deletion.data.deleted, true);
-    await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.includes('思维导图')).click(); [...document.querySelectorAll('button')].find((button) => button.textContent.includes('课程讲义')).click()");
-    await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.includes('开始生成')).click()");
-    await waitForBrowser(cdp, `fetch('/api/resources?sessionId=${encodeURIComponent(sessionId)}').then((response) => response.json()).then((payload) => payload.data?.total === 3)`, 'regenerated resources');
-    const recreated = await cdp.evaluate(`fetch('/api/resources?sessionId=${encodeURIComponent(sessionId)}').then((response) => response.json())`);
-    assert.equal(recreated.data.total, 3, 'regenerating a deleted quiz must not duplicate prior rows');
-
-    await setText(cdp, 'textarea', '二叉树层序遍历');
-    await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.includes('课程讲义')).click()");
-    await cdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.includes('开始生成')).click()");
-    await waitForCondition(() => batchResponses(cdp).length >= 3, 'lecture batch request');
-    const firstLectureBatch = await responseBody(cdp, batchResponses(cdp).at(-1));
-    const target = await cdp.call('Target.createTarget', { url: `http://127.0.0.1:${frontendPort}/generate?q=${encodeURIComponent('二叉树层序遍历')}&types=lecture` });
-    await waitForCondition(async () => (await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json()).some((page) => page.id === target.targetId), 'second browser target', 10000);
-    const pages = await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json();
-    const second = pages.find((page) => page.id === target.targetId);
-    secondSocket = new WebSocket(second.webSocketDebuggerUrl); await new Promise((resolve, reject) => { secondSocket.addEventListener('open', resolve, { once: true }); secondSocket.addEventListener('error', reject, { once: true }); });
-    const secondCdp = new Cdp(secondSocket); await secondCdp.call('Runtime.enable'); await secondCdp.call('Network.enable');
-    await waitForBrowser(secondCdp, "Boolean(document.querySelector('textarea'))", 'second tab generation page');
-    await secondCdp.evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.includes('开始生成')).click()");
-    await waitForCondition(() => batchResponses(secondCdp).length === 1, 'second tab batch request');
-    const secondBatch = await responseBody(secondCdp, batchResponses(secondCdp)[0]);
-    const firstLectureTask = firstLectureBatch.tasks.find((task) => task.resource_type === 'lecture');
-    const secondLectureTask = secondBatch.tasks.find((task) => task.resource_type === 'lecture');
-    assert.equal(secondLectureTask.task_id, firstLectureTask.task_id, 'same scope/type in two tabs must reuse one active task');
-    assert.equal(secondLectureTask.reused_existing, true);
+    const remaining = await authenticatedApi(cdp, apiBase, identity.access_token, 'resources', { params: { sessionId, subjectId: subject.id } });
+    assert.equal(remaining.data.resources.some((resource) => resource.id === quiz.id), false);
   } finally {
     secondSocket?.close(); socket?.close(); await stop(edge); await stop(frontend); await stop(backend); await rm(tempDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
   }

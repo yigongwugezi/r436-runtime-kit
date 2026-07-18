@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { BrainCircuit, CheckCircle2, ChevronRight, Clapperboard, Clock, FileQuestion, FileText, Image as ImageIcon, Loader2, Presentation, Sparkles, X, XCircle } from 'lucide-react';
-import { startGeneralResourceGeneration, getPptTemplates, type GeneralResourceType, type PptTemplate } from '../api/resources';
+import { getResourceCapabilities, startGeneralResourceGeneration, getPptTemplates, type GeneralResourceType, type PptTemplate, type ProviderCapabilityStatus } from '../api/resources';
 import { cancelWorkflow, consumeWorkflowEvents, readWorkflow, retryWorkflow, type WorkflowState } from '../api/workflows';
 import { getCurrentLearner } from '../store/authStore';
 import { useChatStore } from '../store/chatStore';
@@ -16,6 +16,7 @@ import {
   type WorkflowTaskRecoveryRecord,
   type WorkflowTaskScope,
 } from '../utils/workflowTaskRecovery';
+import { resourceCapability, resourceErrorMessage } from '../utils/resourceCapabilities';
 
 type TaskEntry = WorkflowState & { resourceType: GeneralResourceType; reusedExisting?: boolean };
 
@@ -81,10 +82,19 @@ export default function ResourceGenerationPage() {
   const [selectedTemplate, setSelectedTemplate] = useState<string>(() => searchParams.get('tpl') || '');
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [providerStatus, setProviderStatus] = useState<Record<string, ProviderCapabilityStatus>>();
+  const [capabilityError, setCapabilityError] = useState('');
   const controllers = useRef(new Map<string, AbortController>());
   const pollingTimers = useRef(new Map<string, ReturnType<typeof setInterval>>());
   const restoring = useRef(new Set<string>());
   const topicFingerprint = useMemo(() => fingerprint(prompt), [prompt]);
+  const loadCapabilities = useCallback(() => {
+    setCapabilityError('');
+    getResourceCapabilities().then((data) => setProviderStatus(data.providerStatus || {})).catch(() => {
+      setProviderStatus({});
+      setCapabilityError('无法确认生成服务状态；除本地思维导图外，生成入口已暂时禁用。');
+    });
+  }, []);
 
   const completedResources = useMemo(() => {
     return Object.values(workflows)
@@ -207,6 +217,13 @@ export default function ResourceGenerationPage() {
   }, [bumpDataVersion, putTask, scopeFor, sessionId, startPolling]);
 
   useEffect(() => {
+    loadCapabilities();
+  }, [loadCapabilities]);
+  useEffect(() => {
+    if (!providerStatus) return;
+    setSelectedTypes((types) => types.filter((type) => resourceCapability(type, providerStatus).enabled));
+  }, [providerStatus]);
+  useEffect(() => {
     if (selectedTypes.includes('ppt')) {
       getPptTemplates().then((res) => {
         if (res.templates?.length) setPptTemplates(res.templates);
@@ -303,6 +320,7 @@ export default function ResourceGenerationPage() {
   const activeTasks = Object.values(workflows).filter((task) => isActiveWorkflowStatus(task.status));
   const updatePrompt = (value: string) => { setPrompt(value); updateUrl(value, selectedTypes); };
   const toggleType = (resourceType: GeneralResourceType) => {
+    if (!resourceCapability(resourceType, providerStatus).enabled) return;
     const next = selectedTypes.includes(resourceType)
       ? selectedTypes.filter((item) => item !== resourceType)
       : selectedTypes.length < 3 ? [...selectedTypes, resourceType] : selectedTypes;
@@ -311,6 +329,8 @@ export default function ResourceGenerationPage() {
 
   const handleGenerate = async () => {
     if (!sessionId || !prompt.trim() || !selectedTypes.length || activeTasks.length || isGenerating) return;
+    const blocked = selectedTypes.find((type) => !resourceCapability(type, providerStatus).enabled);
+    if (blocked) { setGenError(resourceCapability(blocked, providerStatus).reason || '当前资源暂不可生成。'); return; }
     setGenError(''); setProgressExpanded(true); setIsGenerating(true);
     const genOptions: Record<string, unknown> = {};
     if (selectedTemplate) genOptions.templateId = selectedTemplate;
@@ -327,7 +347,7 @@ export default function ResourceGenerationPage() {
         putTask(task.resource_type, initial, Boolean(task.reused_existing));
         void monitor(task.resource_type, task.task_id, Boolean(task.reused_existing), initial);
       }
-    } catch (error: any) { setGenError(error?.message || '无法创建资源任务，请检查输入后重试。'); }
+    } catch (error: any) { setGenError(resourceErrorMessage(error?.response?.data?.errorCode || error?.code).message); }
     finally { setIsGenerating(false); }
   };
 
@@ -357,7 +377,7 @@ export default function ResourceGenerationPage() {
       <div className="grid grid-cols-3 gap-6">
         <div className="col-span-2 space-y-6">
           <div className="bg-white rounded-2xl p-6 shadow-soft"><label className="block text-sm font-medium text-surface-700 mb-3">描述你的学习需求</label><textarea value={prompt} onChange={(event) => updatePrompt(event.target.value)} maxLength={500} className="w-full h-32 px-4 py-3 bg-surface-50 border border-surface-200 rounded-xl" /><div className="flex justify-between mt-3 text-xs text-surface-400"><span>支持 Markdown 输入</span><span>{prompt.length}/500</span></div></div>
-          <div className="bg-white rounded-2xl p-6 shadow-soft"><div className="flex justify-between mb-4"><h3 className="font-semibold text-surface-700">选择资源类型</h3><span className="text-xs text-primary-600">已选择 {selectedTypes.length}/3 种</span></div><div className="grid grid-cols-2 gap-3">{resourceTypes.map((type) => { const Icon = type.icon; const selected = selectedTypes.includes(type.id); const isPpt = type.id === 'ppt'; return <div key={type.id} className="relative"><button onClick={() => toggleType(type.id)} disabled={!selected && selectedTypes.length >= 3} className={`w-full p-4 rounded-xl border-2 text-left ${selected ? 'border-primary-500 bg-primary-50' : 'border-surface-200 bg-surface-50'} disabled:opacity-50`}><Icon size={20} className="mb-2 text-primary-600" /><p className="text-sm font-medium">{type.label}</p><p className="text-xs text-surface-500 mt-1">{type.description}</p></button>{isPpt && selected && pptTemplates.length > 0 && <div onClick={() => setShowTemplatePicker(true)} className="mt-2 w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border border-primary-200 bg-primary-50 text-primary-600 text-xs font-medium hover:bg-primary-100 transition-colors cursor-pointer"><Presentation size={14} />{selectedTemplate ? (pptTemplates.find(t => t.templateId === selectedTemplate)?.name || '已选模板') : '选择模板'}</div>}</div>; })}</div></div>
+          <div className="bg-white rounded-2xl p-6 shadow-soft"><div className="flex justify-between mb-4"><h3 className="font-semibold text-surface-700">选择资源类型</h3><span className="text-xs text-primary-600">已选择 {selectedTypes.length}/3 种</span></div><div className="grid grid-cols-2 gap-3">{resourceTypes.map((type) => { const Icon = type.icon; const selected = selectedTypes.includes(type.id); const isPpt = type.id === 'ppt'; const capability = resourceCapability(type.id, providerStatus); return <div key={type.id} className="relative"><button onClick={() => toggleType(type.id)} disabled={!capability.enabled || (!selected && selectedTypes.length >= 3)} title={capability.reason} className={`w-full p-4 rounded-xl border-2 text-left ${selected ? 'border-primary-500 bg-primary-50' : 'border-surface-200 bg-surface-50'} disabled:opacity-50`}><Icon size={20} className="mb-2 text-primary-600" /><p className="text-sm font-medium">{type.label}</p><p className="text-xs text-surface-500 mt-1">{type.description}</p>{capability.reason && <p className={`text-xs mt-2 ${capability.enabled ? 'text-primary-600' : 'text-error-600'}`}>{capability.reason}</p>}</button>{isPpt && selected && capability.enabled && pptTemplates.length > 0 && <div onClick={() => setShowTemplatePicker(true)} className="mt-2 w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border border-primary-200 bg-primary-50 text-primary-600 text-xs font-medium hover:bg-primary-100 transition-colors cursor-pointer"><Presentation size={14} />{selectedTemplate ? (pptTemplates.find(t => t.templateId === selectedTemplate)?.name || '已选模板') : '选择模板'}</div>}</div>; })}</div></div>
           <button onClick={handleGenerate} disabled={!prompt.trim() || !selectedTypes.length || activeTasks.length > 0 || isGenerating || !sessionId} className="w-full flex items-center justify-center gap-3 px-6 py-4 rounded-xl font-semibold text-lg bg-gradient-to-r from-primary-600 to-accent-600 text-white disabled:bg-surface-100 disabled:text-surface-400 disabled:cursor-not-allowed">{isGenerating ? <Loader2 size={22} className="animate-spin" /> : <Sparkles size={22} />}{isGenerating ? '正在创建任务…' : activeTasks.length ? '任务进行中…' : `开始生成（${selectedTypes.length} 种资源）`}</button>
         </div>
         <div className="space-y-4">
@@ -435,7 +455,7 @@ export default function ResourceGenerationPage() {
             )}
           </div>
           {Object.values(workflows).some((task) => task.status === 'completed') && <button onClick={() => navigate('/resources')} className="w-full px-4 py-3 rounded-xl bg-success-50 text-success-700 text-sm font-medium">查看已生成资源</button>}
-          {genError && <p className="p-3 rounded-xl bg-error-50 text-error-600 text-sm">{genError}</p>}
+          {(genError || capabilityError) && <div className="p-3 rounded-xl bg-error-50 text-error-600 text-sm">{genError || capabilityError}{capabilityError && <button onClick={loadCapabilities} className="ml-3 text-primary-600">重试</button>}</div>}
         </div>
       </div>
       {/* Template picker modal */}

@@ -61,6 +61,44 @@ _assessment_factory = AgentFactory(llm_client=_assessment_llm)
 
 logger = logging.getLogger(__name__)
 
+
+def _require_path_stage(payload: dict[str, Any]) -> None:
+    """Apply path locking only when an existing path task supplies a stage."""
+    stage_id = str(payload.get("stageId") or payload.get("stage_id") or "")
+    session_id = str(payload.get("sessionId") or payload.get("session_id") or "")
+    if stage_id and session_id:
+        from app.routers.product import _require_stage_access
+        _require_stage_access(session_id, stage_id)
+
+
+def _assessment_path_context(db, parent, body: "QuizSubmitRequest", learner_id: str, subject_id: str) -> dict[str, str] | None:
+    """Accept only an explicit, owned assessment task; standalone practice stays standalone."""
+    values = {"path_id": body.path_id.strip(), "stage_id": body.stage_id.strip(), "task_id": body.task_id.strip()}
+    if not any(values.values()):
+        return None
+    if not all(values.values()):
+        raise HTTPException(status_code=400, detail="pathId, stageId and taskId are required together")
+    if values["path_id"] != str(getattr(parent, "path_id", "") or "") or values["stage_id"] != str(getattr(parent, "stage_id", "") or ""):
+        raise HTTPException(status_code=403, detail="assessment path context does not match its parent")
+    from app.db.models import LearningPathModel, SessionModel
+    from app.routers.product import _apply_stage_progress, _path_task_context
+    session = db.get(SessionModel, parent.session_id)
+    if not session or session.learner_id != learner_id or (subject_id and session.subject_id and session.subject_id != subject_id):
+        raise HTTPException(status_code=403, detail="assessment session is not owned by learner")
+    path = db.query(LearningPathModel).filter(
+        LearningPathModel.id == values["path_id"], LearningPathModel.session_id == parent.session_id,
+    ).first()
+    context = _path_task_context(path.stages, values["task_id"]) if path and isinstance(path.stages, list) else None
+    if not context or str(context[0].get("id") or context[0].get("stage_id") or "") != values["stage_id"]:
+        raise HTTPException(status_code=403, detail="assessment task is not in the requested path stage")
+    task_type = str(context[1].get("task_type") or context[1].get("type") or context[1].get("content_type") or "").lower()
+    if task_type not in {"quiz", "practice", "exam", "assessment", "test"}:
+        raise HTTPException(status_code=403, detail="path task is not an assessment")
+    stage = _apply_stage_progress(path.stages)[path.stages.index(context[0])]
+    if stage["progressStatus"] == "locked":
+        raise HTTPException(status_code=403, detail="please complete the current stage first")
+    return values
+
 router = APIRouter(tags=["assessment"])
 
 
@@ -157,6 +195,9 @@ class QuizSubmitRequest(BaseModel):
     idempotency_key: str = Field(..., alias="idempotencyKey")
     answers_revealed: bool = Field(default=False, alias="answersRevealed")
     client_submitted_at: str | None = Field(default=None, alias="clientSubmittedAt")
+    path_id: str = Field(default="", alias="pathId")
+    stage_id: str = Field(default="", alias="stageId")
+    task_id: str = Field(default="", alias="taskId")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -219,6 +260,9 @@ def _attempt_dict(a) -> dict:
         "attemptId": a.attempt_id,
         "sessionId": a.session_id,
         "subjectId": a.subject_id,
+        "pathId": a.path_id,
+        "stageId": a.stage_id,
+        "taskId": a.task_id,
         "quizId": a.quiz_id,
         "examSetId": a.exam_set_id,
         "learnerId": a.learner_id,
@@ -694,6 +738,7 @@ def create_quiz_endpoint(
     db = SessionLocal()
     try:
         require_owned_session(db, body.session_id, auth.learner_id)
+        _require_path_stage(body.model_dump(by_alias=True))
         quiz = save_quiz(db, {
             "id": f"quiz_{uuid.uuid4().hex[:12]}",
             "title": body.title,
@@ -781,6 +826,7 @@ def start_quiz_attempt(
     try:
         quiz = require_owned_quiz(db, quiz_id, auth.learner_id)
         session_id = require_matching_session(quiz.session_id, body.session_id)
+        _require_path_stage({"sessionId": session_id, "stageId": quiz.stage_id})
         attempt = create_attempt(db, {
             "attempt_id": f"att_{uuid.uuid4().hex[:12]}",
             "session_id": session_id,
@@ -896,6 +942,7 @@ def generate_section_quiz(
     db = SessionLocal()
     try:
         require_owned_session(db, body.session_id, auth.learner_id)
+        _require_path_stage(body.model_dump(by_alias=True))
         # ── Build LLM prompt ────────────────────────────────────
         kp_text = "\n".join(f"- {kp}" for kp in body.knowledge_points[:8])
         summary = body.lecture_summary[:2000] if body.lecture_summary else "暂无讲义摘要"
@@ -1092,6 +1139,8 @@ def submit_quiz(
         except Exception:
             pass
 
+        path_context = _assessment_path_context(db, quiz, body, auth.learner_id, subject_id)
+
         # ── Create attempt ─────────────────────────────────────
         try:
             attempt = create_attempt(db, {
@@ -1104,6 +1153,7 @@ def submit_quiz(
                 "idempotency_key": body.idempotency_key,
                 "attempt_number": attempt_no,
                 "assessment_eligible": not body.answers_revealed,
+                **(path_context or {}),
             })
         except Exception:
             # Race: another request inserted between our SELECT and INSERT.
@@ -1278,6 +1328,13 @@ def submit_quiz(
             section_id=quiz.section_id,
         )
         db.commit()  # persist fallback mappings + event
+        path_completion = {"pathTaskCompleted": False, "stageCompleted": False, "nextStageUnlocked": False, "pathProgress": None}
+        if path_context:
+            from app.routers.product import complete_path_task
+            path_completion = complete_path_task(
+                db, session_id=session_id, subject_id=subject_id, source="assessment_submission", **path_context,
+            )
+            db.commit()
 
         # Update per-result knowledgePoint to highest-weight label
         for i, r in enumerate(results):
@@ -1357,6 +1414,8 @@ def submit_quiz(
                 "knowledgePointResults": kp_results,
                 "processingTaskId": processing_task_id,
                 "diagnosisTaskId": diagnosis_task_id,
+                "assessmentCompleted": True,
+                **path_completion,
             },
         }
     finally:
@@ -1386,6 +1445,7 @@ def create_attempt_endpoint(
             else require_owned_exam_set(db, body.exam_set_id, auth.learner_id)
         )
         session_id = require_matching_session(parent.session_id, body.session_id)
+        _require_path_stage({"sessionId": session_id, "stageId": getattr(parent, "stage_id", "")})
         attempt = create_attempt(db, {
             "attempt_id": f"att_{uuid.uuid4().hex[:12]}",
             "session_id": session_id,
@@ -1498,6 +1558,7 @@ def create_exam_set_endpoint(
     db = SessionLocal()
     try:
         require_owned_session(db, body.session_id, auth.learner_id)
+        _require_path_stage(body.model_dump(by_alias=True))
         exam = save_exam_set(db, {
             "id": f"exam_{uuid.uuid4().hex[:12]}",
             "title": body.title,
@@ -1622,6 +1683,7 @@ def start_exam_set_attempt(
     try:
         exam_set = require_owned_exam_set(db, exam_set_id, auth.learner_id)
         session_id = require_matching_session(exam_set.session_id, body.session_id)
+        _require_path_stage({"sessionId": session_id, "stageId": exam_set.stage_id})
         attempt = create_attempt(db, {
             "attempt_id": f"att_{uuid.uuid4().hex[:12]}",
             "session_id": session_id,
@@ -1862,6 +1924,8 @@ def submit_exam_set(
         except Exception:
             pass
 
+        path_context = _assessment_path_context(db, exam_set, body, auth.learner_id, subject_id)
+
         # ── Create attempt ─────────────────────────────────────
         try:
             attempt = create_attempt(db, {
@@ -1874,6 +1938,7 @@ def submit_exam_set(
                 "idempotency_key": body.idempotency_key,
                 "attempt_number": attempt_no,
                 "assessment_eligible": not body.answers_revealed,
+                **(path_context or {}),
             })
         except Exception:
             db.rollback()
@@ -2033,6 +2098,13 @@ def submit_exam_set(
             chapter_id=exam_set.chapter_id,
         )
         db.commit()  # persist fallback mappings + event
+        path_completion = {"pathTaskCompleted": False, "stageCompleted": False, "nextStageUnlocked": False, "pathProgress": None}
+        if path_context:
+            from app.routers.product import complete_path_task
+            path_completion = complete_path_task(
+                db, session_id=session_id, subject_id=subject_id, source="assessment_submission", **path_context,
+            )
+            db.commit()
 
         # Update per-result knowledgePoint to highest-weight label
         for i, r in enumerate(results):
@@ -2104,6 +2176,8 @@ def submit_exam_set(
                 "knowledgePointResults": kp_results,
                 "processingTaskId": processing_task_id,
                 "diagnosisTaskId": diagnosis_task_id,
+                "assessmentCompleted": True,
+                **path_completion,
             },
         }
     finally:
