@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { authHeaders } from '../api/client';
 import { useNavigate } from 'react-router-dom';
 import { useLearningPath } from '../hooks/useLearningPath';
 import { useChatStore } from '../store/chatStore';
@@ -75,7 +76,7 @@ function MiniTutor({ sessionId, sectionId, section, lecture, initialPrompt }: {
     setMsg(''); setLoading(true); setReply('');
     try {
       const res = await fetch(`/api/sections/${encodeURIComponent(sectionId)}/tutor/ask`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
           sessionId, question,
           sectionTitle: section?.title || '',
@@ -348,7 +349,7 @@ function AdaptiveToolTab({ sessionId, sectionId, section, lecture, onGenerated, 
         type: action.genType,
       };
       const res = await fetch(`/api/sections/${encodeURIComponent(sectionId)}/lecture/generate`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify(body),
       });
       const data = await res.json();
@@ -441,7 +442,7 @@ export default function DailyTaskPage({ chapterId, sectionId, onBack }: Props) {
     if (store.lectureCache[key]) { setLectureLoaded(true); return; }
     setLectureLoaded(false);
     autoGenRef.current = false;
-    fetch(`/api/sections/${encodeURIComponent(currentTask.id)}/lecture?sessionId=${encodeURIComponent(sessionId)}`)
+    fetch(`/api/sections/${encodeURIComponent(currentTask.id)}/lecture?sessionId=${encodeURIComponent(sessionId)}`, { headers: authHeaders() })
       .then(r => r.json())
       .then(d => {
         store.markLoaded(currentTask.id);
@@ -494,7 +495,7 @@ export default function DailyTaskPage({ chapterId, sectionId, onBack }: Props) {
     setGenerating(true);
     try {
       const res = await fetch(`/api/sections/${encodeURIComponent(currentTask.id)}/lecture/generate`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
           sessionId,
           sectionTitle: currentTask.title,

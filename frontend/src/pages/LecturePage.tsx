@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { authHeaders } from '../api/client';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useLearningPath } from '../hooks/useLearningPath';
 import { useChatStore } from '../store/chatStore';
@@ -143,9 +144,8 @@ export default function LecturePage() {
     if (!sid) return;
     setDownloadLoading(fmt);
     try {
-      const token = (() => { try { return localStorage.getItem('edu_token') || ''; } catch { return ''; } })();
       const resp = await fetch(`/api/sections/${sid}/lecture/download?format=${fmt}&sessionId=${sessionId || ''}`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        headers: authHeaders(),
       });
       if (!resp.ok) throw new Error(`下载失败 (${resp.status})`);
       const blob = await resp.blob();
@@ -357,8 +357,7 @@ export default function LecturePage() {
       params.set('stageId', focusedStageId);
       params.set('taskId', focusedTaskId);
     }
-    const token = localStorage.getItem('edu_token') || '';
-    fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/lecture?${params}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+    fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/lecture?${params}`, { headers: authHeaders() })
       .then(async r => {
         if (r.status === 403) setFocusedAccessDenied(true);
         return r.ok ? r.json() : null;
@@ -474,7 +473,7 @@ export default function LecturePage() {
     }
     try {
       const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/tutor/ask`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', ...(localStorage.getItem('edu_token') ? { Authorization: `Bearer ${localStorage.getItem('edu_token')}` } : {}) },
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
           sessionId, question,
           quoted: quotedText || '',
@@ -504,7 +503,7 @@ export default function LecturePage() {
     const cid = cardId || generatePanelRef.current?.beginRecord('video', title, requirements) || '';
     try {
       const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/tutor/video`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, lectureContent: effectiveLectureContent, requirements: requirements || '' }),
       });
       const data = await res.json();
@@ -1366,7 +1365,7 @@ export default function LecturePage() {
                 if (!activeSectionId || !sessionId || !currentSection) return;
                 try {
                   const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/lecture/generate`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
                     body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal, type: 'reading', knowledgePoints: currentSection.knowledgePoints || [], lectureContent: effectiveLectureContent.slice(0, 3000), requirements: requirements || '' }),
                   });
                   const data = await res.json();
@@ -1380,7 +1379,7 @@ export default function LecturePage() {
                 if (!activeSectionId || !sessionId || !currentSection) return;
                 try {
                   const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/lecture/generate`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
                     body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal, type: 'practice', knowledgePoints: currentSection.knowledgePoints || [], lectureContent: effectiveLectureContent.slice(0, 3000), requirements: requirements || '' }),
                   });
                   const data = await res.json();
@@ -1411,7 +1410,7 @@ export default function LecturePage() {
                 setGenAll(true);
                 try {
                   const res = await fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/generate-all`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
                     body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal || '', chapterId: chapterCtx?.chapter.id || '', stageId: chapterCtx?.stage.id || '', knowledgePoints: currentSection.knowledgePoints || [], lectureContent: effectiveLectureContent }),
                   }).then(r => r.json());
                   const data = res?.data || res;
@@ -1425,7 +1424,7 @@ export default function LecturePage() {
                       for (let i = 0; i < 30; i++) {
                         await new Promise(r => setTimeout(r, 10000));
                         try {
-                          const pr = await fetch(`/api/video/task/${encodeURIComponent(videoResource.task_id)}`);
+                          const pr = await fetch(`/api/video/task/${encodeURIComponent(videoResource.task_id)}`, { headers: authHeaders() });
                           const pd = await pr.json();
                           const pollData = pd?.data || pd;
                           if (pollData.status === 'success' && pollData.video_url) {
