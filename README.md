@@ -136,6 +136,14 @@ LLM_PROVIDER=mock
 
 注意：真实 `.env` 不要提交到 GitHub。
 
+### 资源比赛模式
+
+比赛核心只需要 `LLM_PROVIDER=deepseek` 和非空 `DEEPSEEK_API_KEY`。讲义、阅读材料、练习材料与基础导图使用该核心能力；`pyahocorasick` 缺失时会使用安全的纯 Python 内容检查降级。
+
+以下均为可选项，留空不会阻止后端或已生成资源读取：`TAVILY_API_KEY`（联网搜索）、`AIPPT_APP_ID` / `AIPPT_API_SECRET`（PPT）、`DASHSCOPE_API_KEY`、`WAN_API_KEY`、`QWEN_API_KEY`（视频/图像）、`ARK_API_KEY`、`SPARK_*`、`OPENAI_API_KEY`、DeepTutor、RAG 与 Manim。未配置时接口会返回明确 unavailable/provider-not-configured 状态，不会创建空资源或伪造搜索结果。
+
+不要提交真实 `backend/.env`；从 `backend/.env.example` 复制后仅在本机填写变量值。
+
 ## 开源依赖与协议声明
 
 本系统在开发过程中使用了以下开源项目及 AI 工具/框架，在此列出名称、来源及相关协议要求。
