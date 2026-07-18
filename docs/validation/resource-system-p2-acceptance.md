@@ -2,7 +2,7 @@
 
 ## Status
 
-`READY` on `MAF-Refactor` at `f607e14`.
+`MOSTLY_READY` on `MAF-Refactor` at `f607e14`: backend/API versioning is accepted, while the resource-detail UI still needs an explicit regeneration control and version display.
 
 ## Capability matrix
 
@@ -56,4 +56,4 @@ npm run build
 - Idempotency is stable in a single process; multi-worker shared locking is not implemented.
 - Real-provider smoke tests require a configured key and network access.
 - Vite still reports existing large bundle chunk warnings.
-- Version history is API-backed; there is no full history-browser UI.
+- Resource detail still needs an explicit regeneration control and version display; version history remains API-backed.
