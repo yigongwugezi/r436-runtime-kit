@@ -91,6 +91,9 @@ def sanitize_json(text: str) -> str:
     """在 JSON 字符串值内部转义字面换行/制表符。
     90% 以上的 LLM JSON 失败是因为 content 字段里的 markdown 有字面换行。
     """
+    # LLM 有时输出 {{...}}（markdown 模板残留的双花括号）
+    if text.startswith('{{') and text.endswith('}}'):
+        text = text[1:-1]
     result: list[str] = []
     in_string = False
     escape_next = False

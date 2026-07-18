@@ -19,6 +19,7 @@ import TeacherClassDetail from '../pages/TeacherClassDetail';
 import LoginPage from '../pages/LoginPage';
 import LecturePage from '../pages/LecturePage';
 import TextbookViewPage from '../pages/TextbookViewPage';
+import TaskPage from '../pages/TaskPage';
 import NotFound from '../pages/NotFound';
 import { useAuthStore } from '../store/authStore';
 
@@ -74,6 +75,7 @@ const router = createBrowserRouter([
       { path: 'textbook/:subjectId', element: <RequireStudent><TextbookViewPage /></RequireStudent> },
       { path: 'resources', element: <RequireStudent><ResourceLibrary /></RequireStudent> },
       { path: 'resources/:id', element: <RequireStudent><ResourceLibrary /></RequireStudent> },
+      { path: 'task/:taskId', element: <RequireStudent><TaskPage /></RequireStudent> },
       { path: 'kg', element: <RequireStudent><KnowledgeGraphPage /></RequireStudent> },
       { path: 'path', element: <RequireStudent><LearningPathPage /></RequireStudent> },
       { path: 'learning-path', element: <RequireStudent><LearningPathPage /></RequireStudent> },

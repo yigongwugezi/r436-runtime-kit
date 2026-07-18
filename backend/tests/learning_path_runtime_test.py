@@ -122,9 +122,9 @@ def main() -> None:
     print("  unified path structure (stages→chapters→sections→knowledgePoints): ok")
 
     # ── Test 6: Dynamic stage count scales with total_days ──
-    estimated = max(3, min(12, 90 // 7))  # 90 days ~ 12 stages
-    assert estimated == 12, f"Expected 12 stages for 90 days, got {estimated}"
-    estimated_short = max(3, min(12, 14 // 7))  # 14 days ~ 2 stages, min 3
+    estimated = 90 // 4  # 90 days ~ 22 stages
+    assert estimated == 22, f"Expected 22 stages for 90 days, got {estimated}"
+    estimated_short = 14 // 4  # 14 days ~ 3 stages
     assert estimated_short == 3, f"Expected 3 stages for 14 days, got {estimated_short}"
     print("  dynamic stage scaling: ok")
 

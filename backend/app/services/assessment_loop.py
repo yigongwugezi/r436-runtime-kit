@@ -29,8 +29,8 @@ logger = logging.getLogger(__name__)
 
 # ── Thresholds ───────────────────────────────────────────────────────────
 
-REASSESS_INTERVAL_SECONDS = 24 * 3600       # re-assess every 1 day
-MIN_EVENTS_FOR_REASSESS = 3                  # need at least N new events to re-assess
+REASSESS_INTERVAL_SECONDS = 12 * 3600       # re-assess every 12 hours (was 24h)
+MIN_EVENTS_FOR_REASSESS = 1                  # need at least 1 event to re-assess (was 3)
 RESOURCE_COMPLETE_BATCH = 3                  # auto-diagnose after every N resource completions
 
 
@@ -485,7 +485,37 @@ def run_post_quiz_assessment(
             logger.exception("ProfileAgent update failed for session=%s", session_id)
 
         # ═══════════════════════════════════════════════════════════
-        # Step 4: Check if plan adjustment is needed → PlannerAgent
+        # Step 3.5: DeepTutor 引擎桥接 — 获取学习策略建议
+        # ═══════════════════════════════════════════════════════════
+        dt_suggestions = None
+        try:
+            from app.services.dt_bridge import build_learning_progress, get_next_action, get_due_reviews, save_progress
+            learning_path = diagnosis_context.get("learning_path", [])
+            dt_progress = build_learning_progress(
+                session_id, learning_path, new_diagnosis,
+                diagnosis_context.get("analytics"),
+            )
+            if dt_progress is not None:
+                dt_suggestions = get_next_action(dt_progress)
+                due_reviews = get_due_reviews(dt_progress, max_items=3)
+                save_progress(session_id, dt_progress)  # 持久化掌握度
+                if dt_suggestions:
+                    logger.info(
+                        "DeepTutor engine: next_action=%s mastery=%.2f",
+                        dt_suggestions.get("action", ""),
+                        dt_suggestions.get("mastery", 0.0),
+                    )
+                if due_reviews:
+                    logger.info("DeepTutor engine: %d reviews due", len(due_reviews))
+                # 注入引擎数据到 diagnosis
+                if dt_suggestions and dt_suggestions.get("mastery", 1.0) < 0.5:
+                    new_diagnosis.setdefault("risk_flags", []).append("dt_engine_low_mastery")
+                if due_reviews:
+                    new_diagnosis["_due_reviews"] = due_reviews
+        except Exception:
+            logger.debug("DeepTutor engine bridge skipped (no-op)")
+
+        # ═══════════════════════════════════════════════════════════
         #
         # Trigger adjustment when:
         #   a) mastery scores changed significantly (≥1 topic, ≥10 pts), OR
@@ -512,23 +542,182 @@ def run_post_quiz_assessment(
                     planner_result = planner_agent.run(planner_context)
                     adjusted_path = planner_result.get("learning_path", [])
                     if adjusted_path:
-                        # ── 不直接覆盖，创建 pending_revision ──
-                        from app.services.day_planner import compute_diff
-                        existing_path = diagnosis_context.get("learning_path", [])
-                        diff = compute_diff(existing_path, adjusted_path)
-                        conversation_store.set_pending_revision(
-                            session_id,
-                            proposed_stages=adjusted_path,
-                            diff=diff,
-                            reason=f"基于小测「{quiz_title}」结果调整学习路径",
-                        )
-                        path_adjusted = True
-                        logger.info(
-                            "PlannerAgent created pending revision for session=%s, diff=%s",
-                            session_id, diff.get("summary", ""),
-                        )
+                        apply_silently = planner_result.get("apply_silently", False)
+                        if apply_silently:
+                            # ── 仅节奏调整：静默写入，不弹窗 ──
+                            existing_result = dict(conversation_store.get(session_id).last_result or {})
+                            existing_result["learning_path"] = adjusted_path
+                            existing_result["stages"] = adjusted_path
+                            existing_result["version"] = int(time.time() * 1000)
+                            conversation_store.set_result(session_id, existing_result)
+                            path_adjusted = True
+                            logger.info(
+                                "PlannerAgent silently applied pacing adjustment for session=%s",
+                                session_id,
+                            )
+                        else:
+                            # ── 结构性调整：创建 pending_revision ──
+                            from app.services.day_planner import compute_diff
+                            existing_path = diagnosis_context.get("learning_path", [])
+                            diff = compute_diff(existing_path, adjusted_path)
+                            conversation_store.set_pending_revision(
+                                session_id,
+                                proposed_stages=adjusted_path,
+                                diff=diff,
+                                reason=f"基于小测「{quiz_title}」结果调整学习路径",
+                            )
+                            path_adjusted = True
+                            logger.info(
+                                "PlannerAgent created pending revision for session=%s, diff=%s",
+                                session_id, diff.get("summary", ""),
+                            )
             except Exception:
                 logger.exception("PlannerAgent adjustment failed for session=%s", session_id)
+
+        # ════════════════════════
+        # Step 4.5: auto-generate resources for newly inserted stages
+        # ════════════════════════
+        if adjusted_path and existing_path:
+            old_ids = {s.get("stage_id","") for s in existing_path if isinstance(s,dict)}
+            new_ids = {s.get("stage_id","") for s in adjusted_path if isinstance(s,dict)}
+            added_ids = new_ids - old_ids
+            if added_ids:
+                try:
+                    ra = factory.get("resource_agent")
+                    if ra is not None:
+                        for ns in [s for s in adjusted_path if isinstance(s,dict) and s.get("stage_id","") in added_ids]:
+                            _agent_ctx = {
+                                "action": "inserted_remedial",
+                                "target_stages": [ns.get("stage_id","")],
+                                "reason": "自动插入的新阶段，需配套资源",
+                                "needs_resources": ["lecture","quiz","practice"],
+                                "focus_topics": [sec.get("title","") for ch in ns.get("chapters",[]) for sec in ch.get("sections",[])],
+                                "urgency": "high",
+                            }
+                            rctx = {
+                                "session_id":session_id,
+                                "user_message": f"为新增阶段生成配套资源",
+                                "diagnosis":new_diagnosis,
+                                "learning_path":[ns],
+                                "profile_facts":diagnosis_context.get("profile_facts",{}),
+                                "resources":diagnosis_context.get("resources",[]),
+                                "_agent_context":_agent_ctx,
+                            }
+                            rr = ra.run(rctx)
+                            nr = rr.get("resources",[])
+                            if nr:
+                                for r in nr:
+                                    _stamp_resource_personalization(r, session_id)
+                                    # 确保 task_id 和 section_generated tag
+                                    if not r.get("task_id"):
+                                        secs = [sec for ch in ns.get("chapters",[]) for sec in ch.get("sections",[])]
+                                        r["task_id"] = secs[0].get("section_id","") if secs else ""
+                                        r["related_section_id"] = r["task_id"]
+                                    r.setdefault("tags",[])
+                                    if "section_generated" not in r["tags"]:
+                                        r["tags"].append("section_generated")
+                                    # 同步写 DB
+                                    try:
+                                        from app.db.repository import upsert_resource
+                                        from app.db.engine import SessionLocal as _SL2
+                                        _db2 = _SL2()
+                                        upsert_resource(_db2, session_id, r)
+                                        _db2.commit()
+                                        _db2.close()
+                                    except Exception:
+                                        pass
+                                er = dict(conversation_store.get(session_id).last_result or {})
+                                ex = list(er.get("resources",[]))
+                                ex.extend(nr)
+                                er["resources"] = ex
+                                conversation_store.set_result(session_id, er)
+                                resources_generated = resources_generated + len(nr)
+                                logger.info("Auto-generated %d resources for new stage %s", len(nr), ns.get("stage_id",""))
+                except Exception:
+                    logger.exception("New stage resource generation failed")
+            # ── 归档已删除 stage 的资源 ──
+            removed_ids = old_ids - new_ids
+            if removed_ids:
+                er3 = dict(conversation_store.get(session_id).last_result or {})
+                for r in list(er3.get("resources", [])):
+                    if isinstance(r, dict) and r.get("related_stage_id") in removed_ids:
+                        r["_archived"] = True
+                        r["_archived_at"] = time.time()
+                conversation_store.set_result(session_id, er3)
+                logger.info("Archived resources for %d removed stages", len(removed_ids))
+            # ── 同步资源 estimated_minutes（改时间不重生成）──
+            stage_min_map = {}
+            for s in adjusted_path:
+                if isinstance(s, dict):
+                    sid = s.get("stage_id","")
+                    for ch in s.get("chapters",[]):
+                        for sec in ch.get("sections",[]):
+                            stage_min_map[sid] = max(stage_min_map.get(sid,0), sec.get("estimated_minutes",45))
+            er4 = dict(conversation_store.get(session_id).last_result or {})
+            for r in list(er4.get("resources",[])):
+                if isinstance(r, dict) and not r.get("_archived"):
+                    sid = r.get("related_stage_id","")
+                    if sid in stage_min_map:
+                        r["estimated_minutes"] = stage_min_map[sid]
+            conversation_store.set_result(session_id, er4)
+            # ── 复习题自动生成（标记了 _needs_questions 的 stage）──
+            for s in adjusted_path:
+                if isinstance(s, dict) and s.get("_needs_questions"):
+                    try:
+                        qa = factory.get("question_agent")
+                        if not qa:
+                            from app.agents.question_agent import QuestionAgent
+                            qa = QuestionAgent()
+                        qctx = {
+                            "knowledge_points": [
+                                {"name": sec.get("title",""), "type": "concept"}
+                                for ch in s.get("chapters",[])
+                                for sec in ch.get("sections",[])
+                            ],
+                            "quiz_config": {"question_count": 3, "types": ["choice","fill"]},
+                            "difficulty": "medium",
+                            "session_id": session_id,
+                        }
+                        qr = qa.run(qctx)
+                        if qr.get("questions"):
+                            er5 = dict(conversation_store.get(session_id).last_result or {})
+                            import uuid as _uid2
+                            sections = [
+                                sec for ch in s.get("chapters",[]) for sec in ch.get("sections",[])
+                            ]
+                            for qi, q_item in enumerate(qr["questions"]):
+                                task_id = sections[qi % len(sections)].get("section_id","") if sections else ""
+                                er5_res = list(er5.get("resources",[]))
+                                er5_res.append({
+                                    "id": _uid2.uuid4().hex[:12],
+                                    "resource_id": _uid2.uuid4().hex[:12],
+                                    "type": "quiz",
+                                    "title": f"复习题：{q_item.get('stem','')[:25]}",
+                                    "items": [q_item],
+                                    "related_stage_id": s.get("stage_id",""),
+                                    "related_section_id": task_id,
+                                    "task_id": task_id,
+                                    "source": "question_agent",
+                                    "format": "quiz",
+                                    "difficulty": "medium",
+                                    "quality_status": "passed",
+                                    "tags": ["section_generated","quiz","review"],
+                                })
+                                er5["resources"] = er5_res
+                                # 同步写入 DB 供 TaskPage 查询
+                                try:
+                                    from app.db.repository import upsert_resource
+                                    from app.db.engine import SessionLocal as _SL
+                                    _db = _SL()
+                                    upsert_resource(_db, session_id, er5_res[-1])
+                                    _db.commit()
+                                    _db.close()
+                                except Exception:
+                                    pass
+                            conversation_store.set_result(session_id, er5)
+                            logger.info("Auto-generated %d review quiz resources (task_id=%s)", len(qr["questions"]), sections[0].get("section_id","") if sections else "")
+                    except Exception:
+                        pass
 
         # ═══════════════════════════════════════════════════════════
         # Step 5: ResourceAgent — 为薄弱点生成针对性资源
@@ -669,6 +858,22 @@ def run_periodic_reassessment(session_id: str) -> dict[str, Any]:
         result = diagnosis_agent.run(diagnosis_context)
         new_diagnosis = result.get("diagnosis", {})
 
+        # 2.5 DT engine bridge
+        try:
+            from app.services.dt_bridge import build_learning_progress, get_next_action, get_due_reviews, save_progress
+            lp = diagnosis_context.get("learning_path", [])
+            dp = build_learning_progress(session_id, lp, new_diagnosis, diagnosis_context.get("analytics"))
+            if dp:
+                s = get_next_action(dp)
+                d = get_due_reviews(dp, max_items=3)
+                save_progress(session_id, dp)
+                if s and s.get("mastery",1.0)<0.5:
+                    new_diagnosis.setdefault("risk_flags",[]).append("dt_engine_low_mastery")
+                if d:
+                    new_diagnosis["_due_reviews"] = d
+        except Exception:
+            pass
+
         # 2. Extract mastery
         mastery_levels = new_diagnosis.get("mastery_levels", [])
         new_mastery: dict[str, float] = {
@@ -730,18 +935,66 @@ def run_periodic_reassessment(session_id: str) -> dict[str, Any]:
                     })
                     adjusted_path = planner_result.get("learning_path", [])
                     if adjusted_path:
-                        from app.services.day_planner import compute_diff
-                        existing_path = diagnosis_context.get("learning_path", [])
-                        diff = compute_diff(existing_path, adjusted_path)
-                        conversation_store.set_pending_revision(
-                            session_id,
-                            proposed_stages=adjusted_path,
-                            diff=diff,
-                            reason="定期诊断发现掌握度变化",
-                        )
-                        path_adjusted = True
+                        apply_silently2 = planner_result.get("apply_silently", False)
+                        if apply_silently2:
+                            er2 = dict(conversation_store.get(session_id).last_result or {})
+                            er2["learning_path"] = adjusted_path
+                            er2["stages"] = adjusted_path
+                            er2["version"] = int(time.time() * 1000)
+                            conversation_store.set_result(session_id, er2)
+                            path_adjusted = True
+                        else:
+                            from app.services.day_planner import compute_diff
+                            existing_path = diagnosis_context.get("learning_path", [])
+                            diff = compute_diff(existing_path, adjusted_path)
+                            conversation_store.set_pending_revision(
+                                session_id,
+                                proposed_stages=adjusted_path,
+                                diff=diff,
+                                reason="定期诊断发现掌握度变化",
+                            )
+                            path_adjusted = True
             except Exception:
                 logger.exception("PlannerAgent failed in periodic reassessment")
+
+        # 7.5 — 为新 stage 自动生成资源
+        if path_adjusted and adjusted_path and existing_path:
+            try:
+                oids = {s.get("stage_id","") for s in existing_path if isinstance(s,dict)}
+                nids = {s.get("stage_id","") for s in adjusted_path if isinstance(s,dict)}
+                for ns in [s for s in adjusted_path if isinstance(s,dict) and s.get("stage_id","") in (nids-oids)]:
+                    ra2 = factory.get("resource_agent")
+                    if ra2:
+                        rr = ra2.run({
+                            "session_id":session_id,
+                            "user_message":"为新增阶段生成资源",
+                            "diagnosis":new_diagnosis,
+                            "learning_path":[ns],
+                            "profile_facts":diagnosis_context.get("profile_facts",{}),
+                            "_agent_context":{
+                                "action":"inserted_remedial",
+                                "target_stages":[ns.get("stage_id","")],
+                                "needs_resources":["lecture","quiz","practice"],
+                                "urgency":"medium",
+                            },
+                        })
+                        if rr.get("resources"):
+                            er = dict(conversation_store.get(session_id).last_result or {})
+                            er["resources"] = list(er.get("resources",[])) + rr["resources"]
+                            # DB persistence
+                            for __r in rr["resources"]:
+                                if isinstance(__r,dict):
+                                    __r.setdefault("related_section_id",__r.get("task_id",""))
+                                    __r.setdefault("tags",[])
+                                    if "section_generated" not in __r["tags"]: __r["tags"].append("section_generated")
+                                    try:
+                                        from app.db.repository import upsert_resource
+                                        from app.db.engine import SessionLocal as _SL3
+                                        _db3=_SL3();upsert_resource(_db3,session_id,__r);_db3.commit();_db3.close()
+                                    except Exception: pass
+                            conversation_store.set_result(session_id, er)
+            except Exception:
+                pass
 
         # 8. Notify
         if decayed_topics:

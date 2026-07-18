@@ -41,6 +41,7 @@ class WorkflowTask:
     total_units: int | None = None
     result_available: bool = False
     error_code: str = ""
+    current_stage_label: str = ""
     safe_error_message: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
     result: Any = None
@@ -66,6 +67,7 @@ class WorkflowTask:
         data = {
             "task_id": self.task_id,
             "workflow_type": self.workflow_type,
+            "current_stage_label": self.current_stage_label,
             "status": self.status,
             "current_stage": self.current_stage,
             "created_at": self.created_at,
@@ -241,7 +243,7 @@ class WorkflowTaskManager:
             if task.status in TERMINAL_STATUSES and event not in {"heartbeat"}:
                 return {}
             task.sequence += 1
-            task.current_stage = stage_id or task.current_stage
+            task.current_stage = stage_id or task.current_stage; task.current_stage_label = data.get("label", "") or task.current_stage_label
             task.updated_at = _now()
             if "completed_units" in data:
                 task.completed_units = data["completed_units"]

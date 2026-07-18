@@ -64,6 +64,32 @@ class PlannerAgent(BaseAgent):
         total_days = self._infer_days(time_text, profile)
         diag_meta = self._build_diagnosis_meta(diagnosis, weak_points, total_days, profile, time_text)
 
+        # ── Filter profile_facts to current course only (prevent cross-subject contamination) ──
+        course_id = str(context.get("course_id", "") or "")
+        course_name = str(context.get("course_name", "") or "")
+        if course_id:
+            facts = context.get("profile_facts", {}) or {}
+            target = str(facts.get("target_course", "") or "")
+            # If facts reference a different course, clear unrelated fields
+            # For user-defined courses (custom_xxx), course_id is a hash that
+            # can't be compared with course name — use course_name when available,
+            # or skip the check entirely.
+            should_clear = False
+            if target and course_name:
+                # Compare course names (not hash IDs)
+                if target.strip() != course_name.strip() and target[:4] != course_name[:4]:
+                    should_clear = True
+            elif target and not course_id.startswith("custom_"):
+                # Pre-defined course: compare course_id with target_course name
+                if target.lower() != course_id.lower() and target[:4] != course_id[:4]:
+                    should_clear = True
+            # custom_ courses are what the user typed — no cross-subject risk
+            if should_clear:
+                logger.info("Cross-subject fact detected: facts reference '%s' but course is '%s' — clearing", target, course_id)
+                context["profile_facts"] = {}
+            # Also clean facts extracted from unrelated conversation topics
+            # by keeping only fields that are generic enough
+        
         # ── Load textbook chapters for LLM context (if available) ──
         textbook_chapters = context.get("textbook_chapters")
         if not textbook_chapters:
@@ -85,7 +111,7 @@ class PlannerAgent(BaseAgent):
         except Exception:
             pass
 
-        # ── Fallback: LLM prompt with web search ──
+        # ── Fallback 1: LLM + web search ──
         if not chapters:
             try:
                 chapters = self._generate_chapters(
@@ -94,26 +120,44 @@ class PlannerAgent(BaseAgent):
             except Exception:
                 pass
 
-        # ── Step 3: LLM pipeline as last resort ──
+        # ── Fallback 2: 4-stage LLM pipeline ──
         if not chapters:
-            chapters = self._llm_pipeline_fallback(context, profile, planning_points, total_days, diag_meta)
+            chapters = self._llm_pipeline_fallback(
+                context, profile, planning_points, total_days, diag_meta,
+            )
 
+        # ── Last resort: rule-based template ──
         if not chapters:
             return self._fallback_path(context, planning_points, total_days, profile, diag_meta)
-
-        # ── Step 4: Personalize with DeepTutor ──
-        personalized = self._personalize_with_deeptutor(
-            chapters, context, profile, diagnosis, weak_points, total_days,
-        )
-        chapters = personalized if personalized else chapters
 
         # ── Resolve textbook section IDs to page ranges ──
         if textbook_chapters and chapters:
             chapters = self._resolve_textbook_pages(chapters, textbook_chapters)
 
+        # ── Personalize: adjust pacing/emphasis based on student profile ──
+        personalized = self._personalize_with_deeptutor(
+            chapters, context, profile, diagnosis, weak_points, total_days,
+        )
+        chapters = personalized if personalized else chapters
+
         chapters = self._validate_prerequisites(chapters, context)
 
-        return self._make_chapter_result(chapters, total_days, diag_meta)
+        # ── 构建 _agent_context 供下游 agent 协同 ──
+        ctx = {
+            "action": "initial_plan",
+            "target_stages": [
+                s.get("stage_id", "")
+                for s in (chapters or []) if isinstance(s, dict)
+            ],
+            "reason": "基于画像和诊断的全量路径规划",
+            "needs_resources": ["lecture", "quiz", "mindmap", "reading", "practice"],
+            "focus_topics": diag_meta.get("weak_topic_names", []),
+            "urgency": "medium",
+        }
+
+        result = self._make_chapter_result(chapters, total_days, diag_meta)
+        result["_agent_context"] = ctx
+        return result
 
 
     # ── Load textbook chapters from DB if available ──
@@ -387,10 +431,10 @@ class PlannerAgent(BaseAgent):
         """Primary planner: DeepTutor mastery_path, flat stages->tasks."""
         try:
             from app.services.deeptutor_client import deeptutor_call
-            course = str(context.get("course_id", "") or "")
+            course = str(context.get("course_name", "") or context.get("course_id", "") or "")
             message = str(context.get("user_message", "") or "")
             facts = context.get("profile_facts", {}) or {}
-            analysis = self._analyze_profile(facts)
+            analysis = self._analyze_profile(facts, course)
             p_parts = []
             p_parts.append("学习起点：" + analysis["starting_level"] + "，每天可用约" + str(analysis["daily_minutes_est"]) + "分钟")
             p_parts.append("学习深度：" + analysis["depth"])
@@ -403,7 +447,7 @@ class PlannerAgent(BaseAgent):
             parts = ["为学生规划学习路径。课程：" + course + "。需求：" + message + "。"]
             if total_days:
                 parts.append("总学时：" + str(total_days) + "天。")
-            parts.append("请按 stages->tasks 层级输出，每个 stage 包含多个 task，每 stage 约3-8个任务。")
+            parts.append("请按 stages->tasks 层级输出，每个 stage 根据知识点数量包含相应任务。")
             if p_text:
                 parts.append(chr(10) * 2 + "【学生画像】" + chr(10) + p_text)
             prompt = chr(10).join(parts)
@@ -554,13 +598,12 @@ class PlannerAgent(BaseAgent):
         if not self.llm_client:
             return None
         try:
-            course = str(context.get("course_id", "") or "")
+            course = str(context.get("course_name", "") or context.get("course_id", "") or "")
             weak_names = [p.get("name", "") for p in planning_points[:10]]
             kp_total = max(1, len(planning_points))
-            stage_count = max(2, min(8, max(2, total_days // 4)))
             prompt = f"""你是课程架构师。为「{course}」设计学习路径。
-学生：{total_days}天，薄弱点：{chr(44).join(weak_names) if weak_names else chr(39)+chr(39)}。
-要求：大约{stage_count}个阶段，难度递增，优先覆盖薄弱点，每阶段2-4类资源。具体数量按知识点分布灵活调整。
+学生：{total_days}天，知识点{kp_total}个，薄弱点：{chr(44).join(weak_names) if weak_names else chr(39)+chr(39)}。
+要求：根据知识点自然聚类和难度递进划分阶段数量，不设固定上限。优先覆盖薄弱点，为每个阶段提供所需类型的资源。
 输出JSON：{{"stages":[{{"stage_id":"s1","title":"","duration":"","goal":"","tasks":[],"resource_types":[],"estimated_days":N}}],"rationale":""}}"""
             raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.3, max_tokens=2000)
             s, e = raw.find("{"), raw.rfind("}") + 1
@@ -576,7 +619,7 @@ class PlannerAgent(BaseAgent):
         try:
             stages_json = json.dumps(architect_plan.get("stages", []), ensure_ascii=False)
             prompt = f"""细化学习阶段：{stages_json}
-每个阶段：细化tasks为2-4个可执行任务，明确resource_types，total_days匹配{total_days}天。
+每个阶段：根据知识点数量灵活细化tasks，明确resource_types，total_days匹配{total_days}天。
 输出JSON：{{"stages":[...]}}"""
             raw = self.llm_client.chat(messages=[{"role":"user","content":prompt}], temperature=0.3, max_tokens=2500)
             s, e = raw.find("{"), raw.rfind("}") + 1
@@ -635,14 +678,14 @@ class PlannerAgent(BaseAgent):
         return []
     def _generate_chapters(self, context, profile, planning_points, total_days, diag_meta):
         """Fallback planner: web search + LLM. Flat stages->tasks."""
-        course = str(context.get("course_id", "") or "")
+        course = str(context.get("course_name", "") or context.get("course_id", "") or "")
         weak = [p.get("name", "") for p in planning_points[:10]]
         from app.config import settings
         max_tokens = settings.path_max_tokens
-        est = max(3, min(12, total_days // 7))
+        kp_total = max(1, len(planning_points))
         # Profile
         facts = context.get("profile_facts", {}) or {}
-        analysis = self._analyze_profile(facts)
+        analysis = self._analyze_profile(facts, course)
         pl = []
         pl.append("学习起点：" + analysis["starting_level"] + "，每天约" + str(analysis["daily_minutes_est"]) + "分钟")
         pl.append("学习深度：" + analysis["depth"])
@@ -674,11 +717,11 @@ class PlannerAgent(BaseAgent):
             "你是课程设计师和学习路径规划专家。请为「%s」设计一份完整、科学的个性化学习路径。" % course,
             "",
             "【设计要求】",
-            "- 总学时：%d天" % total_days,
-            "- 请设计约 %d 个阶段（stage）" % est,
-            "- 每个阶段包含 3~8 个任务（task）",
+            "- 总学时：%d天，共%d个知识点" % (total_days, kp_total),
+            "- 请根据知识点自然分组设计阶段数量，不设上限",
+            "- 按 stages->days->tasks 三级：每个 stage 多个 day，每个 day 的任务数根据知识点密度灵活决定",
             "- 总天数越多，阶段和任务数量应相应增加",
-            "- 每个 task 包含：标题(title)、类型(type)、预计分钟数(estimated_minutes)、学习目标(goal)、建议资源类型(resource_types)",
+            "- 每天的任务数根据知识点密度和学生可用时间灵活决定。每个 task 含 title/type/estimated_minutes/goal/resource_types",
             "- 任务类型请根据课程特点自行选择，不受限制",
         ]
         for b in [tbb, pb, wb, sb]:
@@ -706,6 +749,50 @@ class PlannerAgent(BaseAgent):
             except Exception:
                 pass
         return None
+    def _rewrite_stage_ids(self, context: dict, stages: list) -> list:
+        """Rewrite IDs for stages->days->tasks format."""
+        session_id = str(context.get("session_id", "") or "")
+        path_id = ("path_" + session_id) if session_id else "path_local"
+        rewritten = []
+        for si, stage in enumerate(stages):
+            stage_id = f"{path_id}_s{si}"
+            raw_days = stage.get("days", [])
+            if not raw_days and stage.get("tasks"):
+                raw_days = [{"day": 1, "tasks": stage["tasks"]}]
+            if not raw_days:
+                raw_days = [{"day": 1, "tasks": [{"title": stage.get("title", ""), "type": "read_doc"}]}]
+            day_list = []
+            for di, d in enumerate(raw_days):
+                day_num = d.get("day", di + 1)
+                task_list = []
+                for ti, t in enumerate(d.get("tasks", [])):
+                    if isinstance(t, str):
+                        t = {"title": t, "type": "read_doc", "estimated_minutes": 45, "goal": t[:200]}
+                    task_id = t.get("task_id") or t.get("id") or f"{stage_id}_d{day_num}_t{ti}"
+                    task_list.append({
+                        "task_id": task_id,
+                        "title": str(t.get("title", t.get("name", f"任务{ti+1}"))),
+                        "type": str(t.get("type", "read_doc")),
+                        "estimated_minutes": int(t.get("estimated_minutes", t.get("minutes", 45))),
+                        "goal": str(t.get("goal", t.get("description", ""))),
+                        "required": bool(t.get("required", True)),
+                        "resource_types": t.get("resource_types", ["lecture"]),
+                        "status": t.get("status", "pending"),
+                        "source": t.get("source", "generated"),
+                        "_adjustment": t.get("_adjustment", ""),
+                        "_adjustment_reason": t.get("_adjustment_reason", ""),
+                        "textbook_section_ids": t.get("textbook_section_ids", []),
+                    })
+                day_list.append({"day": day_num, "tasks": task_list})
+            rewritten.append({
+                "stage_id": stage_id,
+                "title": str(stage.get("title", "")),
+                "order": si,
+                "theme": str(stage.get("theme", stage.get("objective", ""))),
+                "days": day_list,
+            })
+        return rewritten
+
     def _rewrite_chapter_ids(self, context, chapters: list) -> list:
         """Rewrite LLM-generated IDs with canonical, stable IDs."""
         session_id = str(context.get("session_id", "") or "")
@@ -836,6 +923,26 @@ class PlannerAgent(BaseAgent):
         existing_path = list(context.get("existing_path", []) or [])
         mastery_levels = diagnosis.get("mastery_levels", []) or []
         grading_results = context.get("grading_results", []) or []
+
+        # ── 读取 diagnosis 全量字段，不止 mastery_levels ──
+        evidence_chain = diagnosis.get("evidence_chain", []) or []
+        risk_flags = diagnosis.get("risk_flags", []) or []
+        strengths = diagnosis.get("strengths", []) or []
+        weak_topics = diagnosis.get("weak_topics", []) or diagnosis.get("weak_knowledge_points", []) or []
+        needs_more_evidence = bool(diagnosis.get("needs_more_evidence", False))
+
+        # 构建更丰富的弱点信息（含证据类型和优先级）
+        weak_detail: dict[str, dict] = {}
+        for wt in weak_topics:
+            if isinstance(wt, dict):
+                name = str(wt.get("name", "") or wt.get("topic", ""))
+                if name:
+                    weak_detail[name] = {
+                        "reason": str(wt.get("reason", "")),
+                        "evidence": str(wt.get("evidence", "")),
+                        "priority": str(wt.get("priority", "medium")),
+                        "confidence": float(wt.get("confidence", 0.5)),
+                    }
         adjustments: list[str] = []
 
         if not existing_path:
@@ -883,7 +990,7 @@ class PlannerAgent(BaseAgent):
                     matched_kp_count += 1
                     score = km["score"]
                     total_kp_score += score
-                    if score >= 95:
+                    if score >= 85:
                         kp_statuses.append("mastered")
                     elif score <= 40:
                         kp_statuses.append("weak")
@@ -981,6 +1088,13 @@ class PlannerAgent(BaseAgent):
 
                 # 如果有 accelerated + strengthened 混合，记录
                 sec_adj_types = set(s.get("_adjustment", "") for ch in new_chapters for s in ch.get("sections", []))
+                # 将 section 级 _adjustment 汇总到 stage，前端靠这个渲染徽章
+                if "strengthened" in sec_adj_types:
+                    stage["_adjustment"] = "strengthened"
+                elif "mixed" in sec_adj_types:
+                    stage["_adjustment"] = "mixed"
+                elif sec_adj_types == {"accelerated"}:
+                    stage["_adjustment"] = "accelerated"
                 if "strengthened" in sec_adj_types:
                     adj_kps = []
                     for ch in new_chapters:
@@ -1008,7 +1122,7 @@ class PlannerAgent(BaseAgent):
                 if mastery:
                     score = mastery.get("score", 50)
                     level = mastery.get("level", "")
-                    if level == "精通" and score >= 95:
+                    if level == "精通" and score >= 85:
                         new_days = max(1, days // 3)
                         adj["duration"] = f"第{days}-{new_days}天（加速）"
                         adj["_adjustment"] = "accelerated"
@@ -1074,6 +1188,86 @@ class PlannerAgent(BaseAgent):
                             )
             adjustments.append("检测到考试目标→切换到考前冲刺模式（step_through+减少讲义时间）")
 
+        # ── DeepTutor 间隔复习：到期知识点自动插入复习任务 ──
+        due_reviews = diagnosis.get("_due_reviews", []) or []
+        if due_reviews:
+            review_stage = {
+                "stage_id": "stage_review_dt",
+                "title": "间隔复习（系统自动）",
+                "order": 0,
+                "goal": "根据艾宾浩斯遗忘曲线，以下知识点已到复习时间",
+                "estimated_days": 1,
+                "chapters": [{
+                    "chapter_id": "ch_review_dt",
+                    "title": "到期复习",
+                    "order": 0,
+                    "sections": [
+                        {
+                            "section_id": f"sec_review_{i}",
+                            "title": f"复习：{r.get('knowledge_point_name', r.get('knowledge_point_id', ''))}",
+                            "goal": f"快速回顾已学内容，巩固长期记忆（第{r.get('interval_index', 0)+1}轮复习）",
+                            "estimated_minutes": 15,
+                            "content_type": "review",
+                            "knowledge_points": [{"name": r.get("knowledge_point_name", ""), "type": "concept"}],
+                            "_adjustment": "review_due",
+                        }
+                        for i, r in enumerate(due_reviews[:5])
+                    ],
+                }],
+                "_adjustment": "review_due",
+                "source": "dt_scheduler",
+                "_needs_questions": True,  # 触发 question_agent 出复习题
+            }
+            adjusted_path.insert(0, review_stage)
+            adjustments.append(f"DeepTutor间隔复习：{len(due_reviews[:5])}个知识点到期，已插入复习阶段")
+
+        # ── 节奏感知(按天移动平均, 优先用completionTrend) ──
+        analytics = context.get("analytics", {}) or {}
+        pacing_ratio = 1.0
+        completion_trend = analytics.get("completionTrend", []) or []
+        if completion_trend and len(completion_trend) >= 3:
+            recent = [d.get("count", 0) for d in completion_trend[-5:] if isinstance(d, dict)]
+            if recent:
+                daily_avg = sum(recent) / len(recent)
+                planned_daily = self._analyze_profile(context.get("profile_facts",{}),"").get("daily_minutes_est",60)
+                pacing_ratio = (daily_avg * 15) / max(1, planned_daily)
+        else:
+            actual_minutes = int(analytics.get("totalStudyMinutes", 0))
+            if actual_minutes > 0 and total_days > 0:
+                actual_daily_min = max(10, actual_minutes // max(1, total_days))
+                planned_daily = self._analyze_profile(context.get("profile_facts",{}),"").get("daily_minutes_est",60)
+                pacing_ratio = actual_daily_min / max(1, planned_daily)
+        # pacing_ratio > 1.2 = 学得快，压缩； < 0.8 = 学得慢，放宽
+            if pacing_ratio > 1.2:
+                factor = max(0.5, 1.0 / pacing_ratio)
+                for stage in adjusted_path:
+                    if isinstance(stage, dict):
+                        old_days = stage.get("estimated_days", 1)
+                        stage["estimated_days"] = max(1, int(old_days * factor))
+                        stage["_pacing_adjusted"] = True
+                adjustments.append(
+                    f"学习节奏快{int(pacing_ratio*100)}%，剩余阶段压缩至{int(factor*100)}%天数"
+                )
+            elif pacing_ratio < 0.8:
+                factor = min(2.0, 1.0 / pacing_ratio)
+                for stage in adjusted_path:
+                    if isinstance(stage, dict):
+                        old_days = stage.get("estimated_days", 1)
+                        stage["estimated_days"] = max(1, int(old_days * factor))
+                        stage["_pacing_adjusted"] = True
+                adjustments.append(
+                    f"学习节奏慢{int(pacing_ratio*100)}%，剩余阶段放宽至{int(factor*100)}%天数"
+                )
+
+        # ── 判断是否需要静默应用（仅节奏调整，无结构性变化）──
+        has_structural_change = any(
+            s.get("_adjustment", "") in ("remedial", "strengthened", "accelerated")
+            for s in adjusted_path if isinstance(s, dict)
+        )
+        apply_silently = not has_structural_change and any(
+            s.get("_pacing_adjusted") for s in adjusted_path if isinstance(s, dict)
+        )
+
         # ── 统计并生成结果 ──
         time_text = self._collect_time_text(context)
         total_days = self._infer_days(time_text, profile)
@@ -1092,6 +1286,31 @@ class PlannerAgent(BaseAgent):
         result["review_tasks"] = self._generate_review_tasks(adjusted_path)
         result["consecutive_correct"] = consecutive_correct
         result["consecutive_wrong"] = consecutive_wrong
+        result["apply_silently"] = apply_silently  # 仅节奏变化时静默应用，不弹窗
+
+        # ── 构建 _agent_context 供下游 agent 协同 ──
+        adj_types = set(
+            s.get("_adjustment", "")
+            for s in adjusted_path if isinstance(s, dict)
+        )
+        target_stages = [
+            s.get("stage_id", "")
+            for s in adjusted_path if isinstance(s, dict) and s.get("_adjustment") in ("remedial", "strengthened", "accelerated")
+        ]
+        result["_agent_context"] = {
+            "action": "adjusted_path",
+            "target_stages": target_stages,
+            "reason": "; ".join(adjustments[:3]) if adjustments else "基于诊断数据调整节奏",
+            "needs_resources": ["lecture", "quiz", "practice"],
+            "focus_topics": [wt.get("name","") or wt.get("topic","") for wt in weak_topics[:8] if isinstance(wt, dict) and (wt.get("name") or wt.get("topic"))],
+            "urgency": "high" if consecutive_wrong >= 2 else "medium",
+            "adjustment_types": list(adj_types),
+            "mastery_snapshot": {
+                n: {"score": float(m.get("score",50)), "level": str(m.get("level",""))}
+                for m in mastery_levels if isinstance(m,dict) and m.get("name")
+                for n in [str(m["name"])]
+            },
+        }
         return result
 
 
@@ -1255,18 +1474,33 @@ class PlannerAgent(BaseAgent):
         return result if result else [f"回顾 {stage_title} 的基础知识"]
 
     @staticmethod
-    def _analyze_profile(facts: dict) -> dict:
+    def _analyze_profile(facts: dict, course_id: str = "") -> dict:
         """Convert raw profile facts into structured planning parameters.
-
-        Instead of just appending profile text to prompts, this extracts
-        quantifiable planning dimensions:
-        - starting_level: beginner / intermediate / advanced
-        - daily_minutes_est: estimated available minutes per day
-        - depth: overview / standard / mastery
-        - focus_areas: list of topics to emphasize
-        - content_style: visual / text / hands-on
-        - domain_context: major/background keywords
+        
+        Filters out facts that belong to a different course to prevent
+        cross-subject data contamination.
         """
+        # If facts contain a target_course that doesn't match current course_id,
+        # clear the subject-specific fields to prevent contamination
+        if course_id and facts.get("target_course"):
+            tc = str(facts["target_course"]).lower()
+            ci = course_id.lower()
+            # Different topics → contamination likely
+            if ci[:8] not in tc and tc[:8] not in ci and tc not in ci and ci not in tc:
+                # Only clear subject-specific fields, keep generic ones
+                clean = {
+                    "time_budget": facts.get("time_budget", ""),
+                    "preference": facts.get("preference", ""),
+                }
+                # Only keep knowledge_base if it's generic, not subject-specific
+                kb = str(facts.get("knowledge_base", "") or "")
+                if not any(topic in kb.lower() for topic in ["cnn", "深度学习", "神经网络", "python", "java", "微积分", "线性代数"]):
+                    clean["knowledge_base"] = kb
+                # Add back original fields that aren't contaminated
+                for k in ["background", "target_course"]:
+                    if k in facts:
+                        clean[k] = facts[k]
+                facts = clean
         result = {
             "starting_level": "intermediate",
             "daily_minutes_est": 60,
@@ -1747,7 +1981,7 @@ class PlannerAgent(BaseAgent):
     # _repair_truncated_json 已迁移到 app.utils.llm_json.repair_truncated
 
     def _build_rule_path(self, points, profile, total_days, diag_meta) -> list[dict]:
-        n_stages = min(5, max(3, len(points))) if points else 3
+        n_stages = max(4, min(len(points), total_days // 2)) if points else max(4, total_days // 2)
         groups = self._group_points(points, n_stages) if points else []
         path = []
 

@@ -36,8 +36,10 @@ def run_agents(
     session_id: str,
     user_message: str,
     course_id: str | None = None,
+    course_name: str | None = None,
     progress_callback: Callable | None = None,
     agents_filter: list[str] | None = None,
+    max_tasks: int = 0,
 ) -> dict[str, Any]:
     """Run the multi-agent pipeline, persist results, and return them.
 
@@ -52,6 +54,7 @@ def run_agents(
         session_id: Current session identifier.
         user_message: The latest user message (raw, not wrapped).
         course_id: Optional explicit course ID.  If *None*, matched from facts.
+        course_name: Optional explicit course name. If *None*, derived from course catalog or facts.
         progress_callback: Optional callback forwarded to Orchestrator.
         agents_filter: 指定只运行哪些 Agent。None 表示全部。
 
@@ -76,9 +79,14 @@ def run_agents(
     selected_course = None
     if course_id and course_id.startswith("custom_"):
         resolved_course_id = course_id
+        # Use caller-supplied course_name or derive from facts/user_message
+        if not course_name:
+            course_name = str(state.facts.get("target_course") or user_message or "自定义课程")
     elif course_id:
         selected_course = course_catalog.get_course(course_id)
         resolved_course_id = course_id
+        if not course_name and selected_course:
+            course_name = selected_course.get("course_name", "")
     else:
         selected_course = course_catalog.match_course(
             state.facts.get("target_course") or user_message,
@@ -86,6 +94,8 @@ def run_agents(
         resolved_course_id = course_id or str(
             (selected_course or {}).get("course_id") or f"custom_{abs(hash(str(state.facts.get('target_course') or user_message))) % 10000:04d}"
         )
+        if not course_name:
+            course_name = str((selected_course or {}).get("course_name", "") or state.facts.get("target_course") or user_message or "自定义课程")
 
     # Run LangGraph orchestrator with feedback loop
     from app.services.langgraph_orchestrator import run_pipeline
@@ -94,9 +104,12 @@ def run_agents(
     result = asyncio.run(run_pipeline(
         session_id=session_id,
         course_id=resolved_course_id,
+        course_name=course_name or "",
         user_message=user_message,
         profile_facts=facts,
         agents_filter=agents_filter,
+        progress_callback=progress_callback,
+        max_tasks=max_tasks,
     ))
 
     # Attach course metadata
@@ -108,6 +121,14 @@ def run_agents(
             "chapter_count": selected_course.get(
                 "chapter_count", len(selected_course.get("chapters", []))
             ),
+        }
+    elif course_name:
+        # Custom course — still attach metadata so downstream code can use it
+        result["course"] = {
+            "course_id": resolved_course_id,
+            "course_name": course_name,
+            "description": f"用户自定义学习主题：{course_name}",
+            "chapter_count": 0,
         }
 
     apply_state_facts_to_result(result, state.facts, selected_course)

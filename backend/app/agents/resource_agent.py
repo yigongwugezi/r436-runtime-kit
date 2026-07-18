@@ -34,16 +34,51 @@ class ResourceAgent(BaseAgent):
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
         """主入口 — DeepTutor first, LLM fallback, rule last resort."""
         stages = self._stages(context)
+        # ── 限制初始生成的任务数（初次生成只生前2个任务）──
+        max_tasks = int(context.get("max_tasks", 0) or 0)
+        if max_tasks > 0 and stages:
+            limited = []
+            for stage in stages:
+                if not isinstance(stage, dict):
+                    limited.append(stage)
+                    continue
+                s = dict(stage)
+                tasks = list(s.get("tasks", []) or [])
+                if len(tasks) > max_tasks:
+                    s["tasks"] = tasks[:max_tasks]
+                    s["_pending_tasks"] = tasks[max_tasks:]
+                limited.append(s)
+            stages = limited
         course = self._course_context(context)
         knowledge_points = self._knowledge_points(context, course, stages)
         profile = context.get("profile", {})
 
         course_name = (course.get("course_name") or
                        context.get("profile_facts", {}).get("target_course") or
+                       context.get("course_name", "") or
                        context.get("course_id", "目标课程"))
 
         
         course_name = str(course_name).strip()
+
+        # ── 读取上游 agent 传递的协同上下文 ──
+        agent_ctx = context.get("_agent_context", {}) or {}
+        action = str(agent_ctx.get("action", ""))
+        target_stages = agent_ctx.get("target_stages", []) or []
+        needed_types = agent_ctx.get("needs_resources", ["lecture", "quiz", "mindmap", "reading", "practice"])
+        focus_topics = agent_ctx.get("focus_topics", []) or []
+
+        if agent_ctx:
+            logger.info(
+                "ResourceAgent 收到协同上下文: action=%s target=%d needs=%s focus=%d",
+                action, len(target_stages), needed_types, len(focus_topics),
+            )
+            # ── 针对性生成：只给新增的目标stage生成资源 ──
+            if target_stages and action in ("adjusted_path", "inserted_remedial", "weak_point_remediation"):
+                filtered = [s for s in stages if s.get("stage_id", "") in target_stages]
+                if filtered:
+                    stages = filtered
+                    logger.info("ResourceAgent narrowed to %d target stages", len(stages))
 
         # ── 检测审核反馈，进入修正模式 ──
         # 当 ReviewAgent 标记了问题，ResourceAgent 需针对性修复而非从头生成
@@ -78,8 +113,15 @@ class ResourceAgent(BaseAgent):
             from app.services.deeptutor_client import deeptutor_call, generate_mindmap, generate_research
             import uuid as _uuid
 
-            # Lecture via DeepTutor
-            lecture_prompt = f"为「{course_name}」生成一份图文并茂的完整讲义。Markdown格式，含课程概述、学习目标、核心知识体系、Mermaid图表、课后思考题。1500字以上。"
+            # Lecture via DeepTutor — 注入 focus_topics + 弱项原因
+            focus_str = "、".join(focus_topics[:5]) if focus_topics else course_name
+            weak_reason = str(agent_ctx.get("reason", ""))
+            weak_hint = f"\n学生薄弱项及原因：{weak_reason}。请在讲义中重点讲解这些概念，多用对比和例题澄清误区。" if weak_reason else ""
+            lecture_prompt = (
+                f"为「{course_name}」生成一份图文并茂的完整讲义。"
+                f"Markdown格式，含课程概述、学习目标、核心知识体系、Mermaid图表、课后思考题。"
+                f"重点覆盖：{focus_str}。{weak_hint}1500字以上。"
+            )
             lecture = deeptutor_call("chat", lecture_prompt)
             if lecture and len(lecture) > 300:
                 has_mermaid = "mermaid" in lecture.lower()
@@ -335,7 +377,7 @@ class ResourceAgent(BaseAgent):
 
         payload = {
             "course_id": course.get("course_id") or context.get("course_id"),
-            "course_name": course.get("course_name") or context.get("course_id"),
+            "course_name": course.get("course_name") or context.get("course_name", "") or context.get("course_id"),
             "course_chapters": [
                 {
                     "chapter_id": item.get("chapter_id"),
@@ -377,7 +419,7 @@ class ResourceAgent(BaseAgent):
                     "练习题由练习中心处理，你专注做学习材料（讲义、导图、阅读、代码案例等）。\n"
                     "不要偷工减料，不要跳过任何任务。宁多勿少，宁深勿浅。\n\n"
                     "## 资源类型（按课程模式选择）\n"
-                    + self._mode_resource_guide() + "\n\n"
+                    + self._mode_resource_guide(context) + "\n\n"
                     "## 内容深度\n"
                     "简单概念 → 精炼讲义附1-2道基础例题\n"
                     "核心难点 → 拆分为上下篇 + 每篇3-5道例题 + 阶梯难度\n"
@@ -447,9 +489,10 @@ class ResourceAgent(BaseAgent):
             return []
         return self._normalize_llm_resources(resources, stages, knowledge_points, course, rag_evidence)
 
-    def _mode_resource_guide(self) -> str:
+    def _mode_resource_guide(self, context: dict = None) -> str:
         """Return mode-specific resource type instructions for the LLM prompt."""
-        
+        ctx = context or {}
+        pm = str(ctx.get("planning_mode", "") or ctx.get("path_mode", "") or "").strip().lower()
         if pm == "daily":
             return (
                 "这是语言类/每日学习模式。不要生成讲义！生成以下类型的资源：\n"
@@ -514,6 +557,9 @@ class ResourceAgent(BaseAgent):
             # 提取 JSON（取第一行或第一个 { ... }）
             if meta_text.startswith('{'):
                 json_str = meta_text
+                # LLM sometimes outputs {{...}} (double braces, markdown template artifact)
+                if json_str.startswith('{{') and json_str.endswith('}}'):
+                    json_str = json_str[1:-1]
             else:
                 # 可能是代码块包裹
                 json_str = re.sub(r'^```(?:json)?\s*', '', meta_text)
@@ -726,15 +772,26 @@ class ResourceAgent(BaseAgent):
 
         for i, task in enumerate(tasks, 1):
             task_id = f"{stage_id}_node_{i}"
-            if has_remedial:
+            # ── 默认生成全部5种资源类型，根据 _adjustment 调整侧重点 ──
+            if has_accelerated and not has_strengthened and not has_remedial:
+                # 已掌握：快速测验 + 思维导图回顾
+                resources.append(self._quiz_for_task(course, binding, profile, task, task_id))
+                resources.append(self._mindmap_for_task(course, binding, profile, task, task_id))
+            elif has_remedial:
+                # 补救：完整讲义 + 练习 + 测验 + 阅读（重基础）
                 resources.append(self._lecture_for_task(course, binding, profile, task, task_id))
                 resources.append(self._practice_for_task(course, binding, profile, task, task_id))
-            elif has_accelerated and not has_strengthened:
                 resources.append(self._quiz_for_task(course, binding, profile, task, task_id))
-            else:
-                resources.append(self._lecture_for_task(course, binding, profile, task, task_id))
                 resources.append(self._reading_for_task(course, binding, task, stage_id, task_id))
+            else:
+                # 默认：全部5种——讲义、测验、思维导图、阅读、实操
+                resources.append(self._lecture_for_task(course, binding, profile, task, task_id))
+                resources.append(self._quiz_for_task(course, binding, profile, task, task_id))
+                resources.append(self._mindmap_for_task(course, binding, profile, task, task_id))
+                resources.append(self._reading_for_task(course, binding, task, stage_id, task_id))
+                resources.append(self._practice_for_task(course, binding, profile, task, task_id))
                 if has_strengthened:
+                    # 薄弱项：额外加一份练习
                     resources.append(self._practice_for_task(course, binding, profile, task, task_id))
         return resources
 
@@ -800,7 +857,7 @@ class ResourceAgent(BaseAgent):
         knowledge_source = str(knowledge.get("source") or "")
         return {
             "course_id": knowledge.get("course_id", course_id),
-            "course_name": knowledge.get("course_name", course_id or "课程"),
+            "course_name": knowledge.get("course_name", "") or context.get("course_name", "") or course_id or "课程",
             "chapters": knowledge.get("retrieved_points", []),
             "_source_type": (
                 SOURCE_TYPE_COURSE_KB
@@ -843,7 +900,7 @@ class ResourceAgent(BaseAgent):
             if name and len(name) >= 2 and name not in queries:
                 queries.append(name)
 
-        target = str(profile.get("interest_direction", {}).get("value", "") or context.get("course_id", "")).strip()
+        target = str(profile.get("interest_direction", {}).get("value", "") or context.get("course_name", "") or context.get("course_id", "")).strip()
         goal_val = str(profile.get("learning_goal", {}).get("value", "") or profile.get("learning_goal", "")).strip()
         if target and len(target) >= 2:
             queries.append(target)
@@ -1264,17 +1321,51 @@ class ResourceAgent(BaseAgent):
         )
 
     def _quiz_for_task(self, course, binding, profile, task, task_id):
-        goal = self._profile_value(profile, ["learning_goal"], "查漏补缺")
-        items = [{
-            "question_id": f"q_{task_id}_001",
-            "question_type": "short_answer",
-            "stem": f"围绕 {task}，说明它在当前学习目标中的作用。",
-            "options": [],
-            "answer": f"应从 {task} 的任务目标、输入输出、方法流程和评价方式四方面作答。",
-            "explanation": f"本题服务于目标：{goal}；重点检查 {task} 是否能用于真实题目或任务。",
-            "difficulty": binding["difficulty"],
-            "knowledge_point": task,
-        }]
+        """Generate quiz via QuestionAgent delegation, with rule fallback."""
+        try:
+            from app.agents.question_agent import QuestionAgent
+            qa = QuestionAgent()
+            ctx = {
+                "knowledge_points": [{"name": task, "type": "concept"}],
+                "quiz_config": {"question_count": 3, "types": ["choice", "fill", "shortanswer"]},
+                "difficulty": binding.get("difficulty", "medium"),
+            }
+            qa_result = qa.run(ctx)
+            items = qa_result.get("questions", [])
+            if items and len(items) >= 2:
+                return self._resource(
+                    f"res_quiz_{task_id}", "quiz",
+                    f"{task}练习题", f"覆盖学习任务「{task}」的多样化测验题。",
+                    "json", binding,
+                    items=items,
+                    reason=f"检验{task}的掌握情况（QuestionAgent生成）",
+                    task_id=task_id,
+                )
+        except Exception:
+            pass
+        import uuid
+        items = [
+            {
+                "question_id": f"q_{task_id}_001",
+                "question_type": "choice",
+                "stem": f"关于 {task}，以下哪个描述是正确的？",
+                "options": ["A: 定义描述一", "B: 定义描述二", "C: 定义描述三", "D: 以上都不完全正确"],
+                "answer": "A",
+                "explanation": f"{task} 需要从定义、方法和应用三方面理解。",
+                "difficulty": binding["difficulty"],
+                "knowledge_point": task,
+            },
+            {
+                "question_id": f"q_{task_id}_002",
+                "question_type": "short_answer",
+                "stem": f"用自己的话解释 {task} 的核心思想。",
+                "options": [],
+                "answer": f"应从 {task} 的问题背景、解决思路和关键步骤三方面回答。",
+                "explanation": f"考察对 {task} 的理解深度。",
+                "difficulty": binding["difficulty"],
+                "knowledge_point": task,
+            },
+        ]
         return self._resource(
             f"res_quiz_{task_id}", "quiz",
             f"{task}练习题", f"覆盖学习任务「{task}」的测验题。",

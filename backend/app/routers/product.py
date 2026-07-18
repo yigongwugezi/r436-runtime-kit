@@ -275,6 +275,7 @@ def _run_agents(
     session_id: str,
     progress_callback: Callable | None = None,
     agents_filter: list[str] | None = None,
+    max_tasks: int = 0,
 ) -> dict[str, Any]:
     """Trigger the multi-agent pipeline via AgentService and persist results.
 
@@ -300,17 +301,20 @@ def _run_agents(
         }
 
     course_id = str(selected_course.get("course_id"))
+    course_name = str(selected_course.get("course_name", "") or "")
     result = ag_run_agents(
         session_id=session_id,
         user_message=message,
         course_id=course_id,
+        course_name=course_name,
         progress_callback=progress_callback,
         agents_filter=agents_filter,
+        max_tasks=max_tasks,
     )
     if selected_course and "course" not in result:
         result["course"] = {
             "course_id": selected_course.get("course_id"),
-            "course_name": selected_course.get("course_name"),
+            "course_name": course_name,
             "description": selected_course.get("description", ""),
             "chapter_count": selected_course.get("chapter_count", len(selected_course.get("chapters", []))),
         }
@@ -845,10 +849,18 @@ def _task_stages_to_frontend(stages: list[dict[str, Any]]) -> list[dict[str, Any
     for index, stage in enumerate(stages, start=1):
         if not isinstance(stage, dict):
             continue
+        # ── 展平 days.tasks 到 tasks（planner 产出 stages→days→tasks 格式时用）──
+        stage_tasks = list(stage.get("tasks", []))
+        days_list = list(stage.get("days", []))
+        for d in days_list:
+            if isinstance(d, dict):
+                stage_tasks.extend(d.get("tasks", []))
+        # ── Build nodes from flattened tasks ──
+        all_tasks_for_nodes = stage_tasks if stage_tasks else stage.get("tasks", [])
         nodes = [
             {
                 "id": f"{stage.get('stage_id', index)}_node_{node_index}",
-                "topic": task,
+                "topic": (task.get("title", "") if isinstance(task, dict) else str(task)),
                 "description": stage.get("goal", ""),
                 "prerequisites": [] if index == 1 else [f"stage_{index - 1}_node_1"],
                 "mastery": 35 if index == 1 else 0,
@@ -865,7 +877,7 @@ def _task_stages_to_frontend(stages: list[dict[str, Any]]) -> list[dict[str, Any
                 ],
                 "isKeyPoint": node_index == 1,
             }
-            for node_index, task in enumerate(stage.get("tasks", []), start=1)
+            for node_index, task in enumerate(all_tasks_for_nodes, start=1)
         ]
         result.append({
             "id": stage.get("stage_id", f"stage_{index}"),
@@ -874,9 +886,11 @@ def _task_stages_to_frontend(stages: list[dict[str, Any]]) -> list[dict[str, Any
             "description": stage.get("duration", ""),
             "nodes": nodes,
             "chapters": [],
-            "objective": stage.get("goal", ""),
+            "sections": [],
+            "objective": stage.get("goal", stage.get("theme", "")),
             "estimatedDays": _stage_estimated_days(stage.get("duration", "")),
-            "tasks": stage.get("tasks", []),
+            "tasks": stage_tasks,           # ← 展平后的 tasks
+            "days": days_list,              # ← 保留原始 days
             "resourceTypes": stage.get("resource_types", []),
             "orderingReason": stage.get("reason", stage.get("ordering_reason", "")),
             # ── Preserve mode markers ──
@@ -899,7 +913,7 @@ def _to_learning_path(result: dict[str, Any]) -> dict[str, Any]:
     course = result.get("course") or {}
     course_id = result.get("course_id", "custom")
     # 优先课程名 → 用户画像中的目标课程 → 不硬编码默认值
-    state = conversation_store.get(result.get("session_id", ""))
+    state = conversation_store.get(result.get("session_id", "")) if result.get("session_id") else None
     user_topic = state.facts.get("target_course", "") if state else ""
     course_name = (
         course.get("course_name")
@@ -3229,6 +3243,65 @@ def recommend_general_resources(payload: dict[str, Any]) -> dict[str, Any]:
     return _product_response({"recommendations": result}, session_id=session_id, source="search")
 
 
+@router.post("/resources/recommendations/for-learning")
+def recommend_resources_for_learning(payload: dict[str, Any]) -> dict[str, Any]:
+    """基于当前学习阶段的上下文推荐外部资源。
+    
+    根据 stage 的知识点 + 学生画像 + 薄弱点，从外部搜索聚合推荐资源。
+    """
+    session_id = _payload_session_id(payload)
+    stage_id = str(payload.get("stageId", "") or payload.get("stage_id", ""))
+    from app.services.conversation_state import conversation_store
+    from app.services.section_resource_recommendations import (
+        SectionResourceRecommendationService, RESOURCE_TYPES,
+    )
+    state = conversation_store.get(session_id)
+    lr = state.last_result or {}
+    path = lr.get("learning_path", []) or lr.get("path", {}).get("stages", [])
+    # 找到目标 stage
+    target_stage = None
+    for s in path:
+        if isinstance(s, dict) and s.get("stage_id", "") == stage_id:
+            target_stage = s
+            break
+    if not target_stage:
+        target_stage = path[0] if path and isinstance(path[0], dict) else {}
+
+    # 提取知识点和上下文
+    kps: list[dict] = []
+    sections: list[str] = []
+    for ch in target_stage.get("chapters", []):
+        for sec in ch.get("sections", []):
+            if isinstance(sec, dict):
+                sections.append(sec.get("title", ""))
+                for kp in sec.get("knowledge_points", []):
+                    kps.append(kp)
+    # 从 profile_facts 提取画像
+    profile_facts = state.facts or {}
+    profile = lr.get("profile", {})
+    diagnosis = lr.get("diagnosis", {})
+    weak_kps = diagnosis.get("weak_knowledge_points", []) or diagnosis.get("weak_topics", [])
+
+    course_name = (
+        profile_facts.get("target_course", "")
+        or lr.get("course", {}).get("course_name", "")
+        or target_stage.get("title", "")
+    )
+
+    svc = SectionResourceRecommendationService()
+    result = svc.recommend(
+        session_id=session_id,
+        section_id=stage_id,
+        section_title=target_stage.get("title", ""),
+        knowledge_points=kps if kps else [{"name": sections[0]}] if sections else [],
+        profile=profile,
+        weak_points=weak_kps,
+        course_name=course_name,
+        refresh=bool(payload.get("refresh", False)),
+    )
+    return _product_response({"recommendations": result}, session_id=session_id, source="recommend")
+
+
 _ONLINE_SEARCH_RESOURCE_TYPES = {"article", "video", "course", "document", "paper"}
 
 
@@ -4349,6 +4422,8 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
             if not path.get("stages"):
                 return _product_response({"path": _empty_learning_path(session_id)}, session_id=session_id, subject_id=subjectId, source="none")
             path["source"] = "agent_generated"
+            path["day_plan"] = state.last_result.get("day_plan")
+            path["diagnosis"] = state.last_result.get("diagnosis", {})
             path["stages"] = _apply_node_progress(path["stages"], session_id)
             all_nodes = [n for s in path["stages"] for n in s.get("nodes", [])]
             mastered = sum(1 for n in all_nodes if n.get("status") == "mastered")
@@ -4380,6 +4455,18 @@ def enable_profile_extraction(payload: dict[str, Any]) -> dict[str, Any]:
     return _product_response({"ok": True}, session_id=session_id)
 
 
+@router.post("/learning-path/disable-profile-extraction")
+def disable_profile_extraction(payload: dict[str, Any]) -> dict[str, Any]:
+    """关闭路径规划信息收集模式，允许 planner 正常执行。"""
+    session_id = str(payload.get("sessionId", payload.get("session_id", ""))).strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="sessionId required")
+    from app.services.conversation_state import conversation_store
+    st = conversation_store.get(session_id)
+    st.path_planning_info_mode = False
+    return _product_response({"ok": True}, session_id=session_id)
+
+
 @router.get("/learning-path/validate-course")
 def validate_course(courseName: str = "") -> dict[str, Any]:
     """Validate local course-name input without claiming catalog membership."""
@@ -4388,20 +4475,58 @@ def validate_course(courseName: str = "") -> dict[str, Any]:
     return {"valid": valid, "normalizedCourseName": normalized if valid else "", "reason": None if valid else "请输入不超过 120 个字符的课程名称"}
 
 
-def _generate_learning_path(payload: dict[str, Any], auth: AuthContext) -> dict[str, Any]:
+def _generate_learning_path(payload: dict[str, Any], auth: AuthContext, workflow_task: Any = None) -> dict[str, Any]:
     """Run the canonical planner path and persist only a non-empty result."""
     session_id = _payload_session_id(payload)
     user_message = str(payload.get("userMessage", "")).strip()
     course_id = str(payload.get("courseId", "")).strip()
+    course_name = str(payload.get("courseName", "")).strip()
     subject_id = str(payload.get("subjectId", "")).strip()
     _ensure_session_linked(session_id, subject_id=subject_id)
 
+    # ── Build progress callback that emits workflow events for real-time frontend feedback ──
+    progress_callback = None
+    if workflow_task is not None:
+        from app.services.workflow_tasks import workflow_task_manager
+        AGENT_LABELS = {
+            "profile_agent": "分析学习画像",
+            "planner_agent": "规划学习路径",
+            "resource_agent": "生成学习资源",
+            "review_agent": "审核资源质量",
+        }
+        def _on_agent_progress(agent_id: str, status: str, label: str = ""):
+            lbl = label or AGENT_LABELS.get(agent_id, agent_id)
+            workflow_task_manager.emit(
+                workflow_task,
+                f"stage_{'completed' if status == 'completed' else 'started'}",
+                f"agent_{agent_id.replace('_agent', '')}",
+                status,
+                label=lbl,
+            )
+        progress_callback = _on_agent_progress
+
     state = conversation_store.get(session_id)
+    # ── Clear cross-subject contamination in profile_facts ──
+    # If facts from previous conversations mention a different topic than
+    # the current generation, reset subject-specific fields
+    if state and state.facts:
+        ftc = str(state.facts.get("target_course", "") or "").strip()
+        current_topic = (course_name or course_id or "").strip()
+        current_user_msg = (user_message or "").strip()
+        # Generic check: if stored target_course differs from current request topic, clear it
+        if ftc and current_topic and ftc.lower() != current_topic.lower():
+            # Also check that the user message doesn't mention the old topic
+            if ftc.lower() not in current_user_msg.lower():
+                logger.info("Cross-subject detected: facts=%s vs request=%s — clearing", ftc, current_topic)
+                for k in ["knowledge_base", "weak_points", "target_course", "learning_goal"]:
+                    state.facts.pop(k, None)
     message = user_message or conversation_store.profile_prompt(state, latest_message="请生成学习路径")
     result = _run_agents(
         message,
         session_id=session_id,
         agents_filter=["profile_agent", "planner_agent", "resource_agent"],
+        progress_callback=progress_callback,
+        max_tasks=2,
     )
     result["session_id"] = session_id
     path = _to_learning_path(result)
@@ -4410,7 +4535,7 @@ def _generate_learning_path(payload: dict[str, Any], auth: AuthContext) -> dict[
         error.error_code = "LEARNING_PATH_UNAVAILABLE"
         error.safe_error_message = "路径生成服务暂不可用，未保存空路径。"
         raise error
-
+    # ── 异步触发资源生成（如果上面的调用链快速返回但资源未完成）──
     path["id"] = f"path_{session_id}"
     path["courseId"] = course_id or str(result.get("course_id", ""))
     db = SessionLocal()
@@ -4607,6 +4732,57 @@ def accept_pending_revision(session_id: str) -> dict[str, Any]:
                 conversation_store.set_result(session_id, lr)
     except Exception:
         pass
+    # ── 新增 stage 自动生成配套资源 ──
+    new_stages = result.get("_new_stages", [])
+    if new_stages:
+        try:
+            from app.agents.base import get_agent_class
+            from app.agents.resource_agent import ResourceAgent
+            from app.services.conversation_state import conversation_store as _cs2
+            ra = ResourceAgent()
+            for ns in new_stages:
+                ctx = {
+                    "session_id": session_id,
+                    "user_message": f"为新增阶段「{ns.get('title','')}」生成配套学习资源",
+                    "learning_path": [ns],
+                    "profile_facts": {},
+                    "_agent_context": {
+                        "action": "inserted_remedial",
+                        "target_stages": [ns.get("stage_id", "")],
+                        "needs_resources": ["lecture", "quiz", "practice"],
+                        "focus_topics": [
+                            sec.get("title", "")
+                            for ch in ns.get("chapters", [])
+                            for sec in ch.get("sections", [])
+                        ],
+                        "reason": "用户确认动态规划插入的新阶段",
+                        "urgency": "medium",
+                    },
+                }
+                rr = ra.run(ctx)
+                if rr.get("resources"):
+                    from app.db.repository import upsert_resource
+                    from app.db.engine import SessionLocal as _SL
+                    _db = _SL()
+                    for r in rr["resources"]:
+                        r.setdefault("related_section_id", r.get("task_id", ""))
+                        r.setdefault("tags", [])
+                        if "section_generated" not in r["tags"]:
+                            r["tags"].append("section_generated")
+                        try:
+                            upsert_resource(_db, session_id, r)
+                        except Exception:
+                            pass
+                    _db.commit()
+                    _db.close()
+                    # 也写内存
+                    st = _cs2.get(session_id)
+                    lr = dict(st.last_result or {})
+                    lr["resources"] = list(lr.get("resources", [])) + rr["resources"]
+                    _cs2.set_result(session_id, lr)
+            logger.info("Triggered resource generation for %d new stages", len(new_stages))
+        except Exception:
+            logger.exception("Failed to trigger resource generation for new stages")
     return _product_response({"ok": True, "version": result.get("version")}, session_id=session_id)
 
 

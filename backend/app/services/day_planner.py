@@ -38,6 +38,8 @@ def flatten_sections(stages: list[dict]) -> list[dict]:
         stage_title = str(stage.get("title", ""))
         # New format: tasks
         for t in stage.get("tasks", []):
+            if not isinstance(t, dict):
+                t = {"title": str(t), "type": "read_doc", "estimated_minutes": 45, "goal": str(t)[:100]}
             sections.append({
                 "section_id": t.get("task_id", ""),
                 "title": t.get("title", ""),

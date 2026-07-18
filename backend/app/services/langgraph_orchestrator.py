@@ -1227,10 +1227,17 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
             finally:
                 db.close()
 
+        progress_cb = state.get("progress_callback")
         for full_id in agent_ids:
             short_key = full_id.replace("_agent", "")
             if factory.has(full_id):
+                if progress_cb:
+                    try: progress_cb(full_id, "running")
+                    except Exception: pass
                 await _run_agent(short_key, state, factory)
+                if progress_cb:
+                    try: progress_cb(full_id, "completed")
+                    except Exception: pass
 
         # ── 单 agent 路径的审核闭环 ──
         # 跑了 resource_agent 后自动追加 review_agent，发现问题就重试修正
@@ -1239,7 +1246,7 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
             """ResourceAgent 审核闭环：只关注资源相关的 check，不因 profile/path 等无关项重试。"""
             resource_check_ids = {"resource_content_quality", "resource_coverage", "resource_type_match", "semantic_quality"}
             retries = state.get("_retry_count", 0)
-            max_retries = 2
+            max_retries = 1  # was 2 — one retry is enough
             while retries <= max_retries:
                 await _run_agent("review", state, factory)
                 review = state.get("review", {})

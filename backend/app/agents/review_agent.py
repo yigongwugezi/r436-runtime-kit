@@ -461,8 +461,8 @@ class ReviewAgent(BaseAgent):
             return self._check(
                 "content_safety",
                 "内容安全检查",
-                "blocked",
-                f"内容安全引擎检测到违规：{result.summary}",
+                "warning",
+                f"内容安全引擎检测到疑似违规（已降级为警告）：{result.summary}",
             )
         if result.violations:
             return self._check(

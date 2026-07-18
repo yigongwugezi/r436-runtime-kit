@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { createPathGenerationTask } from '../../api/learningPath';
-import { readWorkflow } from '../../api/workflows';
+import { disableProfileExtraction } from '../../api/learningPath';
+import { startWorkflow } from '../../api/workflows';
+import { useSubjectStore } from '../../store/subjectStore';
 
 const DIMS = [
   { key: 'background', label: '专业/年级' },
@@ -33,7 +34,7 @@ function classifyEvidence(ev: string): string {
 }
 
 function isEmpty(v: string) {
-  return !v || v === '未提及' || v === '待补充' || v === '未知' || v === '';
+  return !v || v === '未提及' || v === '待补充' || v === '未知' || v === '未明确' || v === '';
 }
 
 function DimSection({ dimKey, label, fact, rich, onProbe }: {
@@ -147,10 +148,10 @@ function DimSection({ dimKey, label, fact, rich, onProbe }: {
 
 export default function ProfilePanel({ sessionId }: { sessionId: string }) {
   const nav = useNavigate();
+  const subjectId = useSubjectStore((s) => s.activeSubject?.id ?? s.activeClassSubject?.subject);
   const [facts, setFacts] = useState<Record<string, string>>({});
   const [richFacts, setRichFacts] = useState<Record<string, any>>({});
   const [generating, setGenerating] = useState(false);
-  const generateCancelledRef = useRef(false);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -175,56 +176,37 @@ export default function ProfilePanel({ sessionId }: { sessionId: string }) {
   const pct = Math.round((filledCount / total) * 100);
   const ready = filledCount >= 6;
 
-  /** 轮询等待 workflow 完成，返回 true=成功 false=失败/超时 */
-  const pollTaskUntilDone = useCallback(async (taskId: string): Promise<boolean> => {
-    const TIMEOUT = 120_000; // 2 分钟
-    const INTERVAL = 1500;
-    const deadline = Date.now() + TIMEOUT;
-    while (!generateCancelledRef.current && Date.now() < deadline) {
-      await new Promise(r => setTimeout(r, INTERVAL));
-      if (generateCancelledRef.current) return false;
-      try {
-        const res = await readWorkflow(taskId, sessionId);
-        // readWorkflow 可能返回 { task: { status } } 或直接 { status }
-        const status = res?.task?.status || res?.status || '';
-        if (status === 'completed') return true;
-        if (['failed', 'cancelled', 'expired'].includes(status)) return false;
-      } catch { /* 网络错误，重试 */ }
-    }
-    return false; // 超时或取消
-  }, [sessionId]);
-
   const handleGenerate = useCallback(async () => {
     if (!ready || generating) return;
     setGenerating(true);
-    generateCancelledRef.current = false;
     try {
-      const { task } = await createPathGenerationTask({
+      // ── 先关闭画像收集模式再启动 workflow ──
+      // path_planning_info_mode=True 时，langgraph 的 run_pipeline 入口会检测到
+      // 并重定向到聊天模式，导致 planner 被跳过 → 产出空路径
+      // 必须在 startWorkflow 之前设为 false（workflow 线程立即启动并检查此标志）
+      await disableProfileExtraction(sessionId);
+      const started = await startWorkflow('learning_path_generation', {
         sessionId,
-        subjectId: '',
+        subjectId: subjectId || '',
         planMode: 'textbook',
         pathMode: 'textbook',
         draft: Object.fromEntries(
           DIMS.filter(d => !isEmpty(facts[d.key] || '')).map(d => [d.key, facts[d.key]])
         ),
       });
-      if (task?.task_id) {
-        const ok = await pollTaskUntilDone(task.task_id);
-        if (generateCancelledRef.current) return;
-        if (!ok) {
-          setGenerating(false); // 失败/超时 → 按钮恢复可点击，用户可重试
-          return;
-        }
+      // 通过 sessionStorage 传递任务 ID（比 location.state 更可靠）
+      const taskId = started?.task_id || '';
+      if (taskId) {
+        sessionStorage.setItem('_pending_gen_task_id', taskId);
+        sessionStorage.setItem('_pending_gen_session_id', sessionId || '');
       }
+      console.log('[ProfilePanel] 导航到学习路径页, taskId:', taskId, 'sessionId:', sessionId);
       nav('/learning-path');
     } catch (e) {
-      console.error('生成路径失败', e);
+      console.error('创建路径生成任务失败', e);
       setGenerating(false);
     }
-  }, [ready, generating, sessionId, facts, nav, pollTaskUntilDone]);
-
-  // 组件卸载时取消正在进行的轮询
-  useEffect(() => () => { generateCancelledRef.current = true; }, []);
+  }, [ready, generating, sessionId, facts, nav]);
 
   return (
     <div className="flex flex-col h-full">

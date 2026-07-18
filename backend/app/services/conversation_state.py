@@ -145,6 +145,12 @@ def _safe_estimated_days(raw_estimated: Any, stages: list[dict[str, Any]]) -> in
     return _estimated_path_days(stages)
 
 
+def _find_new_stages(old_stages: list, new_stages: list) -> list[dict]:
+    """找出新增的 stage（在 new 中有但 old 中没有的 stage_id）。"""
+    old_ids = {s.get("stage_id", "") for s in old_stages if isinstance(s, dict)}
+    return [s for s in new_stages if isinstance(s, dict) and s.get("stage_id", "") not in old_ids]
+
+
 @dataclass
 class ConversationState:
     session_id: str
@@ -670,7 +676,8 @@ class ConversationStore:
                 pass
             finally:
                 db.close()
-        return {"success": True, "version": current["version"]}
+        return {"success": True, "version": current["version"],
+                "_new_stages": _find_new_stages(old_path, rev["proposed_stages"])}
 
     def reject_pending_revision(self, session_id: str) -> None:
         """用户拒绝候选路径。"""

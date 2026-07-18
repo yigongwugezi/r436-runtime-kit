@@ -197,9 +197,9 @@ export default function PlanningWizard({ sessionId, subjectId, subjectName, prof
           resourcePreferences: draft.resourcePreferences,
         },
       });
-      if (res.ok && res.task) {
-        setTask(res.task);
-        startSSE(res.task.task_id);
+      if (res && res.task_id) {
+        setTask(res);
+        startSSE(res.task_id);
       } else {
         setTaskError('创建任务失败');
       }
@@ -223,6 +223,21 @@ export default function PlanningWizard({ sessionId, subjectId, subjectName, prof
     es.onmessage = handleEvent;
     es.addEventListener('stage_started', handleEvent as any);
     es.addEventListener('stage_completed', handleEvent as any);
+    es.addEventListener('workflow_completed', (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data);
+        setTask((prev) => prev ? { ...prev, status: 'completed', result: data.result, result_available: true } : prev);
+      } catch {}
+    });
+    es.addEventListener('workflow_failed', (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data);
+        setTask((prev) => prev ? { ...prev, status: 'failed', safe_error_message: data.safe_error_message || prev.safe_error_message } : prev);
+      } catch {}
+    });
+    es.addEventListener('workflow_cancelled', () => {
+      setTask((prev) => prev ? { ...prev, status: 'cancelled' } : prev);
+    });
     es.onerror = () => {
       es.close();
       // Fallback: poll for status
@@ -232,13 +247,12 @@ export default function PlanningWizard({ sessionId, subjectId, subjectName, prof
 
   const pollTaskStatus = async (taskId: string) => {
     try {
-      const res = await getWorkflowTask(taskId);
-      if (res.ok && res.task) {
-        setTask(res.task);
-        if (res.task.status === 'completed' && res.task.result?.data?.path?.id) {
-          onPathGenerated(res.result.data.path.id);
-        } else if (res.task.status === 'failed' || res.task.status === 'cancelled') {
-          // stop polling
+      const task = await getWorkflowTask(taskId);
+      if (task && task.task_id) {
+        setTask(task);
+        if (task.status === 'completed' && task.result?.data?.path?.id) {
+          onPathGenerated(task.result.data.path.id);
+        } else if (task.status === 'failed' || task.status === 'cancelled') {
           return;
         } else {
           setTimeout(() => pollTaskStatus(taskId), 2000);

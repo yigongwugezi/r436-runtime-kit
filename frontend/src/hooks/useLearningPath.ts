@@ -69,26 +69,42 @@ export function useLearningPath() {
   const hasDataRef = useRef(false);
   const initialLoadRef = useRef(true);
 
-  const fetchPath = useCallback(async (force: boolean = false) => {
-    if (!subjectId || !sessionId) { setLoading(false); return; }
-    if (force) hasDataRef.current = false;
+  const fetchPath = useCallback(async (force: boolean = false, overrideSessionId?: string) => {
+    const effectiveSessionId = overrideSessionId || sessionId;
+    if (!effectiveSessionId) { setLoading(false); return; }
+    if (force) { hasDataRef.current = false; pathVersionRef.current = -1; }
     if (force || !hasDataRef.current) { setLoading(true); setError(null); }
     try {
-      const res = await learningPathApi.getLearningPath({ sessionId, subjectId });
+      const res = await learningPathApi.getLearningPath({ sessionId: effectiveSessionId, subjectId });
       const p = normalizeLearningPathForClient(res?.path ?? null);
+      // 后端查不到路径时，尝试从 sessionStorage 读取 workflow 直接结果（仅当非 force 时）
+      let finalPath = p;
+      if (!finalPath && !force) {
+        try {
+          const cached = sessionStorage.getItem(`_gen_path_cache_${subjectId}`);
+          if (cached) {
+            const parsed = JSON.parse(cached);
+            if (parsed?.stages?.length) {
+              finalPath = normalizeLearningPathForClient(parsed);
+            }
+          }
+        } catch {}
+      }
+      // Always clear the cache after attempting to read it
+      try { sessionStorage.removeItem(`_gen_path_cache_${subjectId}`); } catch {}
       // Merge path: only update if pathVersion changed (structural change)
       // or if force (initial load / explicit refresh)
-      if (p) {
-        const newVersion = p.pathVersion ?? 0;
+      if (finalPath) {
+        const newVersion = finalPath.pathVersion ?? 0;
         if (force || newVersion !== pathVersionRef.current) {
           pathVersionRef.current = newVersion;
-          setPath(p);
+          setPath(finalPath);
         }
       } else {
-        setPath(p);
+        setPath(finalPath);
       }
-      hasDataRef.current = !!p;
-      if (!p && !hasDataRef.current) setError('学习路径数据为空');
+      hasDataRef.current = !!finalPath;
+      if (!finalPath && !hasDataRef.current) setError('学习路径数据为空');
     } catch (e) {
       if (!hasDataRef.current) { setPath(null); setError(e instanceof Error ? e.message : '加载学习路径失败'); }
     } finally {
@@ -199,5 +215,17 @@ export function useLearningPath() {
   useEffect(() => { fetchPath(true); }, [sessionId, subjectId]);
   useEffect(() => { if (dataVersion <= 0 || dataVersion === lastVersionRef.current) return; lastVersionRef.current = dataVersion; fetchPath(true); }, [dataVersion, fetchPath]);
 
-  return { path, loading, error, generationWorkflow, fetchPath, generatePath, updateNode, updateNodeStatus, updateKnowledgePoint, updateChapterStatus, updateSectionStatus };
+  /** 从 workflow 完成结果直接设置路径，不依赖 API 二次查询 */
+  const applyPathFromWorkflow = useCallback((rawPath: any) => {
+    const normalized = normalizeLearningPathForClient(rawPath);
+    if (normalized && normalized.stages?.length) {
+      pathVersionRef.current = normalized.pathVersion ?? Date.now();
+      hasDataRef.current = true;
+      setPath(normalized);
+      setLoading(false);
+      setError(null);
+    }
+  }, []);
+
+  return { path, loading, error, generationWorkflow, fetchPath, generatePath, applyPathFromWorkflow, updateNode, updateNodeStatus, updateKnowledgePoint, updateChapterStatus, updateSectionStatus };
 }

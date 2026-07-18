@@ -39,6 +39,12 @@ export async function enableProfileExtraction(sessionId: string): Promise<{ ok: 
   return data;
 }
 
+/** 关闭路径规划信息收集模式，允许 planner 正常执行 */
+export async function disableProfileExtraction(sessionId: string): Promise<{ ok: boolean }> {
+  const { data } = await client.post('/api/learning-path/disable-profile-extraction', { sessionId });
+  return data;
+}
+
 /** 路径规划专用对话：发送消息，返回提取的信息+引导语+是否就绪 */
 export async function planningChat(params: {
   sessionId: string;
@@ -130,15 +136,15 @@ export async function createPathGenerationTask(params: {
   dynamicAdjust?: boolean;
   reviewEnabled?: boolean;
   draft?: Record<string, any>;
-}): Promise<{ ok: boolean; task: WorkflowTask }> {
+}): Promise<WorkflowTask> {
   const { data } = await client.post('/api/workflows/learning_path_generation/start', params);
-  return data;
+  return data as WorkflowTask;
 }
 
 /** 查询workflow任务状态 */
-export async function getWorkflowTask(taskId: string): Promise<{ ok: boolean; task: WorkflowTask }> {
+export async function getWorkflowTask(taskId: string): Promise<WorkflowTask> {
   const { data } = await client.get(`/api/workflows/${taskId}`);
-  return data;
+  return data as WorkflowTask;
 }
 
 /** 取消workflow任务 */

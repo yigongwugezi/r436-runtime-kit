@@ -94,6 +94,12 @@ function itemFrom(raw: any, stageId?: string, chapterId?: string): PathViewItem 
   const id = idOf(raw, 'id', 'section_id', 'node_id', 'item_id');
   const title = text(raw?.title) || text(raw?.topic) || text(raw?.name) || '未命名学习项';
   const sectionId = id;
+  // Normalize stages: flatten days→tasks for new format
+  const _stages = (raw?.stages || []).map((s: any) => {
+    if (s.days?.length) s.tasks = (s.days as any[]).flatMap((d: any) => d.tasks || []);
+    return s;
+  });
+  const _raw = { ...raw, stages: _stages };
   return {
     id,
     title,
@@ -111,6 +117,12 @@ function itemFrom(raw: any, stageId?: string, chapterId?: string): PathViewItem 
 function chapterFrom(raw: any, stageId?: string): PathViewChapter {
   const id = idOf(raw, 'id', 'chapter_id');
   const items = array(raw?.sections).map((section) => itemFrom(section, stageId, id));
+  // Normalize stages: flatten days→tasks for new format
+  const _stages = (raw?.stages || []).map((s: any) => {
+    if (s.days?.length) s.tasks = (s.days as any[]).flatMap((d: any) => d.tasks || []);
+    return s;
+  });
+  const _raw = { ...raw, stages: _stages };
   return {
     id,
     title: text(raw?.title) || '未命名章节',
@@ -160,6 +172,12 @@ function stageFrom(raw: any, index: number, rootNodes: any[]): PathViewStage {
   const estimatedMinutes = stageMinutes ?? (itemMinutes.length === items.length && items.length > 0 ? itemMinutes.reduce((sum, value) => sum + value, 0) : undefined);
   const availability = id || items.some((item) => item.target.kind !== 'unavailable') ? 'available' : 'unavailable';
 
+  // Normalize stages: flatten days→tasks for new format
+  const _stages = (raw?.stages || []).map((s: any) => {
+    if (s.days?.length) s.tasks = (s.days as any[]).flatMap((d: any) => d.tasks || []);
+    return s;
+  });
+  const _raw = { ...raw, stages: _stages };
   return {
     id,
     ordinal: positiveNumber(raw?.order) ?? positiveNumber(raw?.ordinal) ?? index + 1,
@@ -196,6 +214,12 @@ export function adaptLearningPath(raw: any, requestedMode?: string | null): Lear
   const knownDurations = stages.map((stage) => stage.estimatedMinutes).filter((value): value is number => value !== undefined);
   const durationSource = knownDurations.length === 0 ? 'missing' : knownDurations.length === stages.length ? 'complete' : 'partial';
 
+  // Normalize stages: flatten days→tasks for new format
+  const _stages = (raw?.stages || []).map((s: any) => {
+    if (s.days?.length) s.tasks = (s.days as any[]).flatMap((d: any) => d.tasks || []);
+    return s;
+  });
+  const _raw = { ...raw, stages: _stages };
   return {
     pathId: idOf(raw, 'id', 'path_id'),
     mode: modeFrom(raw, requestedMode),
@@ -241,6 +265,12 @@ export function normalizeLearningPathForClient(raw: any): any {
     id: idOf(node, 'id', 'node_id'),
     topic: text(node?.topic) || text(node?.title) || text(node?.name),
   });
+  // Normalize stages: flatten days→tasks for new format
+  const _stages = (raw?.stages || []).map((s: any) => {
+    if (s.days?.length) s.tasks = (s.days as any[]).flatMap((d: any) => d.tasks || []);
+    return s;
+  });
+  const _raw = { ...raw, stages: _stages };
   return {
     ...raw,
     id: idOf(raw, 'id', 'path_id'),
@@ -249,7 +279,7 @@ export function normalizeLearningPathForClient(raw: any): any {
     courseName: text(raw?.courseName) || text(raw?.course_name),
     overallProgress: boundedPercent(raw?.overallProgress) ?? boundedPercent(raw?.overall_progress),
     estimatedDays: positiveNumber(raw?.estimatedDays) ?? positiveNumber(raw?.estimated_days),
-    stages: array(raw?.stages).map((stage, index) => ({
+    stages: array(_raw?.stages).map((stage, index) => ({
       ...stage,
       id: idOf(stage, 'id', 'stage_id'),
       order: positiveNumber(stage?.order) ?? index + 1,
@@ -261,7 +291,14 @@ export function normalizeLearningPathForClient(raw: any): any {
       sections: array(stage?.sections).map(normalizeSection),
       nodes: array(stage?.nodes).map(normalizeNode),
 
-      tasks: array(stage?.tasks || []).map((task: any) => ({
+      // ── 展平 days.tasks 到 tasks（后端 _task_stages_to_frontend 丢弃了 days 字段）──
+      days: array(stage?.days),
+      tasks: [
+        // 直接挂 stage 上的 tasks
+        ...array(stage?.tasks || []),
+        // days 里嵌套的 tasks
+        ...array(stage?.days || []).flatMap((d: any) => array(d?.tasks || [])),
+      ].map((task: any) => ({
         ...task,
         task_id: task.task_id || task.taskId || task.id || "",
         title: task.title || "",

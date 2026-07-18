@@ -300,7 +300,7 @@ def _runner(workflow_type: str, payload: dict[str, Any], auth: AuthContext):
             elif workflow_type == "profile_rebuild":
                 result = product.build_profile(payload, auth)
             elif workflow_type == "learning_path_generation":
-                result = product._generate_learning_path(payload, auth)
+                result = product._generate_learning_path(payload, auth, workflow_task=task)
             else:
                 result = product._generate_section_lecture(str(payload.get("sectionId") or ""), payload, task)
         except RuntimeError as exc:
