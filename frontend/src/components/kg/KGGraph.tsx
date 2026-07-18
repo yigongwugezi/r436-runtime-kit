@@ -45,7 +45,6 @@ export default function KGGraph({
 
     const graph = new Graph({
       container, width, height: height || 600,
-      autoFit: false,
       animation: true, // 只影响相机动画（点击飞行），不影响布局稳定性
       layout: LAYOUTS[layoutKey as LayoutType] || LAYOUTS.dagre,
       data: {
@@ -104,22 +103,6 @@ export default function KGGraph({
       if (!nid) return;
       const node = nodes.find((n) => n.id === nid);
       onNodeClick(node || null);
-      // ONE absolute transform: zoom to 4x AND center on node, simultaneous
-      try {
-        const nd = graph.getNodeData(nid);
-        const st = (nd as any).style || (nd as any).data?.style;
-        const sx = parseFloat(st?.x);
-        const sy = parseFloat(st?.y);
-        if (!isNaN(sx) && !isNaN(sy)) {
-          const sz = graph.getSize();
-          const Z = 4;
-          graph.transform({
-            mode: 'absolute', zoom: Z,
-            translate: { x: sz[0] / 2 - sx * Z, y: sz[1] / 2 - sy * Z },
-          }, { duration: 800 });
-          return;
-        }
-      } catch {}
       graph.focusElement(nid, { duration: 800 });
     });
 

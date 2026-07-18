@@ -17,7 +17,7 @@ export default function KGPreview({ graphData, height = 360 }: KGPreviewProps) {
 
     const graph = new Graph({
       container, width: width || 600, height,
-      autoFit: false, animation: false,
+      animation: false,
       layout: { type: 'force', preventOverlap: true, nodeSize: 60, nodeStrength: 200, edgeStrength: 10, linkDistance: 800, coulombDisScale: 3, collideStrength: 10, gravity: 2, damping: 0.9, maxSpeed: 500, maxIteration: 3000, minMovement: 0.01 },
       data: {
         nodes: graphData.nodes.map((n) => ({ id: n.id, data: { label: n.label } })),
@@ -47,7 +47,7 @@ export default function KGPreview({ graphData, height = 360 }: KGPreviewProps) {
     });
 
     graph.render();
-    setTimeout(() => { try { graph.fitView({ padding: 60 }); } catch {} }, 100);
+    setTimeout(() => { try { graph.fitView(); } catch {} }, 100);
     return () => { graph.destroy(); };
   }, [graphData]);
 

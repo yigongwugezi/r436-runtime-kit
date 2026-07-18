@@ -128,7 +128,7 @@ export default function LecturePage() {
   // ── 从 store 读取持久化状态 ──
   const store = useLectureStore();
   // ── Section download handler ──
-  const handleSectionDownload = async (fmt) => {
+  const handleSectionDownload = async (fmt: string) => {
     const sid = activeSectionId;
     if (!sid) return;
     setDownloadLoading(fmt);
