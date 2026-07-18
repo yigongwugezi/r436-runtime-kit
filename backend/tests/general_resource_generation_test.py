@@ -20,7 +20,7 @@ os.environ.setdefault("DATABASE_URL", f"sqlite:///{Path(_bootstrap.name) / 'boot
 def main() -> None:
     # Imports happen after the test-only configuration above; no provider is used.
     from app.db.engine import SessionLocal
-    from app.db.models import ResourceModel
+    from app.db.models import LearnerModel, ResourceModel
     from app.routers import product, workflows
     from app.services.workflow_tasks import WorkflowTaskManager, workflow_task_manager
 
@@ -29,6 +29,14 @@ def main() -> None:
         "topic": "递归调用栈", "difficulty": "medium", "operation": "generate",
         "mode": "general_resource_generation", "generationOptions": {},
     }
+    # Workflow ownership upgrade requires a real learner under SQLite FK rules.
+    db = SessionLocal()
+    try:
+        if db.get(LearnerModel, "learner-test") is None:
+            db.add(LearnerModel(id="learner-test"))
+            db.commit()
+    finally:
+        db.close()
     assert product.normalize_general_resource_request({**payload, "resourceType": "mind-map"})["resourceType"] == "mindmap"
     try:
         product.normalize_general_resource_request({**payload, "resourceType": "unknown"})
