@@ -6,6 +6,7 @@ import { useChatStore } from '../store/chatStore';
 import { enableProfileExtraction, listPlanningDrafts } from '../api/learningPath';
 import { useProfile } from '../hooks/useProfile';
 import PlanningWizard from '../components/learning/PlanningWizard';
+import RevisionProposalCard from '../components/learning/RevisionProposalCard';
 import { PageLoading, PageError } from '../components/common/PageState';
 import { getCurrentLearner } from '../store/authStore';
 import { learningTaskRoute } from '../utils/learningTaskRoute';
@@ -176,6 +177,8 @@ export default function LearningPathPage() {
             <p className="mt-4 text-sm leading-7 text-surface-400">{path?.description || 'AI 根据你的学习表现持续优化这条路径'}</p>
           </section>
         </header>
+
+        {path?.id && sessionId && subject.subject_id && <RevisionProposalCard sessionId={sessionId} subjectId={subject.subject_id} pathId={path.id} />}
 
         {/* ── 进度概览 ── */}
         <section className="rounded-[20px] border border-surface-200 bg-white/80 backdrop-blur-sm p-5 sm:p-6 shadow-sm">

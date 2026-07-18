@@ -155,21 +155,21 @@ export async function cancelWorkflowTask(taskId: string): Promise<{ ok: boolean 
 
 // ── Path Revision API ──
 
-export async function getPendingRevision(sessionId: string): Promise<{
+export async function getPendingRevision(sessionId: string, subjectId: string, pathId: string): Promise<{
   pending_revision: any;
   diff?: any;
 }> {
-  const { data } = await client.get(`/api/learning-path/${sessionId}/pending-revision`);
+  const { data } = await client.get(`/api/learning-path/${sessionId}/pending-revision`, { params: { subjectId, pathId } });
   return data?.data || data;
 }
 
-export async function acceptPendingRevision(sessionId: string): Promise<{ ok: boolean }> {
-  const { data } = await client.post(`/api/learning-path/${sessionId}/pending-revision/accept`);
+export async function acceptPendingRevision(sessionId: string, subjectId: string, pathId: string, revisionId: string): Promise<{ ok: boolean }> {
+  const { data } = await client.post(`/api/learning-path/${sessionId}/pending-revision/accept`, null, { params: { subjectId, pathId, revisionId } });
   return data?.data || data;
 }
 
-export async function rejectPendingRevision(sessionId: string): Promise<{ ok: boolean }> {
-  const { data } = await client.post(`/api/learning-path/${sessionId}/pending-revision/reject`);
+export async function rejectPendingRevision(sessionId: string, subjectId: string, pathId: string, revisionId: string): Promise<{ ok: boolean }> {
+  const { data } = await client.post(`/api/learning-path/${sessionId}/pending-revision/reject`, null, { params: { subjectId, pathId, revisionId } });
   return data?.data || data;
 }
 
