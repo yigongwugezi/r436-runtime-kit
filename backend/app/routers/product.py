@@ -3358,6 +3358,8 @@ def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "", aut
                 "qualityStatus": metadata.get("quality_status", ""),
                 "sourceType": metadata.get("generation_source", ""),
                 "generationMode": metadata.get("generation_mode", ""),
+                "generationVersion": db_match.get("generation_version") or 1,
+                "supersedesResourceId": db_match.get("supersedes_resource_id"),
                 "resourceMetadata": metadata,
             }},
             session_id=session_id, subject_id=subjectId, source="db",
@@ -3374,6 +3376,44 @@ def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "", aut
             return _product_response({"resource": match}, session_id=session_id, subject_id=subjectId, source="memory")
 
     raise HTTPException(status_code=404, detail="resource not found")
+
+
+@router.post("/resources/{resource_id}/regenerate")
+def regenerate_resource(resource_id: str, payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
+    """Create one explicit successor; retries with the same operationId reuse it."""
+    scope = resolve_resource_scope(auth, session_id=_payload_session_id(payload), subject_id=_payload_subject_id(payload), resource_id=resource_id)
+    operation_id = str(payload.get("operationId") or "").strip()
+    if not operation_id:
+        raise HTTPException(status_code=422, detail="operationId required")
+    db = SessionLocal()
+    try:
+        original = db.query(ResourceModel).filter(ResourceModel.id == resource_id, ResourceModel.session_id == scope.session_id).first()
+        if not original or not original.learner_id or original.learner_id != scope.learner_id or not original.subject_id or original.subject_id != scope.subject_id:
+            raise HTTPException(status_code=403, detail="access denied")
+        if original.path_id and original.related_stage_id:
+            _require_task_stage_access(scope.session_id, original.related_stage_id, original.related_section_id or original.task_id, original.path_id, original.task_id)
+        for candidate in db.query(ResourceModel).filter(ResourceModel.supersedes_resource_id == original.id).all():
+            metadata = candidate.resource_metadata if isinstance(candidate.resource_metadata, dict) else {}
+            if metadata.get("regeneration_operation_id") == operation_id:
+                return _product_response({"resourceId": candidate.id, "generationVersion": candidate.generation_version, "reused": True}, session_id=scope.session_id, subject_id=scope.subject_id, source="db")
+        metadata = original.resource_metadata if isinstance(original.resource_metadata, dict) else {}
+        resource_type = str(metadata.get("resource_type") or original.type or "").replace("case_study", "practice")
+        if resource_type not in GENERAL_RESOURCE_TYPES:
+            raise HTTPException(status_code=422, detail="resource type cannot be regenerated")
+        if resource_type != "mindmap":
+            from app.config import runtime_capabilities
+            if not runtime_capabilities()["llmConfigured"]:
+                return _product_response({"errorCode": "provider_not_configured", "resource": None}, session_id=scope.session_id, status="error", message="provider_not_configured", source="agent")
+        topic = str((original.knowledge_points or [original.title])[0] or original.title).strip()
+        request = normalize_general_resource_request({"sessionId": scope.session_id, "subjectId": scope.subject_id, "pathId": original.path_id or "", "stageId": original.related_stage_id or "", "chapterId": original.related_chapter_id or "", "sectionId": original.related_section_id or "", "topic": topic, "resourceType": resource_type, "difficulty": original.difficulty or "medium", "operation": "regenerate", "mode": "general_resource_regeneration"})
+        resource = _general_resource_payload(request)
+        resource.update({"id": f"regen_{uuid.uuid4().hex}", "learner_id": original.learner_id, "subject_id": original.subject_id, "path_id": original.path_id, "related_stage_id": original.related_stage_id, "related_chapter_id": original.related_chapter_id, "related_section_id": original.related_section_id, "task_id": original.task_id, "generation_version": int(original.generation_version or 1) + 1, "supersedes_resource_id": original.id})
+        resource["resource_metadata"] = {**(resource.get("resource_metadata") or {}), "regeneration_operation_id": operation_id}
+        from app.db.repository import upsert_resource
+        saved = upsert_resource(db, scope.session_id, resource)
+        return _product_response({"resourceId": saved.id, "generationVersion": saved.generation_version, "supersedesResourceId": saved.supersedes_resource_id, "reused": False}, session_id=scope.session_id, subject_id=scope.subject_id, source="agent")
+    finally:
+        db.close()
 
 
 @router.delete("/resources/{resource_id}")
