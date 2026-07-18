@@ -312,7 +312,10 @@ class WorkflowTaskManager:
                     self.emit_terminal(task, "workflow_failed", "failed", label="任务执行失败", error_code=task.error_code, safe_error_message=task.safe_error_message)
 
         try:
-            threading.Thread(target=work, daemon=True, name=f"workflow-{task.task_id[:8]}").start()
+            # copy_context_wrap: workflow 线程不继承 ContextVar，需带入发起请求
+            # 用户的 AI 凭据上下文（见 services/user_ai_config.py）
+            from app.services.user_ai_config import copy_context_wrap
+            threading.Thread(target=copy_context_wrap(work), daemon=True, name=f"workflow-{task.task_id[:8]}").start()
         except Exception:
             task.status = "failed"
             task.failed_at = task.updated_at = _now()

@@ -115,32 +115,41 @@ VITE_API_BASE_URL=http://localhost:8001
 
 ## 模型配置
 
-后端 `.env` 示例：
+> **v1.1.0 起：AI 凭据为每用户配置，不再放在 `.env`。**
+> 所有 API key / secret / app_id 由每个登录用户在前端「系统设置 → AI 模型配置」
+> 中独立填写（存 `user_ai_config` 表，默认为空，用户之间互不可见）。
+> 未配置密钥时，AI 功能返回 `AI_CONFIG_MISSING` 友好提示并引导前往设置页，
+> 不会产出模拟内容。接口详见 `docs/api/api-contract.md` 第 3 节。
+
+每用户可配置的服务：主对话模型（DeepSeek / Qwen / GLM / OpenAI，选提供商+填 key；
+Base URL 与模型名为代码内官方默认值）、通义 DashScope（识图/图像/视频）、讯飞星火
+（图像与识图三元组）、Wan 视频、ARK/Seedream、讯飞智文 AIPPT、Tavily 搜索。
+
+后端 `.env` 只保留技术项（超时、重试、温度、端点 URL、角色模型微调、搜索缓存与
+熔断参数等），示例：
 
 ```env
 APP_NAME=r436-runtime-kit-backend
 APP_ENV=development
 FRONTEND_ORIGIN=http://localhost:5173
-LLM_PROVIDER=deepseek
-LLM_MODEL=deepseek-chat
+# user = 真实提供商由每个用户在系统设置中选择（默认部署值）；
+# mock = 自动化测试逃生舱（仅当用户未配置密钥时生效，用户配置始终优先）。
+LLM_PROVIDER=user
 LLM_TEMPERATURE=0.2
-DEEPSEEK_API_KEY=你的key
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-```
-
-不想调用真实模型时：
-
-```env
-LLM_PROVIDER=mock
 ```
 
 注意：真实 `.env` 不要提交到 GitHub。
 
 ### 资源比赛模式
 
-比赛核心只需要 `LLM_PROVIDER=deepseek` 和非空 `DEEPSEEK_API_KEY`。讲义、阅读材料、练习材料与基础导图使用该核心能力；`pyahocorasick` 缺失时会使用安全的纯 Python 内容检查降级。
+比赛核心只需要演示账号在「系统设置 → AI 模型配置」中选择 DeepSeek 并填写有效
+API Key。讲义、阅读材料、练习材料与基础导图使用该核心能力；`pyahocorasick`
+缺失时会使用安全的纯 Python 内容检查降级。
 
-以下均为可选项，留空不会阻止后端或已生成资源读取：`TAVILY_API_KEY`（联网搜索）、`AIPPT_APP_ID` / `AIPPT_API_SECRET`（PPT）、`DASHSCOPE_API_KEY`、`WAN_API_KEY`、`QWEN_API_KEY`（视频/图像）、`ARK_API_KEY`、`SPARK_*`、`OPENAI_API_KEY`、DeepTutor、RAG 与 Manim。未配置时接口会返回明确 unavailable/provider-not-configured 状态，不会创建空资源或伪造搜索结果。
+以下服务均为可选项，在设置页留空不会阻止后端或已生成资源读取：Tavily（联网搜索）、
+AIPPT（PPT）、通义 DashScope / Wan（视频/图像）、ARK/Seedream、讯飞星火、
+OpenAI/GLM（备用提供商）、DeepTutor、RAG 与 Manim。未配置时接口会返回明确
+unavailable/provider-not-configured 状态，不会创建空资源或伪造搜索结果。
 
 不要提交真实 `backend/.env`；从 `backend/.env.example` 复制后仅在本机填写变量值。
 

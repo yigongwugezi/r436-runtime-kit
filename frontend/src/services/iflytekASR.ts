@@ -4,43 +4,39 @@
  * 关键改进：边录边传音频帧，而非录完再一次性发送。
  * 这样才能配合讯飞服务端的 VAD 机制正确识别。
  *
+ * 凭据：每用户配置（系统设置 → AI 模型配置 → 语音识别）。
+ * HMAC 签名在后端完成（GET /api/learner/me/ai-config/asr-ws-url），
+ * apiKey/apiSecret 永不下发前端；本模块只拿到预签名 wss URL 和 appId。
+ *
  * 用法：
  *   const asr = new IflytekASR();
  *   await asr.start();          // 连接 + 开始录音（音频实时推送）
  *   const result = await asr.finish();  // 停止录音，等待最终结果
  */
 
-// ── 配置 ──────────────────────────────────────────────────
-const APP_ID = 'f6b33305';
-const API_SECRET = 'OGM3ODhiNGJhODU3ZDUxYzc5NGE5OTM1';
-const API_KEY = '037ad7373fab4d2f7137c676e9e7aea2';
-const HOST = 'iat-api.xfyun.cn';
-const WS_URL = `wss://${HOST}/v2/iat`;
+import client from '../api/client';
 
 const DEBUG = true;
 function log(...args: unknown[]) {
   if (DEBUG) console.log('[iflytekASR]', ...args);
 }
 
-// ── 工具 ──────────────────────────────────────────────────
+// ── 连接信息（后端预签名） ─────────────────────────────────
 
-function rfc1123Date(): string { return new Date().toUTCString(); }
+interface AsrConnection { url: string; appId: string; }
 
-async function hmacSha256Base64(key: string, message: string): Promise<string> {
-  const enc = new TextEncoder();
-  const ck = await crypto.subtle.importKey('raw', enc.encode(key), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const sig = await crypto.subtle.sign('HMAC', ck, enc.encode(message));
-  return uint8ToBase64(new Uint8Array(sig));
-}
-
-async function buildAuthUrl(): Promise<string> {
-  const date = rfc1123Date();
-  const signingString = `host: ${HOST}\ndate: ${date}\nGET /v2/iat HTTP/1.1`;
-  const sig = await hmacSha256Base64(API_SECRET, signingString);
-  const authOrigin = `api_key="${API_KEY}", algorithm="hmac-sha256", headers="host date request-line", signature="${sig}"`;
-  const auth = btoa(authOrigin);
-  // 注意：encodeURIComponent 是必须的，因为 base64 含 +/= 等特殊字符
-  return `${WS_URL}?authorization=${encodeURIComponent(auth)}&date=${encodeURIComponent(date)}&host=${HOST}`;
+async function fetchAsrConnection(): Promise<AsrConnection> {
+  try {
+    const { data } = await client.get('/api/learner/me/ai-config/asr-ws-url');
+    return data as AsrConnection;
+  } catch (e: any) {
+    // 409 AI_CONFIG_MISSING → 引导去系统设置；其余错误保留原信息
+    const code = e?.response?.data?.code ?? e?.code;
+    if (code === 'AI_CONFIG_MISSING') {
+      throw new Error('语音识别未配置，请前往「系统设置 → AI 模型配置」填写讯飞语音听写凭据');
+    }
+    throw new Error(e?.message || '获取语音服务连接失败');
+  }
 }
 
 function uint8ToBase64(buf: Uint8Array): string {
@@ -193,10 +189,10 @@ export class IflytekASR {
     this.audioSent = false;
 
     try {
-      // 1. 连接 WebSocket
-      const url = await buildAuthUrl();
-      log('Connecting to:', WS_URL);
-      this.ws = new WebSocket(url);
+      // 1. 从后端获取预签名连接（凭据缺失时抛出引导文案）
+      const conn = await fetchAsrConnection();
+      log('Connecting to iFlytek IAT (pre-signed by backend)');
+      this.ws = new WebSocket(conn.url);
 
       await new Promise<void>((resolve, reject) => {
         if (!this.ws) return reject(new Error('ws null'));
@@ -233,7 +229,7 @@ export class IflytekASR {
       log('Format:', this.formatStr);
 
       this.ws.send(JSON.stringify({
-        common: { app_id: APP_ID },
+        common: { app_id: conn.appId },
         business: {
           language: 'zh_cn',
           domain: 'iat',

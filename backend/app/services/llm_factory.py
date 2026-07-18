@@ -1,6 +1,7 @@
 """统一 LLM 工厂 — 所有大模型调用从这里走。
 
-.env 控制一切，不需要改代码。支持：
+凭据来自**每用户配置**（系统设置 → AI 模型配置，见 user_ai_config.py），
+.env 只保留技术项（角色模型微调、温度等）。支持：
   - DeepSeek (deepseek-chat)
   - Qwen / Qwen-Coder / Qwen-VL (DashScope)
   - GLM 5.2 (智谱)
@@ -15,7 +16,7 @@
 from __future__ import annotations
 import json
 import os
-# Ensure .env is loaded before reading config
+# Ensure .env is loaded before reading config (technical vars only)
 from app.config import load_backend_env
 load_backend_env()
 import time
@@ -24,6 +25,13 @@ import base64
 import logging
 from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 from openai import OpenAI
+
+from app.services.user_ai_config import (
+    PROVIDER_DEFAULTS,
+    get_llm_credentials,
+    resolve_provider_key,
+)
+from app.utils.errors import AIConfigMissingError
 
 logger = logging.getLogger(__name__)
 
@@ -109,58 +117,22 @@ def _make_vision_func(client: OpenAI, model: str) -> VisionFunc:
 # 注册 Provider
 # ═══════════════════════════════════════════════════════════════════════
 
-PROVIDERS = {
-    "deepseek": {
-        "env_key": "DEEPSEEK_API_KEY",
-        "env_url": "DEEPSEEK_BASE_URL",
-        "default_url": "https://api.deepseek.com",
-        "models": {
-            "text": "deepseek-chat",
-            "vision": None,
-        },
-    },
-    "qwen": {
-        "env_key": "QWEN_API_KEY",
-        "env_url": "QWEN_BASE_URL",
-        "default_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "models": {
-            "text": "qwen-coder-plus",
-            "vision": "qwen-vl-max",
-        },
-    },
-    "glm": {
-        "env_key": "GLM_API_KEY",
-        "env_url": "GLM_BASE_URL",
-        "default_url": "https://open.bigmodel.cn/api/paas/v4/",
-        "models": {
-            "text": "glm-5.2",
-            "vision": "glm-4v-plus",
-        },
-    },
-    "openai": {
-        "env_key": "OPENAI_API_KEY",
-        "env_url": "OPENAI_BASE_URL",
-        "default_url": "https://api.openai.com/v1/",
-        "models": {
-            "text": "gpt-4o",
-            "vision": "gpt-4o",
-        },
-    },
-}
+# Base URL 与默认模型固化在 user_ai_config.PROVIDER_DEFAULTS（代码内官方默认，
+# 不再从 .env 读取）；key 一律来自每用户配置。
+PROVIDERS = PROVIDER_DEFAULTS
 
 
-def _get_provider_config(provider: str) -> Dict:
-    """从 .env 读取指定 provider 的配置"""
+def _get_provider_config(provider: str, *, config: dict | None = None) -> Dict:
+    """解析指定 provider 的配置——key 来自用户配置，URL/模型用代码内默认值。"""
     cfg = PROVIDERS.get(provider)
     if not cfg:
         raise ValueError(f"Unknown LLM provider: {provider}")
-    api_key = os.getenv(cfg["env_key"], "")
-    base_url = os.getenv(cfg["env_url"], cfg["default_url"])
-    return {**cfg, "api_key": api_key, "base_url": base_url}
+    api_key = resolve_provider_key(provider, config=config)
+    return {**cfg, "api_key": api_key, "base_url": cfg["default_url"]}
 
 
 def _get_role_provider(role: str) -> str:
-    """读取角色对应的 provider，如 LLM_PLANNER_PROVIDER=deepseek"""
+    """读取角色对应的 provider，如 LLM_PLANNER_PROVIDER=deepseek（.env 技术项）"""
     env_var = f"LLM_{role.upper()}_PROVIDER"
     return os.getenv(env_var, role_defaults.get(role, "deepseek"))
 
@@ -176,58 +148,56 @@ role_defaults = {
 # 公开接口
 # ═══════════════════════════════════════════════════════════════════════
 
-def get_planner() -> TokenFunc:
+def get_planner(config: dict | None = None) -> TokenFunc:
     """获取 Planner（大纲+分镜）的 LLM 函数。默认 DeepSeek。"""
     provider = _get_role_provider("planner")
-    cfg = _get_provider_config(provider)
+    cfg = _get_provider_config(provider, config=config)
     env_model = os.getenv("LLM_PLANNER_MODEL", "")
     model = env_model or cfg["models"]["text"]
     if not cfg["api_key"]:
-        logger.warning("LLM_PLANNER_PROVIDER=%s but %s not set", provider, cfg["env_key"])
+        logger.warning("planner provider=%s 但当前用户未配置该提供商的 API key", provider)
     client = _make_client(cfg["base_url"], cfg["api_key"])
     return _make_text_func(client, model)
 
 
-def get_coder() -> TokenFunc:
+def get_coder(config: dict | None = None) -> TokenFunc:
     """获取 Coder（Manim 代码生成）的 LLM 函数。默认 Qwen-Coder。"""
     provider = _get_role_provider("coder")
-    cfg = _get_provider_config(provider)
+    cfg = _get_provider_config(provider, config=config)
     env_model = os.getenv("LLM_CODER_MODEL", "")
     model = env_model or cfg["models"]["text"]
     if not cfg["api_key"]:
-        logger.warning("LLM_CODER_PROVIDER=%s but %s not set", provider, cfg["env_key"])
+        logger.warning("coder provider=%s 但当前用户未配置该提供商的 API key", provider)
     client = _make_client(cfg["base_url"], cfg["api_key"])
     return _make_text_func(client, model)
 
 
-def get_critic() -> VisionFunc:
+def get_critic(config: dict | None = None) -> VisionFunc:
     """获取 Critic（视频画面评审）的 VLM 函数。默认 Qwen-VL。"""
     provider = _get_role_provider("critic")
-    cfg = _get_provider_config(provider)
+    cfg = _get_provider_config(provider, config=config)
     env_model = os.getenv("LLM_CRITIC_MODEL", "")
     model = env_model or cfg["models"]["vision"] or cfg["models"]["text"]
     if not cfg["api_key"]:
-        logger.warning("LLM_CRITIC_PROVIDER=%s but %s not set", provider, cfg["env_key"])
+        logger.warning("critic provider=%s 但当前用户未配置该提供商的 API key", provider)
     client = _make_client(cfg["base_url"], cfg["api_key"])
     return _make_vision_func(client, model)
 
 
-def get_narrator() -> TokenFunc:
+def get_narrator(config: dict | None = None) -> TokenFunc:
     """获取旁白生成的 LLM 函数。默认使用 DeepSeek。"""
     provider = os.getenv("LLM_NARRATOR_PROVIDER", "deepseek")
-    cfg = _get_provider_config(provider)
+    cfg = _get_provider_config(provider, config=config)
     env_model = os.getenv("LLM_NARRATOR_MODEL", "")
     model = env_model or cfg["models"]["text"]
     client = _make_client(cfg["base_url"], cfg["api_key"])
     return _make_text_func(client, model)
 
 
-def is_configured() -> bool:
-    """检查是否至少有一个 provider 配置了 API key"""
-    for name, cfg in PROVIDERS.items():
-        if os.getenv(cfg["env_key"], ""):
-            return True
-    return False
+def is_configured(config: dict | None = None) -> bool:
+    """检查当前用户是否配置了主 LLM 的 API key（mock 视为已配置）"""
+    creds = get_llm_credentials(config=config)
+    return creds["provider"] == "mock" or bool(creds["api_key"])
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -237,40 +207,35 @@ def is_configured() -> bool:
 class UnifiedChatClient:
     """统一的 chat 客户端 — 实现 .chat(messages) 接口，所有 agent 通用。
 
-    读取 LLM_API_KEY / LLM_BASE_URL / LLM_MODEL env，或从 settings 回退。
+    凭据来自每用户配置（user_ai_config）；未配置 key 时构造成功但任何
+    调用都会抛 AIConfigMissingError（惰性报错，引导用户去系统设置）。
     """
 
-    def __init__(self):
-        import importlib
-        prov = os.getenv("LLM_API_PROVIDER", "deepseek")
-        cfg = _get_provider_config(prov)
-        self._api_key = os.getenv("LLM_API_KEY") or cfg["api_key"]
-        self._base_url = os.getenv("LLM_BASE_URL") or cfg["base_url"]
-        self._model = os.getenv("LLM_MODEL") or cfg["models"]["text"]
-        try:
-            mod = importlib.import_module("app.config")
-            settings = getattr(mod, "settings", None)
-            if settings:
-                self._api_key = self._api_key or getattr(settings, "deepseek_api_key", "")
-                self._base_url = self._base_url or getattr(settings, "deepseek_base_url", "https://api.deepseek.com")
-                self._model = self._model or getattr(settings, "llm_model", "deepseek-chat")
-        except Exception:
-            pass
+    def __init__(self, config: dict | None = None):
+        creds = get_llm_credentials(config=config)
+        self._provider = creds["provider"]
+        self._api_key = creds["api_key"]
+        self._base_url = creds["base_url"]
+        self._model = creds["model"]
         self._temperature = float(os.getenv("LLM_TEMPERATURE", "0.2"))
         self._client = OpenAI(base_url=self._base_url, api_key=self._api_key) if self._api_key else None
 
     def is_available(self) -> bool:
         return self._client is not None
 
-    def chat(self, messages: list[dict], **kwargs) -> str:
+    def _require_client(self) -> OpenAI:
         if not self._client:
-            raise RuntimeError("No LLM API key configured. Set LLM_API_KEY in .env")
+            raise AIConfigMissingError(service="llm", provider=self._provider or "llm")
+        return self._client
+
+    def chat(self, messages: list[dict], **kwargs) -> str:
+        client = self._require_client()
         max_tokens = kwargs.pop("max_tokens", 8000)
         temp = kwargs.pop("temperature", self._temperature)
         retries = kwargs.pop("retry_count", 2)
         for attempt in range(retries + 1):
             try:
-                completion = self._client.chat.completions.create(
+                completion = client.chat.completions.create(
                     model=self._model,
                     messages=messages,
                     max_tokens=max_tokens,
@@ -286,8 +251,7 @@ class UnifiedChatClient:
 
     def stream_chat(self, messages: list[dict], **kwargs) -> Generator[str, None, None]:
         """流式聊天——边生成边 yield token。"""
-        if not self._client:
-            raise RuntimeError("No LLM API key configured")
+        client = self._require_client()
         model = kwargs.pop("model", self._model) or self._model
         temp = kwargs.pop("temperature", self._temperature)
         _is_reasoner = "reasoner" in model
@@ -320,7 +284,7 @@ class UnifiedChatClient:
             return
 
         # 非推理模型：用 OpenAI 客户端库
-        stream = self._client.chat.completions.create(
+        stream = client.chat.completions.create(
             model=model, messages=messages, temperature=temp, stream=True, **kwargs,
         )
         for chunk in stream:
@@ -328,6 +292,6 @@ class UnifiedChatClient:
                 yield chunk.choices[0].delta.content
 
 
-def get_chat_client() -> UnifiedChatClient:
-    """返回统一 chat 客户端，所有 agent 调用 LLM 的统一入口。"""
-    return UnifiedChatClient()
+def get_chat_client(config: dict | None = None) -> UnifiedChatClient:
+    """返回统一 chat 客户端，绑定当前用户（或显式快照）的凭据。"""
+    return UnifiedChatClient(config=config)

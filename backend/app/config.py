@@ -40,11 +40,12 @@ class Settings(BaseSettings):
     app_name: str = "r436-runtime-kit-backend"
     app_env: str = "development"
     frontend_origin: str = "http://localhost:5173"
-    llm_provider: str = "mock"
-    llm_model: str = "deepseek-chat"
+    # NOTE: AI credentials (API keys / secrets / app ids) are PER-USER and
+    # live in the user_ai_config table (系统设置 → AI 模型配置).  They are
+    # intentionally absent from Settings — only technical tuning stays here.
+    llm_provider: str = "mock"  # "mock" = test escape hatch; anything else defers to per-user config
+    llm_model: str = "deepseek-chat"  # display/tuning only — actual model comes from the user's provider
     llm_temperature: float = 0.2
-    deepseek_api_key: str = ""
-    deepseek_base_url: str = "https://api.deepseek.com"
     llm_enable_search: bool = True
     llm_reasoner_model: str = "deepseek-reasoner"
 
@@ -73,26 +74,11 @@ class Settings(BaseSettings):
     mastery_threshold_top: int = 15   # 优秀段（>=80）
 
     # ── 科大讯飞 星火多模态 ──────────────────────────────────────────
-    spark_app_id: str = ""
-    spark_api_key: str = ""
-    spark_api_secret: str = ""
+    # 凭据（app_id/api_key/api_secret）已迁至每用户配置；仅端点 URL 保留为技术项。
     spark_image_host_url: str = "https://spark-api.cn-huabei-1.xf-yun.com/v2.1/tti"
-    spark_vision_app_id: str = ""
-    spark_vision_api_key: str = ""
-    spark_vision_api_secret: str = ""
-    # Qwen / DashScope
-    qwen_api_key: str = ""
-    qwen_base_url: str = ""
-    qwen_vl_model: str = ""
-    qwen_image_model: str = ""
-    qwen_coder_model: str = ""  # qwen-coder-plus for code generation
-    # Wan Video
-    wan_api_key: str = ""
-    wan_video_model: str = ""
 
     # Web search provider settings
-    search_provider: str = "mock"       # "mock" | "duckduckgo" | "tavily"
-    tavily_api_key: str = ""
+    search_provider: str = "mock"       # "mock" | "duckduckgo" | "tavily"（tavily key 为每用户配置）
     search_max_results: int = 5
     search_timeout: int = 10            # seconds for HTTP request
     search_total_timeout: int = 15      # seconds across all real search backends
@@ -161,28 +147,37 @@ settings = Settings()
 
 
 def runtime_capabilities() -> dict[str, object]:
-    """Return safe runtime readiness data; credentials and URLs never leave process."""
-    provider = settings.llm_provider.lower()
-    key_names = {"deepseek": "DEEPSEEK_API_KEY", "qwen": "QWEN_API_KEY", "glm": "GLM_API_KEY", "openai": "OPENAI_API_KEY"}
-    llm_configured = provider == "mock" or bool(os.getenv(key_names.get(provider, "LLM_API_KEY"), ""))
-    search = settings.search_provider.lower()
+    """Return safe runtime readiness data; credentials and URLs never leave process.
+
+    Credential-based flags are resolved through the **per-user** AI config
+    (``app.services.user_ai_config``): inside an authenticated request they
+    reflect the current learner's own keys; outside any request context
+    (e.g. the unauthenticated ``/health/capabilities`` endpoint) they report
+    "not configured", which is accurate — credentials no longer exist at
+    process level.  Infrastructure checks (installed deps, manim, RAG) stay
+    process-wide.
+    """
+    from app.services.user_ai_config import user_capabilities
+
+    caps = user_capabilities()
+    llm_configured = bool(caps["llmConfigured"])
+    search_configured = bool(caps["searchConfigured"])
+
     def status(configured: bool, dependency: str = "") -> str:
         if configured:
             return "available"
         if dependency and find_spec(dependency) is None:
             return "dependency_missing"
         return "not_configured"
-    ppt = bool(os.getenv("AIPPT_APP_ID", "") and os.getenv("AIPPT_API_SECRET", ""))
-    video = bool(os.getenv("DASHSCOPE_API_KEY", "") or os.getenv("WAN_API_KEY", "") or os.getenv("QWEN_API_KEY", "") or shutil.which("manim"))
-    image = bool(os.getenv("DASHSCOPE_API_KEY", "") or os.getenv("QWEN_API_KEY", "") or (os.getenv("ARK_API_KEY", "") and os.getenv("DEEPSEEK_API_KEY", "")))
+
     return {
-        "llmProvider": provider,
+        "llmProvider": caps["llmProvider"],
         "llmConfigured": llm_configured,
-        "searchProvider": search,
-        "searchConfigured": search in {"mock", "duckduckgo"} or bool(os.getenv("TAVILY_API_KEY", "")),
-        "pptConfigured": ppt,
-        "videoConfigured": video,
-        "imageConfigured": image,
-        "providerStatus": {"llm": status(llm_configured), "search": status(search in {"mock", "duckduckgo"} or bool(os.getenv("TAVILY_API_KEY", ""))), "mindmap": status(llm_configured), "ppt": status(ppt), "video": status(video, "manim"), "image": status(image), "rag": status(bool(settings.rag_enabled), "faiss"), "deeptutor": status(find_spec("deeptutor") is not None and llm_configured), "manim": status(bool(shutil.which("manim")), "manim")},
+        "searchProvider": caps["searchProvider"],
+        "searchConfigured": search_configured,
+        "pptConfigured": caps["pptConfigured"],
+        "videoConfigured": caps["videoConfigured"],
+        "imageConfigured": caps["imageConfigured"],
+        "providerStatus": {"llm": status(llm_configured), "search": status(search_configured), "mindmap": status(llm_configured), "ppt": status(bool(caps["pptConfigured"])), "video": status(bool(caps["videoConfigured"]), "manim"), "image": status(bool(caps["imageConfigured"])), "rag": status(bool(settings.rag_enabled), "faiss"), "deeptutor": status(find_spec("deeptutor") is not None and llm_configured), "manim": status(bool(shutil.which("manim")), "manim")},
         "optionalDependencies": {name: find_spec(name) is not None for name in ("ahocorasick", "openai", "faiss", "deeptutor", "manim")},
     }

@@ -167,6 +167,10 @@ export function useStreamChat() {
                 if (payload.reasoning) {
                   appendReasoningToLastAssistant(payload.reasoning);
                 }
+                if (payload.type === 'error' && payload.code) {
+                  // 携带错误码（如 AI_CONFIG_MISSING）供消息气泡渲染引导入口
+                  updateLastAssistant((m) => ({ ...m, errorCode: payload.code }));
+                }
                 if (payload.done) {
                   // Store debug info from final event (dev-only, §13.2)
                   setDebugInfoFromPayload(payload);
@@ -382,6 +386,10 @@ export function useStreamChat() {
                 }
                 if (payload.reasoning) {
                   appendReasoningToLastAssistant(payload.reasoning);
+                }
+                if (payload.type === 'error' && payload.code) {
+                  // 携带错误码（如 AI_CONFIG_MISSING）供消息气泡渲染引导入口
+                  updateLastAssistant((m) => ({ ...m, errorCode: payload.code }));
                 }
                 if (payload.done) {
                   writeStorageItem(runtimeStorageKeys.pendingGeneration, '');

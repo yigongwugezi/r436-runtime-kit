@@ -28,7 +28,7 @@ BaseSearchClient (ABC)             <-- abstract contract
 
 | Feature | Mock | DuckDuckGo | Tavily |
 |---------|------|------------|--------|
-| API key required | No | No | Yes (`TAVILY_API_KEY`) |
+| API key required | No | No | Yes (per-user, 系统设置 → AI 模型配置) |
 | Results per call | ≤ 3 (fake) | max_results param | max_results param |
 | AI-optimised results | No | No | Yes (includes answer summary) |
 | Rate limiting | None | Moderate (built-in) | Paid-tier limits |
@@ -36,12 +36,13 @@ BaseSearchClient (ABC)             <-- abstract contract
 
 ## Configuration
 
-All settings live in ``.env`` and are loaded by ``app/config.py``:
+> **v1.1.0**: Tavily key 为每用户配置（`user_ai_config.tavily.apiKey`，经
+> ``app/services/user_ai_config.py`` 解析），不再从 ``.env`` 读取。
+> 其余技术设置仍在 ``.env`` 中并由 ``app/config.py`` 加载：
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | ``SEARCH_PROVIDER`` | ``mock`` | ``mock``, ``duckduckgo``, or ``tavily`` |
-| ``TAVILY_API_KEY`` | (empty) | Required only for Tavily |
 | ``SEARCH_MAX_RESULTS`` | ``5`` | Default max results per search |
 | ``SEARCH_TIMEOUT`` | ``10`` | HTTP request timeout (seconds) |
 | ``SEARCH_CACHE_TTL`` | ``300`` | In-memory cache TTL (seconds) |

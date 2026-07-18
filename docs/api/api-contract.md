@@ -369,6 +369,143 @@ Response: `TokenResponse` — includes `access_token`, `refresh_token`, `token_t
 
 Standard auth endpoints. See backend `auth.py` router for full schema details.
 
+### GET /api/learner/me/ai-config
+
+> **Added v1.1.0** — 每用户独立的 AI 模型凭据配置。所有 AI API key/secret/app_id
+> 不再来自 `.env`：每个登录用户在「系统设置 → AI 模型配置」中独立配置，存于
+> `user_ai_config` 表，默认为空，用户之间互不可见、互不串扰。
+
+Purpose: 获取当前用户的 AI 模型配置。**凭据一律脱敏返回**（如 `sk-26****1d4f`），完整密钥永不离开后端。需要登录（Bearer token）。
+
+Request: (none)
+
+Response:
+
+```json
+{
+  "config": {
+    "llm":         { "provider": "deepseek", "apiKey": "sk-26****1d4f", "configured": true },
+    "qwen":        { "apiKey": "", "configured": false },
+    "spark":       { "appId": "", "apiKey": "", "apiSecret": "", "configured": false },
+    "sparkVision": { "appId": "", "apiKey": "", "apiSecret": "", "configured": false },
+    "asr":         { "appId": "", "apiKey": "", "apiSecret": "", "configured": false },
+    "wan":         { "apiKey": "", "configured": false },
+    "ark":         { "apiKey": "", "configured": false },
+    "aippt":       { "appId": "", "apiSecret": "", "configured": false },
+    "tavily":      { "apiKey": "", "configured": false },
+    "glm":         { "apiKey": "", "configured": false },
+    "openai":      { "apiKey": "", "configured": false }
+  }
+}
+```
+
+| Field | Type | Required | Default | Constraint | Description |
+|---|---|---|---|---|---|
+| `config.llm.provider` | string | yes | `deepseek` | `deepseek` \| `qwen` \| `glm` \| `openai` | 主对话模型提供商；Base URL 与模型名为代码内官方默认值，不可配置 |
+| `config.*.apiKey` / `apiSecret` / `appId` | string | - | `""` | 脱敏格式 `xxxxx****xxxx` | 凭据脱敏值；空串表示未配置 |
+| `config.*.configured` | boolean | yes | `false` | - | 该服务全部必填凭据字段均已配置时为 `true` |
+
+### PUT /api/learner/me/ai-config
+
+> **Added v1.1.0**
+
+Purpose: 保存当前用户的 AI 模型配置。**按服务部分合并**：只需提交改动的服务/字段。需要登录。
+
+Request（示例：切换提供商并更新 key、清除 Tavily key）:
+
+```json
+{
+  "config": {
+    "llm": { "provider": "deepseek", "apiKey": "sk-xxxxxxxxxxxxxxxx" },
+    "tavily": { "apiKey": "" }
+  }
+}
+```
+
+合并语义：
+
+| 提交值 | 行为 |
+|---|---|
+| 含 `****` 的值 / `null` | 忽略（前端回显的脱敏占位值不会覆盖真实密钥） |
+| 空字符串 `""` | 清除该字段 |
+| 其他字符串 | 去除首尾空白后存储 |
+
+Response: 与 GET 相同（脱敏后的完整配置）。
+
+### GET /api/learner/me/ai-config/capabilities
+
+> **Added v1.1.0**
+
+Purpose: 按当前用户凭据计算的能力开关，供前端提示各功能是否可用。需要登录。
+
+Response:
+
+```json
+{
+  "llmProvider": "deepseek",
+  "llmConfigured": true,
+  "searchProvider": "mock",
+  "searchConfigured": true,
+  "pptConfigured": false,
+  "videoConfigured": false,
+  "imageConfigured": false
+}
+```
+
+### GET /api/learner/me/ai-config/asr-ws-url
+
+> **Added v1.1.0** — 语音输入（讯飞语音听写 IAT）。浏览器直连讯飞 WebSocket，
+> 但 HMAC 签名在后端完成：`asr.apiKey` / `asr.apiSecret` 永不下发前端。
+
+Purpose: 获取讯飞语音听写的预签名 WebSocket URL。需要登录。签名 URL 含时间戳，
+有效期约 5 分钟——前端每次开始录音前重新获取。
+
+Request: (none)
+
+Response:
+
+```json
+{
+  "url": "wss://iat-api.xfyun.cn/v2/iat?authorization=...&date=...&host=iat-api.xfyun.cn",
+  "appId": "f6b33305"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `url` | string | yes | 预签名 wss 地址，前端直接 `new WebSocket(url)` |
+| `appId` | string | yes | 首帧 `common.app_id` 所需的非机密应用标识 |
+
+未配置 `asr` 凭据时返回 `409 AI_CONFIG_MISSING`（统一错误信封）。
+
+错误码（AI 配置相关，适用于所有触发 AI 调用的端点）:
+
+| Error code | HTTP status | Meaning |
+|---|---|---|
+| `AI_CONFIG_MISSING` | 409 | 当前用户未配置对应 AI 模型密钥（响应为统一错误信封；前端应引导用户前往「系统设置 → AI 模型配置」） |
+
+> **流式端点行为 (v1.1.0)**: `/api/chat/stream` 等 SSE 端点在密钥缺失时不返回 409，
+> 而是在流内发出错误事件后正常收尾：
+> ```text
+> data: {"type":"error","code":"AI_CONFIG_MISSING","message":"AI 模型「deepseek」未配置，请前往「系统设置 → AI 模型配置」完成设置。","action":"navigate_to_settings"}
+> ```
+
+数据库表定义（`user_ai_config`）:
+
+```sql
+CREATE TABLE user_ai_config (
+  learner_id VARCHAR(64) PRIMARY KEY REFERENCES learners(id) ON DELETE CASCADE,
+  config JSON NOT NULL DEFAULT '{}',   -- 明文存储；读取接口负责脱敏
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL
+);
+```
+
+> **配置边界 (v1.1.0)**: `.env` 仅保留技术项（超时/重试/温度/token 上限/端点 URL/
+> 角色模型微调/搜索缓存与熔断参数）。`LLM_PROVIDER=user` 为默认部署值（真实提供商
+> 由每个用户在系统设置中选择）；`LLM_PROVIDER=mock` 是自动化测试逃生舱，仅当用户
+> 未配置密钥时生效——用户配置的密钥始终优先。
+
 ---
 
 ## 4. Product APIs For React Frontend

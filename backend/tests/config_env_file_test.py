@@ -41,7 +41,11 @@ def main() -> None:
             "from pathlib import Path\n"
             "import app.config as config\n"
             "assert config.settings.database_url == " + repr(database_url) + "\n"
-            "assert config.settings.deepseek_api_key == 'synthetic-test-key'\n"
+            # v1.1.0: credentials are per-user (user_ai_config table) — Settings
+            # must NOT expose any credential field even when the env var is set.
+            "assert not hasattr(config.settings, 'deepseek_api_key')\n"
+            "assert not hasattr(config.settings, 'tavily_api_key')\n"
+            "assert not hasattr(config.settings, 'qwen_api_key')\n"
             "config._skip_env_file = False\n"
             "assert config.load_backend_env(Path(" + repr(str(Path(temp_dir) / 'missing.env')) + ")) is False\n"
             "print('config env test: ok')\n"
@@ -55,7 +59,7 @@ def main() -> None:
             check=False,
         )
         missing_key = subprocess.run(
-            [sys.executable, "-c", "from app.config import settings; assert settings.deepseek_api_key == ''; print('missing provider: ok')"],
+            [sys.executable, "-c", "from app.config import settings; assert not hasattr(settings, 'deepseek_api_key'); print('missing provider: ok')"],
             cwd=temp_dir,
             env=_env(database_url),
             capture_output=True,

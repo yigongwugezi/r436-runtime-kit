@@ -1033,6 +1033,44 @@ class UserPreferencesModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
+# ── User AI Config (per-learner AI model credentials) ───────────────────────
+
+
+class UserAIConfigModel(Base):
+    """Per-learner AI model API credentials.
+
+    Each learner configures their own provider keys in
+    系统设置 → AI 模型配置; credentials are never read from ``.env``.
+    Stored as plaintext JSON (single-host SQLite deployment); every read
+    API must mask values via ``user_ai_config.to_safe_response`` before
+    returning them to the frontend.
+
+    JSON shape (all services optional, default empty)::
+
+        {
+          "llm":         {"provider": "deepseek", "apiKey": ""},
+          "qwen":        {"apiKey": ""},
+          "spark":       {"appId": "", "apiKey": "", "apiSecret": ""},
+          "sparkVision": {"appId": "", "apiKey": "", "apiSecret": ""},
+          "wan":         {"apiKey": ""},
+          "ark":         {"apiKey": ""},
+          "aippt":       {"appId": "", "apiSecret": ""},
+          "tavily":      {"apiKey": ""},
+          "glm":         {"apiKey": ""},
+          "openai":      {"apiKey": ""}
+        }
+    """
+
+    __tablename__ = "user_ai_config"
+
+    learner_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("learners.id", ondelete="CASCADE"), primary_key=True
+    )
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+
 # ── Assessment State (closed-loop tracking, survives restarts) ──────────
 
 class AssessmentStateModel(Base):

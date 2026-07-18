@@ -4,7 +4,7 @@ Do not commit real API keys.
 
 ## Provider Setup
 
-Recommended Qwen-VL settings:
+Recommended Qwen-VL settings（`.env` 技术项——端点与模型名）:
 
 ```env
 QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
@@ -12,7 +12,12 @@ QWEN_VL_MODEL=qwen3-vl-plus
 QWEN_IMAGE_ENDPOINT=https://dashscope.aliyuncs.com/compatible-mode/v1/images/generations
 ```
 
-Keys are read from `DASHSCOPE_API_KEY` or `QWEN_API_KEY`. Missing keys return `provider_not_configured`; the agent must not fake OCR, answers, images, videos, or knowledge-base writes.
+> **v1.1.0**: 凭据为每用户配置——通义/DashScope key 读取自
+> `user_ai_config.qwen.apiKey`（系统设置 → AI 模型配置），不再读取
+> `DASHSCOPE_API_KEY` / `QWEN_API_KEY` 环境变量。讯飞星火三元组、Wan、ARK
+> 同理（`spark` / `sparkVision` / `wan` / `ark` 服务条目）。
+> Missing keys return `provider_not_configured`; the agent must not fake OCR,
+> answers, images, videos, or knowledge-base writes.
 
 ## Model Split
 

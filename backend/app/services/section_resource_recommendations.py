@@ -16,6 +16,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from app.config import settings
 from app.services.search_client import SearchError, get_search_client, search_arxiv, search_crossref
+from app.services.user_ai_config import copy_context_wrap as _ai_ctx_wrap
 
 logger = logging.getLogger(__name__)
 
@@ -798,7 +799,7 @@ class SectionResourceRecommendationService:
             diagnostics["provider_calls"] += 1
             diagnostics["provider_calls_by_type"][resource_type] += 1
             queries.append(query)
-            pending[executor.submit(self._client.search, query, settings.search_max_results_single_type)] = (query, match_level)
+            pending[executor.submit(_ai_ctx_wrap(self._client.search), query, settings.search_max_results_single_type)] = (query, match_level)
             next_index = max(next_index, index + 1)
 
         def add_response(query: str, match_level: str, response: Any) -> None:

@@ -1,6 +1,12 @@
 """Regression checks for provider-unavailable ordinary chat."""
 
 import asyncio
+import os
+
+# v1.1.0: 密钥缺失现在会在管线入口抛 AIConfigMissingError（引导去系统设置），
+# 不再进入规则回退。本测试验证的是"提供商配置了但暂不可用"时的对话回退机制，
+# 因此固定走 mock 逃生舱（须在 app.config 首次导入前设置）。
+os.environ["LLM_PROVIDER"] = "mock"
 
 from app.services import deeptutor_client, langgraph_orchestrator as orchestrator
 from app.services.conversation_state import ConversationState, ConversationStore

@@ -1127,8 +1127,22 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
     This is the single entry point called by agent_service and chat_router.
     Internally it uses AgentFactory for lazy agent creation and IntentRouter
     for intent → agent mapping.
+
+    ``_ai_config``: optional per-user AI credential snapshot — pass it when
+    the pipeline may outlive the request context (SSE generators, workflow
+    threads); otherwise credentials resolve via the request ContextVar.
     """
-    factory = AgentFactory()
+    factory = AgentFactory(config=kwargs.get("_ai_config"))
+
+    # ── 未配置密钥闸口：不 mock、不规则回退产出内容，直接引导去系统设置 ──
+    # 各 agent 内部的规则回退是为真实调用的偶发失败兜底的；密钥缺失属于
+    # 用户可自助解决的配置问题，必须在管线入口以 AIConfigMissingError 冒出
+    # （HTTP 409 / SSE 错误事件），否则会静默生成与 AI 无关的占位内容。
+    from app.services.llm_client import UnconfiguredLLMClient
+    from app.utils.errors import AIConfigMissingError
+    if isinstance(factory.llm, UnconfiguredLLMClient):
+        raise AIConfigMissingError(service="llm")
+
     state: dict[str, Any] = dict(**kwargs, _retry_count=0, _factory=factory)
 
 

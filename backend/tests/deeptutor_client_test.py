@@ -112,21 +112,23 @@ def main() -> None:
         assert asyncio.run(original_fallback("hello", [], "", "")) == ""
         llm_client.get_llm_client = original_get_client
 
-        old_key = os.environ.get("LLM_API_KEY")
-        old_cache = dict(llm_client._llm_client_cache)
+        # v1.1.0: credentials are per-user — an explicit config snapshot with a
+        # key yields a real client; an empty config yields the lazy-raising
+        # UnconfiguredLLMClient (never a silent mock fallback).
+        configured = llm_client.get_llm_client(
+            "deepseek", config={"llm": {"provider": "deepseek", "apiKey": "unit-test-key"}}
+        )
+        assert isinstance(configured, UnifiedChatClient)
+        assert configured.is_available()
+        from app.config import settings as _settings
+        _old_provider = _settings.llm_provider
+        _settings.llm_provider = "user"  # disable the mock escape hatch for this assertion
         try:
-            os.environ["LLM_API_KEY"] = "unit-test-key"
-            llm_client._llm_client_cache.clear()
-            configured = llm_client.get_llm_client("deepseek")
-            assert isinstance(configured, UnifiedChatClient)
-            assert configured.is_available()
+            unconfigured = llm_client.get_llm_client("user", config={})
         finally:
-            llm_client._llm_client_cache.clear()
-            llm_client._llm_client_cache.update(old_cache)
-            if old_key is None:
-                os.environ.pop("LLM_API_KEY", None)
-            else:
-                os.environ["LLM_API_KEY"] = old_key
+            _settings.llm_provider = _old_provider
+        assert isinstance(unconfigured, llm_client.UnconfiguredLLMClient)
+        assert not unconfigured.is_available()
 
         tls_calls: list[int] = []
         tls_client = llm_client.DeepSeekLLMClient("unit-test-key", "https://example.invalid", "test", 0)

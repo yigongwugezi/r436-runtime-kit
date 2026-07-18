@@ -120,11 +120,41 @@ class HttpClientError(RuntimeError):
 
 
 def _env(*names: str, default: str = "") -> str:
+    """Read TECHNICAL env vars (timeouts, endpoints, model tuning) only.
+
+    AI credentials never come from the environment — use ``_user_key`` /
+    ``user_ai_config.get_credential`` for keys and secrets.
+    """
     for name in names:
         value = os.getenv(name)
         if value:
             return value
     return default
+
+
+def _user_key(service: str, field: str = "apiKey", *fallback_services: str) -> str:
+    """Resolve a credential from the current user's AI config.
+
+    ``fallback_services`` are tried in order when the primary service has no
+    value (e.g. Wan video falls back to the shared DashScope/Qwen key).
+    """
+    from app.services.user_ai_config import get_credential
+
+    for svc in (service, *fallback_services):
+        value = get_credential(svc, field)
+        if value:
+            return value
+    return ""
+
+
+def _user_deepseek_key() -> str:
+    """DeepSeek key exists only as the main-LLM key when provider==deepseek."""
+    from app.services.user_ai_config import get_llm_credentials
+
+    creds = get_llm_credentials()
+    if creds["provider"] == "deepseek":
+        return creds["api_key"]
+    return ""
 
 
 def _json_post(url: str, payload: dict[str, Any], api_key: str, timeout: int = 60, extra_headers: dict[str, str] | None = None) -> dict[str, Any]:
@@ -796,13 +826,13 @@ class QwenVisionProvider:
 
     @staticmethod
     def is_configured() -> bool:
-        return bool(_env("DASHSCOPE_API_KEY", "QWEN_API_KEY"))
+        return bool(_user_key("qwen"))
 
     def __init__(self, post_json: Any | None = None) -> None:
         self.post_json = post_json or _json_post
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
-        api_key = _env("DASHSCOPE_API_KEY", "QWEN_API_KEY")
+        api_key = _user_key("qwen")
         model = _env("QWEN_VL_MODEL", default="qwen-vl-plus")
         base_url = _env("QWEN_BASE_URL", default="https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
         task_type = _text(context.get("task_type")) or "image_understanding"
@@ -813,7 +843,7 @@ class QwenVisionProvider:
         except ValueError as exc:
             return _response(status="failed", provider=self.provider, warnings=[str(exc)], trace={"model": model, "base_url": base_url, "endpoint": endpoint, "task_type": task_type, "image_input_kind": image_kind, "payload_image_url_preview": image[:80], "exception_type": type(exc).__name__, "exception_message": str(exc)})
         if not api_key:
-            return _response(status="provider_not_configured", provider=self.provider, warnings=["Qwen vision provider is not configured."], trace={"required_env": ["DASHSCOPE_API_KEY or QWEN_API_KEY"]})
+            return _response(status="provider_not_configured", provider=self.provider, warnings=["Qwen 识图未配置，请在「系统设置 → AI 模型配置」填写通义/DashScope API Key。"], trace={"required_config": ["qwen.apiKey"]})
         if not image:
             return _response(status="needs_input", provider=self.provider, warnings=[image_warning or "missing image input"], trace={"input_keys": sorted(context.keys()), "model": model, "base_url": base_url, "endpoint": endpoint, "task_type": task_type, "image_input_kind": image_kind})
 
@@ -871,22 +901,20 @@ class SparkVisionProvider:
 
     @staticmethod
     def is_configured() -> bool:
-        from app.config import settings
-        app_id = settings.spark_vision_app_id or settings.spark_app_id
-        api_key = settings.spark_vision_api_key or settings.spark_api_key
+        app_id = _user_key("sparkVision", "appId", "spark")
+        api_key = _user_key("sparkVision", "apiKey", "spark")
         return bool(app_id) and bool(api_key)
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
-        from app.config import settings
         import asyncio, json as _json, base64 as _b64
 
-        app_id = settings.spark_vision_app_id or settings.spark_app_id
-        api_key = settings.spark_vision_api_key or settings.spark_api_key
-        api_secret = settings.spark_vision_api_secret or settings.spark_api_secret
+        app_id = _user_key("sparkVision", "appId", "spark")
+        api_key = _user_key("sparkVision", "apiKey", "spark")
+        api_secret = _user_key("sparkVision", "apiSecret", "spark")
         if not app_id or not api_key:
             return _response(status="provider_not_configured", provider=self.provider,
-                warnings=["Spark vision provider not configured."],
-                trace={"required_env": ["SPARK_VISION_APP_ID", "SPARK_VISION_API_KEY", "SPARK_VISION_API_SECRET"]})
+                warnings=["讯飞 Spark 识图未配置，请在「系统设置 → AI 模型配置」填写 Spark 识图凭据。"],
+                trace={"required_config": ["sparkVision.appId", "sparkVision.apiKey", "sparkVision.apiSecret"]})
 
         image, image_warning, image_kind = image_input_from_context(context)
         task_type = _text(context.get("task_type")) or "image_understanding"
@@ -958,20 +986,20 @@ class QwenImageProvider:
 
     @staticmethod
     def is_configured() -> bool:
-        api_key = _env("DASHSCOPE_API_KEY", "QWEN_API_KEY")
+        api_key = _user_key("qwen")
         return bool(api_key)
 
     def __init__(self, post_json: Any | None = None) -> None:
         self.post_json = post_json or _json_post
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
-        api_key = _env("DASHSCOPE_API_KEY", "QWEN_API_KEY")
+        api_key = _user_key("qwen")
         model = _env("QWEN_IMAGE_MODEL", default="qwen-image-2.0")
         endpoint = _env("QWEN_IMAGE_ENDPOINT") or "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
         if not api_key:
             return _response(status="provider_not_configured", provider=self.provider,
-                warnings=["Qwen image provider is not configured."],
-                trace={"required_env": ["DASHSCOPE_API_KEY or QWEN_API_KEY"]})
+                warnings=["Qwen 图像生成未配置，请在「系统设置 → AI 模型配置」填写通义/DashScope API Key。"],
+                trace={"required_config": ["qwen.apiKey"]})
         prompt = _text(context.get("prompt") or context.get("user_message") or context.get("topic"))
         if not prompt:
             return _response(status="needs_input", provider=self.provider, warnings=["missing image prompt"])
@@ -1017,11 +1045,11 @@ _SEEDREAM_FEWSHOT: list[dict[str, str]] = [
 
 def _optimize_prompt_with_deepseek(raw_prompt: str) -> str:
     """Use DeepSeek to expand a short prompt into a detailed image description."""
-    ds_key = _env("DEEPSEEK_API_KEY")
+    ds_key = _user_deepseek_key()
     ds_url = _env("DEEPSEEK_BASE_URL", default="https://api.deepseek.com/v1")
     ds_model = _env("DEEPSEEK_MODEL", default="deepseek-chat")
     if not ds_key:
-        raise RuntimeError("DEEPSEEK_API_KEY not configured for prompt optimisation")
+        raise RuntimeError("主模型未配置为 DeepSeek，无法进行提示词优化")
     messages: list[dict[str, str]] = [{"role": "system", "content": _SEEDREAM_SYSTEM_PROMPT}]
     messages.extend(_SEEDREAM_FEWSHOT)
     messages.append({"role": "user", "content": f'Create an imaginative image descriptive caption for the user input : "{raw_prompt}"'})
@@ -1041,40 +1069,39 @@ class SeedreamImageProvider:
 
     @staticmethod
     def is_configured() -> bool:
-        ark_key = _env("ARK_API_KEY")
-        ds_key = _env("DEEPSEEK_API_KEY")
-        return bool(ark_key) and bool(ds_key)
+        # 仅要求 ARK key；DeepSeek 提示词优化是可选增强（无则用原始提示词）
+        return bool(_user_key("ark"))
 
     def __init__(self, post_json: Any | None = None) -> None:
         self.post_json = post_json or _json_post
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
-        ark_key = _env("ARK_API_KEY")
-        ds_key = _env("DEEPSEEK_API_KEY")
+        ark_key = _user_key("ark")
+        ds_key = _user_deepseek_key()
         endpoint = _env("SEEDREAM_ENDPOINT") or "https://ark.cn-beijing.volces.com/api/v3/images/generations"
         model = _env("SEEDREAM_MODEL", default="doubao-seedream-5-0-lite-260128")
         size = _env("SEEDREAM_SIZE", default="1920x1920")
 
         if not ark_key:
             return _response(status="provider_not_configured", provider=self.provider,
-                warnings=["ARK_API_KEY not configured for Seedream image generation."],
-                trace={"required_env": ["ARK_API_KEY"]})
-        if not ds_key:
-            return _response(status="provider_not_configured", provider=self.provider,
-                warnings=["DEEPSEEK_API_KEY not configured for prompt optimisation."],
-                trace={"required_env": ["DEEPSEEK_API_KEY"]})
+                warnings=["Seedream 图像生成未配置，请在「系统设置 → AI 模型配置」填写 ARK API Key。"],
+                trace={"required_config": ["ark.apiKey"]})
 
         raw_prompt = _text(context.get("prompt") or context.get("user_message") or context.get("topic"))
         if not raw_prompt:
             return _response(status="needs_input", provider=self.provider,
                 warnings=["missing image prompt"])
 
-        try:
-            # Step 1 — DeepSeek prompt optimisation
-            enhanced_prompt = _optimize_prompt_with_deepseek(raw_prompt)
-            logger.info("Seedream prompt enhanced: %d → %d chars", len(raw_prompt), len(enhanced_prompt))
-        except Exception as exc:
-            logger.warning("Prompt optimisation failed, using raw prompt: %s", exc)
+        if ds_key:
+            try:
+                # Step 1 — DeepSeek prompt optimisation (optional enhancement)
+                enhanced_prompt = _optimize_prompt_with_deepseek(raw_prompt)
+                logger.info("Seedream prompt enhanced: %d → %d chars", len(raw_prompt), len(enhanced_prompt))
+            except Exception as exc:
+                logger.warning("Prompt optimisation failed, using raw prompt: %s", exc)
+                enhanced_prompt = raw_prompt
+        else:
+            # 主模型不是 DeepSeek → 优雅跳过优化，直接用原始提示词
             enhanced_prompt = raw_prompt
 
         try:
@@ -1140,7 +1167,7 @@ class WanVideoProvider:
 
     @staticmethod
     def is_configured() -> bool:
-        api_key = _env("DASHSCOPE_API_KEY", "WAN_API_KEY", "QWEN_API_KEY")
+        api_key = _user_key("wan", "apiKey", "qwen")
         model = _env("WAN_VIDEO_MODEL", default="wanx2.1-t2v-turbo")
         return bool(api_key) and bool(model)
 
@@ -1154,11 +1181,11 @@ class WanVideoProvider:
         caller can poll for completion via WanVideoProvider.poll_task().
         """
         script = _micro_lesson_script(context)
-        api_key = _env("DASHSCOPE_API_KEY", "WAN_API_KEY", "QWEN_API_KEY")
+        api_key = _user_key("wan", "apiKey", "qwen")
         model = _env("WAN_VIDEO_MODEL", default="wanx2.1-t2v-turbo")
         endpoint = _env("WAN_VIDEO_ENDPOINT") or _env("WAN_VIDEO_BASE_URL", default="https://dashscope.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis")
         if not api_key or not model:
-            return _response(status="script_ready_provider_not_configured", provider=self.provider, result=script, warnings=["Wan video provider is not configured."], trace={"required_env": ["QWEN_API_KEY/DASHSCOPE_API_KEY/WAN_API_KEY", "WAN_VIDEO_MODEL"]})
+            return _response(status="script_ready_provider_not_configured", provider=self.provider, result=script, warnings=["Wan 视频生成未配置，请在「系统设置 → AI 模型配置」填写 Wan 或通义/DashScope API Key。"], trace={"required_config": ["wan.apiKey 或 qwen.apiKey"]})
         try:
             body = self.post_json(endpoint, {
                 "model": model,
@@ -1756,7 +1783,7 @@ Only output corrected code, no explanation."""
             {"status": "pending", "task_status": "RUNNING"}
             {"status": "failed", "message": "..."}
         """
-        api_key = _env("DASHSCOPE_API_KEY", "WAN_API_KEY", "QWEN_API_KEY")
+        api_key = _user_key("wan", "apiKey", "qwen")
         endpoint = f"https://dashscope.aliyuncs.com/api/v1/tasks/{task_id}"
         try:
             body = _json_post(endpoint, {}, api_key, timeout=15)

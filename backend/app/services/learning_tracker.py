@@ -187,8 +187,9 @@ class LearningTracker:
                 resource_id = str(event.get("resourceId", ""))
                 # Run in background thread so event logging is not delayed
                 import threading
+                from app.services.user_ai_config import copy_context_wrap
                 threading.Thread(
-                    target=lambda: run_resource_completion_check(sid, resource_id),
+                    target=copy_context_wrap(lambda: run_resource_completion_check(sid, resource_id)),
                     daemon=True,
                 ).start()
 

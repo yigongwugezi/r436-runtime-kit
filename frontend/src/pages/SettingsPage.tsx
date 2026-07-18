@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   User, BookOpen, MessageSquare, Activity, Database, Palette, Info,
   Check, X, Edit3, Trash2, Download, Upload,
-  Brain, ChevronDown, Moon, Sun, GraduationCap,
+  Brain, ChevronDown, Moon, Sun, GraduationCap, KeyRound,
 } from 'lucide-react';
 
 const ROLE_LABEL: Record<string, string> = {
@@ -16,6 +17,8 @@ import { useSubjectStore } from '../store/subjectStore';
 import { readStorageJson, writeStorageJson, runtimeStorageKeys } from '../utils/storageKeys';
 import { safeClearCache, exportAllData, importAllData, getCacheSize, formatBytes } from '../utils/cache';
 import { getPreferences, savePreferences } from '../api/auth';
+import { getAIConfig, saveAIConfig, type AIConfigMap } from '../api/aiConfig';
+import { useToast } from '../components/common/Toast';
 
 /* ===================================================================
  * 导航分区定义
@@ -24,6 +27,7 @@ const NAV_SECTIONS = [
   { id: 'account',     label: '账户设置', icon: User },
   { id: 'preferences', label: '学习偏好', icon: BookOpen },
   { id: 'chat',        label: '对话设置', icon: MessageSquare },
+  { id: 'aiconfig',    label: 'AI 模型配置', icon: KeyRound },
   { id: 'diagnosis',   label: '诊断设置', icon: Activity },
   { id: 'data',        label: '数据管理', icon: Database },
   { id: 'appearance',  label: '外观设置', icon: Palette },
@@ -203,8 +207,12 @@ export default function SettingsPage() {
   const learner = getCurrentLearner();
   const { subjects } = useSubjectStore();
 
-  // ── 选中分区 ──
-  const [section, setSection] = useState('account');
+  // ── 选中分区（支持深链 /settings?section=aiconfig） ──
+  const [searchParams] = useSearchParams();
+  const [section, setSection] = useState(() => {
+    const requested = searchParams.get('section') || '';
+    return NAV_SECTIONS.some(s => s.id === requested) ? requested : 'account';
+  });
   const learnerRole = learner?.role;
   const isTeacherOrAdmin = learnerRole === 'teacher' || learnerRole === 'admin';
   // 过滤教师/管理员不相关的分区
@@ -519,6 +527,10 @@ export default function SettingsPage() {
           </div>
         );
 
+      /* ---- AI 模型配置 ---- */
+      case 'aiconfig':
+        return <AIConfigSection />;
+
       /* ---- 诊断设置 ---- */
       case 'diagnosis':
         return (
@@ -747,6 +759,208 @@ function SectionHeader({ icon: Icon, title, desc }: {
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">{desc}</p>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ===================================================================
+ * AI 模型配置分区
+ * ===================================================================
+ * 每个用户独立配置自己的 AI 服务凭据（存后端 user_ai_config 表）。
+ * - 后端只返回脱敏值（sk-26****1d4f），完整密钥永不回传；
+ * - 保存为显式操作（不走偏好的 1s 防抖通道），只提交改动过的字段；
+ * - 清除凭据 = 提交空字符串。
+ */
+
+/** 凭据字段声明：service → 显示分组 */
+const AI_PROVIDER_OPTIONS = [
+  { value: 'deepseek', label: 'DeepSeek' },
+  { value: 'qwen', label: '通义千问 Qwen' },
+  { value: 'glm', label: '智谱 GLM' },
+  { value: 'openai', label: 'OpenAI' },
+];
+
+/** 凭据输入行：未改动时显示脱敏占位值；输入即暂存；可显式清除 */
+function CredentialField({ label, description, masked, configured, staged, onStage }: {
+  label: string;
+  description?: string;
+  masked: string;
+  configured: boolean;
+  /** undefined = 未改动；'' = 已暂存清除；其他 = 已暂存新值 */
+  staged: string | undefined;
+  onStage: (value: string | undefined) => void;
+}) {
+  const cleared = staged === '';
+  return (
+    <div className="flex items-center justify-between py-3.5 px-4 bg-white dark:bg-surface-700 border border-gray-100 dark:border-gray-600 rounded-xl hover:border-gray-200 dark:hover:border-gray-500 transition-colors">
+      <div className="flex-1 min-w-0 mr-4">
+        <p className="text-sm font-medium text-gray-800 dark:text-gray-100 flex items-center gap-2">
+          {label}
+          {configured && !cleared ? (
+            <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-green-50 dark:bg-green-500/10 text-green-600 dark:text-green-400 border border-green-100 dark:border-green-500/30 font-medium">已配置</span>
+          ) : (
+            <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-gray-50 dark:bg-surface-600 text-gray-400 dark:text-gray-500 border border-gray-100 dark:border-gray-600 font-medium">未配置</span>
+          )}
+          {cleared && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-red-50 dark:bg-red-500/10 text-red-500 dark:text-red-400 border border-red-100 dark:border-red-500/30 font-medium">保存后清除</span>
+          )}
+        </p>
+        {description && <p className="text-xs text-gray-400 dark:text-gray-400 mt-0.5">{description}</p>}
+      </div>
+      <div className="flex-shrink-0 flex items-center gap-1.5">
+        <input
+          type="password"
+          autoComplete="off"
+          value={staged ?? ''}
+          placeholder={cleared ? '（将清除）' : (masked || '未配置，点击输入')}
+          onChange={e => onStage(e.target.value === '' ? undefined : e.target.value)}
+          className="w-52 px-3 py-2 bg-gray-50 dark:bg-surface-600 border border-gray-200 dark:border-gray-500 rounded-lg text-sm text-gray-700 dark:text-gray-200 placeholder:text-gray-300 dark:placeholder:text-gray-500 focus:outline-none focus:border-brand-400 dark:focus:border-brand-500 transition-colors"
+        />
+        {configured && !cleared && staged === undefined && (
+          <button type="button" onClick={() => onStage('')}
+            title="清除该凭据"
+            className="p-1.5 rounded-lg text-gray-300 dark:text-gray-500 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors">
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        )}
+        {(staged !== undefined) && (
+          <button type="button" onClick={() => onStage(undefined)}
+            title="撤销改动"
+            className="p-1.5 rounded-lg text-gray-300 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-50 dark:hover:bg-surface-600 transition-colors">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AIConfigSection() {
+  const { toast } = useToast();
+  const [config, setConfig] = useState<AIConfigMap>({});
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  // 暂存的改动：service → field → value（'' = 清除；不存在 = 未改动）
+  const [edits, setEdits] = useState<Record<string, Record<string, string>>>({});
+
+  useEffect(() => {
+    getAIConfig()
+      .then(cfg => { setConfig(cfg); setLoaded(true); })
+      .catch(() => { setLoaded(true); });
+  }, []);
+
+  const svc = useCallback((name: string) => config[name] ?? { configured: false }, [config]);
+
+  const stage = useCallback((service: string, field: string, value: string | undefined) => {
+    setEdits(prev => {
+      const next = { ...prev, [service]: { ...(prev[service] ?? {}) } };
+      if (value === undefined) {
+        delete next[service][field];
+        if (Object.keys(next[service]).length === 0) delete next[service];
+      } else {
+        next[service][field] = value;
+      }
+      return next;
+    });
+  }, []);
+
+  const dirty = Object.keys(edits).length > 0;
+  const currentProvider = edits.llm?.provider ?? svc('llm').provider ?? 'deepseek';
+
+  const handleSave = async () => {
+    if (!dirty || saving) return;
+    setSaving(true);
+    try {
+      const saved = await saveAIConfig(edits);
+      setConfig(saved);
+      setEdits({});
+      toast('success', 'AI 模型配置已保存');
+    } catch {
+      toast('error', '保存失败，请稍后重试');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  /** 生成 CredentialField 的通用 props */
+  const fieldProps = (service: string, field: 'apiKey' | 'appId' | 'apiSecret') => {
+    const masked = String(svc(service)[field] ?? '');
+    return {
+      masked,
+      configured: Boolean(masked),
+      staged: edits[service]?.[field],
+      onStage: (v: string | undefined) => stage(service, field, v),
+    };
+  };
+
+  return (
+    <div className="space-y-4">
+      <SectionHeader icon={KeyRound} title="AI 模型配置" desc="配置你自己的 AI 服务密钥（仅本账号可用，密钥保存后脱敏显示）" />
+
+      {!loaded ? (
+        <p className="text-sm text-gray-400 dark:text-gray-500 px-1 py-6 text-center">正在加载配置…</p>
+      ) : (
+        <>
+          <p className="text-xs text-gray-400 dark:text-gray-500 font-semibold uppercase tracking-wider px-1">主对话模型</p>
+          <div className="flex items-center justify-between py-3.5 px-4 bg-white dark:bg-surface-700 border border-gray-100 dark:border-gray-600 rounded-xl hover:border-gray-200 dark:hover:border-gray-500 transition-colors">
+            <div className="flex-1 min-w-0 mr-4">
+              <p className="text-sm font-medium text-gray-800 dark:text-gray-100">模型提供商</p>
+              <p className="text-xs text-gray-400 dark:text-gray-400 mt-0.5">对话、规划、资源生成等所有文本能力使用该模型</p>
+            </div>
+            <div className="flex-shrink-0">
+              <Select value={currentProvider} options={AI_PROVIDER_OPTIONS}
+                onChange={v => stage('llm', 'provider', v === (svc('llm').provider ?? 'deepseek') ? undefined : v)} />
+            </div>
+          </div>
+          <CredentialField label="API Key" description="所选提供商的 API 密钥（必填，未配置时 AI 功能不可用）" {...fieldProps('llm', 'apiKey')} />
+
+          <p className="text-xs text-gray-400 dark:text-gray-500 font-semibold uppercase tracking-wider px-1 pt-2">多模态 · 通义 DashScope</p>
+          <CredentialField label="通义 / DashScope API Key" description="识图、图像生成共用；未配置 Wan 时也用于视频生成" {...fieldProps('qwen', 'apiKey')} />
+
+          <p className="text-xs text-gray-400 dark:text-gray-500 font-semibold uppercase tracking-wider px-1 pt-2">多模态 · 讯飞星火</p>
+          <CredentialField label="星火图像 App ID" {...fieldProps('spark', 'appId')} />
+          <CredentialField label="星火图像 API Key" {...fieldProps('spark', 'apiKey')} />
+          <CredentialField label="星火图像 API Secret" {...fieldProps('spark', 'apiSecret')} />
+          <CredentialField label="星火识图 App ID" description="留空时回退使用星火图像凭据" {...fieldProps('sparkVision', 'appId')} />
+          <CredentialField label="星火识图 API Key" {...fieldProps('sparkVision', 'apiKey')} />
+          <CredentialField label="星火识图 API Secret" {...fieldProps('sparkVision', 'apiSecret')} />
+
+          <p className="text-xs text-gray-400 dark:text-gray-500 font-semibold uppercase tracking-wider px-1 pt-2">语音识别 · 讯飞语音听写</p>
+          <CredentialField label="语音听写 App ID" description="聊天输入框的语音转文字功能使用" {...fieldProps('asr', 'appId')} />
+          <CredentialField label="语音听写 API Key" {...fieldProps('asr', 'apiKey')} />
+          <CredentialField label="语音听写 API Secret" {...fieldProps('asr', 'apiSecret')} />
+
+          <p className="text-xs text-gray-400 dark:text-gray-500 font-semibold uppercase tracking-wider px-1 pt-2">视频与图像扩展</p>
+          <CredentialField label="Wan 视频 API Key" description="可选；留空时回退使用通义 / DashScope Key" {...fieldProps('wan', 'apiKey')} />
+          <CredentialField label="ARK API Key（Seedream 图像）" description="火山方舟密钥；主模型为 DeepSeek 时自动启用提示词优化" {...fieldProps('ark', 'apiKey')} />
+
+          <p className="text-xs text-gray-400 dark:text-gray-500 font-semibold uppercase tracking-wider px-1 pt-2">PPT 生成 · 讯飞智文</p>
+          <CredentialField label="AIPPT App ID" {...fieldProps('aippt', 'appId')} />
+          <CredentialField label="AIPPT API Secret" {...fieldProps('aippt', 'apiSecret')} />
+
+          <p className="text-xs text-gray-400 dark:text-gray-500 font-semibold uppercase tracking-wider px-1 pt-2">联网搜索</p>
+          <CredentialField label="Tavily API Key" description="可选；未配置时使用免费搜索通道" {...fieldProps('tavily', 'apiKey')} />
+
+          <p className="text-xs text-gray-400 dark:text-gray-500 font-semibold uppercase tracking-wider px-1 pt-2">备用提供商</p>
+          <CredentialField label="智谱 GLM API Key" description="当角色微调指定 GLM 且主模型不是 GLM 时使用" {...fieldProps('glm', 'apiKey')} />
+          <CredentialField label="OpenAI API Key" description="当角色微调指定 OpenAI 且主模型不是 OpenAI 时使用" {...fieldProps('openai', 'apiKey')} />
+
+          <div className="flex items-center justify-between pt-3 border-t border-gray-100 dark:border-gray-600">
+            <p className="text-xs text-gray-400 dark:text-gray-500">
+              密钥仅用于你本人的 AI 请求，其他账号不可见、不可用。
+            </p>
+            <button type="button" onClick={handleSave} disabled={!dirty || saving}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                dirty && !saving
+                  ? 'bg-brand-500 text-white hover:bg-brand-600 shadow-sm'
+                  : 'bg-gray-100 dark:bg-surface-600 text-gray-400 dark:text-gray-500 cursor-not-allowed'
+              }`}>
+              <Check className="w-4 h-4" />
+              {saving ? '保存中…' : dirty ? '保存配置' : '暂无改动'}
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

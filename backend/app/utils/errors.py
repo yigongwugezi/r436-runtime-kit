@@ -135,6 +135,41 @@ class NotFoundError(AppError):
         return d
 
 
+class AIConfigMissingError(AppError):
+    """The current user has not configured the required AI credential.
+
+    Raised by :mod:`app.services.user_ai_config` when a credential is
+    resolved but the user's per-account AI config does not contain it.
+    Guides the user to 系统设置 → AI 模型配置.
+
+    .. versionadded:: 1.1.0
+    """
+
+    def __init__(
+        self,
+        *,
+        service: str = "llm",
+        provider: str = "",
+        authenticated: bool = True,
+    ) -> None:
+        label = provider or service
+        if authenticated:
+            message = (
+                f"AI 模型「{label}」未配置，"
+                "请前往「系统设置 → AI 模型配置」完成设置。"
+            )
+        else:
+            message = "请登录后在「系统设置 → AI 模型配置」中配置你的 AI 模型密钥。"
+        super().__init__(
+            message=message,
+            code="AI_CONFIG_MISSING",
+            status_code=409,
+            is_user_error=True,
+        )
+        self.service = service
+        self.provider = provider
+
+
 # ── System / infrastructure errors (5xx) ─────────────────────────────────
 
 

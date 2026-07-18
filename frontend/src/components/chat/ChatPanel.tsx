@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useChatStore, detectOrphanedStreaming } from '../../store/chatStore';
 import { useStreamChat } from '../../hooks/useStreamChat';
 import { getSessionMessages, getSessions, recoverGeneration } from '../../api/chat';
@@ -144,8 +144,14 @@ function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onCla
                 <div className="mt-1.5 p-2 bg-red-50 border border-red-100 rounded-lg flex items-start gap-1.5">
                   <AlertCircle className="w-3 h-3 text-red-400 flex-shrink-0 mt-0.5" />
                   <div>
-                    <p className="text-[10px] text-red-600 font-medium">生成失败</p>
+                    <p className="text-[10px] text-red-600 font-medium">{msg.errorCode === 'AI_CONFIG_MISSING' ? '尚未配置 AI 模型' : '生成失败'}</p>
                     <p className="text-[10px] text-red-400 mt-0.5">{msg.error}</p>
+                    {msg.errorCode === 'AI_CONFIG_MISSING' && (
+                      <Link to="/settings?section=aiconfig"
+                        className="inline-block mt-1 text-[10px] font-medium text-brand-600 hover:text-brand-700 underline underline-offset-2">
+                        前往系统设置配置 →
+                      </Link>
+                    )}
                   </div>
                 </div>
               )}

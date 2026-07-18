@@ -21,6 +21,7 @@ async def _direct_llm_fallback(
     """Keep chat available when DeepTutor's runtime cannot reach its provider."""
     from app.config import settings
     from app.services.llm_client import MockLLMClient, get_llm_client
+    from app.utils.errors import AIConfigMissingError
 
     client = get_llm_client(settings.llm_provider)
     if isinstance(client, MockLLMClient):
@@ -40,6 +41,8 @@ async def _direct_llm_fallback(
     try:
         timeout = min(_DIRECT_CHAT_TIMEOUT_SECONDS, max(1, int(settings.llm_request_timeout)))
         return str(await asyncio.to_thread(client.chat, messages, timeout=timeout, retry_count=1) or "").strip()
+    except AIConfigMissingError:
+        raise  # 未配置 key → 引导用户，不能吞成空回复
     except Exception as exc:
         logger.warning(
             "Configured chat provider failed: provider=%s error=%s elapsed_ms=%d",
@@ -62,25 +65,26 @@ async def _chat_fallback(
 
 
 def _setup_config():
-    from app.config import settings
-    from app.services.llm_factory import get_chat_client
+    """Configure DeepTutor's scoped LLM config from the current user's credentials.
+
+    Uses ``set_scoped_llm_config`` only — the API key is NEVER written into
+    ``os.environ`` (process-global env would leak one user's key into every
+    other user's requests).
+    """
     import os as _os
-    client = get_chat_client()
-    if not client.is_available():
-        api_key = _os.environ.get("LLM_API_KEY") or settings.deepseek_api_key
-        if not api_key:
-            return False
-    api_key = _os.environ.get("LLM_API_KEY") or settings.deepseek_api_key
-    base_url = _os.environ.get("LLM_BASE_URL") or settings.deepseek_base_url
-    model = _os.environ.get("LLM_MODEL") or settings.llm_model
+
+    from app.services.user_ai_config import get_llm_credentials
+
+    creds = get_llm_credentials()
+    if creds["provider"] == "mock" or not creds["api_key"]:
+        return False
     try:
         from deeptutor.services.llm.config import LLMConfig, set_scoped_llm_config
-        cfg = LLMConfig(model=model, api_key=api_key, base_url=base_url, effective_url=base_url,
+        cfg = LLMConfig(model=creds["model"], api_key=creds["api_key"], base_url=creds["base_url"],
+                        effective_url=creds["base_url"],
                         binding="openai", provider_name="openai_compatible", provider_mode="cloud")
         set_scoped_llm_config(cfg)
-        _os.environ["OPENAI_API_KEY"] = api_key
-        _os.environ["OPENAI_BASE_URL"] = base_url
-        _os.environ.setdefault("OPENAI_TIMEOUT", "120")
+        _os.environ.setdefault("OPENAI_TIMEOUT", "120")  # technical setting, no secret
         return True
     except Exception as e:
         logger.debug("DT config: %s", e)
@@ -157,6 +161,7 @@ def deeptutor_call(
     fallback_to_configured_llm: bool = False,
 ) -> str:
     import asyncio, concurrent.futures
+    from app.services.user_ai_config import copy_context_wrap
     async def _call(): return await deeptutor_call_async(
         capability, message, history, profile_context, persona_context, config_overrides,
         fallback_to_configured_llm,
@@ -164,7 +169,8 @@ def deeptutor_call(
     try:
         loop = asyncio.get_running_loop()
         with concurrent.futures.ThreadPoolExecutor() as pool:
-            return pool.submit(asyncio.run, _call()).result(timeout=120)
+            # copy_context_wrap: 工作线程不继承 ContextVar，需带入当前用户凭据上下文
+            return pool.submit(copy_context_wrap(asyncio.run), _call()).result(timeout=120)
     except RuntimeError:
         return asyncio.run(_call())
 

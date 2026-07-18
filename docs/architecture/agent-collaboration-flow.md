@@ -89,14 +89,21 @@ class BaseAgent(ABC):
 self.llm_client.chat(messages, timeout=60)
 ```
 
+> **v1.1.0 凭据规则**: 凭据来自**每用户配置**（`user_ai_config` 表，系统设置 →
+> AI 模型配置），由 `app/services/user_ai_config.py` 统一解析（请求内走
+> ContextVar，后台线程用 `copy_context_wrap` 传播，SSE/工作流传显式快照
+> `_ai_config`）。任何代码不得从 `.env` / `os.environ` 读取 API key，也不得把
+> key 写入 `os.environ`。
+
 当前支持的 Provider：
 
 | Provider | 类 | 说明 |
 | --- | --- | --- |
-| `mock` | `MockLLMClient` | 返回确定性 mock 响应（开发/测试默认） |
-| `deepseek` | `DeepSeekLLMClient` | OpenAI 兼容 HTTP 客户端，内置重试逻辑 |
+| `mock` | `MockLLMClient` | 确定性 mock 响应——仅当 `LLM_PROVIDER=mock` **且**当前用户未配置密钥（测试逃生舱；用户配置优先） |
+| `deepseek` / `qwen` / `glm` / `openai` | `UnifiedChatClient` | OpenAI 兼容客户端；提供商与 key 由用户在系统设置中选择，Base URL/模型名为代码内官方默认值 |
+| （未配置 key） | `UnconfiguredLLMClient` | 任何调用抛 `AIConfigMissingError`（409 / 流内错误事件），引导用户前往系统设置——不回退 mock、不产出模拟内容 |
 
-通过环境变量 `LLM_PROVIDER` 切换。DeepSeek 客户端支持配置重试次数 (`llm_retry_count`) 和请求超时 (`llm_request_timeout`)。
+技术项仍走 `.env`：重试次数 (`llm_retry_count`)、请求超时 (`llm_request_timeout`)、温度、角色模型微调（`LLM_PLANNER_MODEL` 等）。
 
 ## 6. 质量控制 (ReviewAgent)
 
