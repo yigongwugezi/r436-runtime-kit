@@ -61,6 +61,15 @@ _assessment_factory = AgentFactory(llm_client=_assessment_llm)
 
 logger = logging.getLogger(__name__)
 
+
+def _require_path_stage(payload: dict[str, Any]) -> None:
+    """Apply path locking only when an existing path task supplies a stage."""
+    stage_id = str(payload.get("stageId") or payload.get("stage_id") or "")
+    session_id = str(payload.get("sessionId") or payload.get("session_id") or "")
+    if stage_id and session_id:
+        from app.routers.product import _require_stage_access
+        _require_stage_access(session_id, stage_id)
+
 router = APIRouter(tags=["assessment"])
 
 
@@ -694,6 +703,7 @@ def create_quiz_endpoint(
     db = SessionLocal()
     try:
         require_owned_session(db, body.session_id, auth.learner_id)
+        _require_path_stage(body.model_dump(by_alias=True))
         quiz = save_quiz(db, {
             "id": f"quiz_{uuid.uuid4().hex[:12]}",
             "title": body.title,
@@ -896,6 +906,7 @@ def generate_section_quiz(
     db = SessionLocal()
     try:
         require_owned_session(db, body.session_id, auth.learner_id)
+        _require_path_stage(body.model_dump(by_alias=True))
         # ── Build LLM prompt ────────────────────────────────────
         kp_text = "\n".join(f"- {kp}" for kp in body.knowledge_points[:8])
         summary = body.lecture_summary[:2000] if body.lecture_summary else "暂无讲义摘要"
@@ -1386,6 +1397,7 @@ def create_attempt_endpoint(
             else require_owned_exam_set(db, body.exam_set_id, auth.learner_id)
         )
         session_id = require_matching_session(parent.session_id, body.session_id)
+        _require_path_stage({"sessionId": session_id, "stageId": getattr(parent, "stage_id", "")})
         attempt = create_attempt(db, {
             "attempt_id": f"att_{uuid.uuid4().hex[:12]}",
             "session_id": session_id,
@@ -1498,6 +1510,7 @@ def create_exam_set_endpoint(
     db = SessionLocal()
     try:
         require_owned_session(db, body.session_id, auth.learner_id)
+        _require_path_stage(body.model_dump(by_alias=True))
         exam = save_exam_set(db, {
             "id": f"exam_{uuid.uuid4().hex[:12]}",
             "title": body.title,

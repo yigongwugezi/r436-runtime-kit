@@ -11,7 +11,7 @@ import { getCurrentLearner } from '../store/authStore';
 import {
   ArrowRight, BookOpen, Check, CircleDot, Clock3,
   FileText, FlaskConical, Lightbulb, PenLine, Plus, Sparkles, Target, Zap,
-  Loader2, ChevronRight
+  Loader2, ChevronRight, Lock
 } from 'lucide-react';
 
 /* ── 任务类型图标与标签 ──────────────────── */
@@ -202,28 +202,29 @@ export default function LearningPathPage() {
         {/* ── 左侧导航 + 中间单阶段 + 右侧面板 ── */}
         <div className="grid gap-8 xl:grid-cols-[minmax(200px,0.9fr)_minmax(0,1.55fr)_minmax(260px,0.82fr)] xl:items-start">
           {/* ═══ 左栏：阶段选择器 ═══ */}
-          <aside className="space-y-5 xl:sticky xl:top-8">
+          <aside className="min-w-0 space-y-5 xl:sticky xl:top-8">
             <section className="rounded-[20px] border border-surface-200 bg-white/80 backdrop-blur-sm p-5 shadow-sm">
               <p className="mb-5 text-xs font-semibold uppercase tracking-[0.24em] text-surface-400">阶段导航</p>
-              <div className="space-y-2">
+              <div className="max-h-[calc(100vh-13rem)] space-y-2 overflow-y-auto overscroll-contain pr-1">
                 {stages.map((stage: any, si: number) => {
                   const tasks = stage.tasks || [];
                   const tDone = tasks.filter((t: any) => t.status === 'completed' || t.status === 'mastered').length;
                   const tTotal = tasks.length;
                   const selected = stage.id === activeStage?.id;
                   const allDone = tTotal > 0 && tasks.every((t: any) => t.status === 'completed' || t.status === 'mastered');
+                  const locked = stage.progressStatus === 'locked';
                   return (
-                    <button key={stage.id || si} type="button" onClick={() => selectStage(stage.id)}
+                    <button key={stage.id || si} type="button" disabled={locked} onClick={() => selectStage(stage.id)}
                       className={`group flex w-full items-center gap-3 rounded-2xl border px-3 py-3 text-left transition-all duration-300 ${
                         selected ? 'border-primary-200 bg-primary-50/50 shadow-[inset_3px_0_0_#3478f6]' :
                         allDone ? 'border-transparent bg-transparent opacity-60' :
-                        'border-transparent bg-transparent hover:border-surface-200 hover:bg-surface-50'
+                        locked ? 'border-transparent bg-surface-50 opacity-50 cursor-not-allowed' : 'border-transparent bg-transparent hover:border-surface-200 hover:bg-surface-50'
                       }`}>
                       <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold ${
                         selected ? 'bg-primary-500 text-white shadow-[0_0_12px_rgba(52,120,246,0.35)]' :
                         allDone ? 'bg-success-100 text-success-600' :
                         'border border-surface-300 text-surface-400'
-                      }`}>{allDone ? <Check size={12} /> : si + 1}</span>
+                      }`}>{locked ? <Lock size={12} /> : allDone ? <Check size={12} /> : si + 1}</span>
                       <span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold text-surface-800">{stage.title}</span></span>
                       <span className="text-xs font-semibold text-surface-400">{tDone}/{tTotal}</span>
                     </button>
@@ -240,7 +241,7 @@ export default function LearningPathPage() {
           </aside>
 
           {/* ═══ 中栏：只展示选中的阶段（始终展开） ═══ */}
-          <section className="space-y-4" ref={stageRef}>
+          <section className="min-w-0 max-h-[calc(100vh-10rem)] space-y-4 overflow-y-auto overscroll-contain" ref={stageRef}>
             {activeStage && (() => {
               const stage = activeStage;
               const tasks = stage.tasks || [];

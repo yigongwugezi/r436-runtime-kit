@@ -22,6 +22,7 @@ from queue import Queue, Empty
 from threading import Event
 import uuid
 from typing import Any, Callable
+from sqlalchemy.orm.attributes import flag_modified
 
 logger = logging.getLogger(__name__)
 
@@ -4178,12 +4179,101 @@ def resource_knowledge_graph_legacy(resource_id: str) -> dict[str, Any]:
     )
 
 
-# ── In-memory node progress store ────────────────────────────────────
+# ── Node progress ────────────────────────────────────────────────────
+# Legacy in-memory entries are only retained for paths generated before their
+# first persistence.  New updates are written into LearningPathModel.stages.
 _node_progress_store: dict[str, dict[str, Any]] = {}
 
 
 def _nkey(session_id: str, node_id: str) -> str:
     return f"{session_id}:{node_id}"
+
+
+def _set_path_node_progress(stages: list[dict[str, Any]], node_id: str, status: str, mastery: int) -> bool:
+    """Update one existing task/chapter/section/KP in the persisted path."""
+    for stage in stages:
+        for task in stage.get("tasks", []):
+            if isinstance(task, dict) and str(task.get("task_id") or task.get("id") or "") == node_id:
+                task["status"], task["mastery"] = status, mastery
+                return True
+        for node in stage.get("nodes", []):
+            if str(node.get("id") or "") == node_id:
+                node["status"], node["mastery"] = status, mastery
+                return True
+        for chapter in stage.get("chapters", []):
+            if str(chapter.get("chapter_id") or chapter.get("id") or "") == node_id:
+                chapter["status"], chapter["mastery"] = status, mastery
+                return True
+            for section in chapter.get("sections", []):
+                if str(section.get("section_id") or section.get("id") or "") == node_id:
+                    section["status"], section["mastery"] = status, mastery
+                    return True
+                for point in section.get("knowledge_points", section.get("knowledgePoints", [])):
+                    if str(point.get("kp_id") or point.get("id") or "") == node_id:
+                        point["status"], point["mastery"] = status, mastery
+                        return True
+    return False
+
+
+def _stage_items(stage: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return executable items only; containers never complete a stage."""
+    if stage.get("tasks"):
+        return [item for item in stage["tasks"] if isinstance(item, dict)]
+    if stage.get("nodes"):
+        return [item for item in stage["nodes"] if isinstance(item, dict)]
+    items: list[dict[str, Any]] = []
+    for chapter in stage.get("chapters", []):
+        for section in chapter.get("sections", []):
+            points = section.get("knowledge_points", section.get("knowledgePoints", []))
+            items.extend(item for item in points if isinstance(item, dict))
+            if not points and isinstance(section, dict):
+                items.append(section)
+    return items
+
+
+def _is_complete(item: dict[str, Any]) -> bool:
+    return item.get("status") in {"completed", "mastered"} or int(item.get("mastery") or 0) >= 100
+
+
+def _apply_stage_progress(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Derive the only stage-access state from persisted path JSON."""
+    current_seen = False
+    for stage in stages:
+        items = _stage_items(stage)
+        required = [item for item in items if not item.get("optional", False)]
+        done = sum(_is_complete(item) for item in required)
+        if not required:
+            status = "current" if not current_seen else "locked"
+        elif done == len(required):
+            status = "completed"
+        elif not current_seen:
+            status = "current"
+        else:
+            status = "locked"
+        if status == "current":
+            current_seen = True
+        stage["progressStatus"] = status
+        stage["completedTaskCount"] = done
+        stage["requiredTaskCount"] = len(required)
+        stage["progressPercent"] = round(done * 100 / len(required)) if required else 0
+        stage["accessible"] = status != "locked"
+    return stages
+
+
+def _require_stage_access(session_id: str, stage_id: str) -> None:
+    db = SessionLocal()
+    try:
+        path = repo_get_latest_learning_path(db, session_id)
+        if not path or not isinstance(path.stages, list):
+            raise HTTPException(status_code=404, detail="learning path not found")
+        stages = _apply_stage_progress(path.stages)
+        stage = next((item for item in stages if str(item.get("stage_id") or item.get("id") or "") == stage_id), None)
+        if not stage:
+            raise HTTPException(status_code=404, detail="learning path stage not found")
+        if stage["progressStatus"] == "locked":
+            raise HTTPException(status_code=403, detail="请先完成当前阶段")
+    finally:
+        db.close()
 
 
 def _apply_node_progress(stages: list[dict[str, Any]], session_id: str = "") -> list[dict[str, Any]]:
@@ -4219,10 +4309,6 @@ def _apply_node_progress(stages: list[dict[str, Any]], session_id: str = "") -> 
             elif completed > 0:
                 node["status"] = "in_progress"
                 node["mastery"] = 60
-            elif _nkey(session_id, nid) in _node_progress_store:
-                saved = _node_progress_store[_nkey(session_id, nid)]
-                node["status"] = saved.get("status", node["status"])
-                node["mastery"] = 0
             if node.get("mastery", 0) >= 100 and node.get("status") != "mastered":
                 node["mastery"] = 60
 
@@ -4236,34 +4322,17 @@ def _apply_node_progress(stages: list[dict[str, Any]], session_id: str = "") -> 
             next_nodes = next_stage.get("nodes", [])
             if next_nodes and next_nodes[0].get("status") not in ("mastered", "in_progress"):
                 first_next = next_nodes[0]["id"]
-                if _nkey(session_id, first_next) not in _node_progress_store:
-                    _node_progress_store[_nkey(session_id, first_next)] = {
-                        "status": "available", "mastery": 0,
-                        "updatedAt": time.time(),
-                    }
-                    _log_node_progress(session_id, first_next, "available")
                 next_nodes[0]["status"] = "available"
 
     # Apply saved progress to chapter hierarchy
     for stage in stages:
         for chapter in stage.get("chapters", []):
             ch_id = chapter.get("chapter_id") or chapter.get("id", "")
-            if ch_id and _nkey(session_id, ch_id) in _node_progress_store:
-                saved = _node_progress_store[_nkey(session_id, ch_id)]
-                chapter["status"] = saved.get("status", chapter.get("status", "not_started"))
             for section in chapter.get("sections", []):
                 sec_id = section.get("section_id") or section.get("id", "")
-                if sec_id and _nkey(session_id, sec_id) in _node_progress_store:
-                    saved = _node_progress_store[_nkey(session_id, sec_id)]
-                    section["status"] = saved.get("status", section.get("status", "not_started"))
                 for kp in section.get("knowledge_points", []):
                     kp_id = kp.get("kp_id") or kp.get("id", "")
-                    if kp_id and _nkey(session_id, kp_id) in _node_progress_store:
-                        saved = _node_progress_store[_nkey(session_id, kp_id)]
-                        kp["status"] = saved.get("status", kp.get("status", "not_started"))
-                        kp["mastery"] = saved.get("mastery", kp.get("mastery", 0))
-
-    return stages
+    return _apply_stage_progress(stages)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -4549,11 +4618,19 @@ def download_learning_path(
 @router.patch("/learning-path/nodes/{node_id}")
 def update_node_progress(node_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     session_id = _payload_session_id(payload)
-    _node_progress_store[_nkey(session_id, node_id)] = {
-        "status": payload.get("status", "available"),
-        "mastery": payload.get("mastery", 0),
-        "updatedAt": time.time(),
-    }
+    status = str(payload.get("status", "available"))
+    mastery = int(payload.get("mastery", 0))
+    db = SessionLocal()
+    try:
+        path = repo_get_latest_learning_path(db, session_id)
+        if not path or not isinstance(path.stages, list) or not _set_path_node_progress(path.stages, node_id, status, mastery):
+            raise HTTPException(status_code=404, detail="learning path node not found")
+        flag_modified(path, "stages")
+        db.add(path)
+        db.commit()
+        db.refresh(path)
+    finally:
+        db.close()
     learning_tracker.log(
         {"event": "node_progress", "resourceId": node_id, "metadata": payload},
         session_id=session_id,
@@ -6024,7 +6101,7 @@ def _fallback_section_lecture(section_title: str, section_goal: str, knowledge_p
 
 
 @router.get("/sections/{section_id}/lecture")
-def get_section_lecture(section_id: str, sessionId: str = "") -> dict[str, Any]:
+def get_section_lecture(section_id: str, sessionId: str = "", stageId: str = "") -> dict[str, Any]:
     """Read existing lecture for a section. Returns None if not generated yet."""
     try:
         db = SessionLocal()
@@ -7651,6 +7728,9 @@ def _generate_section_resource(section_id: str, payload: dict[str, Any], workflo
         _require_matching_subject(session_id, subject_id)
     resource_type = str(payload.get("resourceType") or "").strip()
     context = _section_path_context(session_id, section_id)
+    stage_id = str(payload.get("stageId") or context.get("stage_id") or "")
+    if stage_id:
+        _require_stage_access(session_id, stage_id)
     section_title = str(payload.get("sectionTitle") or context.get("section_title") or "").strip()
     if not section_title:
         return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
@@ -7667,7 +7747,7 @@ def _generate_section_resource(section_id: str, payload: dict[str, Any], workflo
         ).order_by(ResourceModel.updated_at.desc()).first()
         resource = service.generate(
             session_id=session_id, path_id=str(payload.get("pathId") or context.get("path_id") or ""),
-            stage_id=str(payload.get("stageId") or context.get("stage_id") or ""),
+        stage_id=stage_id,
             chapter_id=str(payload.get("chapterId") or context.get("chapter_id") or ""),
             section_id=section_id, section_title=section_title,
             lecture_content=str(payload.get("lectureContent") or (lecture.content if lecture else "") or ""),
@@ -7776,6 +7856,8 @@ def feedback_on_generated_section_resource(section_id: str, resource_type: str, 
 def get_generated_section_resources(section_id: str, sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
     """Read only resources generated for the current section."""
     session_id = _require_session_id(sessionId)
+    context = _section_path_context(session_id, section_id)
+    _require_stage_access(session_id, stageId or str(context.get("stage_id") or "")) if (stageId or context.get("stage_id")) else None
     from app.services.section_generated_resources import SectionGeneratedResourcesService
     from app.services.structured_multimodal_resources import STRUCTURED_RESOURCE_DEFINITIONS, normalized_resource_title
     try:
