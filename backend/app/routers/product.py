@@ -3790,8 +3790,18 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
 
     # ── 真实生成路径：优先调用项目已有的 AI 能力，失败后降级为模板 ──
     from app.services.deeptutor_client import deeptutor_call, generate_mindmap, generate_quiz, generate_research
+    from app.services.workflow_tasks import workflow_task_manager
+
+    def _emit(label: str, stage: str = "generation", **meta: Any) -> None:
+        if workflow_task is not None:
+            try:
+                workflow_task_manager.check_cancelled(workflow_task)
+                workflow_task_manager.emit(workflow_task, "stage_progress", stage, "running", label=label, **meta)
+            except Exception:
+                pass
 
     if resource_type == "lecture":
+        _emit("正在生成学习文档…")
         try:
             content = deeptutor_call("chat",
                 f"为「{topic}」生成一份专业课程讲义。\n"
@@ -3812,6 +3822,7 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
             resource["content"] = f"# {topic}\n\n## 学习目标\n理解 {topic} 的核心概念、关键过程和常见误区。\n\n## 核心讲解\n从定义开始，结合一个小例子逐步说明概念之间的关系。\n\n## 自测\n用自己的话复述关键步骤，并完成一道对应练习。"
 
     elif resource_type == "mindmap":
+        _emit("正在生成思维导图…")
         try:
             mm = generate_mindmap(topic)
             if mm and len(mm) > 50:
@@ -3828,6 +3839,7 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
             resource["content_format"] = "mermaid"
 
     elif resource_type == "quiz":
+        _emit("正在生成练习题库…")
         try:
             quiz_content = generate_quiz(topic, count=5)
             if quiz_content and len(quiz_content) > 50:
@@ -3843,6 +3855,7 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
             ]
 
     elif resource_type == "reading":
+        _emit("正在生成拓展阅读…")
         try:
             content = generate_research(topic)
             if content and len(content) > 100:
@@ -3854,6 +3867,7 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
             resource["content"] = f"# {topic} 拓展阅读\n\n先阅读定义与背景，再将关键术语整理为自己的笔记，最后用一个例子验证理解。"
 
     elif resource_type == "practice":
+        _emit("正在生成实操案例…")
         try:
             content = deeptutor_call("chat",
                 f"为「{topic}」生成一个实操练习。\n"
@@ -3874,6 +3888,7 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
             resource["code_blocks"] = [{"language": "python", "code": "def solve(value):\n    if value is None:\n        raise ValueError('value is required')\n    return value", "explanation": "从输入校验开始，再补充与主题对应的处理逻辑。"}]
 
     elif resource_type == "image":
+        _emit("正在生成知识图解…")
         from app.services.multimodal_registry import default_registry
         _, tool = default_registry().select_tool("image_generation")
         if tool is None or not tool.is_configured():
@@ -3893,6 +3908,7 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
             raise RuntimeError("provider_not_configured")
 
     elif resource_type == "ppt":
+        _emit("正在准备PPT生成…", "ppt_prepare")
         # Use iFlytek (讯飞智文) for PPT generation — the only supported provider
         pptx_path = None
         ppt_outline = None
@@ -3904,7 +3920,10 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
                 gen_opts = request.get("generationOptions") or {}
                 if gen_opts.get("templateId"):
                     ctx["template_id"] = gen_opts["templateId"]
-                result = provider.run(ctx)
+                # Build on_progress callback wired to workflow events
+                def _ppt_progress(label: str, stage: str = "ppt_generation", **meta: Any) -> None:
+                    _emit(label, stage, **meta)
+                result = provider.run(ctx, on_progress=_ppt_progress)
                 if result.get("status") == "success" and result.get("result", {}).get("filepath"):
                     pptx_path = result["result"]["filepath"]
                     logger.info("PPT generated via iFlytek: %s", pptx_path)
@@ -3916,7 +3935,10 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
             resource["content"] = f"# {topic}\n\nPPT 生成服务暂时不可用，请稍后重试。"
             resource["format"] = "text"
         else:
-            rel_path = pptx_path.replace(str(settings.project_root), "").replace("\\", "/").lstrip("/")
+            rel_path = pptx_path.replace("\\", "/")
+            idx = rel_path.find("outputs/")
+            if idx >= 0:
+                rel_path = rel_path[idx:]
             resource["content"] = f"/api/multimodal/file/{rel_path}"
             resource["format"] = "pptx"
             resource["ppt_outline"] = ppt_outline or []
@@ -4060,7 +4082,10 @@ def _legacy_generate_resource(payload: dict[str, Any], auth: AuthContext = Depen
                 session_id=session_id, source="agent",
             )
 
-        rel_path = pptx_path.replace(str(settings.project_root), "").replace("\\", "/").lstrip("/")
+        rel_path = pptx_path.replace("\\", "/")
+        idx = rel_path.find("outputs/")
+        if idx >= 0:
+            rel_path = rel_path[idx:]
         resource = {
             "id": f"ppt_{uuid.uuid4().hex}",
             "type": "ppt",

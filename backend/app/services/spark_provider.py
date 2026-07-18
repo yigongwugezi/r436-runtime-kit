@@ -71,8 +71,8 @@ def _request(url: str, body: dict) -> dict | None:
 
 def generate_image(
     prompt: str,
-    width: int = 1024,
-    height: int = 1024,
+    width: int = 1280,
+    height: int = 1280,
 ) -> dict[str, Any]:
     """星火绘画：文本生成图片，返回 base64 图片数据。"""
     if not SPARK_APP_ID or not SPARK_API_KEY:

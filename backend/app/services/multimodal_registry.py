@@ -39,9 +39,10 @@ class ToolRegistry:
             "image_to_variant_questions": "QwenVisionProvider",
             "image_to_resource_bundle": "QwenVisionProvider",
             # ── 生成类 ──
-            "image_generation": "SeedreamImageProvider",
-            "concept_card_generation": "SeedreamImageProvider",
-            "teaching_diagram_generation": "SeedreamImageProvider",
+            "image_generation": "SparkImageProvider",
+            "concept_card_generation": "SparkImageProvider",
+            "teaching_diagram_generation": "SparkImageProvider",
+            "image_generation_seedream": "SeedreamImageProvider",
             "image_generation_qwen": "QwenImageProvider",
             "concept_card_generation_qwen": "QwenImageProvider",
             "teaching_diagram_generation_qwen": "QwenImageProvider",
