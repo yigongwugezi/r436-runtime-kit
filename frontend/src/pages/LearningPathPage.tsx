@@ -221,7 +221,7 @@ export default function LearningPathPage() {
         </section>
 
         {/* ── 左侧导航 + 中间单阶段 + 右侧面板 ── */}
-        <div className="grid gap-8 xl:grid-cols-[minmax(200px,0.9fr)_minmax(0,1.55fr)_minmax(260px,0.82fr)] xl:items-start">
+        <div className="grid gap-8 xl:h-[calc(100vh-16rem)] xl:min-h-0 xl:grid-cols-[minmax(200px,0.9fr)_minmax(0,1.55fr)_minmax(260px,0.82fr)] xl:items-stretch">
           {/* ═══ 左栏：阶段选择器 ═══ */}
           <aside className="min-w-0 space-y-5 max-h-[calc(100vh-16rem)] overflow-y-auto overscroll-contain">
             <section className="rounded-[20px] border border-surface-200 bg-white/80 backdrop-blur-sm p-5 shadow-sm">
@@ -262,7 +262,7 @@ export default function LearningPathPage() {
           </aside>
 
           {/* ═══ 中栏：只展示选中的阶段（始终展开） ═══ */}
-          <section className="min-w-0 max-h-[calc(100vh-16rem)] space-y-4 overflow-y-auto overscroll-contain" ref={stageRef}>
+          <section className="min-w-0 space-y-4 overflow-y-auto overscroll-contain xl:h-full xl:min-h-0" ref={stageRef}>
             {activeStage && (() => {
               const stage = activeStage;
               const tasks = stage.tasks || [];
@@ -364,9 +364,9 @@ export default function LearningPathPage() {
           </section>
 
           {/* ═══ 右栏：立即开始 + 学习分析 + 练习 ═══ */}
-          <aside className="space-y-5 max-h-[calc(100vh-16rem)] overflow-y-auto overscroll-contain">
+          <aside className="min-w-0 space-y-5 xl:flex xl:h-full xl:min-h-0 xl:flex-col xl:space-y-0">
             {nextTask && (
-              <section className="overflow-hidden rounded-[20px] border border-surface-200 bg-white/80 backdrop-blur-sm shadow-sm">
+              <section className="shrink-0 overflow-hidden rounded-[20px] border border-surface-200 bg-white/80 backdrop-blur-sm shadow-sm xl:mb-5">
                 <div className="h-20 bg-gradient-to-r from-primary-500 to-accent-500" />
                 <div className="p-5">
                   <p className="mb-3 text-xs font-semibold uppercase tracking-[0.22em] text-surface-400">立即开始</p>
@@ -380,27 +380,29 @@ export default function LearningPathPage() {
                 </div>
               </section>
             )}
-            <section className="rounded-[20px] border border-surface-200 bg-white/80 backdrop-blur-sm p-5 shadow-sm">
-              <p className="mb-4 text-xs font-semibold uppercase tracking-[0.24em] text-surface-400">学习分析</p>
-              <ul className="space-y-4 text-sm leading-6 text-surface-600">
-                <li className="flex gap-3"><span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-primary-500 shadow-[0_0_12px_rgba(52,120,246,0.45)]" />已完成 {doneTasks}/{totalTasks || totalNodes} 项学习任务</li>
-                <li className="flex gap-3"><span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-warning-400 shadow-[0_0_12px_rgba(251,191,36,0.4)]" />共 {stages.length} 个阶段，{completedStages} 个已完成</li>
-                {nextTask?.stageTitle && <li className="flex gap-3"><span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-accent-500 shadow-[0_0_12px_rgba(141,107,255,0.45)]" />当前阶段：{nextTask.stageTitle}</li>}
-              </ul>
-            </section>
-            <section className="rounded-[20px] border border-surface-200 bg-white/80 backdrop-blur-sm p-5 shadow-sm">
-              <p className="mb-4 text-xs font-semibold uppercase tracking-[0.24em] text-surface-400">练习</p>
-              <button type="button" onClick={() => nav('/practice')}
-                className="flex w-full items-center gap-3 rounded-2xl border border-transparent p-3 text-left transition-all duration-300 hover:border-surface-200 hover:bg-surface-50">
-                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary-50 text-primary-500 border border-primary-100"><FileText size={16} /></span>
-                <span className="min-w-0 flex-1"><strong className="block truncate text-sm font-semibold text-surface-800">前往练习中心</strong><span className="mt-0.5 block text-xs text-surface-400">做题巩固知识点</span></span>
-                <ChevronRight size={16} className="text-surface-300" />
-              </button>
-              <button type="button" onClick={() => nav('/practice?prompt=出题')}
-                className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-dashed border-primary-300/50 bg-primary-50/30 text-sm font-bold text-primary-500 transition-all duration-300 hover:border-primary-400/70 hover:bg-primary-50/60 hover:text-primary-600">
-                <Plus size={16} />生成题集
-              </button>
-            </section>
+            <div className="learning-path-card-list space-y-5 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:overscroll-contain">
+              <section className="rounded-[20px] border border-surface-200 bg-white/80 backdrop-blur-sm p-5 shadow-sm">
+                <p className="mb-4 text-xs font-semibold uppercase tracking-[0.24em] text-surface-400">学习分析</p>
+                <ul className="space-y-4 text-sm leading-6 text-surface-600">
+                  <li className="flex gap-3"><span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-primary-500 shadow-[0_0_12px_rgba(52,120,246,0.45)]" />已完成 {doneTasks}/{totalTasks || totalNodes} 项学习任务</li>
+                  <li className="flex gap-3"><span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-warning-400 shadow-[0_0_12px_rgba(251,191,36,0.4)]" />共 {stages.length} 个阶段，{completedStages} 个已完成</li>
+                  {nextTask?.stageTitle && <li className="flex gap-3"><span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-accent-500 shadow-[0_0_12px_rgba(141,107,255,0.45)]" />当前阶段：{nextTask.stageTitle}</li>}
+                </ul>
+              </section>
+              <section className="rounded-[20px] border border-surface-200 bg-white/80 backdrop-blur-sm p-5 shadow-sm">
+                <p className="mb-4 text-xs font-semibold uppercase tracking-[0.24em] text-surface-400">练习</p>
+                <button type="button" onClick={() => nav('/practice')}
+                  className="flex w-full items-center gap-3 rounded-2xl border border-transparent p-3 text-left transition-all duration-300 hover:border-surface-200 hover:bg-surface-50">
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary-50 text-primary-500 border border-primary-100"><FileText size={16} /></span>
+                  <span className="min-w-0 flex-1"><strong className="block truncate text-sm font-semibold text-surface-800">前往练习中心</strong><span className="mt-0.5 block text-xs text-surface-400">做题巩固知识点</span></span>
+                  <ChevronRight size={16} className="text-surface-300" />
+                </button>
+                <button type="button" onClick={() => nav('/practice?prompt=出题')}
+                  className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-dashed border-primary-300/50 bg-primary-50/30 text-sm font-bold text-primary-500 transition-all duration-300 hover:border-primary-400/70 hover:bg-primary-50/60 hover:text-primary-600">
+                  <Plus size={16} />生成题集
+                </button>
+              </section>
+            </div>
           </aside>
         </div>
       </div>
