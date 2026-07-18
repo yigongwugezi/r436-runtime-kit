@@ -57,7 +57,7 @@ function groupTasksByDay(stages: any[]) {
 export default function LearningPathPage() {
   const nav = useNavigate();
   const location = useLocation();
-  const { path, loading, error, fetchPath, applyPathFromWorkflow } = useLearningPath();
+  const { path, loading, error, fetchPath, generatePath, applyPathFromWorkflow } = useLearningPath();
   const { profileV2 } = useProfile();
   const subject = profileV2?.subject_context || {};
   const [existingDraft, setExistingDraft] = useState<any>(null);
@@ -335,16 +335,13 @@ export default function LearningPathPage() {
         {/* ── 三栏布局 ── */}
         <div className="grid gap-8 xl:h-[calc(100vh-16rem)] xl:min-h-0 xl:grid-cols-[minmax(200px,0.9fr)_minmax(0,1.55fr)_minmax(260px,0.82fr)] xl:items-stretch">
           
-          {/* ═══ 左栏：大面板容器 ═══ */}
+          {/* ═══ 左栏：原始样式 + 天粒度展开 ═══ */}
           <aside className="min-w-0 flex flex-col xl:h-full xl:min-h-0">
-            {/* 大面板：与中间面板相同的视觉风格 */}
-            <div className="flex-1 min-h-0 flex flex-col rounded-[20px] border border-surface-200 bg-white shadow-sm overflow-hidden">
-              {/* 固定标题 */}
-              <div className="shrink-0 px-5 pt-5 pb-3 border-b border-surface-100">
+            <div className="flex-1 min-h-0 flex flex-col rounded-[20px] border border-surface-200 bg-white/80 backdrop-blur-sm shadow-sm overflow-hidden">
+              <div className="shrink-0 px-5 pt-5 pb-3 sm:px-6 sm:pt-6 border-b border-surface-100">
                 <p className="text-xs font-semibold uppercase tracking-[0.24em] text-surface-400">阶段导航</p>
               </div>
-              {/* 可滚动的阶段卡片列表 */}
-              <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 pb-5 pt-3 space-y-3">
+              <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 pb-5 pt-3 sm:px-6 sm:pb-6 space-y-2">
                 {dayGroups.map((group: any) => {
                   const stage = stages[group.stageIdx];
                   const tasks = stage?.tasks || [];
@@ -354,50 +351,31 @@ export default function LearningPathPage() {
                   const locked = stage?.progressStatus === 'locked';
                   const isExpanded = expandedStageId === group.stageId;
                   return (
-                    <div key={group.stageId} 
-                      className={`rounded-xl border transition-all duration-300 overflow-hidden ${
-                        isExpanded 
-                          ? 'bg-white border-primary-200 shadow-sm' 
-                          : allDone 
-                            ? 'bg-white/60 border-surface-100' 
-                            : 'bg-white border-surface-100 hover:border-surface-200 hover:shadow-sm'
-                      }`}>
+                    <div key={group.stageId}>
+                      {/* 阶段按钮 — 完全保持原始样式 */}
                       <button type="button" disabled={locked}
                         onClick={() => toggleStage(group.stageId)}
-                        className={`group flex w-full items-center gap-3 px-3.5 py-3 text-left transition-all duration-300 ${
-                          locked ? 'opacity-40 cursor-not-allowed' : ''
+                        className={`group flex w-full items-center gap-3 rounded-2xl border px-3 py-3 text-left transition-all duration-300 ${
+                          isExpanded ? 'border-primary-200 bg-primary-50/50 shadow-[inset_3px_0_0_#3478f6]' :
+                          allDone ? 'border-transparent bg-transparent opacity-60' :
+                          locked ? 'border-transparent bg-surface-50 opacity-50 cursor-not-allowed' : 'border-transparent bg-transparent hover:border-surface-200 hover:bg-surface-50'
                         }`}>
-                        <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[11px] font-bold transition-all duration-300 ${
-                          isExpanded 
-                            ? 'bg-primary-500 text-white shadow-sm' 
-                            : allDone 
-                              ? 'bg-emerald-50 text-emerald-600' 
-                              : 'bg-surface-100 text-surface-500 group-hover:bg-surface-200'
-                        }`}>
-                          {locked ? <Lock size={12} /> : allDone ? <Check size={12} /> : group.stageIdx + 1}
-                        </span>
+                        <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold ${
+                          isExpanded ? 'bg-primary-500 text-white shadow-[0_0_12px_rgba(52,120,246,0.35)]' :
+                          allDone ? 'bg-success-100 text-success-600' :
+                          'border border-surface-300 text-surface-400'
+                        }`}>{locked ? <Lock size={12} /> : allDone ? <Check size={12} /> : group.stageIdx + 1}</span>
                         <span className="min-w-0 flex-1">
-                          <span className={`block truncate text-[13px] font-semibold transition-colors duration-300 ${
-                            isExpanded ? 'text-primary-700' : allDone ? 'text-surface-500' : 'text-surface-800'
-                          }`}>
-                            {group.stageTitle}
-                          </span>
+                          <span className="block truncate text-sm font-semibold text-surface-800">{group.stageTitle}</span>
                         </span>
                         <span className="flex items-center gap-2">
-                          <span className={`text-[11px] font-semibold tabular-nums ${
-                            allDone ? 'text-emerald-500' : 'text-surface-400'
-                          }`}>
-                            {tDone}/{tTotal}
-                          </span>
-                          <span className={`flex items-center justify-center w-4 h-4 rounded transition-all duration-300 ${
-                            isExpanded ? 'rotate-180 text-primary-600' : 'text-surface-400 group-hover:text-surface-600'
-                          }`}>
-                            <ChevronDown size={14} />
-                          </span>
+                          <span className="text-xs font-semibold text-surface-400">{tDone}/{tTotal}</span>
+                          <ChevronDown size={14} className={`text-surface-400 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`} />
                         </span>
                       </button>
+                      {/* 天列表 — 同样式但尺寸更小 */}
                       {isExpanded && group.days.length > 0 && (
-                        <div className="border-t border-surface-100 bg-surface-50/50 px-3.5 py-2 space-y-0.5">
+                        <div className="ml-4 mt-1 space-y-1 border-l-2 border-surface-100 pl-3 py-1">
                           {group.days.map((day: any) => {
                             const dayTasks = day.tasks;
                             const dDone = dayTasks.filter((t: any) => t.status === 'completed' || t.status === 'mastered').length;
@@ -413,29 +391,18 @@ export default function LearningPathPage() {
                             return (
                               <button key={`${group.stageId}_day${day.dayIndex}`}
                                 onClick={() => selectDay(group.stageId, day.dayIndex)}
-                                className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-all duration-200 ${
-                                  isActiveDay 
-                                    ? 'bg-white text-primary-700 shadow-sm' 
-                                    : 'hover:bg-white/60 text-surface-600'
+                                className={`group flex w-full items-center gap-2.5 rounded-xl border px-2.5 py-2 text-left transition-all duration-300 ${
+                                  isActiveDay ? 'border-primary-200 bg-primary-50/50 shadow-[inset_2px_0_0_#3478f6]' :
+                                  dayAllDone ? 'border-transparent bg-transparent opacity-60' :
+                                  dayLocked ? 'border-transparent bg-surface-50 opacity-50 cursor-not-allowed' : 'border-transparent bg-transparent hover:border-surface-200 hover:bg-surface-50'
                                 }`}>
-                                <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[10px] font-bold transition-all duration-200 ${
-                                  isActiveDay 
-                                    ? 'bg-primary-500 text-white' 
-                                    : dayAllDone 
-                                      ? 'bg-emerald-50 text-emerald-600' 
-                                      : 'bg-surface-100 text-surface-500'
-                                }`}>
-                                  {dayAllDone ? <Check size={10} /> : day.dayIndex}
-                                </span>
-                                <span className="min-w-0 flex-1 text-[12px] font-medium">第 {day.dayIndex} 天</span>
-                                <span className={`text-[10px] font-medium tabular-nums ${
-                                  dayAllDone ? 'text-emerald-500' : 'text-surface-400'
-                                }`}>
-                                  {dDone}/{dTotal}
-                                </span>
-                                {dayLocked && !dayAllDone && (
-                                  <Lock size={10} className="text-surface-300 flex-shrink-0" />
-                                )}
+                                <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${
+                                  isActiveDay ? 'bg-primary-500 text-white shadow-[0_0_8px_rgba(52,120,246,0.25)]' :
+                                  dayAllDone ? 'bg-success-100 text-success-600' :
+                                  'border border-surface-300 text-surface-400'
+                                }`}>{dayLocked ? <Lock size={10} /> : dayAllDone ? <Check size={10} /> : day.dayIndex}</span>
+                                <span className="min-w-0 flex-1 text-xs font-medium text-surface-700 truncate">第 {day.dayIndex} 天</span>
+                                <span className="text-[10px] font-semibold text-surface-400">{dDone}/{dTotal}</span>
                               </button>
                             );
                           })}
@@ -446,7 +413,6 @@ export default function LearningPathPage() {
                 })}
               </div>
             </div>
-            {/* AI 调整提示 */}
             {hasInj && (
               <section className="shrink-0 mt-4 rounded-[20px] border border-warning-200/60 bg-warning-50/50 p-5">
                 <div className="mb-3 flex items-center gap-2 text-warning-600"><Sparkles size={16} /><p className="text-xs font-semibold uppercase tracking-[0.18em]">AI 调整提示</p></div>
@@ -469,7 +435,6 @@ export default function LearningPathPage() {
                 <article className="flex flex-col xl:h-full xl:min-h-0 overflow-hidden rounded-[20px] border bg-white/80 backdrop-blur-sm shadow-sm"
                   style={{ borderColor: allDone ? '#31b16f' : '#3478f6', boxShadow: allDone ? 'none' : '0 0 0 1px rgba(52,120,246,0.3), 0 8px 32px rgba(52,120,246,0.08)' }}>
                   
-                  {/* ── 天头 ── */}
                   <div className="shrink-0 flex w-full items-center gap-4 p-5 text-left sm:p-6">
                     <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
                       allDone ? 'bg-success-100 text-success-600' : 'bg-gradient-to-br from-primary-500 to-accent-500 text-white shadow-[0_0_20px_rgba(52,120,246,0.3)]'
@@ -493,7 +458,6 @@ export default function LearningPathPage() {
                     </span>
                   </div>
 
-                  {/* ── 小标签 ── */}
                   <div className="shrink-0 flex gap-1 mx-5 sm:mx-6 bg-surface-100 rounded-md p-0.5 w-fit">
                     <button type="button" onClick={() => setMiddleTab('tasks')}
                       className={`rounded px-2.5 py-1 text-[10px] font-semibold transition-all ${
@@ -505,7 +469,6 @@ export default function LearningPathPage() {
                       }`}>推荐资源</button>
                   </div>
 
-                  {/* ── 内容区 ── */}
                   <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 pb-5 pt-4 sm:px-6 sm:pb-6">
                     {middleTab === 'tasks' ? (
                       <div className="space-y-3">
