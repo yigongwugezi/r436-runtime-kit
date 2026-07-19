@@ -68,30 +68,19 @@ export function useLearningPath() {
   const pathVersionRef = useRef<number>(0);
   const hasDataRef = useRef(false);
   const initialLoadRef = useRef(true);
+  const requestIdRef = useRef(0);
 
   const fetchPath = useCallback(async (force: boolean = false, overrideSessionId?: string) => {
     const effectiveSessionId = overrideSessionId || sessionId;
     if (!effectiveSessionId) { setLoading(false); return; }
+    const requestId = ++requestIdRef.current;
     if (force) { hasDataRef.current = false; pathVersionRef.current = -1; }
     if (force || !hasDataRef.current) { setLoading(true); setError(null); }
     try {
       const res = await learningPathApi.getLearningPath({ sessionId: effectiveSessionId, subjectId });
       const p = normalizeLearningPathForClient(res?.path ?? null);
-      // 后端查不到路径时，尝试从 sessionStorage 读取 workflow 直接结果（仅当非 force 时）
-      let finalPath = p;
-      if (!finalPath && !force) {
-        try {
-          const cached = sessionStorage.getItem(`_gen_path_cache_${subjectId}`);
-          if (cached) {
-            const parsed = JSON.parse(cached);
-            if (parsed?.stages?.length) {
-              finalPath = normalizeLearningPathForClient(parsed);
-            }
-          }
-        } catch {}
-      }
-      // Always clear the cache after attempting to read it
-      try { sessionStorage.removeItem(`_gen_path_cache_${subjectId}`); } catch {}
+      const finalPath = p;
+      if (requestId !== requestIdRef.current) return;
       // Merge path: only update if pathVersion changed (structural change)
       // or if force (initial load / explicit refresh)
       if (finalPath) {
@@ -106,12 +95,14 @@ export function useLearningPath() {
       hasDataRef.current = !!finalPath;
       if (!finalPath && !hasDataRef.current) setError('学习路径数据为空');
     } catch (e) {
+      if (requestId !== requestIdRef.current) return;
       if (!hasDataRef.current) { setPath(null); setError(e instanceof Error ? e.message : '加载学习路径失败'); }
     } finally {
+      if (requestId !== requestIdRef.current) return;
       if (force || !hasDataRef.current) setLoading(false);
       initialLoadRef.current = false;
     }
-  }, [sessionId, subjectId, path?.id]);
+  }, [sessionId, subjectId]);
 
   const generatePath = useCallback(async (params: { subjectId?: string; targetTopics?: string[]; planMode?: string; pathMode?: string; totalDays?: number; weekends?: boolean; dynamicAdjust?: boolean; reviewEnabled?: boolean; userMessage?: string }) => {
     setLoading(true); setError(null);
@@ -212,7 +203,14 @@ export function useLearningPath() {
     });
   }, [sessionId, subjectId, cascadeStatus, path?.id]);
 
-  useEffect(() => { fetchPath(true); }, [sessionId, subjectId]);
+  useEffect(() => {
+    requestIdRef.current += 1;
+    hasDataRef.current = false;
+    pathVersionRef.current = -1;
+    setPath(null);
+    setError(null);
+    fetchPath(true);
+  }, [sessionId, subjectId, fetchPath]);
   useEffect(() => { if (dataVersion <= 0 || dataVersion === lastVersionRef.current) return; lastVersionRef.current = dataVersion; fetchPath(true); }, [dataVersion, fetchPath]);
 
   /** 从 workflow 完成结果直接设置路径，不依赖 API 二次查询 */

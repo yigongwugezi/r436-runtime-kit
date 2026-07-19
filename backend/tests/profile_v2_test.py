@@ -92,6 +92,11 @@ def main() -> None:
         facts={"target_course": "\u6570\u636e\u7ed3\u6784", "daily_minutes": "60", "deadline": "\u4e00\u5468"},
     ))
     assert readiness["filledCount"] == 1
+    assert readiness["totalCount"] == 7
+
+    time_state = ConversationState(session_id="profile_v2_time")
+    ConversationStore()._set_fact(time_state, "time_budget", "\u672a\u660e\u786e\u8bf4\u660e\uff1b\u6709\u9ad8\u6570\u57fa\u7840\uff1b[\u5b66\u751f\u81ea\u8ff0]30\u5929\u5b8c\u6210\uff0c\u6bcf\u59291\u5c0f\u65f6")
+    assert time_state.facts["time_budget"] == "30\u5929\uff1b\u6bcf\u59291\u5c0f\u65f6"
 
     sync_text = "我是大二学生，想在一周内复习数据结构，每天可以学习一小时。我的C语言基础还可以，但链表和树比较薄弱。我喜欢先看例题，再完成练习。"
     sync_profile = build_profile_v2(course={"course_name": "数据结构", "course_id": "subject_ds"}, session_id="sync_a")

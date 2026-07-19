@@ -669,7 +669,7 @@ export default function LecturePage() {
 
   useEffect(() => {
     if (!focusedTask || !currentSection || !sessionId || !lectureLoaded || lecture || generating) return;
-    const key = `${sessionId}:${focusedStageId}:${activeSectionId}`;
+    const key = `${sessionId}:${focusedSubjectId}:${focusedPathId}:${focusedStageId}:${focusedTaskId}:${activeSectionId}`;
     if (focusedGenerationRef.current === key) return;
     focusedGenerationRef.current = key;
     void handleGenerate();

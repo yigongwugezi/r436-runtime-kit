@@ -88,6 +88,7 @@ SUPPLEMENTAL_FIELD_DEFS: dict[str, dict[str, str]] = {
 }
 
 CORE_FIELDS = {"background", "target_course", "knowledge_base"}
+PROFILE_COMPLETENESS_FIELDS = tuple(key for key in PROFILE_FIELD_DEFS if key != "learning_history")
 PLAN_READY_FIELDS = {"background", "target_course", "knowledge_base", "learning_goal", "time_budget"}
 
 # 浅层回答模式——这些值说明学生只是应付，没有给出有深度的信息
@@ -1218,12 +1219,12 @@ class ConversationStore:
             state.profile_dirty = True
 
     def _merge_time_budget(self, old_value: str, new_value: str) -> str:
+        old_value = self._clean_time_value(old_value)
         if not old_value:
             return new_value
         parts = [part.strip() for part in re.split(r"[；;]", old_value) if part.strip()]
-        if any(new_value == part or new_value in part or part in new_value for part in parts):
-            return old_value
-        return f"{old_value}；{new_value}"
+        new_parts = [part.strip() for part in re.split(r"[；;]", new_value) if part.strip()]
+        return "；".join(dict.fromkeys([*parts, *new_parts]))
 
     def _merge_list_fact(self, old_value: str, new_value: str) -> str:
         if not old_value:
@@ -1346,7 +1347,7 @@ class ConversationStore:
         # remains a score for the legacy conversation contract only.
         filled = {
             key for key, value in state.facts.items()
-            if key in PROFILE_FIELD_DEFS and value and str(value).strip()
+            if key in PROFILE_COMPLETENESS_FIELDS and value and str(value).strip()
         }
         missing_core = [key for key in CORE_FIELDS if key not in filled]
 
@@ -1365,13 +1366,13 @@ class ConversationStore:
         # True readiness: all PLAN_READY_FIELDS are deep-filled
         ready_to_plan = PLAN_READY_FIELDS.issubset(deep_filled)
 
-        score = round(len(filled) / len(PROFILE_FIELD_DEFS), 2)
-        depth_score = round(len(deep_filled) / max(1, len(PROFILE_FIELD_DEFS)), 2)
+        score = round(len(filled) / len(PROFILE_COMPLETENESS_FIELDS), 2)
+        depth_score = round(len(deep_filled) / max(1, len(PROFILE_COMPLETENESS_FIELDS)), 2)
 
         return {
             "filledCount": len(filled),
             "deepFilledCount": len(deep_filled),
-            "totalCount": len(PROFILE_FIELD_DEFS),
+            "totalCount": len(PROFILE_COMPLETENESS_FIELDS),
             "score": score,
             "depthScore": depth_score,
             "missingCore": missing_core,
@@ -1446,7 +1447,11 @@ class ConversationStore:
         return cleaned
 
     def _clean_time_value(self, value: str) -> str:
-        return value.strip(" ：:，。,.!?！？；;")
+        matches = re.findall(
+            r"(?:每天\s*)?\d+\s*(?:天|日|周|个?月|小时|分钟)",
+            str(value or ""),
+        )
+        return "；".join(dict.fromkeys(match.strip() for match in matches))
 
     def _is_learning_background(self, value: str) -> bool:
         cleaned = self._clean_fact_value(value)

@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { disableProfileExtraction } from '../../api/learningPath';
 import { startWorkflow } from '../../api/workflows';
 import { useSubjectStore } from '../../store/subjectStore';
+import { useChatStore } from '../../store/chatStore';
 import { isSpecificLearningGoal, isUsableProfileValue, profileCompleteness } from '../../utils/profileCompleteness';
 import { Sparkles, ChevronRight, CheckCircle2, Circle, AlertCircle } from 'lucide-react';
 
@@ -158,6 +159,7 @@ function DimSection({ dimKey, label, fact, rich, onProbe }: {
 export default function ProfilePanel({ sessionId }: { sessionId: string }) {
   const nav = useNavigate();
   const subjectId = useSubjectStore((s) => s.activeSubject?.id ?? s.activeClassSubject?.subject);
+  const dataVersion = useChatStore((s) => s.dataVersion);
   const [facts, setFacts] = useState<Record<string, string>>({});
   const [richFacts, setRichFacts] = useState<Record<string, any>>({});
   const [factsSessionId, setFactsSessionId] = useState('');
@@ -184,9 +186,8 @@ export default function ProfilePanel({ sessionId }: { sessionId: string }) {
       finally { if (!cancelled) setLoading(false); }
     };
     poll();
-    const iv = setInterval(poll, 3000);
-    return () => { cancelled = true; clearInterval(iv); };
-  }, [sessionId]);
+    return () => { cancelled = true; };
+  }, [sessionId, dataVersion]);
 
   const currentFacts = factsSessionId === sessionId ? facts : {};
   const currentRichFacts = factsSessionId === sessionId ? richFacts : {};

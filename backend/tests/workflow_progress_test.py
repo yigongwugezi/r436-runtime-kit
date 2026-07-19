@@ -90,6 +90,9 @@ def main() -> None:
     lecture_payload = {**payload, "taskId": "task-d"}
     assert manager.canonical_task_key("lecture_generation", "learner-d", "session-d", "subject-d", lecture_payload) == manager.canonical_task_key("lecture_generation", "learner-d", "session-d", "subject-d", {**lecture_payload, "requirements": "changed", "sectionTitle": "changed"})
     assert manager.canonical_task_key("lecture_generation", "learner-d", "session-d", "subject-d", lecture_payload) != manager.canonical_task_key("lecture_generation", "learner-d", "session-d", "subject-d", {**lecture_payload, "taskId": "task-e"})
+    path_payload = {"mode": "regenerate", "pathId": "temporary-name", "targetTopics": ["calculus"]}
+    assert manager.canonical_task_key("learning_path_generation", "learner-d", "session-d", "subject-d", path_payload) == manager.canonical_task_key("learning_path_generation", "learner-d", "session-d", "subject-d", {"mode": "preview", "targetTopics": ["linear algebra"]})
+    assert manager.canonical_task_key("learning_path_generation", "learner-d", "session-d", "subject-d", path_payload) != manager.canonical_task_key("learning_path_generation", "learner-d", "session-e", "subject-d", path_payload)
 
     dedupe = WorkflowTaskManager()
     gate = threading.Event()

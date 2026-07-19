@@ -613,7 +613,7 @@ export default function LearningPathPage() {
                   <h2 className="text-sm font-bold leading-6 text-surface-800">{nextTask.title}</h2>
                   <p className="mt-2 text-xs leading-6 text-surface-400">{nextTask.goal || '优先处理最新学习任务'}</p>
                   <p className="mt-3 text-xs font-semibold text-surface-400"><span className="text-primary-500">{kindMeta(nextTask.type || 'read_doc').label}</span> · {nextTask.estimated_minutes}分钟</p>
-                  <button type="button" onClick={() => nav(`/lecture/section/${encodeURIComponent(nextTask.task_id || nextTask.title)}`)}
+                  <button type="button" onClick={() => openTask(nextTask, { stageId: nextTask.stageId })}
                     className="mt-5 flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-primary-500 to-accent-500 text-sm font-bold text-white shadow-[0_0_24px_rgba(52,120,246,0.3)] hover:shadow-[0_0_32px_rgba(167,139,250,0.3)] transition-all">
                     开始学习 <ArrowRight size={16} />
                   </button>

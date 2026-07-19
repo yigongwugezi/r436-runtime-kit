@@ -131,10 +131,21 @@ class WorkflowTaskManager:
         payload: dict[str, Any] | None,
     ) -> dict[str, str | int]:
         source = payload or {}
+        if workflow_type == "learning_path_generation":
+            return {
+                "version": 1,
+                "user": hashlib.sha256(cls._value(user_scope).encode("utf-8")).hexdigest(),
+                "workflow": cls._value(workflow_type),
+                "operation": "default",
+                "session": cls._value(session_scope),
+                "subject": cls._value(subject_scope),
+                "path": "", "stage": "", "chapter": "", "section": "", "task": "",
+                "resource": "", "resource_type": "", "input_fingerprint": "",
+            }
         operation = cls._value(source.get("operation") or source.get("mode"))
         if not operation:
             operation = "preview" if source.get("preview") is True else "apply" if source.get("preview") is False else "regenerate" if source.get("regenerate") else "default"
-        input_fingerprint = "" if workflow_type == "lecture_generation" else hashlib.sha256(
+        input_fingerprint = "" if workflow_type in {"lecture_generation", "learning_path_generation"} else hashlib.sha256(
             json.dumps(cls._normalized(source), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
         return {
