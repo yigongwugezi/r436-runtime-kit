@@ -29,7 +29,11 @@ test('workspace callers require the canonical scope', () => {
   const learningPath = readFileSync(new URL('../src/pages/LearningPathPage.tsx', import.meta.url), 'utf8');
   assert.match(learningPath, /dayId, globalDayIndex/);
   assert.match(lecture, /resolveCanonicalLearningTaskScope\(path/);
+  assert.match(lecture, /canonicalScopePending = taskWorkspaceRequest && canonicalPathLoading/);
+  assert.match(lecture, /taskScopeInvalid = taskWorkspaceRequest && !canonicalPathLoading && !canonicalTaskScope/);
   assert.match(lecture, /if \(workspaceScopeInvalid\) return;/);
   assert.match(lecture, /if \(workspaceScopeInvalid\) \{/);
   assert.doesNotMatch(lecture, /taskDayScope\(path, resourceTaskId\)/);
+  assert.match(lecture, /onComplete=\{\(\) => \{ if \(executionMode !== 'video'\) void completeFocusedTask\(\); \}\}/);
+  assert.doesNotMatch(lecture, /event: 'section_complete'/);
 });

@@ -4950,6 +4950,16 @@ def complete_learning_path_task(task_id: str, payload: dict[str, Any], auth: Aut
             db, session_id=scope.session_id, subject_id=scope.subject_id, path_id=path_id,
             stage_id=stage_id, task_id=task_id, source=source, preserve_mastery=True,
         )
+        if task_type == "read_doc":
+            event = db.query(LearningEventModel).filter(
+                LearningEventModel.session_id == scope.session_id,
+                LearningEventModel.event_type == "task_complete",
+                LearningEventModel.resource_id == f"{path.id}:{task_id}",
+            ).first()
+            if event:
+                event.metadata_ = {**(event.metadata_ or {}), "lectureResourceId": lecture.id,
+                    "evidenceType": str(payload.get("evidenceType") or "lecture_loaded_explicit_completion")}
+                flag_modified(event, "metadata_")
         path.overall_progress = result["pathProgress"]["taskProgressPercent"]
         db.commit()
         normalized = normalize_learning_path({"id": path.id, "estimatedDays": path.estimated_days, "stages": path.stages})

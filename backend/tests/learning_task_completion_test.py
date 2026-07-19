@@ -35,7 +35,8 @@ def main():
     try:
         task = db.get(LearningPathModel, path).stages[0]["days"][0]["tasks"][0]
         assert task["status"] == "completed" and task["mastery"] == 0
-        assert db.query(LearningEventModel).filter(LearningEventModel.event_type == "task_complete").count() == 1
+        event = db.query(LearningEventModel).filter(LearningEventModel.event_type == "task_complete").one()
+        assert event.metadata_["lectureResourceId"] == "lecture" and event.metadata_["evidenceType"] == "lecture_loaded_explicit_completion"
     finally: db.close()
     print("learning task completion: PASS")
 if __name__ == "__main__":

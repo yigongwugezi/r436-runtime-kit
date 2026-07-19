@@ -18,7 +18,6 @@ import TextbookTocPanel from '../components/learning/TextbookTocPanel';
 import { getTextbookTOC, getTextbookContent } from '../api/textbooks';
 import type { TextbookTOC } from '../types/textbook';
 import GeneratePanel, { type GeneratePanelHandle } from '../components/learning/GeneratePanel';
-import { logStudyEvent } from '../api/feedback';
 import DailyTaskPage from './DailyTaskPage';
 import FocusSprintPage from './FocusSprintPage';
 import WorkflowProgress from '../components/common/WorkflowProgress';
@@ -113,7 +112,7 @@ export default function LecturePage() {
   const { chapterId, sectionId } = useParams<{ chapterId?: string; sectionId?: string }>();
   const nav = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { path, updateKnowledgePoint, fetchPath } = useLearningPath();
+  const { path, loading: canonicalPathLoading, updateKnowledgePoint, fetchPath } = useLearningPath();
   const storedSessionId = useChatStore((s) => s.dataSessionId);
   const routeSessionId = searchParams.get('sessionId') || '';
   const sessionId = storedSessionId;
@@ -331,7 +330,8 @@ export default function LecturePage() {
   const prevSection = currentIdx > 0 ? sections[currentIdx - 1] : null;
   const nextSection = currentIdx < sections.length - 1 ? sections[currentIdx + 1] : null;
   const [taskScopeRejected, setTaskScopeRejected] = useState(false);
-  const taskScopeInvalid = taskWorkspaceRequest && !canonicalTaskScope;
+  const canonicalScopePending = taskWorkspaceRequest && canonicalPathLoading;
+  const taskScopeInvalid = taskWorkspaceRequest && !canonicalPathLoading && !canonicalTaskScope;
   const workspaceScopeInvalid = taskScopeInvalid || taskScopeRejected;
   const taskScopeMessage = '\u5b66\u4e60\u8def\u5f84\u5df2\u66f4\u65b0\uff0c\u8bf7\u8fd4\u56de\u5b66\u4e60\u8def\u5f84\u91cd\u65b0\u9009\u62e9\u4efb\u52a1\u3002';
   const resourceTaskId = focusedTaskId || (taskWorkspaceRequest ? '' : activeSectionId);
@@ -816,8 +816,11 @@ export default function LecturePage() {
     try {
       await completeLearningPathTask(focusedTaskId, {
         ...canonicalRequestScope!,
+        taskType: String(canonicalTaskScope.task.type || canonicalTaskScope.task.task_type || ''),
+        evidenceType: 'lecture_loaded_explicit_completion',
       });
       await fetchPath(true);
+      useChatStore.getState().bumpDataVersion();
     } catch (error: any) {
       if (error?.response?.status === 409) setTaskScopeRejected(true);
       else setFocusedCompletionError(error?.response?.data?.detail || error?.message || '完成失败，请稍后重试。');
@@ -829,6 +832,10 @@ export default function LecturePage() {
   const typeLabel = (t: string) => t === 'choice' ? '选择题' : t === 'truefalse' ? '判断题' : t === 'fill' ? '填空题' : '简答题';
 
   // ── Mode delegation ──
+  if (canonicalScopePending) {
+    return <main className="m-auto flex items-center gap-2 text-sm text-surface-500"><Loader2 size={16} className="animate-spin" />正在加载学习任务…</main>;
+  }
+
   if (workspaceScopeInvalid) {
     return <main className="m-auto max-w-sm rounded-2xl bg-white p-8 text-center shadow-soft">
       <p className="text-sm text-surface-600">{taskScopeMessage}</p>
@@ -1294,24 +1301,7 @@ export default function LecturePage() {
               {executionMode === 'video' && videoLectureFallback && <p className="mb-3 rounded-lg bg-blue-50 px-3 py-2 text-sm text-blue-700">当前使用图文讲解替代视频学习</p>}
               <SectionContentRouter
                 content={sectionContent}
-                onComplete={() => {
-                  if (currentSection?.id && updateKnowledgePoint) {
-                    (currentSection.knowledgePoints || []).forEach((kp: any) => {
-                      updateKnowledgePoint(kp.id || kp.name, { status: 'mastered' });
-                    });
-                  }
-                  if (executionMode === 'video') return;
-                  logStudyEvent({
-                    sessionId: sessionId || '',
-                    event: 'section_complete',
-                    resourceId: activeSectionId,
-                    metadata: {
-                      title: currentSection?.title || '',
-                      content_type: contentType,
-                      task_type: (currentSection as any)?.task_type || '',
-                    },
-                  }).catch(() => {});
-                }}
+                onComplete={() => { if (executionMode !== 'video') void completeFocusedTask(); }}
               />
               {/* ── 划词引用栏 ── */}
               {quotedText && quotePos && (
