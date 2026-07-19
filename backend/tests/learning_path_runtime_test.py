@@ -42,11 +42,11 @@ def main() -> None:
         response = product._generate_learning_path(
             {"sessionId": "session-test", "subjectId": "subject-test", "userMessage": "学习数据结构", "pathMode": "textbook"}, None
         )
-    path = response["data"]["path"]
+    path_id = response["data"]["pathId"]
     db = session_factory()
     try:
         saved = get_latest_learning_path(db, "session-test")
-        assert saved and saved.id == path["id"] and saved.stages
+        assert saved and saved.id == path_id and saved.stages
     finally:
         db.close()
 
@@ -69,8 +69,7 @@ def main() -> None:
         resp2 = product._generate_learning_path(
             {"sessionId": "session-resource", "subjectId": "subject-math", "userMessage": "学习高等数学"}, None
         )
-    path2 = resp2["data"]["path"]
-    assert path2["id"]  # path persisted
+    assert resp2["data"]["pathId"]  # path persisted
     assert resp2["data"].get("generated")  # generation flag
     print("  path generation without resource pre-generation: ok")
 
@@ -110,14 +109,18 @@ def main() -> None:
         resp3 = product._generate_learning_path(
             {"sessionId": "session-unified", "subjectId": "subject-physics", "userMessage": "学习大学物理"}, None
         )
-    path3 = resp3["data"]["path"]
-    stages = path3.get("stages", [])
+    db = session_factory()
+    try:
+        path3 = get_latest_learning_path(db, "session-unified", "subject-physics")
+        stages = path3.stages if path3 else []
+    finally:
+        db.close()
     assert len(stages) == 1
     assert stages[0].get("chapters")  # has chapters
     assert len(stages[0]["chapters"]) == 1
     ch = stages[0]["chapters"][0]
     assert ch.get("sections")  # has sections
-    assert ch["sections"][0].get("knowledgePoints")  # has knowledge points
+    assert ch["sections"][0].get("knowledge_points")  # has knowledge points
     print("  unified path structure (stages→chapters→sections→knowledgePoints): ok")
 
     # ── Test 6: Dynamic stage count scales with total_days ──

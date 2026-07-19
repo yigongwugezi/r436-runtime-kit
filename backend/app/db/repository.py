@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.db.models import (
     AnswerRecordModel,
     AttemptModel,
+    CurrentLearningPathModel,
     DailyTaskModel,
     DiagnosisEvidenceModel,
     DiagnosisSnapshotModel,
@@ -37,6 +38,10 @@ from app.db.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class CurrentPathUnresolvedError(RuntimeError):
+    """A legacy scope has no explicit current-path pointer."""
 
 
 def _utcnow() -> datetime:
@@ -582,6 +587,82 @@ def get_latest_learning_path(db: Session, session_id: str, subject_id: str = "")
     # Without a canonical pointer, an ambiguous session must not silently
     # replace one active path with whichever row happened to update last.
     return paths[0] if len(paths) == 1 else None
+
+
+def persist_generated_learning_path(
+    db: Session, *, learner_id: str, session_id: str, subject_id: str,
+    workflow_id: str, path_data: dict[str, Any],
+) -> LearningPathModel:
+    """Persist a generated path and replace its current pointer atomically.
+
+    The caller owns the transaction; this function never commits independently.
+    """
+    if not learner_id or not session_id or not subject_id or not workflow_id:
+        raise ValueError("learner_id, session_id, subject_id and workflow_id are required")
+    stages = path_data.get("stages")
+    if not isinstance(stages, list) or not stages:
+        raise ValueError("generated learning path must contain stages")
+    session = db.get(SessionModel, session_id)
+    if session is None:
+        session = SessionModel(id=session_id, learner_id=learner_id, subject_id=subject_id)
+        db.add(session)
+        db.flush()
+    if session.learner_id and session.learner_id != learner_id:
+        raise ValueError("session is outside learner scope")
+    digest = hashlib.sha256(f"{learner_id}|{session_id}|{subject_id}|{workflow_id}|1".encode()).hexdigest()[:32]
+    path_id = f"path_{digest}"
+    path = db.get(LearningPathModel, path_id)
+    if path is None:
+        path = LearningPathModel(
+            id=path_id, session_id=session_id, subject_id=subject_id,
+            source_workflow_id=workflow_id, course_id=str(path_data.get("course_id") or ""),
+            course_name=str(path_data.get("course_name") or ""), description=path_data.get("description"),
+            stages=stages, overall_progress=int(path_data.get("overallProgress") or 0),
+            estimated_days=int(path_data.get("estimatedDays") or 14), current_version=1,
+        )
+        db.add(path)
+        db.flush()
+    pointer = db.query(CurrentLearningPathModel).filter_by(
+        learner_id=learner_id, session_id=session_id, subject_id=subject_id,
+    ).one_or_none()
+    if pointer is None:
+        pointer = CurrentLearningPathModel(
+            learner_id=learner_id, session_id=session_id, subject_id=subject_id,
+            path_id=path.id, path_version=path.current_version or 1, source_workflow_id=workflow_id,
+        )
+        db.add(pointer)
+    else:
+        pointer.path_id = path.id
+        pointer.path_version = path.current_version or 1
+        pointer.source_workflow_id = workflow_id
+    db.flush()
+    return path
+
+
+def resolve_current_learning_path(
+    db: Session, *, learner_id: str, session_id: str, subject_id: str, path_id: str = "",
+) -> LearningPathModel | None:
+    """Resolve only an explicitly selected path; legacy rows are never guessed."""
+    if path_id:
+        path = db.get(LearningPathModel, path_id)
+        if path is None or path.session_id != session_id or path.subject_id != subject_id:
+            return None
+        return path
+    pointer = db.query(CurrentLearningPathModel).filter_by(
+        learner_id=learner_id, session_id=session_id, subject_id=subject_id,
+    ).one_or_none()
+    if pointer:
+        path = db.get(LearningPathModel, pointer.path_id)
+        if path and path.session_id == session_id and path.subject_id == subject_id:
+            return path
+        raise CurrentPathUnresolvedError("current path pointer is invalid")
+    scoped = db.query(LearningPathModel).filter_by(session_id=session_id, subject_id=subject_id).all()
+    if len(scoped) == 1:
+        return scoped[0]
+    legacy_count = db.query(LearningPathModel).filter_by(session_id=session_id, subject_id="").count()
+    if len(scoped) > 1 or legacy_count:
+        raise CurrentPathUnresolvedError("CURRENT_PATH_UNRESOLVED")
+    return None
 
 
 # ── Resources ────────────────────────────────────────────────────────────

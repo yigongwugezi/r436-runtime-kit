@@ -59,6 +59,8 @@ from app.db.repository import (
     upsert_learning_path,
     update_task_completion as repo_update_task_completion,
     delete_session as repo_delete_session,
+    CurrentPathUnresolvedError,
+    persist_generated_learning_path,
 )
 from app.services.agent_service import (
     get_analytics as ag_get_analytics,
@@ -5205,7 +5207,10 @@ def get_learning_path(sessionId: str = "", subjectId: str = "", pathId: str = ""
                 "pathVersion": base.get("pathVersion", int(time.time() * 1000)),
             }
 
-        db_path = ag_get_learning_path(session_id, subjectId, pathId)
+        try:
+            db_path = ag_get_learning_path(session_id, subjectId, pathId)
+        except CurrentPathUnresolvedError as exc:
+            raise HTTPException(status_code=409, detail={"code": "CURRENT_PATH_UNRESOLVED"}) from exc
         if pathId and not db_path:
             raise HTTPException(status_code=404, detail="learning path is outside the requested scope")
         if db_path:
@@ -5249,22 +5254,10 @@ def get_learning_path(sessionId: str = "", subjectId: str = "", pathId: str = ""
                 session_id=session_id, subject_id=subjectId, source="db",
             )
 
-        state = conversation_store.get(session_id)
-        if state.last_result:
-            path = _to_learning_path(state.last_result)
-            if not path.get("stages"):
-                return _product_response({"path": _empty_learning_path(session_id)}, session_id=session_id, subject_id=subjectId, source="none")
-            path["source"] = "agent_generated"
-            path["day_plan"] = state.last_result.get("day_plan")
-            path["diagnosis"] = state.last_result.get("diagnosis", {})
-            path["stages"] = _apply_node_progress(path["stages"], session_id)
-            all_nodes = [n for s in path["stages"] for n in s.get("nodes", [])]
-            mastered = sum(1 for n in all_nodes if n.get("status") == "mastered")
-            path["overallProgress"] = round(mastered / len(all_nodes) * 100) if all_nodes else 0
-            return _product_response({"path": path}, session_id=session_id, subject_id=subjectId, source="agent")
-
         return _product_response({"path": _empty_learning_path(session_id)}, session_id=session_id, subject_id=subjectId, source="none")
 
+    except HTTPException:
+        raise
     except Exception:
         logger.warning(
             "get_learning_path failed for sessionId=%s subjectId=%s",
@@ -5369,25 +5362,32 @@ def _generate_learning_path(payload: dict[str, Any], auth: AuthContext, workflow
         error.safe_error_message = "路径生成服务暂不可用，未保存空路径。"
         raise error
     # ── 异步触发资源生成（如果上面的调用链快速返回但资源未完成）──
-    path["id"] = f"path_{session_id}"
     path["courseId"] = course_id or str(result.get("course_id", ""))
     normalized = normalize_learning_path({
-        "id": path["id"], "estimatedDays": path["estimatedDays"],
+        "id": "generated", "estimatedDays": path["estimatedDays"],
         "dailyMinutes": path.get("dailyMinutes", 60), "stages": result.get("learning_path", []),
     })
     path["stages"] = _raw_stages_to_nodes(normalized["stages"])
     path["estimatedDays"] = normalized["path"]["estimatedDays"]
     db = SessionLocal()
     try:
-        saved = upsert_learning_path(db, session_id, {
-            "id": path["id"], "course_id": path["courseId"], "course_name": path["courseName"],
+        workflow_id = str(getattr(workflow_task, "task_id", "") or payload.get("generationId") or "synchronous")
+        session = db.get(SessionModel, session_id)
+        learner_id = str(getattr(auth, "learner_id", "") or (session.learner_id if session else "") or "anonymous")
+        saved = persist_generated_learning_path(db, learner_id=learner_id, session_id=session_id, subject_id=subject_id, workflow_id=workflow_id, path_data={
+            "course_id": path["courseId"], "course_name": path["courseName"],
             "description": path["description"], "stages": normalized["stages"],
             "overallProgress": path["overallProgress"], "estimatedDays": path["estimatedDays"],
         })
+        db.commit()
+        saved_id = saved.id
+        saved_version = saved.current_version
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
-    path["id"] = saved.id
-    return _product_response({"path": path, "pathId": saved.id, "generated": True}, session_id=session_id, subject_id=subject_id, source="agent")
+    return _product_response({"persisted": True, "pathId": saved_id, "pathVersion": saved_version, "subjectId": subject_id, "sourceWorkflowId": workflow_id, "generated": True}, session_id=session_id, subject_id=subject_id, source="agent")
 
 
 @router.post("/learning-path/generate")
