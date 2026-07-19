@@ -6,11 +6,15 @@ test('video fallback uses one delivery mode and never exposes ordinary generatio
   const page = readFileSync(new URL('../src/pages/LecturePage.tsx', import.meta.url), 'utf8');
   const api = readFileSync(new URL('../src/api/learningPath.ts', import.meta.url), 'utf8');
   assert.match(api, /return data\?\.data \|\| data/);
+  assert.match(api, /setVideoDeliveryMode/);
   assert.match(page, /const deliveryMode =/);
   assert.match(page, /if \(deliveryMode !== 'lecture'\) return/);
   assert.match(page, /deliveryMode !== 'video_fallback_lecture'/);
   assert.match(page, /if \(executionMode === 'video'\) return/);
   assert.match(page, /const selectVideoFallback/);
+  assert.match(page, /const selectVideoMode/);
+  assert.match(page, /persistVideoDeliveryMode\(resourceTaskId, canonicalRequestScope, 'video'\)/);
+  assert.match(page, /返回视频学习/);
   assert.match(page, /workflowType: 'video_fallback_lecture'/);
   assert.match(page, /recoveryKey: \[canonicalRequestScope\.dayId, canonicalRequestScope\.globalDayIndex, resourceTaskId/);
   assert.match(page, /saveWorkflowTask\(\{ \.\.\.fallbackWorkflowScope, taskId: data\.workflowId/);

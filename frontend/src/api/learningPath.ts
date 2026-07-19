@@ -47,6 +47,11 @@ export async function getVideoFallbackState(taskId: string, payload: { sessionId
   return data?.data || data;
 }
 
+export async function setVideoDeliveryMode(taskId: string, payload: { sessionId: string; subjectId: string; pathId: string; stageId: string; dayId: string; globalDayIndex: number }, mode: 'video' | 'video_fallback_lecture'): Promise<any> {
+  const { data } = await client.post(`/api/learning-path/tasks/${encodeURIComponent(taskId)}/delivery-mode`, { ...payload, mode });
+  return data?.data || data;
+}
+
 export async function recordVideoFallbackLectureOpened(taskId: string, payload: { sessionId: string; subjectId: string; pathId: string; stageId: string; dayId?: string; globalDayIndex?: number }): Promise<any> {
   const { data } = await client.post(`/api/learning-path/tasks/${encodeURIComponent(taskId)}/video-fallback-lecture-opened`, payload);
   return data.data;

@@ -4891,6 +4891,35 @@ def record_video_fallback_lecture_opened(task_id: str, payload: dict[str, Any], 
     return _record_video_evidence(task_id, payload, auth, event_type="video_fallback_lecture_opened")
 
 
+@router.post("/learning-path/tasks/{task_id}/delivery-mode")
+def set_video_delivery_mode(task_id: str, payload: dict[str, Any], auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
+    mode = str(payload.get("mode") or "").strip()
+    if mode not in {"video", "video_fallback_lecture"}:
+        raise HTTPException(status_code=422, detail="mode must be video or video_fallback_lecture")
+    canonical, scope = _video_fallback_payload(task_id, payload, auth, require_selected=False)
+    db = SessionLocal()
+    try:
+        if mode == "video_fallback_lecture" and not _video_evidence_exists(db, session_id=scope.session_id, subject_id=scope.subject_id, path_id=canonical["pathId"], stage_id=canonical["stageId"], task_id=task_id, event_type="video_fallback_selected"):
+            raise HTTPException(status_code=409, detail="select text fallback before switching to it")
+        resource_id = f"{canonical['pathId']}:{task_id}:active_delivery_mode"
+        event = db.query(LearningEventModel).filter(LearningEventModel.session_id == scope.session_id,
+            LearningEventModel.event_type == "video_delivery_mode_selected", LearningEventModel.resource_id == resource_id).first()
+        metadata = {"eventType": "video_delivery_mode_selected", "learnerId": auth.learner_id,
+            "sessionId": scope.session_id, "subjectId": scope.subject_id, "pathId": canonical["pathId"], "stageId": canonical["stageId"],
+            "dayId": canonical["dayId"], "globalDayIndex": canonical["globalDayIndex"], "taskId": task_id, "activeDeliveryMode": mode,
+            "timestamp": datetime.now(timezone.utc).isoformat()}
+        if event:
+            if (event.metadata_ or {}).get("activeDeliveryMode") != mode:
+                event.metadata_ = metadata; flag_modified(event, "metadata_")
+        else:
+            db.add(LearningEventModel(session_id=scope.session_id, learner_id=auth.learner_id, subject_id=scope.subject_id,
+                event_type="video_delivery_mode_selected", resource_id=resource_id, metadata_=metadata))
+        db.commit()
+        return _product_response({"activeDeliveryMode": mode}, session_id=scope.session_id, subject_id=scope.subject_id, source="user_action")
+    finally:
+        db.close()
+
+
 @router.post("/learning-path/tasks/{task_id}/complete")
 def complete_learning_path_task(task_id: str, payload: dict[str, Any], auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
     """Persist one explicit, ready reading-task completion without inflating mastery."""
@@ -8102,7 +8131,7 @@ def ensure_section_lecture(section_id: str, payload: dict[str, Any], auth: AuthC
     return {"status": "running", "workflowId": task.task_id, "lecture": None, "errorCode": None, "errorMessage": None}
 
 
-def _video_fallback_payload(task_id: str, payload: dict[str, Any], auth: AuthContext) -> tuple[dict[str, Any], ResourceScope]:
+def _video_fallback_payload(task_id: str, payload: dict[str, Any], auth: AuthContext, *, require_selected: bool = True) -> tuple[dict[str, Any], ResourceScope]:
     session_id, subject_id = _payload_session_id(payload), _payload_subject_id(payload)
     path_id, stage_id, day_id = (str(payload.get(key) or "").strip() for key in ("pathId", "stageId", "dayId"))
     try:
@@ -8123,7 +8152,7 @@ def _video_fallback_payload(task_id: str, payload: dict[str, Any], auth: AuthCon
         task_type = str(entry["task"].get("task_type") or entry["task"].get("type") or "").lower()
         if task_type not in {"video", "watch_video"}:
             raise HTTPException(status_code=409, detail={"code": "TASK_TYPE_NOT_VIDEO", "message": "video task required"})
-        if not _video_evidence_exists(db, session_id=scope.session_id, subject_id=scope.subject_id, path_id=path_id, stage_id=stage_id, task_id=task_id, event_type="video_fallback_selected"):
+        if require_selected and not _video_evidence_exists(db, session_id=scope.session_id, subject_id=scope.subject_id, path_id=path_id, stage_id=stage_id, task_id=task_id, event_type="video_fallback_selected"):
             raise HTTPException(status_code=409, detail={"code": "FALLBACK_NOT_SELECTED", "message": "select text fallback before generating a lecture"})
         task = entry["task"]
         title = str(task.get("title") or task.get("goal") or "视频学习图文讲解").strip()
@@ -8155,11 +8184,16 @@ def ensure_video_fallback_lecture(task_id: str, payload: dict[str, Any], auth: A
 
 @router.get("/learning-path/tasks/{task_id}/video-fallback/state")
 def video_fallback_state(task_id: str, sessionId: str, subjectId: str, pathId: str, stageId: str, dayId: str, globalDayIndex: int, auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
-    payload, scope = _video_fallback_payload(task_id, {"sessionId": sessionId, "subjectId": subjectId, "pathId": pathId, "stageId": stageId, "dayId": dayId, "globalDayIndex": globalDayIndex}, auth)
+    payload, scope = _video_fallback_payload(task_id, {"sessionId": sessionId, "subjectId": subjectId, "pathId": pathId, "stageId": stageId, "dayId": dayId, "globalDayIndex": globalDayIndex}, auth, require_selected=False)
     db = SessionLocal()
     try:
         lecture = next((item for item in db.query(ResourceModel).filter(ResourceModel.session_id == scope.session_id, ResourceModel.task_id == task_id, ResourceModel.type == "lecture").order_by(ResourceModel.created_at.desc()) if (item.resource_metadata or {}).get("deliveryMode") == "video_fallback_lecture"), None)
-        return {"selected": True, "lecture": {"id": lecture.id, "content": lecture.content} if lecture and lecture.content else None}
+        selected = _video_evidence_exists(db, session_id=scope.session_id, subject_id=scope.subject_id, path_id=pathId, stage_id=stageId, task_id=task_id, event_type="video_fallback_selected")
+        mode_event = next((event for event in db.query(LearningEventModel).filter(LearningEventModel.session_id == scope.session_id, LearningEventModel.event_type == "video_delivery_mode_selected").order_by(LearningEventModel.created_at.desc()) if (event.metadata_ or {}).get("subjectId") == scope.subject_id and (event.metadata_ or {}).get("pathId") == pathId and (event.metadata_ or {}).get("stageId") == stageId and (event.metadata_ or {}).get("taskId") == task_id), None)
+        active_mode = (mode_event.metadata_ or {}).get("activeDeliveryMode") if mode_event else ("video_fallback_lecture" if selected else "video")
+        recommendations = any((item.resource_metadata or {}).get("canonicalScope", {}).get("pathId") == pathId and (item.resource_metadata or {}).get("canonicalScope", {}).get("stageId") == stageId and (item.resource_metadata or {}).get("canonicalScope", {}).get("dayId") == dayId and (item.resource_metadata or {}).get("canonicalScope", {}).get("globalDayIndex") == globalDayIndex for item in db.query(ResourceModel).filter(ResourceModel.session_id == scope.session_id, ResourceModel.task_id == task_id, ResourceModel.type == "video"))
+        fallback_resource = {"id": lecture.id, "content": lecture.content} if lecture and lecture.content else None
+        return {"selected": selected, "fallbackSelected": selected, "activeDeliveryMode": active_mode, "lecture": fallback_resource, "fallbackResource": fallback_resource, "videoRecommendations": recommendations}
     finally:
         db.close()
 
