@@ -252,10 +252,16 @@ export default function LearningPathPage() {
     );
   }
 
-  const openTask = (task: any, stage: any) => nav(learningTaskRoute(task.type || 'read_doc', {
-    sessionId, subjectId: subject.subject_id, pathId: path?.id, stageId: stage.stageId || stage.id,
-    taskId: task.task_id || task.id, sectionId: task.section_id || task.task_id || task.id, taskType: task.type,
-  }));
+  const openTask = (task: any, stage: any) => {
+    const dayId = task.dayId || task.day_id || '';
+    const globalDayIndex = Number(task.globalDayIndex);
+    if (!dayId || !Number.isFinite(globalDayIndex)) return;
+    nav(learningTaskRoute(task.type || 'read_doc', {
+      sessionId, subjectId: subject.subject_id, pathId: path?.id, stageId: stage.stageId || stage.id,
+      taskId: task.id || task.task_id, sectionId: task.section_id || task.id || task.task_id, taskType: task.type,
+      dayId, globalDayIndex,
+    }));
+  };
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto bg-surface-50 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">

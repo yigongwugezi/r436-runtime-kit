@@ -42,9 +42,14 @@ export function groupTasksByDay(stages) {
     stageId: String(stage?.id || stage?.stage_id || `stage-${stageIdx}`),
     stageTitle: String(stage?.title || `阶段 ${stageIdx + 1}`),
     stageIdx,
-    days: array(stage?.days).map((day, dayIdx) => ({
-      dayIndex: dayNumber(day, dayIdx + 1), globalDayIndex: Number(day?.globalDayIndex) || dayNumber(day, dayIdx + 1), tasks: array(day?.tasks), stageIdx,
-    })),
+    days: array(stage?.days).map((day, dayIdx) => {
+      const dayId = String(day?.id || day?.dayId || '');
+      const globalDayIndex = Number(day?.globalDayIndex) || dayNumber(day, dayIdx + 1);
+      return {
+        dayId, dayIndex: dayNumber(day, dayIdx + 1), globalDayIndex,
+        tasks: array(day?.tasks).map((task) => ({ ...task, dayId, globalDayIndex })), stageIdx,
+      };
+    }),
   }));
 }
 

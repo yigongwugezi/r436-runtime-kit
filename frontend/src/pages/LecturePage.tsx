@@ -27,6 +27,7 @@ import { createLectureEnsureGuard } from '../utils/lectureEnsureGuard';
 import { completeLearningPathTask, recordVideoTaskEvidence } from '../api/learningPath';
 import { resolveTaskExecutionMode } from '../utils/taskExecutionMode';
 import { requestVideoRecommendations, retryVideoRecommendations, videoRecommendationScope } from '../api/videoRecommendations';
+import { resolveCanonicalLearningTaskScope } from '../utils/learningTaskRoute';
 import {
   clearWorkflowTask,
   isActiveWorkflowStatus,
@@ -108,18 +109,6 @@ function legacyStageSection(stage: { id: string; title: string }, sectionId: str
   };
 }
 
-function taskDayScope(path: any, taskId: string): { dayId?: string; globalDayIndex?: number; status?: string; task?: any } {
-  for (const stage of path?.stages ?? []) {
-    for (const day of stage?.days ?? []) {
-      if ((day?.tasks ?? []).some((task: any) => (task.id || task.task_id) === taskId)) {
-        const task = (day?.tasks ?? []).find((item: any) => (item.id || item.task_id) === taskId);
-        return { dayId: day.id || day.dayId, globalDayIndex: day.globalDayIndex, status: task?.status, task };
-      }
-    }
-  }
-  return {};
-}
-
 export default function LecturePage() {
   const { chapterId, sectionId } = useParams<{ chapterId?: string; sectionId?: string }>();
   const nav = useNavigate();
@@ -128,14 +117,29 @@ export default function LecturePage() {
   const storedSessionId = useChatStore((s) => s.dataSessionId);
   const routeSessionId = searchParams.get('sessionId') || '';
   const sessionId = storedSessionId;
-  const focusedTaskId = searchParams.get('taskId') || sectionId || '';
+  const activeSubject = useSubjectStore((s) => s.activeSubject);
+  const workflowSubjectId = useSubjectStore((s) => s.activeSubject?.id ?? s.activeClassSubject?.subject ?? '');
+  const requestedTaskId = searchParams.get('taskId') || '';
+  const requestedDayId = searchParams.get('dayId') || '';
+  const requestedGlobalDayIndex = Number(searchParams.get('globalDayIndex'));
   const focusedStageId = searchParams.get('stageId') || '';
   const focusedPathId = searchParams.get('pathId') || '';
   const focusedSubjectId = searchParams.get('subjectId') || '';
   const focusedTaskType = searchParams.get('taskType') || 'read_doc';
+  const taskWorkspaceRequest = Boolean(requestedTaskId || focusedPathId || focusedStageId || requestedDayId || searchParams.get('globalDayIndex'));
+  const canonicalTaskScope = useMemo(() => resolveCanonicalLearningTaskScope(path, {
+    sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId, stageId: focusedStageId,
+    taskId: requestedTaskId, dayId: requestedDayId, globalDayIndex: requestedGlobalDayIndex, taskType: focusedTaskType,
+  }), [path, sessionId, focusedSubjectId, workflowSubjectId, focusedPathId, focusedStageId, requestedTaskId, requestedDayId, requestedGlobalDayIndex, focusedTaskType]);
+  const focusedTaskId = canonicalTaskScope?.taskId || '';
+  const canonicalRequestScope = canonicalTaskScope && {
+    sessionId: canonicalTaskScope.sessionId, subjectId: canonicalTaskScope.subjectId, pathId: canonicalTaskScope.pathId,
+    stageId: canonicalTaskScope.stageId, dayId: canonicalTaskScope.dayId, globalDayIndex: canonicalTaskScope.globalDayIndex, taskId: canonicalTaskScope.taskId,
+  };
+  const canonicalScopeKey = canonicalTaskScope ? [canonicalTaskScope.sessionId, canonicalTaskScope.subjectId, canonicalTaskScope.pathId, canonicalTaskScope.stageId, canonicalTaskScope.dayId, canonicalTaskScope.globalDayIndex, canonicalTaskScope.taskId].join('|') : '';
   // Task URLs keep their scope for refresh/recovery.  The focused layout is
   // legacy-only; normal learning-path navigation always uses the full workspace.
-  const focusedTask = searchParams.get('legacy') === '1' && Boolean(sessionId && focusedPathId && focusedStageId && focusedTaskId);
+  const focusedTask = searchParams.get('legacy') === '1' && Boolean(canonicalTaskScope);
   const focusedReadingTask = ['reading', 'document', 'lecture', 'read_doc'].includes(focusedTaskType);
   const returnPathMode = ['textbook', 'daily', 'project', 'focus'].includes(searchParams.get('pathMode') || '')
     ? searchParams.get('pathMode')
@@ -230,7 +234,7 @@ export default function LecturePage() {
   }, [searchParams]);
 
   // ── 派生值 ──
-  const cacheKey = `${sessionId || 'anon'}:${activeSectionId}`;
+  const cacheKey = `${sessionId || 'anon'}:${canonicalScopeKey || activeSectionId}`;
   const lecture = store.lectureCache[cacheKey] || '';
   const loadedSectionIds = store.loadedSectionIds;
   const generatedSectionIds = store.generatedSectionIds;
@@ -271,8 +275,6 @@ export default function LecturePage() {
   const [quizTotalScore, setQuizTotalScore] = useState<number | null>(cachedQuiz?.totalScore ?? null);
 
   // ── Textbook mode state ──
-  const activeSubject = useSubjectStore((s) => s.activeSubject);
-  const workflowSubjectId = useSubjectStore((s) => s.activeSubject?.id ?? s.activeClassSubject?.subject ?? '');
   const isTextbookMode = !!activeSubject?.textbookId;
   const [textbookToc, setTextbookToc] = useState<TextbookTOC | null>(null);
 
@@ -318,7 +320,7 @@ export default function LecturePage() {
     }
     const planned = currentSection?.contentType as ContentType | undefined;
     store.setContentType(planned || (lecture ? detectContentType(lecture) : 'lecture'));
-  }, [activeSectionId]);
+  }, [activeSectionId, canonicalScopeKey]);
 
   useEffect(() => {
     setActiveSectionId(sectionId || sections[0]?.id || '');
@@ -328,13 +330,19 @@ export default function LecturePage() {
   const currentIdx = sections.findIndex((s: Section) => s.id === activeSectionId);
   const prevSection = currentIdx > 0 ? sections[currentIdx - 1] : null;
   const nextSection = currentIdx < sections.length - 1 ? sections[currentIdx + 1] : null;
-  const resourceTaskId = focusedTaskId || activeSectionId;
-  const resourceDayScope = useMemo(() => taskDayScope(path, resourceTaskId), [path, resourceTaskId]);
+  const [taskScopeRejected, setTaskScopeRejected] = useState(false);
+  const taskScopeInvalid = taskWorkspaceRequest && !canonicalTaskScope;
+  const workspaceScopeInvalid = taskScopeInvalid || taskScopeRejected;
+  const taskScopeMessage = '\u5b66\u4e60\u8def\u5f84\u5df2\u66f4\u65b0\uff0c\u8bf7\u8fd4\u56de\u5b66\u4e60\u8def\u5f84\u91cd\u65b0\u9009\u62e9\u4efb\u52a1\u3002';
+  const resourceTaskId = focusedTaskId || (taskWorkspaceRequest ? '' : activeSectionId);
+  const resourceDayScope: { dayId?: string; globalDayIndex?: number; status?: string; task?: any } = canonicalTaskScope
+    ? { dayId: canonicalTaskScope.dayId, globalDayIndex: canonicalTaskScope.globalDayIndex, status: canonicalTaskScope.task.status, task: canonicalTaskScope.task }
+    : {};
   const completed = ['completed', 'mastered'].includes(resourceDayScope.status || '');
   const executionMode = resolveTaskExecutionMode(resourceDayScope.task || { type: focusedTaskType });
   useEffect(() => {
-    if (executionMode !== 'quiz' || !sessionId || !focusedPathId || !focusedStageId || !focusedTaskId || !resourceDayScope.globalDayIndex) return;
-    const scope = { sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId, stageId: focusedStageId, taskId: focusedTaskId, dayId: resourceDayScope.dayId, globalDayIndex: resourceDayScope.globalDayIndex };
+    if (workspaceScopeInvalid || executionMode !== 'quiz' || !canonicalTaskScope) return;
+    const scope = canonicalRequestScope!;
     let active = true;
     setQuizError(''); setQuizState('generating');
     ensureScopedLearningPathQuiz(focusedTaskId, scope)
@@ -343,10 +351,10 @@ export default function LecturePage() {
         if (!active) return;
         setQuizId(quiz.quizId); setQuizQuestions(quiz.questions); setQuizAnswers({}); setQuizResults([]); setQuizTotalScore(null); setQuizState('answering');
       })
-      .catch((error: any) => { if (active) { setQuizError(error?.response?.data?.detail || error?.message || '题目加载失败'); setQuizState('failed'); } });
+      .catch((error: any) => { if (active) { if (error?.response?.status === 409) setTaskScopeRejected(true); else { setQuizError(error?.response?.data?.detail || error?.message || '题目加载失败'); setQuizState('failed'); } } });
     return () => { active = false; };
-  }, [executionMode, sessionId, focusedPathId, focusedStageId, focusedTaskId, focusedSubjectId, workflowSubjectId, resourceDayScope.dayId, resourceDayScope.globalDayIndex, quizRetry]);
-  const retryLearningPathQuiz = () => { retryScopedLearningPathQuiz({ sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId, stageId: focusedStageId, taskId: focusedTaskId, dayId: resourceDayScope.dayId, globalDayIndex: resourceDayScope.globalDayIndex }); setQuizRetry((value) => value + 1); };
+  }, [executionMode, canonicalTaskScope, workspaceScopeInvalid, sessionId, focusedPathId, focusedStageId, focusedTaskId, focusedSubjectId, workflowSubjectId, resourceDayScope.dayId, resourceDayScope.globalDayIndex, quizRetry]);
+  const retryLearningPathQuiz = () => { if (!canonicalTaskScope || workspaceScopeInvalid) return; retryScopedLearningPathQuiz({ sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId, stageId: focusedStageId, taskId: focusedTaskId, dayId: resourceDayScope.dayId, globalDayIndex: resourceDayScope.globalDayIndex }); setQuizRetry((value) => value + 1); };
   const [videoResources, setVideoResources] = useState<any[]>([]);
   const [videoStatus, setVideoStatus] = useState<'idle' | 'loading' | 'failed' | 'empty' | 'search_unavailable' | 'no_high_relevance' | 'expanded_no_results' | 'invalid_urls' | 'empty_response' | 'persisted' | 'new_search' | 'stale'>('idle');
   const [videoLectureFallback, setVideoLectureFallback] = useState(false);
@@ -355,8 +363,18 @@ export default function LecturePage() {
   const [videoRetry, setVideoRetry] = useState(0);
   const videoRefreshRequested = useRef(false);
   const [focusedCompletionError, setFocusedCompletionError] = useState('');
+  useEffect(() => {
+    setTaskScopeRejected(false);
+    setQuizQuestions([]); setQuizId(''); setQuizAnswers({}); setQuizResults([]); setQuizTotalScore(null); setQuizError('');
+    setQuizSuggestion(''); setQuizWeakPoints([]); setQuizPathCompletion({}); setQuizRetry(0);
+    setVideoResources([]); setVideoStatus('idle'); setVideoLectureFallback(false); setVideoOpened(false); setVideoFallbackSelected(false); setVideoRetry(0);
+    setLectureLoaded(false); setLectureMissing(false); setLectureEnsureUnavailable(false); setFocusedCompletionError('');
+    quizSubmitIdempotencyKeyRef.current = ''; focusedGenerationRef.current = ''; lastEnsureScope.current = ''; videoRefreshRequested.current = false;
+  }, [canonicalScopeKey]);
   useEffect(() => { setVideoLectureFallback(false); setVideoOpened(false); setVideoFallbackSelected(false); }, [resourceTaskId]);
-  const videoScope = useMemo(() => ({ sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId || path?.id, stageId: focusedStageId || chapterCtx?.stage.id, taskId: resourceTaskId, dayId: resourceDayScope.dayId, globalDayIndex: resourceDayScope.globalDayIndex }), [sessionId, focusedSubjectId, workflowSubjectId, focusedPathId, path?.id, focusedStageId, chapterCtx?.stage.id, resourceTaskId, resourceDayScope.dayId, resourceDayScope.globalDayIndex]);
+  const videoScope = useMemo(() => canonicalRequestScope
+    ? canonicalRequestScope
+    : { sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId || path?.id, stageId: focusedStageId || chapterCtx?.stage.id, taskId: resourceTaskId, dayId: resourceDayScope.dayId, globalDayIndex: resourceDayScope.globalDayIndex }, [canonicalRequestScope, sessionId, focusedSubjectId, workflowSubjectId, focusedPathId, path?.id, focusedStageId, chapterCtx?.stage.id, resourceTaskId, resourceDayScope.dayId, resourceDayScope.globalDayIndex]);
   const videoScopeKey = videoRecommendationScope(videoScope);
   const lectureWorkflowScope: WorkflowTaskScope = {
     workflowType: 'lecture_generation', sessionId, subjectId: workflowSubjectId,
@@ -384,7 +402,7 @@ export default function LecturePage() {
         const latest = await readWorkflow(record.taskId, sessionId);
         if (!active) return;
         if (latest.status === 'completed' && latest.result?.data?.lecture?.content) {
-          store.setLecture(`${sessionId}:${activeSectionId}`, latest.result.data.lecture.content);
+          store.setLecture(cacheKey, latest.result.data.lecture.content);
           store.markGenerated(activeSectionId);
         }
         if (isTerminalWorkflowStatus(latest.status)) clearWorkflowTask(lectureWorkflowScope);
@@ -417,9 +435,10 @@ export default function LecturePage() {
   // ── 加载已有文档（优先读缓存）──
   useEffect(() => {
     if ((executionMode === 'video' && !videoLectureFallback) || executionMode === 'quiz') return;
+    if (workspaceScopeInvalid) return;
     if (!activeSectionId || !sessionId) return;
-    const key = `${sessionId}:${activeSectionId}`;
-    const ensureScope = [sessionId, focusedSubjectId || workflowSubjectId, focusedPathId || path?.id, focusedStageId || chapterCtx?.stage.id, focusedTaskId || activeSectionId].join('|');
+    const key = cacheKey;
+    const ensureScope = [sessionId, focusedSubjectId || workflowSubjectId, focusedPathId || path?.id, focusedStageId || chapterCtx?.stage.id, resourceDayScope.dayId, resourceDayScope.globalDayIndex, resourceTaskId].join('|');
     if (lastEnsureScope.current !== ensureScope) {
       unavailableEnsureGuard.current.retry(ensureScope);
       lastEnsureScope.current = ensureScope;
@@ -429,7 +448,7 @@ export default function LecturePage() {
     if (store.lectureCache[key]) { setLectureLoaded(true); return; }
     if (unavailableEnsureGuard.current.blocks(ensureScope)) { setLectureMissing(true); setLectureEnsureUnavailable(true); setLectureLoaded(true); return; }
     setLectureLoaded(false);
-    ensureLecture(activeSectionId, { sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId || path?.id, stageId: focusedStageId || chapterCtx?.stage.id, taskId: focusedTaskId || activeSectionId })
+    ensureLecture(activeSectionId, canonicalRequestScope || { sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId || path?.id, stageId: focusedStageId || chapterCtx?.stage.id, taskId: resourceTaskId, dayId: resourceDayScope.dayId, globalDayIndex: resourceDayScope.globalDayIndex })
       .then(d => {
         store.markLoaded(activeSectionId);
         if (d?.status === 'running') setLectureMissing(true);
@@ -440,7 +459,9 @@ export default function LecturePage() {
         }
       })
       .catch((error) => {
-        if (error?.response?.status === 404) {
+        if (error?.response?.status === 409) {
+          setTaskScopeRejected(true);
+        } else if (error?.response?.status === 404) {
           unavailableEnsureGuard.current.recordError(ensureScope, 404);
           setLectureMissing(true);
           setLectureEnsureUnavailable(true);
@@ -448,19 +469,19 @@ export default function LecturePage() {
         store.markLoaded(activeSectionId);
       })
       .finally(() => setLectureLoaded(true));
-  }, [activeSectionId, sessionId, focusedTask, focusedPathId, focusedStageId, focusedTaskId, executionMode, videoLectureFallback]);
+  }, [activeSectionId, sessionId, focusedTask, focusedPathId, focusedStageId, resourceTaskId, resourceDayScope.dayId, resourceDayScope.globalDayIndex, workspaceScopeInvalid, executionMode, videoLectureFallback]);
 
   useEffect(() => {
-    if (executionMode !== 'video' || videoLectureFallback || !videoScopeKey) return;
+    if (workspaceScopeInvalid || executionMode !== 'video' || videoLectureFallback || !videoScopeKey) return;
     let active = true;
     setVideoStatus('loading');
     const refresh = videoRefreshRequested.current; videoRefreshRequested.current = false;
     requestVideoRecommendations(videoScope, authHeaders(), refresh)
       .then(({ resources, status, presentationStatus }) => { if (active) { setVideoResources(resources); setVideoStatus(resources.length ? (presentationStatus === 'persisted' || presentationStatus === 'new_search' || presentationStatus === 'stale' ? presentationStatus : 'idle') : ['search_unavailable', 'no_high_relevance', 'expanded_no_results', 'invalid_urls', 'empty_response'].includes(status) ? status as typeof videoStatus : 'empty'); } })
-      .catch(() => { if (active) setVideoStatus('failed'); });
+      .catch((error) => { if (active) { if ((error as any)?.response?.status === 409) setTaskScopeRejected(true); else setVideoStatus('failed'); } });
     return () => { active = false; };
-  }, [executionMode, videoLectureFallback, videoScopeKey, videoRetry]);
-  const retryVideoSearch = () => { videoRefreshRequested.current = true; retryVideoRecommendations(videoScope); setVideoRetry((value) => value + 1); };
+  }, [executionMode, videoLectureFallback, videoScopeKey, videoRetry, workspaceScopeInvalid]);
+  const retryVideoSearch = () => { if (!canonicalTaskScope || workspaceScopeInvalid) return; videoRefreshRequested.current = true; retryVideoRecommendations(videoScope); setVideoRetry((value) => value + 1); };
 
   const totalKps = chapterCtx?.chapter.sections?.reduce((s, sec) => s + (sec.knowledgePoints?.length ?? 0), 0) ?? 0;
   const masteredKps = chapterCtx?.chapter.sections?.reduce((s, sec) => s + (sec.knowledgePoints?.filter(k => k.status === 'mastered').length ?? 0), 0) ?? 0;
@@ -468,6 +489,7 @@ export default function LecturePage() {
 
   const handleGenerate = useCallback(async (cardId?: string, requirements?: string) => {
     if (executionMode === 'video' && !videoLectureFallback) return;
+    if (workspaceScopeInvalid) return;
     if (!currentSection || !sessionId) return;
     if (generating || (lectureWorkflow && isActiveWorkflowStatus(lectureWorkflow.status))) return;
     setGenerating(true);
@@ -483,17 +505,19 @@ export default function LecturePage() {
           sectionTitle: currentSection.title,
           sectionGoal: currentSection.goal || '',
           chapterId: chapterCtx?.chapter.id || '',
-          stageId: chapterCtx?.stage.id || '',
-          pathId: focusedTask ? focusedPathId : path?.id || '',
-          taskId: focusedTask ? focusedTaskId : activeSectionId,
-          subjectId: focusedSubjectId || workflowSubjectId || undefined,
+          stageId: canonicalRequestScope?.stageId || chapterCtx?.stage.id || '',
+          pathId: canonicalRequestScope?.pathId || path?.id || '',
+          taskId: resourceTaskId,
+          dayId: resourceDayScope.dayId,
+          globalDayIndex: resourceDayScope.globalDayIndex,
+          subjectId: canonicalRequestScope?.subjectId || focusedSubjectId || workflowSubjectId || undefined,
           courseId: path?.courseName || '',
           knowledgePoints: currentSection.knowledgePoints || [],
           requirements: requirements || '',
       });
       const ensuredContent = lectureContent(ensured);
       if (ensured.status === 'ready' && ensuredContent) {
-        store.setLecture(`${sessionId}:${activeSectionId}`, ensuredContent);
+        store.setLecture(cacheKey, ensuredContent);
         store.markGenerated(activeSectionId);
         return;
       }
@@ -509,7 +533,7 @@ export default function LecturePage() {
       const data = task.result;
       const content = lectureContent(data);
       if (content) {
-        const key = `${sessionId}:${activeSectionId}`;
+        const key = cacheKey;
         store.setLecture(key, content);
         store.markGenerated(activeSectionId);
         generatePanelRef.current?.updateRecord(cid, { status: 'ready', content });
@@ -519,10 +543,11 @@ export default function LecturePage() {
         if (isTerminalWorkflowStatus(task.status)) clearWorkflowTask(workflowScope);
       }
     } catch (error) {
+      if ((error as any)?.response?.status === 409) setTaskScopeRejected(true);
       if (error instanceof DOMException && error.name === 'AbortError') return;
       generatePanelRef.current?.updateRecord(cid, { status: 'error' });
     } finally { setGenerating(false); }
-  }, [currentSection, activeSectionId, sessionId, chapterCtx, path, focusedTask, focusedPathId, focusedTaskId, focusedSubjectId, executionMode, videoLectureFallback]);
+  }, [currentSection, activeSectionId, sessionId, chapterCtx, path, focusedTask, focusedPathId, focusedTaskId, focusedSubjectId, executionMode, videoLectureFallback, workspaceScopeInvalid, resourceTaskId, resourceDayScope.dayId, resourceDayScope.globalDayIndex, cacheKey]);
 
   const cancelLectureGeneration = useCallback(async () => {
     if (!lectureWorkflow || !sessionId) return;
@@ -697,7 +722,7 @@ export default function LecturePage() {
         setQuizState('answering');
         quizSubmitIdempotencyKeyRef.current = '';  // reset for new quiz
         // 保存到 store 以便跨页面恢复
-        store.setQuiz(`${sessionId}:${activeSectionId}`, { questions: data.questions, quizId: data.quiz.id, answers: {}, results: [], totalScore: null, submitted: false, suggestion: '', weakPoints: [] });
+        store.setQuiz(cacheKey, { questions: data.questions, quizId: data.quiz.id, answers: {}, results: [], totalScore: null, submitted: false, suggestion: '', weakPoints: [] });
         generatePanelRef.current?.updateRecord(cid, {
           status: 'ready',
           content: 'quiz_stored',
@@ -723,7 +748,7 @@ export default function LecturePage() {
   const handleQuizAnswer = (questionId: string, value: string) => {
     setQuizAnswers(a => {
       const updated = { ...a, [questionId]: value };
-      store.updateQuizAnswers(`${sessionId}:${activeSectionId}`, updated);
+      store.updateQuizAnswers(cacheKey, updated);
       return updated;
     });
   };
@@ -731,7 +756,7 @@ export default function LecturePage() {
   const allAnswered = quizQuestions.every(q => quizAnswers[q.questionId]?.trim());
 
   const handleQuizSubmit = async () => {
-    if (!allAnswered || quizState !== 'answering') return;
+    if (!allAnswered || quizState !== 'answering' || (executionMode === 'quiz' && (!canonicalTaskScope || workspaceScopeInvalid))) return;
     const answers = quizQuestions.map(q => ({
       questionId: q.questionId,
       answer: quizAnswers[q.questionId] || '',
@@ -741,15 +766,9 @@ export default function LecturePage() {
         quizSubmitIdempotencyKeyRef.current = crypto.randomUUID();
       }
       const payload = {
-        sessionId: sessionId || `lecture_${activeSectionId}`,
+        ...(executionMode === 'quiz' ? canonicalRequestScope! : { sessionId: sessionId || `lecture_${activeSectionId}`, pathId: focusedPathId || path?.id || '', stageId: focusedStageId || chapterCtx?.stage.id || '', taskId: resourceTaskId, subjectId: focusedSubjectId || workflowSubjectId, dayId: resourceDayScope.dayId, globalDayIndex: resourceDayScope.globalDayIndex }),
         answers,
         idempotencyKey: quizSubmitIdempotencyKeyRef.current,
-        pathId: focusedPathId || path?.id || '',
-        stageId: focusedStageId || chapterCtx?.stage.id || '',
-        taskId: focusedTaskId || activeSectionId,
-        subjectId: focusedSubjectId || workflowSubjectId,
-        dayId: resourceDayScope.dayId,
-        globalDayIndex: resourceDayScope.globalDayIndex,
       };
       const res = (executionMode === 'quiz'
         ? await submitLearningPathQuiz(focusedTaskId, { ...payload, quizId })
@@ -763,46 +782,45 @@ export default function LecturePage() {
         setQuizWeakPoints(data.weakPoints || []);
         setQuizState('submitted');
         // 更新 store 中的答题结果
-        store.setQuiz(`${sessionId}:${activeSectionId}`, { questions: quizQuestions, quizId, answers: quizAnswers, results: data.results, totalScore: data.totalScore ?? null, submitted: true, suggestion: data.sectionStatusSuggestion || '', weakPoints: data.weakPoints || [] });
+        store.setQuiz(cacheKey, { questions: quizQuestions, quizId, answers: quizAnswers, results: data.results, totalScore: data.totalScore ?? null, submitted: true, suggestion: data.sectionStatusSuggestion || '', weakPoints: data.weakPoints || [] });
       }
     } catch (e: any) {
-      alert('提交失败: ' + (e?.message || '请重试'));
+      if (e?.response?.status === 409) setTaskScopeRejected(true);
+      else alert('提交失败: ' + (e?.message || '请重试'));
     }
   };
 
   useEffect(() => {
     if (executionMode === 'video' && !videoLectureFallback) return;
+    if (workspaceScopeInvalid) return;
     if (!currentSection || !sessionId || !lectureLoaded || !lectureMissing || lecture || generating || lectureEnsureUnavailable) return;
     const key = `${sessionId}:${focusedSubjectId}:${focusedPathId}:${focusedStageId}:${focusedTaskId}:${activeSectionId}`;
     if (focusedGenerationRef.current === key) return;
     focusedGenerationRef.current = key;
     void handleGenerate();
-  }, [currentSection, sessionId, lectureLoaded, lectureMissing, lecture, generating, lectureEnsureUnavailable, focusedSubjectId, focusedPathId, focusedStageId, focusedTaskId, activeSectionId, handleGenerate, executionMode, videoLectureFallback]);
+  }, [currentSection, sessionId, lectureLoaded, lectureMissing, lecture, generating, lectureEnsureUnavailable, focusedSubjectId, focusedPathId, focusedStageId, focusedTaskId, activeSectionId, handleGenerate, executionMode, videoLectureFallback, workspaceScopeInvalid]);
 
   const recordVideoEvidence = async (resourceUrl = '', fallback = false) => {
-    if (!focusedTaskId || ['completed', 'mastered'].includes(resourceDayScope.status || '') || (fallback ? videoFallbackSelected : videoOpened)) return;
+    if (!canonicalTaskScope || workspaceScopeInvalid || ['completed', 'mastered'].includes(resourceDayScope.status || '') || (fallback ? videoFallbackSelected : videoOpened)) return;
     setFocusedCompletionError('');
     await recordVideoTaskEvidence(focusedTaskId, {
-      sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId || path?.id || '',
-      stageId: focusedStageId || chapterCtx?.stage.id || '', dayId: resourceDayScope.dayId,
-      globalDayIndex: resourceDayScope.globalDayIndex, ...(resourceUrl ? { resourceUrl } : {}),
-    }, fallback);
+      ...canonicalRequestScope!, ...(resourceUrl ? { resourceUrl } : {}),
+    }, fallback).catch((error) => { if (error?.response?.status === 409) setTaskScopeRejected(true); throw error; });
     if (fallback) setVideoFallbackSelected(true); else setVideoOpened(true);
   };
 
   const completeFocusedTask = async () => {
     const videoReady = executionMode === 'video' && (videoOpened || (videoLectureFallback && videoFallbackSelected && !!effectiveLectureContent));
-    if (!focusedTaskId || focusedCompleting || generating || !resourceDayScope.globalDayIndex || (lectureWorkflow && isActiveWorkflowStatus(lectureWorkflow.status)) || !(focusedReadingTask ? !!effectiveLectureContent : videoReady)) return;
+    if (!canonicalTaskScope || workspaceScopeInvalid || focusedCompleting || generating || !resourceDayScope.globalDayIndex || (lectureWorkflow && isActiveWorkflowStatus(lectureWorkflow.status)) || !(focusedReadingTask ? !!effectiveLectureContent : videoReady)) return;
     setFocusedCompletionError(''); setFocusedCompleting(true);
     try {
       await completeLearningPathTask(focusedTaskId, {
-        sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId || path?.id || '',
-        stageId: focusedStageId || chapterCtx?.stage.id || '', dayId: resourceDayScope.dayId,
-        globalDayIndex: resourceDayScope.globalDayIndex,
+        ...canonicalRequestScope!,
       });
       await fetchPath(true);
     } catch (error: any) {
-      setFocusedCompletionError(error?.response?.data?.detail || error?.message || '完成失败，请稍后重试。');
+      if (error?.response?.status === 409) setTaskScopeRejected(true);
+      else setFocusedCompletionError(error?.response?.data?.detail || error?.message || '完成失败，请稍后重试。');
     } finally {
       setFocusedCompleting(false);
     }
@@ -811,6 +829,13 @@ export default function LecturePage() {
   const typeLabel = (t: string) => t === 'choice' ? '选择题' : t === 'truefalse' ? '判断题' : t === 'fill' ? '填空题' : '简答题';
 
   // ── Mode delegation ──
+  if (workspaceScopeInvalid) {
+    return <main className="m-auto max-w-sm rounded-2xl bg-white p-8 text-center shadow-soft">
+      <p className="text-sm text-surface-600">{taskScopeMessage}</p>
+      <button onClick={() => nav('/path')} className="mt-5 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white">返回学习路径</button>
+    </main>;
+  }
+
   if (focusedTask) {
     return (
       <div className="min-h-screen -m-6 bg-surface-50">
@@ -843,7 +868,7 @@ export default function LecturePage() {
                 {executionMode === 'video' && !videoLectureFallback ? <div className="space-y-3"><h2 className="text-lg font-semibold">视频学习</h2>{videoStatus === 'loading' ? <div className="flex min-h-48 items-center gap-2 text-sm text-surface-500"><Loader2 size={16} className="animate-spin" />正在查找高相关视频…</div> : videoStatus === 'failed' ? <div className="rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">视频资源搜索失败。<button onClick={retryVideoSearch} className="ml-2 underline">重新搜索</button></div> : videoResources.length ? <>{videoStatus === 'persisted' && <p className="text-sm text-surface-500">已显示持久化视频。</p>}{videoStatus === 'new_search' && <p className="text-sm text-surface-500">已显示本次新搜索视频。</p>}{videoStatus === 'stale' && <p className="rounded-xl border border-amber-100 bg-amber-50 p-3 text-sm text-amber-800">本次搜索暂不可用，正在展示上次有效结果。</p>}{videoResources.map((item: any) => <a key={item.url} href={item.url} target="_blank" rel="noreferrer" onClick={() => void recordVideoEvidence(item.url)} className="block rounded-xl border border-surface-200 p-4 hover:border-primary-300"><strong>{item.title}</strong><p className="mt-1 text-sm text-surface-500">{item.source} · {item.reason}</p><span className="mt-2 inline-block text-sm text-primary-600">打开外部视频</span></a>)}</> : <div className="rounded-xl border border-surface-200 p-4 text-sm text-surface-600">{videoStatus === 'search_unavailable' ? '搜索暂不可用，请稍后重新搜索。' : '暂无高相关视频'}</div>}<button onClick={() => void recordVideoEvidence('', true).then(() => setVideoLectureFallback(true)).catch((error) => setFocusedCompletionError(error?.response?.data?.detail || error?.message || '切换失败'))} className="rounded-lg border border-primary-200 px-4 py-2 text-sm text-primary-700">切换为图文讲解</button></div>
                 : !lectureLoaded || generating ? <div className="flex min-h-48 items-center justify-center gap-2 text-sm text-surface-500"><Loader2 size={16} className="animate-spin" />正在准备真实讲义…</div>
                   : effectiveLectureContent ? <Markdown content={effectiveLectureContent} />
-                  : <div className="rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">{lectureEnsureUnavailable ? '教材服务接口不可用，请刷新或重启后端' : '讲义暂不可用。'}<button onClick={() => { const scope = [sessionId, focusedSubjectId || workflowSubjectId, focusedPathId || path?.id, focusedStageId || chapterCtx?.stage.id, focusedTaskId || activeSectionId].join('|'); unavailableEnsureGuard.current.retry(scope); setLectureEnsureUnavailable(false); focusedGenerationRef.current = ''; void handleGenerate(); }} className="ml-2 font-medium underline">重新加载</button></div>}
+                  : <div className="rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">{lectureEnsureUnavailable ? '教材服务接口不可用，请刷新或重启后端' : '讲义暂不可用。'}<button onClick={() => { const scope = [sessionId, focusedSubjectId || workflowSubjectId, focusedPathId || path?.id, focusedStageId || chapterCtx?.stage.id, resourceDayScope.dayId, resourceDayScope.globalDayIndex, resourceTaskId].join('|'); unavailableEnsureGuard.current.retry(scope); setLectureEnsureUnavailable(false); focusedGenerationRef.current = ''; void handleGenerate(); }} className="ml-2 font-medium underline">重新加载</button></div>}
                 <div className="mt-8 border-t border-surface-100 pt-4">
                   <button disabled={completed || focusedCompleting || !resourceDayScope.globalDayIndex || generating || !!(lectureWorkflow && isActiveWorkflowStatus(lectureWorkflow.status)) || !(focusedReadingTask ? !!effectiveLectureContent : executionMode === 'video' && (videoOpened || videoLectureFallback && videoFallbackSelected && !!effectiveLectureContent))} onClick={completeFocusedTask} className="flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"><Check size={15} />{completed ? '任务已完成' : focusedCompleting ? '保存中…' : executionMode === 'video' ? videoOpened || videoFallbackSelected ? '完成视频学习' : '请先打开视频或切换图文讲解' : focusedReadingTask ? '标记完成' : '请先完成练习'}</button>
                   {focusedCompletionError && <p className="mt-2 text-sm text-red-600">完成失败：{focusedCompletionError}</p>}
@@ -1234,7 +1259,7 @@ export default function LecturePage() {
                     setQuizSuggestion('');
                     setQuizWeakPoints([]);
                     setQuizState('answering');
-                    store.setQuiz(`${sessionId}:${activeSectionId}`, { questions: quizQuestions, quizId, answers: resetAnswers, results: [], totalScore: null, submitted: false, suggestion: '', weakPoints: [] });
+                    store.setQuiz(cacheKey, { questions: quizQuestions, quizId, answers: resetAnswers, results: [], totalScore: null, submitted: false, suggestion: '', weakPoints: [] });
                   }}
                     className="flex items-center gap-1.5 px-4 py-2 text-sm text-primary-600 hover:text-primary-700 hover:bg-primary-50 rounded-xl transition-colors">
                     <RefreshCw size={14} />重新答题
@@ -1555,7 +1580,7 @@ export default function LecturePage() {
                     body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal || '', chapterId: chapterCtx?.chapter.id || '', stageId: chapterCtx?.stage.id || '', knowledgePoints: currentSection.knowledgePoints || [], lectureContent: effectiveLectureContent }),
                   }).then(r => r.json());
                   const data = res?.data || res;
-                  if (data?.lecture_content) store.setLecture(`${sessionId}:${activeSectionId}`, data.lecture_content);
+                  if (data?.lecture_content) store.setLecture(cacheKey, data.lecture_content);
                   // Check for async video task
                   const videoResource = (data?.resources || []).find((r: any) => r.task_id);
                   if (videoResource?.task_id) {

@@ -11,7 +11,7 @@ test('generated resource callers send canonical task scope and abort stale reads
   assert.match(client, /pathId: string;[\s\S]*stageId: string;[\s\S]*taskId: string;/);
   assert.match(client, /globalDayIndex\?: number/);
   assert.match(client, /if \(!scope\?\.pathId \|\| !scope\.stageId \|\| !scope\.taskId\) return \[\];/);
-  assert.match(lecture, /taskDayScope\(path, resourceTaskId\)/);
+  assert.match(lecture, /resolveCanonicalLearningTaskScope\(path/);
   for (const source of [lecture, workspace]) {
     assert.match(source, /\{ pathId, stageId, taskId, dayId, globalDayIndex \}/);
     assert.match(source, /new AbortController\(\)/);
