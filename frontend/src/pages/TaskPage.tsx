@@ -10,6 +10,8 @@ import {
   Lightbulb, GraduationCap, Lock, Eye
 } from 'lucide-react';
 import Markdown from '../utils/markdown';
+import TextbookViewer from '../components/learning/TextbookViewer';
+import { getTextbookContent } from '../api/textbooks';
 
 /* ── Types ───────────────────────────── */
 interface Resource {
@@ -67,8 +69,31 @@ export default function TaskPage() {
 
   const stages = path?.stages || [];
   const found = useMemo(() => taskId ? findTask(stages, taskId) : null, [stages, taskId]);
+  const taskAny = found?.task as any;
   const task = found?.task;
   const stage = found?.stage;
+
+  // ── Textbook mode ──
+  const isTextbookMode = !!useSubjectStore((s) => s.activeSubject)?.textbookId;
+  const activeSubjectId = useSubjectStore((s) => s.activeSubject?.id ?? s.activeClassSubject?.subject);
+  const hasTextbookPages = isTextbookMode && !!(taskAny?.textbookPageStart);
+  const [textbookLectureContent, setTextbookLectureContent] = useState('');
+
+  useEffect(() => {
+    if (!isTextbookMode || !activeSubjectId || !taskAny?.textbookSectionId) {
+      setTextbookLectureContent('');
+      return;
+    }
+    let cancelled = false;
+    getTextbookContent(activeSubjectId, {
+      sectionId: taskAny.textbookSectionId,
+    }).then(c => {
+      if (!cancelled) setTextbookLectureContent(c?.content ?? '');
+    }).catch(() => {
+      if (!cancelled) setTextbookLectureContent('');
+    });
+    return () => { cancelled = true; };
+  }, [isTextbookMode, activeSubjectId, taskAny?.textbookSectionId]);
   const isLocked = mode === 'preview' || (stage && stages.indexOf(stage) > stages.findIndex(s =>
     (s.tasks || []).some((t: any) => t.status !== 'completed' && t.status !== 'mastered')
   ));
@@ -176,6 +201,26 @@ export default function TaskPage() {
       </div>
 
       <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+        {/* ── Textbook PDF viewer (when task has textbook pages) ── */}
+        {hasTextbookPages && activeSubjectId && (
+          <section className="bg-white rounded-2xl border border-surface-200 shadow-sm overflow-hidden">
+            <div className="px-6 py-4 border-b border-surface-100 flex items-center gap-3">
+              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-50 text-blue-600"><BookOpen size={18} /></span>
+              <h2 className="text-base font-semibold text-surface-800">教材内容</h2>
+              <span className="text-xs text-surface-400">
+                第{taskAny.textbookPageStart}-{taskAny.textbookPageEnd}页
+              </span>
+            </div>
+            <div className="h-[600px]">
+              <TextbookViewer
+                subjectId={activeSubjectId}
+                pageStart={taskAny.textbookPageStart ?? 1}
+                pageEnd={taskAny.textbookPageEnd ?? (taskAny.textbookPageStart ?? 1) + 5}
+              />
+            </div>
+          </section>
+        )}
+
         {loading ? (
           <div className="flex items-center justify-center py-20">
             <div className="flex flex-col items-center gap-3">

@@ -253,12 +253,10 @@ class PlannerAgent(BaseAgent):
     def _resolve_textbook_pages(
         llm_chapters: list[dict], textbook_chapters: list[dict]
     ) -> list[dict]:
-        """Resolve LLM-assigned textbook_section_ids to actual page ranges.
+        """Resolve LLM-assigned section IDs to actual page ranges.
 
-        The LLM outputs textbook_section_ids on each section (e.g. ["sec_01_01"]).
-        We look up those IDs in the textbook data to get start_page/end_page.
-
-        This is deterministic — no title matching needed.
+        Handles both old (stages→chapters→sections with textbook_section_ids)
+        and new (stages→tasks with source_section_ids) output formats.
         """
         # Build ID → section data lookup
         tb_section_by_id: dict[str, dict] = {}
@@ -268,28 +266,58 @@ class PlannerAgent(BaseAgent):
                 if sec_id:
                     tb_section_by_id[sec_id] = sec
 
+        def _resolve_ids(section_ids: list[str]) -> tuple[int, int, str]:
+            """Given a list of textbook section IDs, return (start_page, end_page, primary_id)."""
+            pages: list[tuple[int, int]] = []
+            primary_id = ""
+            for sid in section_ids:
+                tb_sec = tb_section_by_id.get(sid)
+                if tb_sec:
+                    pages.append((
+                        tb_sec.get("start_page", 1),
+                        tb_sec.get("end_page", 1),
+                    ))
+                    if not primary_id:
+                        primary_id = sid
+            if pages:
+                return (min(p[0] for p in pages), max(p[1] for p in pages), primary_id)
+            return (0, 0, "")
+
         for stage in llm_chapters:
-            for ch in stage.get("chapters", []):
-                for sec in ch.get("sections", []):
-                    sec_ids = sec.get("textbook_section_ids", [])
+            # ── New format: stages→tasks (direct) ──
+            for task in stage.get("tasks", []):
+                sec_ids = task.get("source_section_ids") or task.get("textbook_section_ids") or []
+                if not sec_ids:
+                    continue
+                sp, ep, pid = _resolve_ids(sec_ids)
+                if sp > 0:
+                    task["textbookPageStart"] = sp
+                    task["textbookPageEnd"] = ep
+                    task["textbookSectionId"] = pid
+
+            # ── New format: stages→days→tasks (after _rewrite_stage_ids) ──
+            for day in stage.get("days", []):
+                for task in day.get("tasks", []):
+                    sec_ids = task.get("source_section_ids") or task.get("textbook_section_ids") or []
                     if not sec_ids:
                         continue
-                    # Collect page ranges from ALL assigned textbook sections
-                    pages: list[tuple[int, int]] = []
-                    primary_id = ""
-                    for sid in sec_ids:
-                        tb_sec = tb_section_by_id.get(sid)
-                        if tb_sec:
-                            pages.append((
-                                tb_sec.get("start_page", 1),
-                                tb_sec.get("end_page", 1),
-                            ))
-                            if not primary_id:
-                                primary_id = sid
-                    if pages:
-                        sec["textbookPageStart"] = min(p[0] for p in pages)
-                        sec["textbookPageEnd"] = max(p[1] for p in pages)
-                        sec["textbookSectionId"] = primary_id
+                    sp, ep, pid = _resolve_ids(sec_ids)
+                    if sp > 0:
+                        task["textbookPageStart"] = sp
+                        task["textbookPageEnd"] = ep
+                        task["textbookSectionId"] = pid
+
+            # ── Old format: stages→chapters→sections ──
+            for ch in stage.get("chapters", []):
+                for sec in ch.get("sections", []):
+                    sec_ids = sec.get("textbook_section_ids") or sec.get("source_section_ids") or []
+                    if not sec_ids:
+                        continue
+                    sp, ep, pid = _resolve_ids(sec_ids)
+                    if sp > 0:
+                        sec["textbookPageStart"] = sp
+                        sec["textbookPageEnd"] = ep
+                        sec["textbookSectionId"] = pid
 
         return llm_chapters
 
@@ -690,6 +718,17 @@ class PlannerAgent(BaseAgent):
             "- 每条 task 必填：title（任务名）、type（从上述选）、estimated_minutes（分钟）、goal（目标）、resource_types（如[\"lecture\",\"quiz\"]）",
             "- 每天的任务数根据知识点密度和学生可用时间灵活决定",
         ]
+        # ── Textbook context instruction ──
+        if tbb:
+            parts.extend([
+                "",
+                "【教材参考 — 重要】",
+                "上面提供了这本教材的完整章节目录。你必须遵循以下规则：",
+                "- read_doc 类型的任务应当对应教材中的小节。在 source_section_ids 字段中填入教材小节ID（方括号中的值，如 sec_01_01）。",
+                "- 可以将多个短小的教材小节合并为一个 read_doc 任务（source_section_ids 填入多个ID）。",
+                "- 不是所有任务都需要教材小节——quiz_prac、review 等类型的任务可以不填 source_section_ids。",
+                "- source_section_ids 为可选字段，无对应教材小节时可省略或填 []。",
+            ])
         parts.append("Use 4 to 6 stages, ordered by prerequisites rather than textbook chapter count.")
         for b in [tbb, pb, wb, sb]:
             if b: parts.append(b.strip())
@@ -701,7 +740,8 @@ class PlannerAgent(BaseAgent):
             '      "estimated_days": 3,', '      "tasks": [', '        {',
             '          "title": "阅读讲义",', '          "type": "read_doc",',
             '          "estimated_minutes": 30,', '          "goal": "理解核心概念",',
-            '          "required": true,', '          "resource_types": ["lecture","reading"]',
+            '          "required": true,', '          "resource_types": ["lecture","reading"],',
+            '          "source_section_ids": ["sec_01_01"]',
             '        },', '        {',
             '          "title": "巩固练习",', '          "type": "quiz_prac",',
             '          "estimated_minutes": 35,', '          "goal": "通过做题检验理解",',
@@ -776,7 +816,11 @@ class PlannerAgent(BaseAgent):
                         "source": t.get("source", "generated"),
                         "_adjustment": t.get("_adjustment", ""),
                         "_adjustment_reason": t.get("_adjustment_reason", ""),
-                        "textbook_section_ids": t.get("textbook_section_ids", []),
+                        # ── Textbook fields ──
+                        "source_section_ids": t.get("source_section_ids") or t.get("textbook_section_ids", []),
+                        "textbookPageStart": t.get("textbookPageStart"),
+                        "textbookPageEnd": t.get("textbookPageEnd"),
+                        "textbookSectionId": t.get("textbookSectionId"),
                     })
                 day_list.append({"day": day_num, "tasks": task_list})
             # 确保多样性
