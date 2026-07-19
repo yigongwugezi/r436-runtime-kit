@@ -12,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.db.models import Base, ResourceModel, SessionModel
+from app.db.models import Base, CurrentLearningPathModel, ResourceModel, SessionModel
 from app.db.repository import upsert_learning_path, upsert_resource
 from app.middleware.auth import AuthContext
 from app.routers import product, workflows
@@ -34,14 +34,16 @@ def main() -> None:
     session_id, subject_id, path_id, stage_id, task_id = "lecture-semantic-session", "subject-a", "path-a", "stage-a", "stable-task"
     base = {
         "sessionId": session_id, "subjectId": subject_id, "pathId": path_id, "stageId": stage_id,
-        "dayId": "day-1", "globalDayIndex": 1, "taskId": task_id, "taskType": "read_doc",
+        "dayId": f"{stage_id}_d1", "globalDayIndex": 1, "taskId": task_id, "taskType": "read_doc",
         "taskTitle": "Old outline", "taskDescription": "Old learning task", "learningObjectives": ["old objective"],
         "knowledgePoints": [{"name": "old concept"}], "stageTitle": "Stage", "pathVersion": "v1",
     }
     db = factory()
     try:
         db.add(SessionModel(id=session_id, learner_id="learner-a", subject_id=subject_id))
-        upsert_learning_path(db, session_id, {"id": path_id, "stages": [{"stage_id": stage_id, "days": [{"day": 1, "tasks": [{"task_id": task_id, "title": "Old outline"}]}]}]})
+        upsert_learning_path(db, session_id, {"id": path_id, "subject_id": subject_id, "stages": [{"stage_id": stage_id, "days": [{"id": "day-1", "day": 1, "globalDayIndex": 1, "tasks": [{"task_id": task_id, "title": "Old outline", "type": "read_doc", "dayId": "day-1"}]}]}]})
+        db.flush()
+        db.add(CurrentLearningPathModel(learner_id="learner-a", session_id=session_id, subject_id=subject_id, path_id=path_id, path_version=1))
         fingerprint = product._lecture_semantic_fingerprint(base, auth.learner_id)
         upsert_resource(db, session_id, {
             "id": "lecture-old-resource", "type": "lecture", "title": "Old outline", "content": "old lecture body",
@@ -55,7 +57,7 @@ def main() -> None:
          patch.object(product, "SessionLocal", factory), \
          patch.object(product, "_llm_client", return_value=FakeLLM()), \
          patch.object(product, "_inject_spark_images", side_effect=lambda text, _title: text), \
-         TestClient(app) as client:
+        TestClient(app) as client:
         first = client.post(f"/api/sections/{task_id}/lecture/ensure", json=base)
         assert first.status_code == 200 and first.json()["status"] == "ready", first.text
         assert first.json()["lecture"]["id"] == "lecture-old-resource"

@@ -15,14 +15,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fastapi.testclient import TestClient
 from app.db.engine import SessionLocal, engine
-from app.db.models import Base, LearningPathModel, SessionModel
+from app.db.models import Base, CurrentLearningPathModel, LearningPathModel, SessionModel
 from app.main import app
 from app.routers import workflows
 
 SESSION_ID = "session_1784446310007_7d7aa03f-d55e-4aea-ae16-ff11c4c255ce"
 SUBJECT_ID = "ps_afeab69a4002"
-PATH_ID = f"path_{SESSION_ID}"
-STAGE_ID = f"{PATH_ID}_s0"
+PATH_ID = "path_6ff3b5305c2ca98fd5a969b4663e56b1"
+STAGE_ID = f"path_session_{SESSION_ID}_s0"
 TASK_ID = f"{STAGE_ID}_d1_t0"
 
 
@@ -32,9 +32,11 @@ def main() -> None:
     try:
         db.add(SessionModel(id=SESSION_ID, subject_id=SUBJECT_ID))
         db.add(LearningPathModel(
-            id=PATH_ID, session_id=SESSION_ID, course_id=SUBJECT_ID, course_name="test",
-            stages=[{"stage_id": STAGE_ID, "days": [{"day": 1, "tasks": [{"title": "legacy daily task"}]}]}],
+            id=PATH_ID, session_id=SESSION_ID, subject_id=SUBJECT_ID, course_id=SUBJECT_ID, course_name="test",
+            stages=[{"stage_id": STAGE_ID, "days": [{"id": f"{STAGE_ID}_d1", "day": 1, "globalDayIndex": 1, "tasks": [{"title": "persisted daily task", "type": "read_doc", "dayId": f"{STAGE_ID}_d1"}]}]}],
         ))
+        db.flush()
+        db.add(CurrentLearningPathModel(learner_id="", session_id=SESSION_ID, subject_id=SUBJECT_ID, path_id=PATH_ID, path_version=1))
         db.commit()
     finally:
         db.close()
@@ -47,20 +49,30 @@ def main() -> None:
             assert task["id"] == TASK_ID == task["task_id"]
             response = client.post(f"/api/sections/{TASK_ID}/lecture/ensure", json={
                 "sessionId": SESSION_ID, "subjectId": SUBJECT_ID, "pathId": PATH_ID,
-                "stageId": STAGE_ID, "taskId": TASK_ID,
+                "stageId": STAGE_ID, "dayId": f"{STAGE_ID}_d1", "globalDayIndex": 1, "taskId": TASK_ID, "taskType": "read_doc",
             })
             assert response.status_code == 200, response.text
             assert response.json()["status"] in {"ready", "running"}
             scoped_wrong = client.post(f"/api/sections/{TASK_ID}/lecture/ensure", json={
                 "sessionId": SESSION_ID, "subjectId": SUBJECT_ID, "pathId": PATH_ID,
-                "stageId": "wrong-stage", "taskId": TASK_ID,
+                "stageId": "wrong-stage", "dayId": f"{STAGE_ID}_d1", "globalDayIndex": 1, "taskId": TASK_ID, "taskType": "read_doc",
             })
             assert scoped_wrong.status_code == 409, scoped_wrong.text
             missing = client.post(f"/api/sections/missing/lecture/ensure", json={
                 "sessionId": SESSION_ID, "subjectId": SUBJECT_ID, "pathId": PATH_ID,
-                "stageId": STAGE_ID, "taskId": "missing",
+                "stageId": STAGE_ID, "dayId": f"{STAGE_ID}_d1", "globalDayIndex": 1, "taskId": "missing", "taskType": "read_doc",
             })
             assert missing.status_code == 404, missing.text
+            wrong_subject = client.post(f"/api/sections/{TASK_ID}/lecture/ensure", json={
+                "sessionId": SESSION_ID, "subjectId": "other-subject", "pathId": PATH_ID,
+                "stageId": STAGE_ID, "dayId": f"{STAGE_ID}_d1", "globalDayIndex": 1, "taskId": TASK_ID, "taskType": "read_doc",
+            })
+            assert wrong_subject.status_code == 403, wrong_subject.text
+            wrong_type = client.post(f"/api/sections/{TASK_ID}/lecture/ensure", json={
+                "sessionId": SESSION_ID, "subjectId": SUBJECT_ID, "pathId": PATH_ID,
+                "stageId": STAGE_ID, "dayId": f"{STAGE_ID}_d1", "globalDayIndex": 1, "taskId": TASK_ID, "taskType": "quiz_prac",
+            })
+            assert wrong_type.status_code == 409, wrong_type.text
     print("learning path task index route tests: ok")
 
 

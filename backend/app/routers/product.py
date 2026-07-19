@@ -61,6 +61,7 @@ from app.db.repository import (
     delete_session as repo_delete_session,
     CurrentPathUnresolvedError,
     persist_generated_learning_path,
+    resolve_current_learning_path,
 )
 from app.services.agent_service import (
     get_analytics as ag_get_analytics,
@@ -5037,15 +5038,25 @@ def _require_stage_access(session_id: str, stage_id: str) -> None:
 
 def _require_task_stage_access(
     session_id: str, stage_id: str, section_id: str, path_id: str = "", task_id: str = "",
-    day_id: str = "", global_day_index: int | None = None,
+    day_id: str = "", global_day_index: int | None = None, subject_id: str = "", learner_id: str = "",
 ) -> dict[str, Any]:
     """Validate a task URL against the persisted path before serving its content."""
     db = SessionLocal()
     try:
-        path = repo_get_latest_learning_path(db, session_id)
+        session = db.get(SessionModel, session_id)
+        resolved_subject_id = subject_id or str(session.subject_id or "") if session else ""
+        resolved_learner_id = learner_id or str(session.learner_id or "") if session else ""
+        if not session or (subject_id and session.subject_id != subject_id):
+            raise HTTPException(status_code=403, detail={"code": "invalid_task_scope", "message": "learning path subject scope mismatch"})
+        try:
+            path = resolve_current_learning_path(
+                db, learner_id=resolved_learner_id, session_id=session_id, subject_id=resolved_subject_id,
+            )
+        except CurrentPathUnresolvedError as exc:
+            raise HTTPException(status_code=409, detail={"code": "CURRENT_PATH_UNRESOLVED", "message": str(exc)}) from exc
         if not path or not isinstance(path.stages, list):
             raise HTTPException(status_code=404, detail={"code": "path_not_found", "message": "learning path not found"})
-        if path_id and path.id != path_id:
+        if path.id != path_id:
             raise HTTPException(status_code=404, detail={"code": "path_not_found", "message": "learning path not found"})
         normalized = _normalize_persisted_learning_path(path)
         if normalized["upgraded"]:
@@ -5054,7 +5065,9 @@ def _require_task_stage_access(
         entry = normalized["task_index"].get(requested_task_id)
         if not entry:
             raise HTTPException(status_code=404, detail={"code": "task_not_found", "message": "learning path task not found"})
-        if entry["stage_id"] != stage_id or section_id != requested_task_id:
+        task = entry["task"]
+        compatible_section_id = str(task.get("section_id") or task.get("sectionId") or requested_task_id)
+        if entry["stage_id"] != stage_id or section_id not in {requested_task_id, compatible_section_id}:
             raise HTTPException(status_code=409, detail={"code": "invalid_task_scope", "message": "learning path task scope mismatch"})
         if day_id and entry["day_id"] != day_id:
             raise HTTPException(status_code=409, detail={"code": "invalid_task_scope", "message": "learning path day scope mismatch"})
@@ -8007,7 +8020,10 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
             "related_section_id": section_id,
             "task_id": str(payload.get("taskId") or section_id),
             "knowledge_points": [kp.get("name", str(kp)) if isinstance(kp, dict) else str(kp) for kp in (knowledge_points or [])],
-            "resource_metadata": {"semanticFingerprint": fingerprint} if fingerprint else {},
+            "resource_metadata": {
+                "semanticFingerprint": fingerprint,
+                "canonicalScope": {key: payload.get(key) for key in ("sessionId", "subjectId", "pathId", "stageId", "dayId", "globalDayIndex", "taskId", "taskType")},
+            },
         }
         _attach_personalization_metadata(resource_dict, session_id, subject_id)
         upsert_resource(db, session_id, resource_dict)
@@ -8047,9 +8063,19 @@ def ensure_section_lecture(section_id: str, payload: dict[str, Any], auth: AuthC
     task_id = str(payload.get("taskId") or section_id).strip()
     stage_id = str(payload.get("stageId") or "").strip()
     path_id = str(payload.get("pathId") or "").strip()
-    if not stage_id or not path_id or not task_id:
-        raise HTTPException(status_code=400, detail="pathId, stageId and taskId are required")
-    _require_task_stage_access(session_id, stage_id, section_id, path_id, task_id)
+    subject_id = _payload_subject_id(payload)
+    if not subject_id or not stage_id or not path_id or not task_id:
+        raise HTTPException(status_code=400, detail="subjectId, pathId, stageId and taskId are required")
+    entry = _require_task_stage_access(session_id, stage_id, section_id, path_id, task_id, subject_id=subject_id, learner_id=auth.learner_id)
+    task_type = str(entry["task"].get("type") or entry["task"].get("task_type") or "read_doc")
+    requested_task_type = str(payload.get("taskType") or task_type)
+    if task_type != "read_doc" or requested_task_type != task_type:
+        raise HTTPException(status_code=409, detail={"code": "invalid_task_type", "message": "lecture ensure requires a read_doc task"})
+    payload = {
+        **payload, "sessionId": session_id, "subjectId": subject_id, "pathId": path_id,
+        "stageId": stage_id, "dayId": entry["day_id"], "globalDayIndex": entry["global_day_index"],
+        "taskId": task_id, "sectionId": section_id, "taskType": task_type,
+    }
     fingerprint = _lecture_semantic_fingerprint(payload, auth.learner_id)
     db = SessionLocal()
     try:
@@ -8064,7 +8090,7 @@ def ensure_section_lecture(section_id: str, payload: dict[str, Any], auth: AuthC
     finally:
         db.close()
     from app.routers.workflows import _start
-    task, _ = _start("lecture_generation", {**payload, "sessionId": session_id, "sectionId": section_id, "taskId": task_id, "semanticFingerprint": fingerprint}, auth)
+    task, _ = _start("lecture_generation", {**payload, "semanticFingerprint": fingerprint}, auth)
     return {"status": "running", "workflowId": task.task_id, "lecture": None, "errorCode": None, "errorMessage": None}
 
 
