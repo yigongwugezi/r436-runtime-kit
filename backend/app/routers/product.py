@@ -7818,6 +7818,7 @@ def _generate_section_lecture(section_id: str, payload: dict[str, Any], workflow
     requirements = str(payload.get("requirements", "")).strip()
     course_name = str(payload.get("courseId", "")).strip()
     task_type = str(payload.get("task_type", "")).strip()
+    fingerprint = str(payload.get("semanticFingerprint") or "")
 
     if not section_title:
         return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
@@ -7827,9 +7828,10 @@ def _generate_section_lecture(section_id: str, payload: dict[str, Any], workflow
     try:
         existing = db.query(ResourceModel).filter(
             ResourceModel.session_id == session_id,
-            ResourceModel.related_section_id == section_id,
+            ResourceModel.task_id == str(payload.get("taskId") or section_id),
             ResourceModel.type == "lecture",
-        ).order_by(ResourceModel.updated_at.desc()).first()
+        ).order_by(ResourceModel.updated_at.desc()).all()
+        existing = next((item for item in existing if not fingerprint or (item.resource_metadata or {}).get("semanticFingerprint") == fingerprint), None)
         if existing and existing.content and not _is_profile_json(existing.content):
             return _product_response({"lecture": {
                 "id": existing.id, "title": existing.title or "", "content": existing.content,
@@ -7971,7 +7973,7 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
     raw = _inject_spark_images(raw, section_title)
 
     # Persist as Resource
-    resource_id = f"lecture_{section_id}"
+    resource_id = f"lecture_{fingerprint[:48]}" if fingerprint else f"lecture_{section_id}"
     try:
         db = SessionLocal()
         from app.db.repository import upsert_resource
@@ -7990,6 +7992,7 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
             "related_section_id": section_id,
             "task_id": str(payload.get("taskId") or section_id),
             "knowledge_points": [kp.get("name", str(kp)) if isinstance(kp, dict) else str(kp) for kp in (knowledge_points or [])],
+            "resource_metadata": {"semanticFingerprint": fingerprint} if fingerprint else {},
         }
         _attach_personalization_metadata(resource_dict, session_id, subject_id)
         upsert_resource(db, session_id, resource_dict)
@@ -8008,6 +8011,19 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
     return _product_response({"lecture": lecture_data}, session_id=session_id, source="agent")
 
 
+def _lecture_semantic_fingerprint(payload: dict[str, Any], learner_id: str) -> str:
+    """Stable identity for a lecture's learning-path meaning, not its position."""
+    fields = (
+        "sessionId", "subjectId", "pathId", "stageId", "dayId", "globalDayIndex",
+        "taskId", "taskType", "taskTitle", "taskDescription", "learningObjectives",
+        "knowledgePoints", "stageTitle", "pathVersion",
+    )
+    identity = {key: payload.get(key) for key in fields}
+    identity["learnerId"] = learner_id
+    encoded = json.dumps(identity, sort_keys=True, ensure_ascii=False, default=str, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 @router.post("/sections/{section_id}/lecture/ensure")
 def ensure_section_lecture(section_id: str, payload: dict[str, Any], auth: AuthContext = Depends(get_auth)) -> dict[str, Any]:
     """Atomically return the persisted lecture or the single active generator."""
@@ -8019,19 +8035,21 @@ def ensure_section_lecture(section_id: str, payload: dict[str, Any], auth: AuthC
     if not stage_id or not path_id or not task_id:
         raise HTTPException(status_code=400, detail="pathId, stageId and taskId are required")
     _require_task_stage_access(session_id, stage_id, section_id, path_id, task_id)
+    fingerprint = _lecture_semantic_fingerprint(payload, auth.learner_id)
     db = SessionLocal()
     try:
         lecture = db.query(ResourceModel).filter(
             ResourceModel.session_id == session_id,
-            ResourceModel.related_section_id == section_id,
+            ResourceModel.task_id == task_id,
             ResourceModel.type == "lecture",
-        ).order_by(ResourceModel.created_at.desc()).first()
+        ).order_by(ResourceModel.created_at.desc()).all()
+        lecture = next((item for item in lecture if (item.resource_metadata or {}).get("semanticFingerprint") == fingerprint), None)
         if lecture and str(lecture.content or "").strip():
             return {"status": "ready", "workflowId": None, "lecture": {"id": lecture.id, "content": lecture.content}, "errorCode": None, "errorMessage": None}
     finally:
         db.close()
     from app.routers.workflows import _start
-    task, _ = _start("lecture_generation", {**payload, "sessionId": session_id, "sectionId": section_id, "taskId": task_id}, auth)
+    task, _ = _start("lecture_generation", {**payload, "sessionId": session_id, "sectionId": section_id, "taskId": task_id, "semanticFingerprint": fingerprint}, auth)
     return {"status": "running", "workflowId": task.task_id, "lecture": None, "errorCode": None, "errorMessage": None}
 
 

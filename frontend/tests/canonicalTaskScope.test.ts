@@ -31,6 +31,8 @@ test('workspace callers require the canonical scope', () => {
   assert.match(lecture, /resolveCanonicalLearningTaskScope\(path/);
   assert.match(lecture, /canonicalScopePending = taskWorkspaceRequest && canonicalPathLoading/);
   assert.match(lecture, /taskScopeInvalid = taskWorkspaceRequest && !canonicalPathLoading && !canonicalTaskScope/);
+  assert.match(lecture, /const lectureSemanticKey = canonicalTaskScope \? JSON\.stringify/);
+  assert.match(lecture, /taskDescription: canonicalTaskScope\?\.task\.description/);
   assert.match(lecture, /if \(workspaceScopeInvalid\) return;/);
   assert.match(lecture, /if \(workspaceScopeInvalid\) \{/);
   assert.doesNotMatch(lecture, /taskDayScope\(path, resourceTaskId\)/);
