@@ -351,19 +351,23 @@ export default function LecturePage() {
   const executionMode = resolveTaskExecutionMode(resourceDayScope.task || { type: focusedTaskType });
   useEffect(() => {
     if (workspaceScopeInvalid || executionMode !== 'quiz' || !canonicalTaskScope) return;
-    const scope = canonicalRequestScope!;
+    const scope = { ...canonicalRequestScope!, taskType: canonicalTaskScope.task.type || canonicalTaskScope.task.task_type || focusedTaskType,
+      taskTitle: canonicalTaskScope.task.title || '', taskDescription: canonicalTaskScope.task.description || canonicalTaskScope.task.goal || '',
+      learningObjectives: canonicalTaskScope.task.learningObjectives || canonicalTaskScope.task.learning_objectives || [],
+      knowledgePoints: canonicalTaskScope.task.knowledgePoints || canonicalTaskScope.task.knowledge_points || [],
+      pathVersion: (path as any)?.currentVersion || (path as any)?.version || '' };
     let active = true;
-    setQuizError(''); setQuizState('generating');
+    setQuizError(''); setQuizQuestions([]); setQuizId(''); setQuizState('generating');
     ensureScopedLearningPathQuiz(focusedTaskId, scope)
       .then((quiz) => {
-        if (!quiz.questions.length) throw new Error('题目生成结果为空，请重新生成');
+        if (!quiz.questions.length) throw new Error('题目生成失败，请稍后重试');
         if (!active) return;
         setQuizId(quiz.quizId); setQuizQuestions(quiz.questions); setQuizAnswers({}); setQuizResults([]); setQuizTotalScore(null); setQuizState('answering');
       })
       .catch((error: any) => { if (active) { if (error?.response?.status === 409) setTaskScopeRejected(true); else { setQuizError(error?.response?.data?.detail || error?.message || '题目加载失败'); setQuizState('failed'); } } });
     return () => { active = false; };
   }, [executionMode, canonicalTaskScope, workspaceScopeInvalid, sessionId, focusedPathId, focusedStageId, focusedTaskId, focusedSubjectId, workflowSubjectId, resourceDayScope.dayId, resourceDayScope.globalDayIndex, quizRetry]);
-  const retryLearningPathQuiz = () => { if (!canonicalTaskScope || workspaceScopeInvalid) return; retryScopedLearningPathQuiz({ sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId, stageId: focusedStageId, taskId: focusedTaskId, dayId: resourceDayScope.dayId, globalDayIndex: resourceDayScope.globalDayIndex }); setQuizRetry((value) => value + 1); };
+  const retryLearningPathQuiz = () => { if (!canonicalTaskScope || workspaceScopeInvalid) return; retryScopedLearningPathQuiz({ ...canonicalRequestScope!, taskType: canonicalTaskScope.task.type || canonicalTaskScope.task.task_type || focusedTaskType, taskTitle: canonicalTaskScope.task.title || '', taskDescription: canonicalTaskScope.task.description || canonicalTaskScope.task.goal || '', learningObjectives: canonicalTaskScope.task.learningObjectives || canonicalTaskScope.task.learning_objectives || [], knowledgePoints: canonicalTaskScope.task.knowledgePoints || canonicalTaskScope.task.knowledge_points || [], pathVersion: (path as any)?.currentVersion || (path as any)?.version || '' }); setQuizRetry((value) => value + 1); };
   const [videoResources, setVideoResources] = useState<any[]>([]);
   const [videoStatus, setVideoStatus] = useState<'idle' | 'loading' | 'failed' | 'empty' | 'search_unavailable' | 'no_high_relevance' | 'expanded_no_results' | 'invalid_urls' | 'empty_response' | 'persisted' | 'new_search' | 'stale'>('idle');
   const [videoLectureFallback, setVideoLectureFallback] = useState(false);

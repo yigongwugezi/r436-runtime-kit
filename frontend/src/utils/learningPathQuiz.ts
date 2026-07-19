@@ -6,7 +6,9 @@ const quizEnsures = new Map<string, Promise<LearningPathQuiz>>();
 
 export function learningPathQuizScope(body: Record<string, unknown>): string {
   const values = ['sessionId', 'subjectId', 'pathId', 'stageId', 'dayId', 'globalDayIndex', 'taskId'].map((key) => body[key]);
-  return values.every((value) => value !== undefined && value !== null && value !== '') ? `${values.join('|')}|quiz` : '';
+  if (!values.every((value) => value !== undefined && value !== null && value !== '')) return '';
+  const semantic = ['taskType', 'taskTitle', 'taskDescription', 'learningObjectives', 'knowledgePoints', 'pathVersion'].map((key) => body[key]);
+  return `${values.join('|')}|${JSON.stringify(semantic)}|quiz`;
 }
 
 export function normalizeLearningPathQuiz(response: any): LearningPathQuiz {
