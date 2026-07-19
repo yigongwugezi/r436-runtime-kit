@@ -44,7 +44,7 @@ export async function recordVideoTaskEvidence(taskId: string, payload: {
 
 export async function getVideoFallbackState(taskId: string, payload: { sessionId: string; subjectId: string; pathId: string; stageId: string; dayId: string; globalDayIndex: number }): Promise<any> {
   const { data } = await client.get(`/api/learning-path/tasks/${encodeURIComponent(taskId)}/video-fallback/state`, { params: payload });
-  return data;
+  return data?.data || data;
 }
 
 export async function recordVideoFallbackLectureOpened(taskId: string, payload: { sessionId: string; subjectId: string; pathId: string; stageId: string; dayId?: string; globalDayIndex?: number }): Promise<any> {
