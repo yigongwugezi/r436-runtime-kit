@@ -185,6 +185,72 @@ def _bind_current_subject_from_message(state_obj: Any) -> dict[str, Any] | None:
         db.close()
 
 
+def _inject_textbook_context(state: dict[str, Any], session_id: str) -> None:
+    """Preload textbook chapter metadata into the pipeline state.
+
+    The PlannerAgent already loads textbook chapters itself, but
+    ConversationAgent also benefits from knowing the book's structure
+    during intent classification and profile gathering.  Preloading here
+    avoids redundant DB lookups and makes the textbook context available
+    to every agent in the pipeline.
+    """
+    chat_mode = str(state.get("chat_mode") or "")
+    if chat_mode not in ("planning", "invoke"):
+        return
+    try:
+        from app.db.engine import SessionLocal
+        from app.db.models import PersonalSubjectModel, SessionModel, TextbookModel
+
+        db = SessionLocal()
+        try:
+            sess = db.get(SessionModel, session_id)
+            if sess is None or not sess.subject_id:
+                return
+            subj = db.get(PersonalSubjectModel, sess.subject_id)
+            if subj is None or not subj.textbook_id:
+                return
+            textbook = db.get(TextbookModel, subj.textbook_id)
+            if textbook is None or textbook.status != "ready":
+                return
+
+            # Chapters JSON
+            chapters = list(textbook.chapters_json) if isinstance(textbook.chapters_json, list) else []
+            if chapters:
+                state["textbook_chapters"] = chapters
+
+            # Inject subject identity for cross-subject filtering downstream
+            state["course_name"] = str(subj.name or textbook.title or "").strip() or title
+            state["course_id"] = str(subj.id or "").strip()
+
+            # Build a compact structural summary for LLM context
+            title = str(textbook.title or subj.name or "").strip()
+            if not title:
+                return
+            lines = [
+                "【课本信息 — 对话中请参考】",
+                f"当前科目关联的课本：{title}",
+                "以下为课本的章节目录：",
+            ]
+            for ch in chapters:
+                ch_title = str(ch.get("title") or "").strip()
+                if not ch_title:
+                    continue
+                lines.append(f"  - 第{ch.get('order', '?')}章 {ch_title}")
+                for sec in ch.get("sections", []) or []:
+                    sec_title = str(sec.get("title") or "").strip()
+                    if sec_title:
+                        lines.append(f"    · {sec_title} (section_id={sec.get('section_id','')})")
+            state["textbook_context"] = "\n".join(lines)
+            logger.info(
+                "Injected textbook context for session=%s: textbook=%s chapters=%d",
+                session_id, title, len(chapters),
+            )
+        finally:
+            db.close()
+    except Exception:
+        pass
+
+
 async def _run_chat(message: str, session_id: str, search_enabled: bool = False, deep_think_enabled: bool = False, chat_mode: str = "free", intent: str = "", ai_config: dict | None = None) -> tuple[str, str, dict[str, Any]]:
     # ── 自由模式：纯问答，零副作用，不走任何 Agent 管道 ──
     if chat_mode == "free" and _is_likely_chat(message, {}):
@@ -279,6 +345,9 @@ async def _run_chat(message: str, session_id: str, search_enabled: bool = False,
         state["learning_path"] = last["learning_path"]
         state["existing_path"] = {"stages": last["learning_path"]}
 
+
+    # ── 规划/调用模式下预加载课本信息（供 ConversationAgent 与 PlannerAgent 使用）──
+    _inject_textbook_context(state, session_id)
 
     result = await run_pipeline(**state)
     reply = result.get("final_reply", "") or result.get("_conversation_reply", "") or "处理完成"
