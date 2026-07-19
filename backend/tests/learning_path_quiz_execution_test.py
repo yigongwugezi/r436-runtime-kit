@@ -32,7 +32,7 @@ def main():
         assert client.post("/api/learning-path/tasks/quiz/quiz/ensure", json=scope).json()["data"]["quiz"]["quizId"] == quiz["quizId"]
         answers = [{"questionId": q["questionId"], "answer": "B"} for q in quiz["questions"]]
         low = client.post("/api/learning-path/tasks/quiz/quiz/submit", json={**scope, "quizId": quiz["quizId"], "answers": answers, "idempotencyKey": "low"}); assert low.status_code == 200 and not low.json()["data"]["passed"], low.text
-        answers = [{"questionId": q["questionId"], "answer": "A"} for q in quiz["questions"]]
+        answers = [{"questionId": q["questionId"], "answer": answer} for q, answer in zip(quiz["questions"], ["C", "A", "B", "B", "A"])]
         high = client.post("/api/learning-path/tasks/quiz/quiz/submit", json={**scope, "quizId": quiz["quizId"], "answers": answers, "idempotencyKey": "high"}); assert high.status_code == 200 and high.json()["data"]["passed"]
         db = factory(); assert db.query(LearningEventModel).filter(LearningEventModel.event_type == "task_complete").count() == 1; db.close()
     print("learning path quiz execution: PASS")

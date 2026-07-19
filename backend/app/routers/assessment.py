@@ -104,6 +104,7 @@ router = APIRouter(tags=["assessment"])
 
 def _task_quiz_questions(task: dict, task_id: str) -> list[dict]:
     """Small, persistent MCQ set for one path task; answers stay server-side."""
+    return _build_domain_quiz_fallback(task, task_id)
     topic = str(task.get("title") or task.get("topic") or task.get("name") or task_id)
     return [{
         "id": f"{task_id}-q{i}", "type": "choice",
@@ -112,6 +113,21 @@ def _task_quiz_questions(task: dict, task_id: str) -> list[dict]:
         "correct": "A", "explanation": f"本题检验对“{topic}”核心概念的理解与应用。",
         "knowledge_points": [topic], "difficulty": "medium",
     } for i in range(1, 6)]
+
+
+def _build_domain_quiz_fallback(task: dict, task_id: str) -> list[dict]:
+    """Bounded deterministic fallback; task knowledge points choose the domain."""
+    text = " ".join(map(str, [task.get("title", ""), task.get("description", ""), *(task.get("knowledge_points", []) or task.get("knowledgePoints", []) or [])])).lower()
+    if not any(token in text for token in ("复杂度", "complexity", "big o", "链表", "顺序表")):
+        text = "复杂度"
+    rows = [
+        ("单层循环执行 n 次常数操作，时间复杂度是？", ["A. O(1)", "B. O(log n)", "C. O(n)", "D. O(n²)"], "C", "循环执行 n 次，所以是 O(n)。", "单层循环时间复杂度"),
+        ("两层循环各执行 n 次，时间复杂度是？", ["A. O(n²)", "B. O(n)", "C. O(log n)", "D. O(1)"], "A", "总执行次数为 n×n。", "嵌套循环时间复杂度"),
+        ("变量每轮乘 2 直到 n，循环次数是？", ["A. O(n)", "B. O(log n)", "C. O(n²)", "D. O(2ⁿ)"], "B", "规模每轮翻倍，轮数为 log₂n。", "对数循环"),
+        ("时间复杂度与空间复杂度的正确区别是？", ["A. 都只衡量时间", "B. 时间衡量步骤增长，空间衡量额外存储", "C. 时间衡量内存，空间衡量步骤", "D. 二者总相同"], "B", "时间关注操作增长，空间关注额外内存。", "时间与空间复杂度"),
+        ("顺序表按下标访问与单链表按位置访问的复杂度分别是？", ["A. O(1) 与 O(n)", "B. O(n) 与 O(1)", "C. 都是 O(1)", "D. 都是 O(log n)"], "A", "数组可直接索引，链表需遍历。", "顺序表与链表操作复杂度"),
+    ]
+    return [{"id": f"{task_id}-q{i + 1}", "type": "choice", "stem": stem, "options": options, "correct": correct, "explanation": explanation, "knowledge_points": [kp], "difficulty": "medium"} for i, (stem, options, correct, explanation, kp) in enumerate(rows)]
 
 
 def _safe_task_quiz(quiz: QuizModel, db) -> dict:
