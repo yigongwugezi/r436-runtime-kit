@@ -34,6 +34,13 @@ export async function completeLearningPathTask(taskId: string, payload: {
   return data.data;
 }
 
+export async function recordVideoTaskEvidence(taskId: string, payload: {
+  sessionId: string; subjectId: string; pathId: string; stageId: string; dayId?: string; globalDayIndex?: number; resourceUrl?: string;
+}, fallback = false): Promise<any> {
+  const { data } = await client.post(`/api/learning-path/tasks/${encodeURIComponent(taskId)}/${fallback ? 'video-fallback-selected' : 'video-opened'}`, payload);
+  return data.data;
+}
+
 /** 验证课程名称 */
 export async function validateCourse(courseName: string): Promise<{ valid: boolean; normalizedCourseName: string; reason: string | null }> {
   const { data } = await client.get('/api/learning-path/validate-course', { params: { courseName } });

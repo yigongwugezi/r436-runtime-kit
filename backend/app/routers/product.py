@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from app.middleware.auth import AuthContext, get_auth, reject_parent, require_auth, validate_anonymous_learner_id
 
@@ -4753,6 +4753,68 @@ def complete_path_task(
     }
 
 
+def _video_evidence_exists(db, *, session_id: str, subject_id: str, path_id: str, stage_id: str, task_id: str, event_type: str) -> bool:
+    for event in db.query(LearningEventModel).filter(
+        LearningEventModel.session_id == session_id, LearningEventModel.event_type == event_type,
+    ):
+        metadata = event.metadata_ if isinstance(event.metadata_, dict) else {}
+        if (metadata.get("subjectId") == subject_id and metadata.get("pathId") == path_id
+                and metadata.get("stageId") == stage_id and metadata.get("taskId") == task_id):
+            return True
+    return False
+
+
+def _record_video_evidence(task_id: str, payload: dict[str, Any], auth: AuthContext, *, event_type: str) -> dict[str, Any]:
+    session_id, subject_id = _payload_session_id(payload), _payload_subject_id(payload)
+    path_id, stage_id = str(payload.get("pathId") or ""), str(payload.get("stageId") or "")
+    day_id, global_day_index = str(payload.get("dayId") or ""), payload.get("globalDayIndex")
+    if not path_id or not stage_id or (not day_id and global_day_index is None):
+        raise HTTPException(status_code=400, detail="pathId, stageId and day scope required")
+    try:
+        global_day_index = int(global_day_index) if global_day_index is not None else None
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="invalid globalDayIndex")
+    resource_url = str(payload.get("resourceUrl") or "").strip()
+    if event_type == "video_opened":
+        parsed = urlparse(resource_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise HTTPException(status_code=422, detail="a valid video resource URL is required")
+    scope = resolve_resource_scope(auth, session_id=session_id, subject_id=subject_id, path_id=path_id, stage_id=stage_id,
+        task_id=task_id, section_id=task_id, day_id=day_id, global_day_index=global_day_index)
+    db = SessionLocal()
+    try:
+        path = db.query(LearningPathModel).filter(LearningPathModel.id == path_id, LearningPathModel.session_id == scope.session_id).first()
+        normalized = _normalize_persisted_learning_path(path) if path else None
+        entry = normalized and normalized["task_index"].get(task_id)
+        task_type = str((entry or {}).get("task", {}).get("task_type") or (entry or {}).get("task", {}).get("type") or "").lower()
+        if not entry or entry["stage_id"] != stage_id or task_type not in {"video", "watch_video"}:
+            raise HTTPException(status_code=409, detail="video task required")
+        timestamp = datetime.now(timezone.utc).isoformat()
+        resource_id = f"{path_id}:{task_id}:{event_type}:{hashlib.sha256(resource_url.encode()).hexdigest()[:16]}"
+        exists = db.query(LearningEventModel).filter(LearningEventModel.session_id == scope.session_id,
+            LearningEventModel.event_type == event_type, LearningEventModel.resource_id == resource_id).first()
+        if not exists:
+            db.add(LearningEventModel(session_id=scope.session_id, learner_id=auth.learner_id, subject_id=scope.subject_id,
+                event_type=event_type, resource_id=resource_id, metadata_={"eventType": event_type, "learnerId": auth.learner_id,
+                "sessionId": scope.session_id, "subjectId": scope.subject_id, "pathId": path_id, "stageId": stage_id,
+                "dayId": day_id or entry["day_id"], "globalDayIndex": global_day_index or entry["global_day_index"],
+                "taskId": task_id, "resourceUrl": resource_url or None, "timestamp": timestamp}))
+            db.commit()
+        return _product_response({"recorded": not bool(exists), "eventType": event_type}, session_id=scope.session_id, subject_id=scope.subject_id, source="user_action")
+    finally:
+        db.close()
+
+
+@router.post("/learning-path/tasks/{task_id}/video-opened")
+def record_video_opened(task_id: str, payload: dict[str, Any], auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
+    return _record_video_evidence(task_id, payload, auth, event_type="video_opened")
+
+
+@router.post("/learning-path/tasks/{task_id}/video-fallback-selected")
+def record_video_fallback_selected(task_id: str, payload: dict[str, Any], auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
+    return _record_video_evidence(task_id, payload, auth, event_type="video_fallback_selected")
+
+
 @router.post("/learning-path/tasks/{task_id}/complete")
 def complete_learning_path_task(task_id: str, payload: dict[str, Any], auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
     """Persist one explicit, ready reading-task completion without inflating mastery."""
@@ -4778,9 +4840,19 @@ def complete_learning_path_task(task_id: str, payload: dict[str, Any], auth: Aut
         if not entry:
             raise HTTPException(status_code=404, detail="learning path task not found")
         task = entry["task"]
-        if str(task.get("task_type") or task.get("type") or "") != "read_doc":
-            task_type = str(task.get("task_type") or task.get("type") or "").lower()
-            if task_type in {"quiz", "do_quiz", "assessment", "test"}:
+        task_type = str(task.get("task_type") or task.get("type") or "").lower()
+        if task_type in {"video", "watch_video"}:
+            opened = _video_evidence_exists(db, session_id=scope.session_id, subject_id=scope.subject_id, path_id=path_id, stage_id=stage_id, task_id=task_id, event_type="video_opened")
+            fallback = _video_evidence_exists(db, session_id=scope.session_id, subject_id=scope.subject_id, path_id=path_id, stage_id=stage_id, task_id=task_id, event_type="video_fallback_selected")
+            lecture = db.query(ResourceModel).filter(
+                ResourceModel.session_id == scope.session_id, ResourceModel.related_section_id == task_id,
+                ResourceModel.type == "lecture",
+            ).order_by(ResourceModel.created_at.desc()).first()
+            if not opened and not (fallback and lecture and str(lecture.content or "").strip() and not _is_profile_json(lecture.content or "")):
+                raise HTTPException(status_code=409, detail="open a video or complete the selected text fallback first")
+            source = "video_opened" if opened else "video_fallback"
+        elif task_type != "read_doc":
+            if task_type in {"quiz", "do_quiz", "quiz_prac", "assessment", "test"}:
                 passed = db.query(AttemptModel).filter(
                     AttemptModel.session_id == scope.session_id, AttemptModel.path_id == path_id,
                     AttemptModel.stage_id == stage_id, AttemptModel.task_id == task_id,
@@ -4789,15 +4861,17 @@ def complete_learning_path_task(task_id: str, payload: dict[str, Any], auth: Aut
                 if not passed:
                     raise HTTPException(status_code=409, detail="a passing quiz attempt is required before completion")
             raise HTTPException(status_code=409, detail="task requires its own completion evidence")
-        lecture = db.query(ResourceModel).filter(
-            ResourceModel.session_id == scope.session_id, ResourceModel.related_section_id == task_id,
-            ResourceModel.type == "lecture",
-        ).order_by(ResourceModel.created_at.desc()).first()
-        if not lecture or not str(lecture.content or "").strip() or _is_profile_json(lecture.content or ""):
-            raise HTTPException(status_code=409, detail="ready lecture required before completion")
+        else:
+            lecture = db.query(ResourceModel).filter(
+                ResourceModel.session_id == scope.session_id, ResourceModel.related_section_id == task_id,
+                ResourceModel.type == "lecture",
+            ).order_by(ResourceModel.created_at.desc()).first()
+            if not lecture or not str(lecture.content or "").strip() or _is_profile_json(lecture.content or ""):
+                raise HTTPException(status_code=409, detail="ready lecture required before completion")
+            source = "explicit_reading"
         result = complete_path_task(
             db, session_id=scope.session_id, subject_id=scope.subject_id, path_id=path_id,
-            stage_id=stage_id, task_id=task_id, source="explicit_reading", preserve_mastery=True,
+            stage_id=stage_id, task_id=task_id, source=source, preserve_mastery=True,
         )
         path.overall_progress = result["pathProgress"]["taskProgressPercent"]
         db.commit()

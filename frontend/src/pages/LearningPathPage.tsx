@@ -22,6 +22,7 @@ const KIND_CFG: Record<string, { label: string; icon: React.ReactNode }> = {
   read_doc:   { label: '阅读', icon: <BookOpen className="h-3.5 w-3.5" /> },
   write_code: { label: '推演', icon: <PenLine className="h-3.5 w-3.5" /> },
   do_quiz:    { label: '小测', icon: <FlaskConical className="h-3.5 w-3.5" /> },
+  quiz_prac:  { label: '小测', icon: <FlaskConical className="h-3.5 w-3.5" /> },
   practice:   { label: '专项', icon: <Target className="h-3.5 w-3.5" /> },
   method:     { label: '方法', icon: <Lightbulb className="h-3.5 w-3.5" /> },
   mock:       { label: '模拟', icon: <FileText className="h-3.5 w-3.5" /> },

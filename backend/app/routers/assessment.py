@@ -92,7 +92,7 @@ def _assessment_path_context(db, parent, body: "QuizSubmitRequest", learner_id: 
     if not context or str(context[0].get("id") or context[0].get("stage_id") or "") != values["stage_id"]:
         raise HTTPException(status_code=403, detail="assessment task is not in the requested path stage")
     task_type = str(context[1].get("task_type") or context[1].get("type") or context[1].get("content_type") or "").lower()
-    if task_type not in {"quiz", "do_quiz", "practice", "exam", "assessment", "test"}:
+    if task_type not in {"quiz", "do_quiz", "quiz_prac", "practice", "exam", "assessment", "test"}:
         raise HTTPException(status_code=403, detail="path task is not an assessment")
     stage = _apply_stage_progress(path.stages)[path.stages.index(context[0])]
     if stage["progressStatus"] == "locked":
@@ -153,7 +153,7 @@ def _require_task_quiz_scope(db, task_id: str, payload: dict, learner_id: str) -
     stage = _apply_stage_progress(path.stages)[entry["_stage_index"]]
     if stage["progressStatus"] == "locked":
         raise HTTPException(status_code=403, detail="please complete the current stage first")
-    if str(entry["task"].get("task_type") or entry["task"].get("type") or "").lower() not in {"quiz", "do_quiz", "assessment", "test"}:
+    if str(entry["task"].get("task_type") or entry["task"].get("type") or "").lower() not in {"quiz", "do_quiz", "quiz_prac", "assessment", "test"}:
         raise HTTPException(status_code=409, detail="task is not a quiz")
     return path, entry, session.subject_id or subject_id
 
