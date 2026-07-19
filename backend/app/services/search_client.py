@@ -586,7 +586,6 @@ def get_search_client(provider: str = "mock") -> BaseSearchClient:
         from app.services.user_ai_config import get_credential
 
         # Tavily key：优先每用户 DB 配置，fallback 到全局 settings
-        from app.config import settings
         api_key = get_credential("tavily") or settings.tavily_api_key
         return TavilySearchClient(
             api_key=api_key,
