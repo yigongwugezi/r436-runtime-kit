@@ -7328,8 +7328,140 @@ flowchart LR
 直接输出 Markdown。"""
 
 
+def _try_textbook_lecture(
+    session_id: str, section_id: str, task_id: str,
+    path_id: str, stage_id: str, section_title: str,
+    *, workflow_task: Any = None,
+) -> dict[str, Any] | None:
+    """If the task has textbook page mappings, extract PDF content and persist.
+
+    Returns a response dict ready for the caller to return, or None if no
+    textbook linkage found (caller falls through to LLM generation).
+    """
+    from app.db.models import LearningPathModel, PersonalSubjectModel, SessionModel, TextbookModel, ResourceModel
+    from app.db.repository import upsert_resource
+
+    db = SessionLocal()
+    try:
+        # 1) Find the task in the learning path
+        path_model = db.query(LearningPathModel).filter(
+            LearningPathModel.session_id == session_id,
+        ).order_by(LearningPathModel.created_at.desc()).first()
+        if not path_model or not isinstance(path_model.stages, list):
+            return None
+
+        task = None
+        for stage in path_model.stages:
+            if not isinstance(stage, dict):
+                continue
+            # Match by stage_id if provided; otherwise any stage with matching task
+            if stage_id and str(stage.get("stage_id") or stage.get("id") or "") != stage_id:
+                continue
+            for candidate in stage.get("tasks", []) or []:
+                if not isinstance(candidate, dict):
+                    continue
+                _tid = str(candidate.get("task_id") or candidate.get("id") or "")
+                if not _tid:
+                    continue
+                if _tid == task_id or _tid == section_id:
+                    task = candidate
+                    break
+            if task:
+                break
+        if not task:
+            # Try days → tasks (post-_rewrite_stage_ids format)
+            for stage in path_model.stages:
+                if not isinstance(stage, dict):
+                    continue
+                if stage_id and str(stage.get("stage_id") or stage.get("id") or "") != stage_id:
+                    continue
+                for day in stage.get("days", []) or []:
+                    if not isinstance(day, dict):
+                        continue
+                    for candidate in day.get("tasks", []) or []:
+                        if not isinstance(candidate, dict):
+                            continue
+                        _tid = str(candidate.get("task_id") or candidate.get("id") or "")
+                        if _tid == task_id or _tid == section_id:
+                            task = candidate
+                            break
+                    if task:
+                        break
+                if task:
+                    break
+        if not task:
+            return None
+
+        page_start = int(task.get("textbookPageStart") or 0)
+        page_end = int(task.get("textbookPageEnd") or 0)
+        if not page_start or not page_end:
+            return None
+
+        # 2) Resolve session → subject → textbook
+        session = db.get(SessionModel, session_id)
+        if not session or not session.subject_id:
+            return None
+        subject = db.get(PersonalSubjectModel, session.subject_id)
+        if not subject or not subject.textbook_id:
+            return None
+        textbook = db.get(TextbookModel, subject.textbook_id)
+        if not textbook or textbook.status != "ready":
+            return None
+
+        # 3) Extract textbook pages as markdown
+        from app.services.textbook_processor import extract_pdf_content
+
+        storage_root = settings.project_root / "backend" / settings.textbook_storage_path.lstrip("./")
+        pdf_path = storage_root / textbook.id / f"{textbook.id}.pdf"
+        if not pdf_path.exists():
+            logger.warning("Textbook PDF not found: %s", pdf_path)
+            return None
+
+        all_pages = extract_pdf_content(str(pdf_path))
+        relevant = [p for p in all_pages if page_start <= p["page_number"] <= page_end]
+        if not relevant:
+            return None
+        content = "\n\n".join(
+            f"## 第{p['page_number']}页\n\n{p['content']}" for p in relevant
+        )
+
+        # 4) Persist as ResourceModel
+        db2 = SessionLocal()
+        try:
+            upsert_resource(db2, session_id, {
+                "type": "lecture", "format": "text",
+                "title": section_title,
+                "content": content,
+                "related_section_id": section_id,
+                "related_stage_id": stage_id,
+                "task_id": task_id,
+            })
+            db2.commit()
+        finally:
+            db2.close()
+
+        logger.info(
+            "Textbook lecture extracted: session=%s pages=%d-%d chars=%d",
+            session_id, page_start, page_end, len(content),
+        )
+        return _product_response({"lecture": {
+            "id": f"tb_{section_id}",
+            "title": section_title,
+            "content": content,
+            "sectionId": section_id,
+            "stageId": stage_id,
+            "createdAt": int(time.time() * 1000),
+        }}, session_id=session_id, source="textbook")
+    finally:
+        db.close()
+
+
 def _generate_section_lecture(section_id: str, payload: dict[str, Any], workflow_task: Any = None) -> dict[str, Any]:
-    """Generate a structured lecture for a section using LLM, persist as Resource."""
+    """Generate a structured lecture for a section using LLM, persist as Resource.
+
+    v1.2: If the task has textbook page mappings (textbookPageStart/End), extracts
+    the corresponding PDF pages as markdown and returns them directly — no LLM call.
+    """
     session_id = _payload_session_id(payload)
     subject_id = _payload_subject_id(payload)
     section_title = str(payload.get("sectionTitle", "")).strip()
@@ -7337,6 +7469,7 @@ def _generate_section_lecture(section_id: str, payload: dict[str, Any], workflow
     chapter_id = str(payload.get("chapterId", "")).strip()
     stage_id = str(payload.get("stageId", "")).strip()
     path_id = str(payload.get("pathId", "")).strip()
+    task_id = str(payload.get("taskId") or "").strip()
     knowledge_points = payload.get("knowledgePoints", [])
     resource_type = str(payload.get("type", "lecture")).strip()
     requirements = str(payload.get("requirements", "")).strip()
@@ -7346,7 +7479,7 @@ def _generate_section_lecture(section_id: str, payload: dict[str, Any], workflow
     if not section_title:
         return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
     if stage_id:
-        _require_task_stage_access(session_id, stage_id, section_id, path_id, str(payload.get("taskId") or ""))
+        _require_task_stage_access(session_id, stage_id, section_id, path_id, task_id)
     db = SessionLocal()
     try:
         existing = db.query(ResourceModel).filter(
@@ -7363,6 +7496,15 @@ def _generate_section_lecture(section_id: str, payload: dict[str, Any], workflow
             }}, session_id=session_id, source="db")
     finally:
         db.close()
+
+    # ── v1.2: 教材感知 — 若任务有教材页映射则直接提取教材内容 ──
+    _tb_result = _try_textbook_lecture(
+        session_id, section_id, task_id, path_id, stage_id, section_title,
+        workflow_task=workflow_task,
+    )
+    if _tb_result is not None:
+        return _tb_result
+    # ──────────────────────────────────────────────────────────
 
     # Build knowledge point list for prompt
     kp_lines = ""
