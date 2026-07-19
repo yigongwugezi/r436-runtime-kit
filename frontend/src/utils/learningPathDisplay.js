@@ -28,16 +28,8 @@ export function normalizePathForDisplay(path) {
         return { ...rawDay, dayIndex: dayNumber(rawDay, dayIndex + 1), tasks: array(rawDay.tasks).slice() };
       });
     } else {
-      const dated = new Map();
-      const undated = [];
-      array(rawTasks).forEach((task) => {
-        const day = Number(task?.day ?? task?.day_index ?? task?.dayIndex);
-        if (Number.isFinite(day) && day > 0) dated.set(day, [...(dated.get(day) || []), task]);
-        else undated.push(task);
-      });
-      days = Array.from(dated, ([dayIndex, tasks]) => ({ dayIndex, tasks }));
-      let nextDay = Math.max(0, ...days.map((day) => day.dayIndex)) + 1;
-      for (let index = 0; index < undated.length; index += 3) days.push({ dayIndex: nextDay++, tasks: undated.slice(index, index + 3) });
+      if (array(rawTasks).length) formatInvalid = true;
+      days = [];
     }
     const tasks = days.flatMap((day) => day.tasks);
     return { ...rawStage, id: rawStage.id || rawStage.stage_id || `stage-${stageIndex}`, days, tasks };
@@ -51,7 +43,7 @@ export function groupTasksByDay(stages) {
     stageTitle: String(stage?.title || `阶段 ${stageIdx + 1}`),
     stageIdx,
     days: array(stage?.days).map((day, dayIdx) => ({
-      dayIndex: dayNumber(day, dayIdx + 1), tasks: array(day?.tasks), stageIdx,
+      dayIndex: dayNumber(day, dayIdx + 1), globalDayIndex: Number(day?.globalDayIndex) || dayNumber(day, dayIdx + 1), tasks: array(day?.tasks), stageIdx,
     })),
   }));
 }

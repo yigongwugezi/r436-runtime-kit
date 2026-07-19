@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { useLearningPath } from '../hooks/useLearningPath';
 import { useChatStore } from '../store/chatStore';
 import { enableProfileExtraction, listPlanningDrafts, getWorkflowTask } from '../api/learningPath';
@@ -32,6 +32,7 @@ function kindMeta(k: string) { return KIND_CFG[k] || KIND_CFG.read_doc; }
 export default function LearningPathPage() {
   const nav = useNavigate();
   const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { path, loading, error, fetchPath, generatePath, applyPathFromWorkflow } = useLearningPath();
   const { profileV2 } = useProfile();
   const subject = profileV2?.subject_context || {};
@@ -111,7 +112,7 @@ export default function LearningPathPage() {
     for (const g of dayGroups) {
       for (const d of g.days) {
         if (`${g.stageId}_day${d.dayIndex}` === activeDayKey) {
-          return { stageId: g.stageId, stageTitle: g.stageTitle, stageIdx: g.stageIdx, dayIndex: d.dayIndex };
+          return { stageId: g.stageId, stageTitle: g.stageTitle, stageIdx: g.stageIdx, dayIndex: d.dayIndex, globalDayIndex: d.globalDayIndex };
         }
       }
     }
@@ -127,10 +128,17 @@ export default function LearningPathPage() {
   }, [sessionId]);
 
   useEffect(() => {
+    const requestedDay = Number(searchParams.get('day'));
+    const requested = dayGroups.flatMap((group) => group.days.map((day) => ({ group, day }))).find(({ day }) => day.globalDayIndex === requestedDay);
+    if (requested) {
+      setExpandedStageId(requested.group.stageId);
+      setActiveDayKey(`${requested.group.stageId}_day${requested.day.dayIndex}`);
+      return;
+    }
     const restored = restoreSelectedDay(dayGroups, activeDayKey);
     setExpandedStageId(restored.expandedStageId);
     setActiveDayKey(restored.activeDayKey);
-  }, [dayGroups]);
+  }, [dayGroups, searchParams]);
 
   useEffect(() => { if (path && stages.length && hasProfile) { setPathGenerating(false); setGeneratingStatus(''); } }, [path, stages.length, hasProfile]);
 
@@ -179,9 +187,12 @@ export default function LearningPathPage() {
     if (firstDay) setActiveDayKey(`${stageId}_day${firstDay.dayIndex}`);
   };
 
-  const selectDay = (stageId: string, dayIndex: number) => {
+  const selectDay = (stageId: string, dayIndex: number, globalDayIndex: number) => {
     const key = `${stageId}_day${dayIndex}`;
     setActiveDayKey(key);
+    const next = new URLSearchParams(searchParams);
+    next.set('day', String(globalDayIndex));
+    setSearchParams(next, { replace: true });
     setMiddleTab('tasks');
     setRecommendedResources([]);
     requestAnimationFrame(() => stageRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
@@ -369,7 +380,7 @@ export default function LearningPathPage() {
                             const dayAllDone = dTotal > 0 && dayTasks.every((t: any) => t.status === 'completed' || t.status === 'mastered');
                             return (
                               <button key={`${group.stageId}_day${day.dayIndex}`}
-                                onClick={() => selectDay(group.stageId, day.dayIndex)}
+                                onClick={() => selectDay(group.stageId, day.dayIndex, day.globalDayIndex)}
                                 className={`group flex w-full items-center gap-2.5 rounded-xl border px-2.5 py-2 text-left transition-all duration-300 ${
                                   isActiveDay ? 'border-primary-200 bg-primary-50/50 shadow-[inset_2px_0_0_#3478f6]' :
                                   dayAllDone ? 'border-transparent bg-transparent opacity-60' :
@@ -379,8 +390,8 @@ export default function LearningPathPage() {
                                   isActiveDay ? 'bg-primary-500 text-white shadow-[0_0_8px_rgba(52,120,246,0.25)]' :
                                   dayAllDone ? 'bg-success-100 text-success-600' :
                                   'border border-surface-300 text-surface-400'
-                                }`}>{dayLocked ? <Lock size={10} /> : dayAllDone ? <Check size={10} /> : day.dayIndex}</span>
-                                <span className="min-w-0 flex-1 text-xs font-medium text-surface-700 truncate">第 {day.dayIndex} 天</span>
+                                }`}>{dayLocked ? <Lock size={10} /> : dayAllDone ? <Check size={10} /> : day.globalDayIndex}</span>
+                                <span className="min-w-0 flex-1 text-xs font-medium text-surface-700 truncate">第 {day.globalDayIndex} 天</span>
                                 <span className="text-[10px] font-semibold text-surface-400">{dDone}/{dTotal}</span>
                               </button>
                             );
@@ -417,10 +428,10 @@ export default function LearningPathPage() {
                   <div className="shrink-0 flex w-full items-center gap-4 p-5 text-left sm:p-6">
                     <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
                       allDone ? 'bg-success-100 text-success-600' : 'bg-gradient-to-br from-primary-500 to-accent-500 text-white shadow-[0_0_20px_rgba(52,120,246,0.3)]'
-                    }`}>{allDone ? <Check size={16} /> : stageInfo.dayIndex}</span>
+                    }`}>{allDone ? <Check size={16} /> : stageInfo.globalDayIndex}</span>
                     <span className="min-w-0 flex-1">
                       <h2 className="text-base font-semibold leading-tight tracking-[-0.02em] text-surface-800">
-                        {stageInfo.stageTitle} · 第 {stageInfo.dayIndex} 天
+                        {stageInfo.stageTitle} · 第 {stageInfo.globalDayIndex} 天
                       </h2>
                     </span>
                     <span className="hidden items-center gap-3 sm:flex">

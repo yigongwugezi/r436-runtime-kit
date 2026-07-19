@@ -712,6 +712,137 @@ def _stage_estimated_days(duration: Any) -> int:
     return 1
 
 
+def _task_minutes(task: dict[str, Any]) -> int:
+    value = task.get("durationMinutes", task.get("estimated_minutes", task.get("estimatedMinutes", task.get("minutes", 45))))
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return 45
+
+
+def _stage_tasks(stage: dict[str, Any]) -> list[dict[str, Any]]:
+    days = stage.get("days") if isinstance(stage.get("days"), list) else []
+    tasks = [task for day in days if isinstance(day, dict) for task in day.get("tasks", []) if isinstance(task, dict)]
+    if tasks:
+        return tasks
+    return [task for task in stage.get("tasks", []) if isinstance(task, dict)]
+
+
+def _stage_day_counts(stages: list[dict[str, Any]], total_days: int) -> list[int]:
+    """Allocate non-empty days by workload with deterministic largest remainder."""
+    task_counts = [len(_stage_tasks(stage)) for stage in stages]
+    weights = [sum(_task_minutes(task) for task in _stage_tasks(stage)) or count for stage, count in zip(stages, task_counts)]
+    active = [index for index, count in enumerate(task_counts) if count]
+    if not active:
+        return [0] * len(stages)
+    # A real task owns each persisted day; the requested paths have enough tasks.
+    target = min(total_days, sum(task_counts))
+    counts = [0] * len(stages)
+    for index in active:
+        counts[index] = 1
+    remaining = target - len(active)
+    total_weight = sum(weights[index] for index in active) or len(active)
+    ideals = {index: target * weights[index] / total_weight for index in active}
+    for index in active:
+        counts[index] = min(task_counts[index], max(1, int(ideals[index])))
+    remaining = target - sum(counts)
+    while remaining > 0:
+        choices = [index for index in active if counts[index] < task_counts[index]]
+        if not choices:
+            break
+        index = max(choices, key=lambda item: (ideals[item] - counts[item], weights[item], -item))
+        counts[index] += 1
+        remaining -= 1
+    while remaining < 0:
+        choices = [index for index in active if counts[index] > 1]
+        index = min(choices, key=lambda item: (ideals[item] - counts[item], weights[item], item))
+        counts[index] -= 1
+        remaining += 1
+    return counts
+
+
+def _partition_stage_tasks(tasks: list[dict[str, Any]], day_count: int) -> list[list[dict[str, Any]]]:
+    """Keep task order while choosing 1-3-task days closest to 60 minutes."""
+    task_count = len(tasks)
+    if not task_count or not day_count:
+        return []
+    scores: dict[tuple[int, int], tuple[int, list[list[dict[str, Any]]]]] = {(0, 0): (0, [])}
+    for offset in range(task_count):
+        for used_days in range(day_count):
+            current = scores.get((offset, used_days))
+            if current is None:
+                continue
+            for size in range(1, min(3, task_count - offset) + 1):
+                next_offset, next_days = offset + size, used_days + 1
+                if next_days > day_count or task_count - next_offset < day_count - next_days:
+                    continue
+                minutes = sum(_task_minutes(task) for task in tasks[offset:next_offset])
+                planned = max(45, minutes)
+                penalty = (planned - 60) ** 2 + (10000 if minutes > 75 else 0)
+                if offset == 0 and size > 1:
+                    penalty += 5  # prefer a single first reading task when equally suitable
+                candidate = (current[0] + penalty, current[1] + [tasks[offset:next_offset]])
+                existing = scores.get((next_offset, next_days))
+                if existing is None or candidate[0] < existing[0]:
+                    scores[(next_offset, next_days)] = candidate
+    return scores[(task_count, day_count)][1]
+
+
+def _upgrade_path_days(path: dict[str, Any]) -> bool:
+    """Materialize stable Day nodes once; preserves every existing task ID."""
+    stages = path.get("stages") if isinstance(path.get("stages"), list) else []
+    total_days = int(path.get("totalDays", path.get("estimatedDays", path.get("estimated_days", 0))) or 0)
+    if total_days <= 0 or not stages:
+        return False
+    existing_days = [day for stage in stages if isinstance(stage, dict) for day in stage.get("days", []) if isinstance(day, dict)]
+    if len(existing_days) == total_days and all(day.get("globalDayIndex") for day in existing_days):
+        return False
+
+    path_id = str(path.get("id") or path.get("path_id") or "")
+    counts = _stage_day_counts(stages, total_days)
+    global_day = 0
+    for stage_index, stage in enumerate(stages):
+        if not isinstance(stage, dict):
+            continue
+        stage_id = str(stage.get("stage_id") or stage.get("id") or f"{path_id}_s{stage_index}")
+        tasks = _stage_tasks(stage)
+        day_count = counts[stage_index]
+        groups = _partition_stage_tasks(tasks, day_count)
+        stage["stage_id"] = stage_id
+        stage["id"] = stage_id
+        stage["stageIndex"] = stage_index
+        stage["durationDays"] = day_count
+        stage["estimatedDays"] = day_count
+        stage["startDay"] = global_day + 1 if day_count else global_day
+        days: list[dict[str, Any]] = []
+        for stage_day, group in enumerate(groups, start=1):
+            global_day += 1
+            day_id = f"{stage_id}_d{stage_day}"
+            planned_minutes = sum(_task_minutes(task) for task in group)
+            if planned_minutes < 45 and group:
+                group[-1]["durationMinutes"] = _task_minutes(group[-1]) + (45 - planned_minutes)
+                planned_minutes = 45
+            for task_index, task in enumerate(group):
+                task_id = str(task.get("task_id") or task.get("id") or task.get("section_id") or f"{stage_id}_d{stage_day}_t{task_index}")
+                task.update({
+                    "task_id": task_id, "id": task_id, "pathId": path_id, "stageId": stage_id,
+                    "dayId": day_id, "day_id": day_id, "day": stage_day, "dayIndex": stage_day,
+                    "day_index": stage_day, "globalDayIndex": global_day, "taskIndex": task_index,
+                    "durationMinutes": _task_minutes(task),
+                })
+            days.append({
+                "id": day_id, "dayId": day_id, "pathId": path_id, "stageId": stage_id,
+                "day": stage_day, "stageDayIndex": stage_day, "globalDayIndex": global_day,
+                "title": f"Day {global_day}", "plannedMinutes": planned_minutes, "tasks": group,
+            })
+        stage["endDay"] = global_day
+        stage["days"] = days
+        stage["tasks"] = [task for day in days for task in day["tasks"]]
+    path["totalDays"] = global_day
+    path["estimatedDays"] = global_day
+    return True
+
+
 def _raw_stages_to_nodes(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert raw orchestrator-format stages to frontend-format stages.
 
@@ -732,6 +863,7 @@ def normalize_learning_path(raw_path: dict[str, Any]) -> dict[str, Any]:
     """Return stable task IDs for every persisted learning-path shape."""
     path = deepcopy(raw_path)
     path_id = str(path.get("id") or path.get("path_id") or "")
+    upgraded = _upgrade_path_days(path)
     stages = path.get("stages") if isinstance(path.get("stages"), list) else []
     task_index: dict[str, dict[str, Any]] = {}
     global_day_index = 0
@@ -777,7 +909,18 @@ def normalize_learning_path(raw_path: dict[str, Any]) -> dict[str, Any]:
                     "_task_index": task_index_in_day,
                 }
     path["stages"] = stages
-    return {"path": path, "stages": stages, "task_index": task_index}
+    return {"path": path, "stages": stages, "task_index": task_index, "upgraded": upgraded}
+
+
+def _normalize_persisted_learning_path(path: LearningPathModel) -> dict[str, Any]:
+    normalized = normalize_learning_path({
+        "id": path.id, "estimatedDays": path.estimated_days, "stages": path.stages,
+    })
+    if normalized["upgraded"]:
+        path.stages = normalized["stages"]
+        path.estimated_days = normalized["path"]["estimatedDays"]
+        flag_modified(path, "stages")
+    return normalized
 
 
 def _chapter_stages_to_frontend(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -903,11 +1046,10 @@ def _task_stages_to_frontend(stages: list[dict[str, Any]]) -> list[dict[str, Any
         if not isinstance(stage, dict):
             continue
         # ── 展平 days.tasks 到 tasks（planner 产出 stages→days→tasks 格式时用）──
-        stage_tasks = list(stage.get("tasks", []))
         days_list = list(stage.get("days", []))
-        for d in days_list:
-            if isinstance(d, dict):
-                stage_tasks.extend(d.get("tasks", []))
+        stage_tasks = [task for d in days_list if isinstance(d, dict) for task in d.get("tasks", [])]
+        if not stage_tasks:
+            stage_tasks = list(stage.get("tasks", []))
         # ── Build nodes from flattened tasks ──
         all_tasks_for_nodes = stage_tasks if stage_tasks else stage.get("tasks", [])
         nodes = [
@@ -941,7 +1083,10 @@ def _task_stages_to_frontend(stages: list[dict[str, Any]]) -> list[dict[str, Any
             "chapters": [],
             "sections": [],
             "objective": stage.get("goal", stage.get("theme", "")),
-            "estimatedDays": _stage_estimated_days(stage.get("duration", "")),
+            "estimatedDays": int(stage.get("durationDays", stage.get("estimatedDays", stage.get("estimated_days", _stage_estimated_days(stage.get("duration", ""))))) or 1),
+            "durationDays": int(stage.get("durationDays", stage.get("estimatedDays", stage.get("estimated_days", 1))) or 1),
+            "startDay": stage.get("startDay"),
+            "endDay": stage.get("endDay"),
             "tasks": stage_tasks,           # ← 展平后的 tasks
             "days": days_list,              # ← 保留原始 days
             "resourceTypes": stage.get("resource_types", []),
@@ -4406,12 +4551,26 @@ def _nkey(session_id: str, node_id: str) -> str:
 
 def _set_path_node_progress(stages: list[dict[str, Any]], node_id: str, status: str, mastery: int) -> bool:
     """Update one existing task/chapter/section/KP in the persisted path."""
+    task_updated = False
     for stage in stages:
-        tasks = _stage_items(stage) if isinstance(stage, dict) else []
-        for task in tasks:
+        if not isinstance(stage, dict):
+            continue
+        # The persisted Day contract keeps a legacy flat task list for older
+        # consumers. Update both representations because JSON serialization
+        # does not preserve their in-memory shared references.
+        task_lists = [stage.get("tasks", [])]
+        task_lists.extend(day.get("tasks", []) for day in stage.get("days", []) if isinstance(day, dict))
+        for tasks in task_lists:
+            for task in tasks if isinstance(tasks, list) else []:
+                if isinstance(task, dict) and str(task.get("task_id") or task.get("id") or "") == node_id:
+                    task["status"], task["mastery"] = status, mastery
+                    task_updated = True
+        if task_updated:
+            continue
+        for task in _stage_items(stage):
             if isinstance(task, dict) and str(task.get("task_id") or task.get("id") or "") == node_id:
                 task["status"], task["mastery"] = status, mastery
-                return True
+                task_updated = True
         for node in stage.get("nodes", []):
             if str(node.get("id") or "") == node_id:
                 node["status"], node["mastery"] = status, mastery
@@ -4428,7 +4587,7 @@ def _set_path_node_progress(stages: list[dict[str, Any]], node_id: str, status: 
                     if str(point.get("kp_id") or point.get("id") or "") == node_id:
                         point["status"], point["mastery"] = status, mastery
                         return True
-    return False
+    return task_updated
 
 
 def _stage_items(stage: dict[str, Any]) -> list[dict[str, Any]]:
@@ -4502,6 +4661,7 @@ def complete_path_task(
     ).first()
     if not path or not isinstance(path.stages, list):
         raise HTTPException(status_code=404, detail="learning path not found")
+    _normalize_persisted_learning_path(path)
     stages = path.stages
     stage = next((s for s in stages if str(s.get("id") or s.get("stage_id") or "") == stage_id), None)
     context = _path_task_context(stages, task_id, path.id)
@@ -4609,7 +4769,9 @@ def _require_task_stage_access(
             raise HTTPException(status_code=404, detail={"code": "path_not_found", "message": "learning path not found"})
         if path_id and path.id != path_id:
             raise HTTPException(status_code=404, detail={"code": "path_not_found", "message": "learning path not found"})
-        normalized = normalize_learning_path({"id": path.id, "stages": path.stages})
+        normalized = _normalize_persisted_learning_path(path)
+        if normalized["upgraded"]:
+            db.commit()
         requested_task_id = task_id or section_id
         entry = normalized["task_index"].get(requested_task_id)
         if not entry:
@@ -4744,6 +4906,8 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
                 "createdAt": base.get("createdAt", int(time.time() * 1000)),
                 "overallProgress": overall,
                 "estimatedDays": base.get("estimatedDays", 14),
+                "totalDays": base.get("estimatedDays", 14),
+                "dailyMinutes": base.get("dailyMinutes", 60),
                 "source": "agent_generated",
                 "adjustments": base.get("adjustments", []),
                 "pathVersion": base.get("pathVersion", int(time.time() * 1000)),
@@ -4753,7 +4917,23 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
         if db_path:
             raw_stages = db_path.get("stages", [])
             if isinstance(raw_stages, list):
-                normalized = normalize_learning_path({"id": db_path.get("id", f"path_{session_id}"), "stages": raw_stages})
+                normalized = normalize_learning_path({
+                    "id": db_path.get("id", f"path_{session_id}"),
+                    "estimatedDays": db_path.get("estimated_days", 14), "stages": raw_stages,
+                })
+                if normalized["upgraded"]:
+                    db = SessionLocal()
+                    try:
+                        persisted = db.get(LearningPathModel, db_path["id"])
+                        if persisted:
+                            persisted.stages = normalized["stages"]
+                            persisted.estimated_days = normalized["path"]["estimatedDays"]
+                            flag_modified(persisted, "stages")
+                            db.commit()
+                    finally:
+                        db.close()
+                    db_path["stages"] = normalized["stages"]
+                    db_path["estimated_days"] = normalized["path"]["estimatedDays"]
                 stages = _raw_stages_to_nodes(normalized["stages"])
             else:
                 stages = []
@@ -4896,11 +5076,17 @@ def _generate_learning_path(payload: dict[str, Any], auth: AuthContext, workflow
     # ── 异步触发资源生成（如果上面的调用链快速返回但资源未完成）──
     path["id"] = f"path_{session_id}"
     path["courseId"] = course_id or str(result.get("course_id", ""))
+    normalized = normalize_learning_path({
+        "id": path["id"], "estimatedDays": path["estimatedDays"],
+        "dailyMinutes": path.get("dailyMinutes", 60), "stages": result.get("learning_path", []),
+    })
+    path["stages"] = _raw_stages_to_nodes(normalized["stages"])
+    path["estimatedDays"] = normalized["path"]["estimatedDays"]
     db = SessionLocal()
     try:
         saved = upsert_learning_path(db, session_id, {
             "id": path["id"], "course_id": path["courseId"], "course_name": path["courseName"],
-            "description": path["description"], "stages": result.get("learning_path", []),
+            "description": path["description"], "stages": normalized["stages"],
             "overallProgress": path["overallProgress"], "estimatedDays": path["estimatedDays"],
         })
     finally:
@@ -5044,6 +5230,8 @@ def update_node_progress(node_id: str, payload: dict[str, Any]) -> dict[str, Any
             ).first()
             if path_id else repo_get_latest_learning_path(db, session_id)
         )
+        if path and isinstance(path.stages, list):
+            _normalize_persisted_learning_path(path)
         context = _path_task_context(path.stages, node_id, path.id) if path and isinstance(path.stages, list) else None
         was_complete = bool(context and _is_complete(context[1]))
         if not path or not isinstance(path.stages, list) or not context or not _set_path_node_progress(path.stages, node_id, status, mastery):
