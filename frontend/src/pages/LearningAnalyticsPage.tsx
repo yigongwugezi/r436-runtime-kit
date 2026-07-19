@@ -81,7 +81,7 @@ function groupTasksByDay(stages: any[]) {
 export default function LearningPathPage() {
   const nav = useNavigate();
   const location = useLocation();
-  const { path, loading, error, fetchPath, generatePath, applyPathFromWorkflow } = useLearningPath();
+  const { path, loading, error, fetchPath, generatePath } = useLearningPath();
   const { profileV2 } = useProfile();
   const subject = profileV2?.subject_context || {};
   const [existingDraft, setExistingDraft] = useState<any>(null);
@@ -199,12 +199,9 @@ export default function LearningPathPage() {
           if (task.status === 'completed') {
             sessionStorage.removeItem('_pending_gen_task_id');
             sessionStorage.removeItem('_pending_gen_session_id');
-            const rawPath = task.result?.data?.path;
-            if (rawPath && rawPath.stages?.length) {
-              applyPathFromWorkflow(rawPath);
-            } else {
-              fetchPath(true, generatingSessionId || undefined);
-            }
+            const persisted = task.result?.data;
+            if (!persisted?.persisted || !persisted.pathId) throw new Error('路径未成功保存');
+            fetchPath(true, generatingSessionId || undefined, persisted.pathId);
             return;
           }
           if (task.status === 'failed' || task.status === 'cancelled' || task.status === 'expired') {

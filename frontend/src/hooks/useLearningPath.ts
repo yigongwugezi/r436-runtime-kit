@@ -75,7 +75,7 @@ export function useLearningPath() {
   const requestIdRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
 
-  const fetchPath = useCallback(async (force: boolean = false, overrideSessionId?: string) => {
+  const fetchPath = useCallback(async (force: boolean = false, overrideSessionId?: string, overridePathId?: string) => {
     const effectiveSessionId = overrideSessionId || sessionId;
     if (!canLoadCanonicalData(canonicalStatus, effectiveSessionId)) { setLoading(false); return; }
     const requestId = ++requestIdRef.current;
@@ -85,7 +85,7 @@ export function useLearningPath() {
     if (force) { hasDataRef.current = false; pathVersionRef.current = -1; }
     if (force || !hasDataRef.current) { setLoading(true); setError(null); }
     try {
-      const pathId = new URLSearchParams(location.search).get('pathId') || undefined;
+      const pathId = overridePathId || new URLSearchParams(location.search).get('pathId') || undefined;
       const res = await learningPathApi.getLearningPath({ sessionId: effectiveSessionId, subjectId, pathId }, controller.signal);
       const p = normalizeLearningPathForClient(res?.path ?? null);
       const finalPath = p;
@@ -124,7 +124,13 @@ export function useLearningPath() {
         return { ...current, status, events: [...current.events, event], elapsedMs: event.elapsed_ms };
       }));
       const task = await readWorkflow(started.task_id, sessionId);
-      const next = normalizeLearningPathForClient(task.result?.data?.path ?? null);
+      const persisted = task.result?.data;
+      if (!persisted?.persisted || !persisted.pathId) throw new Error('路径未成功保存，请重试');
+      const res = await learningPathApi.getLearningPath({ sessionId, subjectId: persisted.subjectId || subjectId, pathId: persisted.pathId });
+      const next = normalizeLearningPathForClient(res?.path ?? null);
+      if (!next) throw new Error('已保存的路径无法读取');
+      pathVersionRef.current = next.pathVersion ?? 0;
+      hasDataRef.current = true;
       setPath(next);
       return next;
     } catch (e) { setError(e instanceof Error ? e.message : '路径生成失败'); return null; }
@@ -225,16 +231,5 @@ export function useLearningPath() {
   useEffect(() => { if (dataVersion <= 0 || dataVersion === lastVersionRef.current) return; lastVersionRef.current = dataVersion; fetchPath(true); }, [dataVersion, fetchPath]);
 
   /** 从 workflow 完成结果直接设置路径，不依赖 API 二次查询 */
-  const applyPathFromWorkflow = useCallback((rawPath: any) => {
-    const normalized = normalizeLearningPathForClient(rawPath);
-    if (normalized && normalized.stages?.length) {
-      pathVersionRef.current = normalized.pathVersion ?? Date.now();
-      hasDataRef.current = true;
-      setPath(normalized);
-      setLoading(false);
-      setError(null);
-    }
-  }, []);
-
-  return { path, loading, error, generationWorkflow, fetchPath, generatePath, applyPathFromWorkflow, updateNode, updateNodeStatus, updateKnowledgePoint, updateChapterStatus, updateSectionStatus };
+  return { path, loading, error, generationWorkflow, fetchPath, generatePath, updateNode, updateNodeStatus, updateKnowledgePoint, updateChapterStatus, updateSectionStatus };
 }
