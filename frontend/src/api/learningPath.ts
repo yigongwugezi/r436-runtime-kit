@@ -27,6 +27,13 @@ export async function updateNodeProgress(
   await client.patch(`/api/learning-path/nodes/${nodeId}`, { mastery, ...params });
 }
 
+export async function completeLearningPathTask(taskId: string, payload: {
+  sessionId: string; subjectId: string; pathId: string; stageId: string; dayId?: string; globalDayIndex?: number;
+}): Promise<any> {
+  const { data } = await client.post(`/api/learning-path/tasks/${encodeURIComponent(taskId)}/complete`, payload);
+  return data.data;
+}
+
 /** 验证课程名称 */
 export async function validateCourse(courseName: string): Promise<{ valid: boolean; normalizedCourseName: string; reason: string | null }> {
   const { data } = await client.get('/api/learning-path/validate-course', { params: { courseName } });

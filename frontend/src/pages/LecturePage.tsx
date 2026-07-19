@@ -24,6 +24,7 @@ import FocusSprintPage from './FocusSprintPage';
 import WorkflowProgress from '../components/common/WorkflowProgress';
 import { cancelWorkflow, consumeWorkflowEvents, ensureLecture, readWorkflow, type WorkflowState } from '../api/workflows';
 import { createLectureEnsureGuard } from '../utils/lectureEnsureGuard';
+import { completeLearningPathTask } from '../api/learningPath';
 import {
   clearWorkflowTask,
   isActiveWorkflowStatus,
@@ -105,11 +106,12 @@ function legacyStageSection(stage: { id: string; title: string }, sectionId: str
   };
 }
 
-function taskDayScope(path: any, taskId: string): { dayId?: string; globalDayIndex?: number } {
+function taskDayScope(path: any, taskId: string): { dayId?: string; globalDayIndex?: number; status?: string } {
   for (const stage of path?.stages ?? []) {
     for (const day of stage?.days ?? []) {
       if ((day?.tasks ?? []).some((task: any) => (task.id || task.task_id) === taskId)) {
-        return { dayId: day.id || day.dayId, globalDayIndex: day.globalDayIndex };
+        const task = (day?.tasks ?? []).find((item: any) => (item.id || item.task_id) === taskId);
+        return { dayId: day.id || day.dayId, globalDayIndex: day.globalDayIndex, status: task?.status };
       }
     }
   }
@@ -725,10 +727,14 @@ export default function LecturePage() {
   }, [currentSection, sessionId, lectureLoaded, lectureMissing, lecture, generating, lectureEnsureUnavailable, focusedSubjectId, focusedPathId, focusedStageId, focusedTaskId, activeSectionId, handleGenerate]);
 
   const completeFocusedTask = async () => {
-    if (!focusedTaskId || !focusedReadingTask || focusedCompleting || !effectiveLectureContent || generating || (lectureWorkflow && isActiveWorkflowStatus(lectureWorkflow.status))) return;
+    if (!focusedTaskId || !focusedReadingTask || focusedCompleting || !effectiveLectureContent || generating || !resourceDayScope.globalDayIndex || (lectureWorkflow && isActiveWorkflowStatus(lectureWorkflow.status))) return;
     setFocusedCompleting(true);
     try {
-      await updateKnowledgePoint(focusedTaskId, { status: 'mastered', mastery: 100 });
+      await completeLearningPathTask(focusedTaskId, {
+        sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId || path?.id || '',
+        stageId: focusedStageId || chapterCtx?.stage.id || '', dayId: resourceDayScope.dayId,
+        globalDayIndex: resourceDayScope.globalDayIndex,
+      });
       await fetchPath(true);
     } finally {
       setFocusedCompleting(false);
@@ -739,7 +745,7 @@ export default function LecturePage() {
 
   // ── Mode delegation ──
   if (focusedTask) {
-    const completed = currentSection?.status === 'mastered';
+    const completed = resourceDayScope.status === 'completed' || resourceDayScope.status === 'mastered';
     return (
       <div className="min-h-screen -m-6 bg-surface-50">
         <div className="mx-auto flex min-h-screen max-w-6xl flex-col">
@@ -772,7 +778,7 @@ export default function LecturePage() {
                   : effectiveLectureContent ? <Markdown content={effectiveLectureContent} />
                   : <div className="rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">{lectureEnsureUnavailable ? '教材服务接口不可用，请刷新或重启后端' : '讲义暂不可用。'}<button onClick={() => { const scope = [sessionId, focusedSubjectId || workflowSubjectId, focusedPathId || path?.id, focusedStageId || chapterCtx?.stage.id, focusedTaskId || activeSectionId].join('|'); unavailableEnsureGuard.current.retry(scope); setLectureEnsureUnavailable(false); focusedGenerationRef.current = ''; void handleGenerate(); }} className="ml-2 font-medium underline">重新加载</button></div>}
                 <div className="mt-8 border-t border-surface-100 pt-4">
-                  <button disabled={completed || !focusedReadingTask || focusedCompleting || !effectiveLectureContent || generating || !!(lectureWorkflow && isActiveWorkflowStatus(lectureWorkflow.status))} onClick={completeFocusedTask} className="flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"><Check size={15} />{completed ? '任务已完成' : focusedCompleting ? '保存中…' : focusedReadingTask ? '标记完成' : '请先完成练习'}</button>
+                  <button disabled={completed || !focusedReadingTask || focusedCompleting || !effectiveLectureContent || !resourceDayScope.globalDayIndex || generating || !!(lectureWorkflow && isActiveWorkflowStatus(lectureWorkflow.status))} onClick={completeFocusedTask} className="flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"><Check size={15} />{completed ? '任务已完成' : focusedCompleting ? '保存中…' : focusedReadingTask ? '标记完成' : '请先完成练习'}</button>
                 </div>
               </article>
               <aside className="flex min-h-0 flex-col overflow-hidden rounded-2xl bg-white shadow-soft">

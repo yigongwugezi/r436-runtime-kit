@@ -371,16 +371,11 @@ export default function LearningPathPage() {
                             const dDone = dayTasks.filter((t: any) => t.status === 'completed' || t.status === 'mastered').length;
                             const dTotal = dayTasks.length;
                             const isActiveDay = activeDayKey === `${group.stageId}_day${day.dayIndex}`;
-                            const firstTaskGlobalIdx = allTasks.findIndex(t => 
-                              (t.task_id || t.id) === (dayTasks[0]?.task_id || dayTasks[0]?.id)
-                            );
-                            const dayLocked = firstTaskGlobalIdx >= 0 && 
-                              (group.stageIdx > currentStageIdx || 
-                               (group.stageIdx === currentStageIdx && firstTaskGlobalIdx > currentTaskIdx));
+                            const dayLocked = day.progressStatus === 'locked';
                             const dayAllDone = dTotal > 0 && dayTasks.every((t: any) => t.status === 'completed' || t.status === 'mastered');
                             return (
                               <button key={`${group.stageId}_day${day.dayIndex}`}
-                                onClick={() => selectDay(group.stageId, day.dayIndex, day.globalDayIndex)}
+                                onClick={() => !dayLocked && selectDay(group.stageId, day.dayIndex, day.globalDayIndex)}
                                 className={`group flex w-full items-center gap-2.5 rounded-xl border px-2.5 py-2 text-left transition-all duration-300 ${
                                   isActiveDay ? 'border-primary-200 bg-primary-50/50 shadow-[inset_2px_0_0_#3478f6]' :
                                   dayAllDone ? 'border-transparent bg-transparent opacity-60' :

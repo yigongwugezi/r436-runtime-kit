@@ -4616,6 +4616,7 @@ def _is_complete(item: dict[str, Any]) -> bool:
 def _apply_stage_progress(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Derive the only stage-access state from persisted path JSON."""
     current_seen = False
+    current_day_seen = False
     for stage in stages:
         items = _stage_items(stage)
         required = [item for item in items if not item.get("optional", False)]
@@ -4635,6 +4636,22 @@ def _apply_stage_progress(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         stage["requiredTaskCount"] = len(required)
         stage["progressPercent"] = round(done * 100 / len(required)) if required else 0
         stage["accessible"] = status != "locked"
+        for day in stage.get("days", []) if isinstance(stage.get("days"), list) else []:
+            if not isinstance(day, dict):
+                continue
+            day_required = [item for item in day.get("tasks", []) if isinstance(item, dict) and not item.get("optional", False)]
+            day_done = sum(_is_complete(item) for item in day_required)
+            if day_required and day_done == len(day_required):
+                day_status = "completed"
+            elif not current_day_seen:
+                day_status = "current"
+                current_day_seen = True
+            else:
+                day_status = "locked"
+            day["progressStatus"] = day_status
+            day["accessible"] = day_status != "locked"
+            day["completedTaskCount"] = day_done
+            day["requiredTaskCount"] = len(day_required)
     return stages
 
 
@@ -4653,7 +4670,7 @@ def _path_task_context(stages: list[dict[str, Any]], node_id: str, path_id: str 
 
 def complete_path_task(
     db, *, session_id: str, subject_id: str, path_id: str, stage_id: str,
-    task_id: str, source: str = "learning_path",
+    task_id: str, source: str = "learning_path", preserve_mastery: bool = False,
 ) -> dict[str, Any]:
     """Persist one verified path task completion using the lecture semantics."""
     path = db.query(LearningPathModel).filter(
@@ -4673,7 +4690,9 @@ def complete_path_task(
     _, task = context
     was_complete = _is_complete(task)
     if not was_complete:
-        task["status"], task["mastery"] = "completed", 100
+        task["status"] = "completed"
+        if not preserve_mastery:
+            task["mastery"] = 100
         task["completedAt"] = datetime.now(timezone.utc).isoformat()
         task["completionSource"] = source
         flag_modified(path, "stages")
@@ -4708,6 +4727,62 @@ def complete_path_task(
     }
 
 
+@router.post("/learning-path/tasks/{task_id}/complete")
+def complete_learning_path_task(task_id: str, payload: dict[str, Any], auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
+    """Persist one explicit, ready reading-task completion without inflating mastery."""
+    session_id, subject_id = _payload_session_id(payload), _payload_subject_id(payload)
+    path_id, stage_id = str(payload.get("pathId") or ""), str(payload.get("stageId") or "")
+    day_id = str(payload.get("dayId") or "")
+    global_day_index = payload.get("globalDayIndex")
+    if not path_id or not stage_id or (not day_id and global_day_index is None):
+        raise HTTPException(status_code=400, detail="pathId, stageId and day scope required")
+    try:
+        global_day_index = int(global_day_index) if global_day_index is not None else None
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="invalid globalDayIndex")
+    scope = resolve_resource_scope(
+        auth, session_id=session_id, subject_id=subject_id, path_id=path_id, stage_id=stage_id,
+        task_id=task_id, section_id=task_id, day_id=day_id, global_day_index=global_day_index,
+    )
+    db = SessionLocal()
+    try:
+        path = db.query(LearningPathModel).filter(LearningPathModel.id == path_id, LearningPathModel.session_id == scope.session_id).first()
+        normalized = _normalize_persisted_learning_path(path) if path else None
+        entry = normalized and normalized["task_index"].get(task_id)
+        if not entry:
+            raise HTTPException(status_code=404, detail="learning path task not found")
+        task = entry["task"]
+        if str(task.get("task_type") or task.get("type") or "") != "read_doc":
+            raise HTTPException(status_code=409, detail="task requires its own completion evidence")
+        lecture = db.query(ResourceModel).filter(
+            ResourceModel.session_id == scope.session_id, ResourceModel.related_section_id == task_id,
+            ResourceModel.type == "lecture",
+        ).order_by(ResourceModel.created_at.desc()).first()
+        if not lecture or not str(lecture.content or "").strip() or _is_profile_json(lecture.content or ""):
+            raise HTTPException(status_code=409, detail="ready lecture required before completion")
+        result = complete_path_task(
+            db, session_id=scope.session_id, subject_id=scope.subject_id, path_id=path_id,
+            stage_id=stage_id, task_id=task_id, source="explicit_reading", preserve_mastery=True,
+        )
+        path.overall_progress = result["pathProgress"]["taskProgressPercent"]
+        db.commit()
+        normalized = normalize_learning_path({"id": path.id, "estimatedDays": path.estimated_days, "stages": path.stages})
+        entry = normalized["task_index"][task_id]
+        day_tasks = [item["task"] for item in normalized["task_index"].values() if item["day_id"] == entry["day_id"]]
+        ordered = sorted(normalized["task_index"].values(), key=lambda item: (item["global_day_index"], item["_task_index"]))
+        next_entry = next((item for item in ordered if not _is_complete(item["task"])), None)
+        result.update({
+            "taskId": task_id, "taskStatus": entry["task"].get("status"), "completedAt": entry["task"].get("completedAt"),
+            "dayProgress": {"dayId": entry["day_id"], "globalDayIndex": entry["global_day_index"], "completed": sum(_is_complete(item) for item in day_tasks), "total": len(day_tasks)},
+            "unlockedDay": next_entry["global_day_index"] if next_entry else None,
+            "unlockedStage": next_entry["stage_id"] if next_entry else None,
+            "nextTask": result["pathProgress"].get("nextTask"),
+        })
+        return _product_response(result, session_id=scope.session_id, subject_id=scope.subject_id, source="user_action")
+    finally:
+        db.close()
+
+
 def _path_progress(path: LearningPathModel, *, session_id: str, subject_id: str) -> dict[str, Any]:
     stages = _apply_stage_progress(deepcopy(path.stages or [])) if isinstance(path.stages, list) else []
     required_items = [(stage, item) for stage in stages for item in _stage_items(stage) if not item.get("optional", False)]
@@ -4725,6 +4800,10 @@ def _path_progress(path: LearningPathModel, *, session_id: str, subject_id: str)
             "accessible": True,
             "routeContext": {"sessionId": session_id, "subjectId": subject_id, "pathId": path.id, "stageId": stage_id, "taskId": task_id, "sectionId": section_id},
         }
+        entry = normalize_learning_path({"id": path.id, "estimatedDays": path.estimated_days, "stages": path.stages})["task_index"].get(task_id)
+        if entry:
+            next_task.update({"dayId": entry["day_id"], "globalDayIndex": entry["global_day_index"]})
+            next_task["routeContext"].update({"dayId": entry["day_id"], "globalDayIndex": entry["global_day_index"]})
     total_required = len(required_items)
     completed_required = sum(_is_complete(item) for _, item in required_items)
     completed_stages = sum(stage.get("progressStatus") == "completed" for stage in stages)
@@ -4880,7 +4959,7 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
             stages = _apply_node_progress(stages, session_id)
             all_nodes = [n for s in stages for n in s.get("nodes", [])]
             mastered = sum(1 for n in all_nodes if n.get("status") == "mastered")
-            overall = round(mastered / len(all_nodes) * 100) if all_nodes else 0
+            overall = base.get("overallProgress", round(mastered / len(all_nodes) * 100) if all_nodes else 0)
 
             stage_resource_stats: dict[str, dict[str, int]] = {}
             stage_ids = [s.get("id", "") for s in stages]
@@ -4954,6 +5033,7 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
                     "courseId": db_path.get("course_id", ""),
                     "createdAt": _datetime_to_ms(db_path.get("created_at")),
                     "estimatedDays": db_path.get("estimated_days", 14),
+                    "overallProgress": db_path.get("overall_progress", 0),
                     "adjustments": [],
                     "pathVersion": _datetime_to_ms(db_path.get("updated_at")),
                 })},
