@@ -17,4 +17,12 @@ test('video fallback uses one delivery mode and never exposes ordinary generatio
   assert.match(page, /const workflow = await readWorkflow\(fallbackWorkflowId/);
   assert.match(page, /await getVideoFallbackState\(resourceTaskId, canonicalRequestScope\)/);
   assert.match(page, /重新生成图文讲解/);
+  const content = page.indexOf("quizState !== 'idle' ? null : sectionContent ?");
+  const fallbackError = page.indexOf('isVideoFallbackDelivery && fallbackEnsureError', content);
+  const fallbackLoading = page.indexOf('isVideoFallbackDelivery ? (', fallbackError);
+  const ordinaryLoading = page.indexOf(') : loadingLecture ? (', fallbackLoading);
+  const ordinaryEmpty = page.indexOf('!isTextbookMode && !isVideoFallbackDelivery', ordinaryLoading);
+  assert.ok(content >= 0 && content < fallbackError && fallbackError < fallbackLoading && fallbackLoading < ordinaryLoading && ordinaryLoading < ordinaryEmpty);
+  assert.match(page, /正在生成图文讲解/);
+  assert.match(page, /AI 正在将本视频任务转换为可阅读的图文教材，请稍候…/);
 });

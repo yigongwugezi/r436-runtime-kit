@@ -406,6 +406,7 @@ export default function LecturePage() {
   }, [canonicalScopeKey, lectureSemanticKey, clearQuiz]);
   useEffect(() => { setVideoLectureFallback(false); setVideoOpened(false); setVideoFallbackSelected(false); setFallbackStateLoading(true); setFallbackEnsureError(false); fallbackEnsureScope.current = ''; fallbackRecoveryRetry.current = ''; fallbackSelectionPending.current = false; setFallbackWorkflowId(''); setFallbackWorkflowChecked(false); }, [resourceTaskId]);
   const deliveryMode = executionMode !== 'video' ? executionMode : fallbackStateLoading ? 'resolving' : videoFallbackSelected ? 'video_fallback_lecture' : 'video';
+  const isVideoFallbackDelivery = deliveryMode === 'video_fallback_lecture';
   const videoScope = useMemo(() => canonicalRequestScope
     ? canonicalRequestScope
     : { sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId || path?.id, stageId: focusedStageId || chapterCtx?.stage.id, taskId: resourceTaskId, dayId: resourceDayScope.dayId, globalDayIndex: resourceDayScope.globalDayIndex }, [canonicalRequestScope, sessionId, focusedSubjectId, workflowSubjectId, focusedPathId, path?.id, focusedStageId, chapterCtx?.stage.id, resourceTaskId, resourceDayScope.dayId, resourceDayScope.globalDayIndex]);
@@ -1426,11 +1427,22 @@ export default function LecturePage() {
                 </div>
               )}
             </div>
+          ) : isVideoFallbackDelivery && fallbackEnsureError ? (
+            <div className="mx-auto flex h-full w-full max-w-2xl flex-col items-center justify-center gap-4 p-6 text-center">
+              <div className="rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">图文讲解生成失败。</div>
+              <button onClick={() => { fallbackEnsureScope.current = ''; setFallbackEnsureError(false); setFallbackEnsureRetry((value) => value + 1); }} className="rounded-lg border border-primary-200 px-4 py-2 text-sm text-primary-700">重新生成图文讲解</button>
+            </div>
+          ) : isVideoFallbackDelivery ? (
+            <div className="mx-auto flex h-full w-full max-w-2xl flex-col items-center justify-center gap-2 p-6 text-center text-sm text-surface-500">
+              <Loader2 size={18} className="animate-spin" />
+              <strong className="text-surface-700">正在生成图文讲解</strong>
+              <span>AI 正在将本视频任务转换为可阅读的图文教材，请稍候…</span>
+            </div>
           ) : loadingLecture ? (
             <div className="flex items-center justify-center h-full">
               <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
             </div>
-          ) : !isTextbookMode ? (
+          ) : !isTextbookMode && !isVideoFallbackDelivery ? (
             /* ── No textbook mode: show generate lecture prompt ── */
             <div className="flex flex-col items-center justify-center h-full gap-5">
               <div className="relative">
