@@ -122,8 +122,11 @@ function extractApiError(err: any): ApiError {
 
     // 优先使用后端返回的安全消息（detail/message/error）
     const detail = body?.detail || body?.message || body?.error || null;
+    if (detail && typeof detail === 'object') code = detail.code || code;
 
-    if (detail && typeof detail === 'string') {
+    if (code === 'CURRENT_PATH_UNRESOLVED') {
+      message = code;
+    } else if (detail && typeof detail === 'string') {
       message = detail;
     } else if (STATUS_MESSAGES[status]) {
       message = STATUS_MESSAGES[status];
@@ -219,7 +222,10 @@ export async function streamRequest(
   if (!response.ok || !response.body) {
     log.error(`STREAM 失败 ${path} → ${response.status}`);
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-    throw new Error(`Stream error: ${response.status}`);
+    const body = await response.json().catch(() => null);
+    const detail = body?.detail;
+    const message = typeof detail === 'object' ? detail.code : detail;
+    throw new Error(`Stream error: ${response.status}${message ? ` ${message}` : ''}`);
   }
 
   log.debug(`STREAM 已连接 ${path}`);

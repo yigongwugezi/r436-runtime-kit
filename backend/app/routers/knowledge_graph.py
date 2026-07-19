@@ -24,11 +24,19 @@ from app.services.agent_service import (
     get_learning_path as ag_get_learning_path,
     get_resources as ag_get_resources,
 )
+from app.db.repository import CurrentPathUnresolvedError
 from app.middleware.auth import AuthContext, get_auth
 
 logger = logging.getLogger("app.knowledge_graph")
 
 router = APIRouter(prefix="/knowledge-graph", tags=["knowledge-graph"])
+
+
+def _current_path_or_none(session_id: str, subject_id: str) -> dict[str, Any] | None:
+    try:
+        return ag_get_learning_path(session_id, subject_id)
+    except CurrentPathUnresolvedError:
+        return None
 
 
 @router.get("")
@@ -47,7 +55,7 @@ def get_knowledge_graph(
     _ensure_session_linked(session_id, subject_id=subject_id)
 
     # 1. Get learning path
-    path = ag_get_learning_path(session_id)
+    path = _current_path_or_none(session_id, subject_id)
     if not path:
         return _product_response(
             {"nodes": [], "edges": [], "meta": {"totalNodes": 0, "totalEdges": 0, "masteredCount": 0, "chapters": []}},
@@ -138,6 +146,70 @@ def get_knowledge_graph(
                         "relation": "prerequisite",
                     })
 
+    # 4b. Fallback: task-based stages (no chapters) — build graph from flat nodes
+    if not all_nodes:
+        for stage_index, stage in enumerate(stages):
+            stage_title = str(stage.get("title", f"阶段 {stage_index + 1}"))
+            if stage_title and stage_title not in seen_chapters:
+                seen_chapters.add(stage_title)
+                chapter_names.append(stage_title)
+
+            stage_nodes: list[dict[str, Any]] = stage.get("nodes", [])
+            if not stage_nodes:
+                continue
+
+            # Map task type → KG node type (read_doc/concept, quiz_prac/procedure, etc.)
+            _task_type_map = {
+                "read_doc": "concept", "watch_video": "concept",
+                "quiz_prac": "procedure", "hands_on": "procedure",
+                "mind_map": "memory", "review": "procedure",
+            }
+            tasks: list[dict[str, Any]] = stage.get("tasks", [])
+
+            prev_nid: str | None = None
+            for ni, node in enumerate(stage_nodes):
+                nid = str(node.get("id", ""))
+                if not nid or nid in seen_kps:
+                    continue
+                seen_kps.add(nid)
+
+                task = tasks[ni] if ni < len(tasks) else {}
+                kg_type = _task_type_map.get(str(task.get("type", "")), "concept")
+
+                all_nodes.append({
+                    "id": nid,
+                    "label": str(node.get("topic", nid)),
+                    "type": kg_type,
+                    "category": stage_title,
+                    "chapter": stage_title,
+                    "mastery": int(node.get("mastery", 0)),
+                    "status": _normalize_content_status(str(node.get("status", "not_started"))),
+                    "difficulty": "medium",
+                    "importance": 4 if node.get("isKeyPoint") else 2,
+                    "resourceCount": 0,
+                    "completedCount": 0,
+                })
+
+                # Sequential edge within same stage
+                if prev_nid and prev_nid in seen_kps:
+                    all_edges.append({
+                        "source": prev_nid, "target": nid, "relation": "related",
+                    })
+                prev_nid = nid
+
+            # Prerequisite edge: last node of prev stage → first node of this stage
+            if stage_index > 0:
+                prev_stage_nodes: list[dict[str, Any]] = stages[stage_index - 1].get("nodes", [])
+                cur_first = stage_nodes[0] if stage_nodes else None
+                prev_last = prev_stage_nodes[-1] if prev_stage_nodes else None
+                if prev_last and cur_first:
+                    pid = str(prev_last.get("id", ""))
+                    cid = str(cur_first.get("id", ""))
+                    if pid in seen_kps and cid in seen_kps:
+                        all_edges.append({
+                            "source": pid, "target": cid, "relation": "prerequisite",
+                        })
+
     # 5. Enrich with resource counts
     try:
         resources = ag_get_resources(session_id)
@@ -194,7 +266,7 @@ def get_node_detail(
     session_id = _resolve_session_id(sessionId, subjectId)
 
     # Find node in learning path
-    path = ag_get_learning_path(session_id)
+    path = _current_path_or_none(session_id, str(subjectId).strip())
     node_info: dict[str, Any] | None = None
     linked_sections: list[dict] = []
     prerequisites: list[dict] = []
@@ -230,6 +302,26 @@ def get_node_detail(
                                 "chapterTitle": ch.get("title", ""),
                             })
 
+        # ── Fallback: task-based stages (no chapters) ──
+        if not node_info:
+            for stage in stages:
+                stage_title = str(stage.get("title", ""))
+                for node in stage.get("nodes", []):
+                    nid = str(node.get("id", ""))
+                    all_kp_ids.add(nid)
+                    if nid == node_id:
+                        node_info = {
+                            "id": nid,
+                            "label": str(node.get("topic", nid)),
+                            "description": str(node.get("description", "")),
+                            "type": "concept",
+                            "mastery": int(node.get("mastery", 0)),
+                            "status": _normalize_content_status(str(node.get("status", "not_started"))),
+                            "difficulty": "medium",
+                            "importance": 4 if node.get("isKeyPoint") else 2,
+                            "category": stage_title,
+                        }
+
         # Find prerequisite relationships
         for stage in stages:
             for node in stage.get("nodes", []):
@@ -242,6 +334,32 @@ def get_node_detail(
                             prerequisites.append({"id": pid, "label": pid})
                 if nid != node_id and node_id in prereqs:
                     dependents.append({"id": nid, "label": node.get("topic", nid)})
+
+        # ── Fallback prerequisites for task-based nodes (stage ordering) ──
+        if not prerequisites and not dependents and node_info:
+            for si, stage in enumerate(stages):
+                snodes = stage.get("nodes", [])
+                for node in snodes:
+                    if str(node.get("id", "")) == node_id:
+                        if si > 0:
+                            prev_snodes = stages[si - 1].get("nodes", [])
+                            if prev_snodes:
+                                pn = prev_snodes[-1]
+                                prerequisites.append({
+                                    "id": str(pn.get("id", "")),
+                                    "label": str(pn.get("topic", "")),
+                                })
+                        if si + 1 < len(stages):
+                            next_snodes = stages[si + 1].get("nodes", [])
+                            if next_snodes:
+                                dn = next_snodes[0]
+                                dependents.append({
+                                    "id": str(dn.get("id", "")),
+                                    "label": str(dn.get("topic", "")),
+                                })
+                        break
+                if prerequisites or dependents:
+                    break
 
     if not node_info:
         return _product_response(

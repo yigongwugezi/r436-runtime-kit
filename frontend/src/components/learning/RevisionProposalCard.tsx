@@ -22,7 +22,7 @@ export default function RevisionProposalCard({ sessionId, subjectId, pathId }: {
   const stages = proposal.diff?.changed_stages || [];
   const tasks = proposal.diff?.changed_tasks || [];
   return <section className="rounded-2xl border border-primary-200 bg-primary-50/40 p-4 space-y-3">
-    <div><h3 className="font-semibold text-surface-800">学习路径调整建议</h3><p className="text-sm text-surface-600">{proposal.reason || '根据近期学习情况生成'}</p></div>
+    <div><h3 className="font-semibold text-surface-800">学习路径调整建议</h3><p className="text-sm text-surface-600">根据最近小测结果，建议加强相关复习。</p></div>
     <p className="text-xs text-surface-500">版本：{proposal.currentRevision ?? '当前'} → {proposal.proposedRevision ?? '建议'} · {proposal.trigger_source === 'assessment' ? '学习评估触发' : '你的请求触发'}</p>
     <p className="text-xs text-surface-600">阶段变化：{stages.length ? stages.join('、') : '暂无阶段变化'}；任务变化：{tasks.length ? tasks.join('、') : '暂无任务变化'}</p>
     {status === 'confirmed' || status === 'rejected' ? <p className="text-sm font-medium text-success-600">{status === 'confirmed' ? '已确认调整' : '已拒绝调整'}</p> : <div className="flex gap-2"><button disabled={busy} onClick={() => run('confirm')} className="rounded-lg bg-primary-500 px-3 py-2 text-sm text-white disabled:opacity-50">确认调整</button><button disabled={busy} onClick={() => run('reject')} className="rounded-lg border px-3 py-2 text-sm disabled:opacity-50">拒绝调整</button></div>}

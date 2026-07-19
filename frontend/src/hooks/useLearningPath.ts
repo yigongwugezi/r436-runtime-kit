@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import * as learningPathApi from '../api/learningPath';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
@@ -6,6 +7,7 @@ import type { LearningPath, PathNodeStatus, ContentStatus, Chapter, Section, Kno
 import { contentStatusToProgress, legacyStatusToContent } from '../types/learningPath';
 import { consumeWorkflowEvents, readWorkflow, startWorkflow, type WorkflowState } from '../api/workflows';
 import { normalizeLearningPathForClient } from '../utils/learningPathViewModel';
+import { canLoadCanonicalData } from '../utils/canonicalSessionState';
 
 function computeOverallProgress(path: LearningPath): number {
   // 优先从章节层级计算
@@ -57,30 +59,38 @@ function mapPathHierarchy(
 }
 
 export function useLearningPath() {
+  const location = useLocation();
   const subjectId = useSubjectStore((s) => s.activeSubject?.id ?? s.activeClassSubject?.subject);
   const sessionId = useChatStore((state) => state.dataSessionId);
+  const canonicalStatus = useChatStore((state) => state.canonicalSession.status);
   const dataVersion = useChatStore((state) => state.dataVersion);
   const [path, setPath] = useState<LearningPath | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [generationWorkflow, setGenerationWorkflow] = useState<WorkflowState | null>(null);
+  const clearError = useCallback(() => setError(null), []);
   const lastVersionRef = useRef<number>(0);
   const pathVersionRef = useRef<number>(0);
   const hasDataRef = useRef(false);
   const initialLoadRef = useRef(true);
   const requestIdRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
-  const fetchPath = useCallback(async (force: boolean = false, overrideSessionId?: string) => {
+  const fetchPath = useCallback(async (force: boolean = false, overrideSessionId?: string, overridePathId?: string, overrideSubjectId?: string) => {
     const effectiveSessionId = overrideSessionId || sessionId;
-    if (!effectiveSessionId) { setLoading(false); return; }
+    if (!canLoadCanonicalData(canonicalStatus, effectiveSessionId)) { setLoading(false); return null; }
     const requestId = ++requestIdRef.current;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     if (force) { hasDataRef.current = false; pathVersionRef.current = -1; }
     if (force || !hasDataRef.current) { setLoading(true); setError(null); }
     try {
-      const res = await learningPathApi.getLearningPath({ sessionId: effectiveSessionId, subjectId });
+      const pathId = overridePathId || new URLSearchParams(location.search).get('pathId') || undefined;
+      const res = await learningPathApi.getLearningPath({ sessionId: effectiveSessionId, subjectId: overrideSubjectId || subjectId, pathId }, controller.signal);
       const p = normalizeLearningPathForClient(res?.path ?? null);
       const finalPath = p;
-      if (requestId !== requestIdRef.current) return;
+      if (requestId !== requestIdRef.current) return null;
       // Merge path: only update if pathVersion changed (structural change)
       // or if force (initial load / explicit refresh)
       if (finalPath) {
@@ -94,15 +104,17 @@ export function useLearningPath() {
       }
       hasDataRef.current = !!finalPath;
       if (!finalPath && !hasDataRef.current) setError('学习路径数据为空');
+      return finalPath;
     } catch (e) {
-      if (requestId !== requestIdRef.current) return;
+      if (requestId !== requestIdRef.current) return null;
       if (!hasDataRef.current) { setPath(null); setError(e instanceof Error ? e.message : '加载学习路径失败'); }
+      return null;
     } finally {
       if (requestId !== requestIdRef.current) return;
       if (force || !hasDataRef.current) setLoading(false);
       initialLoadRef.current = false;
     }
-  }, [sessionId, subjectId]);
+  }, [canonicalStatus, sessionId, subjectId, location.search]);
 
   const generatePath = useCallback(async (params: { subjectId?: string; targetTopics?: string[]; planMode?: string; pathMode?: string; totalDays?: number; weekends?: boolean; dynamicAdjust?: boolean; reviewEnabled?: boolean; userMessage?: string }) => {
     setLoading(true); setError(null);
@@ -115,7 +127,13 @@ export function useLearningPath() {
         return { ...current, status, events: [...current.events, event], elapsedMs: event.elapsed_ms };
       }));
       const task = await readWorkflow(started.task_id, sessionId);
-      const next = normalizeLearningPathForClient(task.result?.data?.path ?? null);
+      const persisted = task.result?.data;
+      if (!persisted?.persisted || !persisted.pathId) throw new Error('路径未成功保存，请重试');
+      const res = await learningPathApi.getLearningPath({ sessionId, subjectId: persisted.subjectId || subjectId, pathId: persisted.pathId });
+      const next = normalizeLearningPathForClient(res?.path ?? null);
+      if (!next) throw new Error('已保存的路径无法读取');
+      pathVersionRef.current = next.pathVersion ?? 0;
+      hasDataRef.current = true;
       setPath(next);
       return next;
     } catch (e) { setError(e instanceof Error ? e.message : '路径生成失败'); return null; }
@@ -205,25 +223,16 @@ export function useLearningPath() {
 
   useEffect(() => {
     requestIdRef.current += 1;
+    abortRef.current?.abort();
     hasDataRef.current = false;
     pathVersionRef.current = -1;
     setPath(null);
     setError(null);
     fetchPath(true);
-  }, [sessionId, subjectId, fetchPath]);
+  }, [canonicalStatus, sessionId, subjectId, fetchPath]);
+  useEffect(() => () => abortRef.current?.abort(), []);
   useEffect(() => { if (dataVersion <= 0 || dataVersion === lastVersionRef.current) return; lastVersionRef.current = dataVersion; fetchPath(true); }, [dataVersion, fetchPath]);
 
   /** 从 workflow 完成结果直接设置路径，不依赖 API 二次查询 */
-  const applyPathFromWorkflow = useCallback((rawPath: any) => {
-    const normalized = normalizeLearningPathForClient(rawPath);
-    if (normalized && normalized.stages?.length) {
-      pathVersionRef.current = normalized.pathVersion ?? Date.now();
-      hasDataRef.current = true;
-      setPath(normalized);
-      setLoading(false);
-      setError(null);
-    }
-  }, []);
-
-  return { path, loading, error, generationWorkflow, fetchPath, generatePath, applyPathFromWorkflow, updateNode, updateNodeStatus, updateKnowledgePoint, updateChapterStatus, updateSectionStatus };
+  return { path, loading, error, clearError, generationWorkflow, fetchPath, generatePath, updateNode, updateNodeStatus, updateKnowledgePoint, updateChapterStatus, updateSectionStatus };
 }

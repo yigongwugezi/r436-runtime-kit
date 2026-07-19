@@ -48,6 +48,17 @@ export function ensureLecture(sectionId: string, payload: Record<string, unknown
   return request;
 }
 
+export function ensureVideoFallbackLecture(taskId: string, payload: Record<string, unknown>) {
+  const key = [payload.sessionId, payload.subjectId, payload.pathId, payload.stageId, payload.dayId, payload.globalDayIndex, taskId, 'video_fallback'].join('|');
+  const pending = pendingLectureEnsures.get(key);
+  if (pending) return pending;
+  const request = client.post(`/api/learning-path/tasks/${encodeURIComponent(taskId)}/video-fallback/lecture/ensure`, payload)
+    .then(({ data }) => data as { status: 'ready' | 'running' | 'failed'; workflowId: string | null; lecture: any | null; errorCode?: string | null; errorMessage?: string | null })
+    .finally(() => pendingLectureEnsures.delete(key));
+  pendingLectureEnsures.set(key, request);
+  return request;
+}
+
 export async function readWorkflow(taskId: string, sessionId?: string) {
   const { data } = await client.get(`/api/workflows/${encodeURIComponent(taskId)}`, { params: sessionId ? { sessionId } : undefined });
   return data;

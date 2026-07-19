@@ -63,6 +63,7 @@ export function useStreamChat() {
       if (isStreaming || (!content.trim() && attachments.length === 0)) return;
       const text = content.trim() || '识别这张图片';
       const store = useChatStore.getState();
+      if (store.canonicalSession.status !== 'resolved' || !store.currentSessionId) return;
       const ignoreImageContext = options.ignoreImageContext === true;
       const selectedImageAttachment = store.imageAttachmentHistory.find(
         (item) => imageAttachmentKey(item) === store.selectedImageAttachmentId,
@@ -242,6 +243,10 @@ export function useStreamChat() {
           setAgentProgress(null);
           return;
         }
+        if (err instanceof Error && /MISSING_SESSION_ID|sessionId.*不能为空|Stream error: (401|403|404|422)/.test(err.message)) {
+          updateLastAssistant((m) => ({ ...m, streaming: false, error: err.message }));
+          return;
+        }
         log.warn('流式请求失败，尝试非流式回退', err instanceof Error ? err.message : err);
         try {
           const fallback = await sendMessage({
@@ -318,6 +323,7 @@ export function useStreamChat() {
     async (text: string) => {
       if (isStreaming || !text.trim()) return;
       const store = useChatStore.getState();
+      if (store.canonicalSession.status !== 'resolved' || !store.currentSessionId) return;
 
       // 只创建空的 assistant 消息用于流式输出
       const aiMsg: ChatMessage = {
@@ -437,6 +443,10 @@ export function useStreamChat() {
           writeStorageItem(runtimeStorageKeys.pendingGeneration, '');
           updateLastAssistant((m) => ({ ...m, streaming: false }));
           setAgentProgress(null);
+          return;
+        }
+        if (err instanceof Error && /MISSING_SESSION_ID|sessionId.*不能为空|Stream error: (401|403|404|422)/.test(err.message)) {
+          updateLastAssistant((m) => ({ ...m, streaming: false, error: err.message }));
           return;
         }
         log.warn('推荐指令流式失败，尝试非流式回退', err instanceof Error ? err.message : err);

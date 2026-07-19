@@ -3,107 +3,83 @@ import { useProfileStore } from '../store/profileStore';
 import { useChatStore } from '../store/chatStore';
 import * as profileApi from '../api/profile';
 import type { StudentProfile } from '../types/profile';
+import { canLoadCanonicalData } from '../utils/canonicalSessionState';
 
-/** Read a profile from the current session's server-owned scope.
- *
- * A browser's previously selected subject is UI state, not permission to
- * attach that subject to a newly created conversation.
- */
+const profileRequests = new Map<string, Promise<StudentProfile | null>>();
+
+function readProfile(sessionId: string): Promise<StudentProfile | null> {
+  let request = profileRequests.get(sessionId);
+  if (!request) {
+    request = profileApi.getProfile({ sessionId }).then((result) => result?.profile ?? null).finally(() => profileRequests.delete(sessionId));
+    profileRequests.set(sessionId, request);
+  }
+  return request;
+}
+
 export function useProfile() {
-  const store = useProfileStore();
   const sessionId = useChatStore((state) => state.dataSessionId);
+  const canonicalStatus = useChatStore((state) => state.canonicalSession.status);
   const dataVersion = useChatStore((state) => state.dataVersion);
+  const profile = useProfileStore((state) => sessionId ? state.profiles[sessionId] ?? null : null);
+  const profileError = useProfileStore((state) => sessionId ? state.errorMap[sessionId] ?? null : null);
+  const setProfile = useProfileStore((state) => state.setProfile);
+  const setStoreLoading = useProfileStore((state) => state.setLoading);
+  const setStoreError = useProfileStore((state) => state.setError);
   const [loading, setLoading] = useState(true);
+  const [empty, setEmpty] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const lastReadKeyRef = useRef<string | undefined>(undefined);
   const lastVersionRef = useRef(0);
-  const abortRef = useRef<AbortController | null>(null);
-  /** 递增计数器，用于判断 fetchProfile 返回时是否还有更新的请求已发出。 */
   const fetchGenRef = useRef(0);
 
   const fetchProfile = useCallback(async () => {
     const currentSessionId = sessionId;
-    if (!currentSessionId) {
+    if (!canLoadCanonicalData(canonicalStatus, currentSessionId)) {
+      fetchGenRef.current += 1;
       setLoading(false);
       return;
     }
-
-    // 取消上一次未完成的请求
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    // 记录此次请求的代数
-    const gen = ++fetchGenRef.current;
-
-    setLoading(true);
-    setError(null);
-    store.setLoading(currentSessionId, true);
+    const generation = ++fetchGenRef.current;
+    setLoading(true); setEmpty(false); setError(null); setStoreLoading(currentSessionId, true);
     try {
-      const res = await profileApi.getProfile({ sessionId: currentSessionId });
-
-      // 请求完成后如果已有更新的 fetch 发出，则丢弃旧结果
-      if (gen !== fetchGenRef.current || controller.signal.aborted) return;
-      // 如果 sessionId 在此期间发生了变化，也丢弃
-      if (useChatStore.getState().dataSessionId !== currentSessionId) return;
-
-      if (res?.profile) {
-        store.setProfile(currentSessionId, res.profile);
-      } else {
-        const message = '画像数据为空';
-        store.setError(currentSessionId, message);
-        setError(message);
-      }
+      const nextProfile = await readProfile(currentSessionId);
+      if (generation !== fetchGenRef.current || useChatStore.getState().dataSessionId !== currentSessionId) return;
+      if (nextProfile) {
+        setProfile(currentSessionId, nextProfile);
+        setEmpty(!nextProfile.profileV2);
+      } else setEmpty(true);
     } catch (cause) {
-      if (gen !== fetchGenRef.current || controller.signal.aborted) return;
-      if (useChatStore.getState().dataSessionId !== currentSessionId) return;
-
+      if (generation !== fetchGenRef.current || useChatStore.getState().dataSessionId !== currentSessionId) return;
       const message = cause instanceof Error ? cause.message : '加载画像失败';
-      // 如果后端报 sessionId 为空（实际是竞态导致），转成更友好的提示
-      const displayMessage = message.includes('sessionId')
-        ? '会话尚未就绪，请稍后重试'
-        : message;
-      store.setError(currentSessionId, displayMessage);
-      setError(displayMessage);
+      const displayMessage = message.includes('sessionId') ? '会话尚未就绪，请稍后重试' : message;
+      setStoreError(currentSessionId, displayMessage); setError(displayMessage);
     } finally {
-      if (gen === fetchGenRef.current && !controller.signal.aborted) {
-        setLoading(false);
-        store.setLoading(currentSessionId, false);
-      }
+      if (generation === fetchGenRef.current) { setLoading(false); setStoreLoading(currentSessionId, false); }
     }
-  }, [sessionId, store]);
+  }, [canonicalStatus, sessionId, setProfile, setStoreError, setStoreLoading]);
 
   const buildProfile = useCallback(async (message: string): Promise<StudentProfile | null> => {
     if (!sessionId) return null;
     setLoading(true);
     try {
-      const res = await profileApi.buildProfile({ message, sessionId });
-      if (res?.profile) store.setProfile(sessionId, res.profile);
-      return res?.profile || null;
+      const result = await profileApi.buildProfile({ message, sessionId });
+      if (result?.profile) setProfile(sessionId, result.profile);
+      return result?.profile || null;
     } catch {
-      store.setError(sessionId, '画像构建失败');
-      return null;
-    } finally {
-      setLoading(false);
-    }
-  }, [sessionId, store]);
+      setStoreError(sessionId, '画像构建失败'); return null;
+    } finally { setLoading(false); }
+  }, [sessionId, setProfile, setStoreError]);
 
   useEffect(() => {
     const readKey = sessionId || undefined;
-    if (lastReadKeyRef.current !== readKey) {
-      lastReadKeyRef.current = readKey;
-      void fetchProfile();
-    }
-  }, [sessionId, fetchProfile]);
+    if (lastReadKeyRef.current !== readKey) { lastReadKeyRef.current = readKey; void fetchProfile(); }
+  }, [canonicalStatus, sessionId, fetchProfile]);
 
   useEffect(() => {
-    if (sessionId && dataVersion > 0 && dataVersion !== lastVersionRef.current) {
-      lastVersionRef.current = dataVersion;
-      void fetchProfile();
+    if (canonicalStatus === 'resolved' && sessionId && dataVersion > 0 && dataVersion !== lastVersionRef.current) {
+      lastVersionRef.current = dataVersion; void fetchProfile();
     }
-  }, [dataVersion, fetchProfile, sessionId]);
+  }, [canonicalStatus, dataVersion, fetchProfile, sessionId]);
 
-  const profile = sessionId ? store.profiles[sessionId] ?? null : null;
-  const profileError = sessionId ? store.errorMap[sessionId] ?? null : null;
-  return { profile, profileV2: profile?.profileV2 ?? null, loading, error: error || profileError, fetchProfile, buildProfile };
+  return { profile, profileV2: profile?.profileV2 ?? null, loading, empty, error: error || profileError, fetchProfile, buildProfile };
 }

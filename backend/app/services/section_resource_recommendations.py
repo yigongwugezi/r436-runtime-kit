@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass
 from threading import Event, Lock
 from typing import Any, Callable
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.request import Request, urlopen
 
 from app.config import settings
 from app.services.search_client import SearchError, get_search_client, search_arxiv, search_crossref
@@ -24,6 +25,10 @@ logger = logging.getLogger(__name__)
 RESOURCE_TYPES = ("article", "video", "course", "document", "paper")
 _ACTION_TERMS = ("用纸笔", "手动模拟", "画出", "一个简单", "每一层", "请", "完成")
 _CONCEPTS = (
+    ("数据结构", "data structure"), ("算法", "algorithm"),
+    ("时间复杂度", "time complexity"), ("空间复杂度", "space complexity"),
+    ("大O", "big o"), ("线性表", "linear list"),
+    ("顺序表", "array"), ("链表", "linked list"),
     ("递归", "recursion"), ("调用栈", "call stack"), ("栈帧", "stack frame"),
     ("局部变量", "local variables"), ("返回地址", "return address"),
     ("阶乘", "factorial"), ("斐波那契", "fibonacci"),
@@ -42,6 +47,7 @@ _RESOURCE_SUFFIX = re.compile(
 )
 _PAPER_HOSTS = ("arxiv.org", "semanticscholar.org", "dl.acm.org", "ieeexplore.ieee.org", "dblp.org", "doi.org", "cnki", "wanfang")
 _COURSE_HOSTS = ("icourse163.org", "xuetangx.com", "smartedu.cn", "imooc.com", "coursera.org", "edx.org", "ocw.mit.edu")
+_DOMESTIC_VIDEO_PLATFORMS = {"bilibili", "icourse163", "xuetangx", "icourses", "smartedu"}
 
 ProgressCallback = Callable[[dict[str, Any]], None]
 
@@ -163,6 +169,10 @@ def classify_platform(url: str) -> str | None:
         return "icourse163"
     if host.endswith("xuetangx.com") and ("/learn/" in path or "/course/" in path):
         return "xuetangx"
+    if host.endswith("icourses.cn") and path not in {"", "/"}:
+        return "icourses"
+    if host.endswith("smartedu.cn") and ("/course/" in path or "/resource/" in path):
+        return "smartedu"
     if host.endswith("smartedu.cn") and ("/course/" in path or "/resource/" in path):
         return "smartedu"
     if host.endswith("imooc.com") and ("/learn/" in path or "/video/" in path):
@@ -204,6 +214,11 @@ def classify_resource_type(url: str, title: str = "", snippet: str = "") -> str:
 
 def validate_resource_url(url: str, resource_type: str | None = None, title: str = "", snippet: str = "") -> str:
     """Reject home pages, search pages, unsafe schemes, and type mismatches."""
+    if urlparse(str(url or "").strip()).netloc.lower().removeprefix("www.") == "b23.tv":
+        try:
+            url = urlopen(Request(str(url), method="HEAD"), timeout=3).geturl()
+        except Exception:
+            return ""
     normalized = normalize_url(url)
     if not normalized:
         return ""
@@ -572,6 +587,10 @@ class SectionResourceRecommendationService:
             cn_hints.extend(["入门", "基础"]); en_hints.extend(["beginner", "basics"])
         hint = " ".join(cn_hints)
         english_hint = " ".join(en_hints)
+        if resource_type == "video":
+            return [(f"site:bilibili.com/video {course} {topic} 视频".strip(), "exact_topic"),
+                    (f"site:icourse163.org {course} {topic} 视频".strip(), "chapter_level"),
+                    (f"site:xuetangx.com {course} {topic} 视频".strip(), "chapter_level")]
         if resource_type == "article":
             base = [(f"{course} {topic} {hint}".strip(), "exact_topic"),
                     (f"{keywords} 教程 {hint}".strip(), "exact_topic")]
@@ -703,13 +722,27 @@ class SectionResourceRecommendationService:
         return diversify_results(resources)
 
     @staticmethod
-    def _cache_key(context: dict[str, Any], requested: list[str], language: str) -> str:
+    def _prefer_domestic_videos(resources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        videos = [item for item in resources if item.get("resource_type") == "video"]
+        domestic = [item for item in videos if item.get("platform") in _DOMESTIC_VIDEO_PLATFORMS]
+        if domestic:
+            domestic_urls = {item["url"] for item in domestic}
+            return [item for item in resources if item.get("resource_type") != "video" or item["url"] in domestic_urls]
+        for item in videos:
+            item["access_region"] = "overseas"
+            item["access_note"] = "部分地区可能无法访问"
+            item["reason"] = f"{item.get('reason', '')}；部分地区可能无法访问"
+        return resources
+
+    @staticmethod
+    def _cache_key(context: dict[str, Any], requested: list[str], language: str, scope_key: str = "") -> str:
         public_key = "|".join((
             str(context.get("primary_topic") or "").strip().lower(),
             str(context.get("course_name") or "").strip().lower(),
             ",".join(requested),
             language or "zh-CN",
             settings.search_strategy,
+            scope_key,
         ))
         return sha256(public_key.encode("utf-8")).hexdigest()
 
@@ -870,8 +903,8 @@ class SectionResourceRecommendationService:
         progress_callback: ProgressCallback | None = None,
         refresh: bool = False,
         cancel_event: Event | None = None,
+        cache_scope: str = "",
     ) -> dict[str, Any]:
-        del session_id, section_id  # External results are transient and never persisted.
         requested = [kind for kind in RESOURCE_TYPES if kind in {str(item).lower() for item in resource_types or RESOURCE_TYPES}]
         points = self._point_names(knowledge_points)
         weak = self._point_names(weak_points)
@@ -887,7 +920,7 @@ class SectionResourceRecommendationService:
         primary_call_limit = provider_call_limit - fallback_reserve
         diagnostics: dict[str, Any] = {"queries": [], "raw_count": 0, "url_valid_count": 0, "relevance_candidate_count": 0, "relevant_count": 0, "final_count": 0, "filtered": Counter(), "provider_calls": 0, "provider_call_limit": provider_call_limit, "provider_calls_by_type": Counter(), "cache": "miss", "_deadline": time.monotonic() + total_budget}
         target_count = 1 if len(requested) > 1 else settings.search_min_results_single_type
-        cache_key = self._cache_key(context, requested, language)
+        cache_key = self._cache_key(context, requested, language, cache_scope or f"{session_id}|{section_id}")
         cache_state, cached = SearchCascade.get(cache_key) if self._use_cache else ("miss", None)
         stale = cached if cache_state == "stale" else None
         self._emit(progress_callback, "topic_analysis", "completed")
@@ -963,11 +996,16 @@ class SectionResourceRecommendationService:
                     selected_urls.add(item["url"])
             resources.extend(item for item in ranked if item["url"] not in selected_urls)
             resources = resources[:settings.search_max_results_all]
+        resources = self._prefer_domestic_videos(resources)
         diagnostics["final_count"] = len(resources)
         if resources:
             status = "completed"
         elif diagnostics["raw_count"] == 0 and warnings:
             status = "search_unavailable"
+        elif diagnostics["raw_count"] > 0 and diagnostics["url_valid_count"] == 0:
+            status = "invalid_urls"
+        elif diagnostics["raw_count"] == 0 and not warnings:
+            status = "empty_response"
         elif any(entry["match_level"] in {"course_level", "expanded_research"} for entry in diagnostics["queries"]):
             status = "expanded_no_results"
             warnings.append("已扩大搜索范围，仍未找到高相关公开资源。")

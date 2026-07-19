@@ -38,7 +38,7 @@ export interface StepItem {
 
 interface Props {
   content: SectionContent;
-  onComplete?: () => void;
+  onComplete?: () => void | boolean | Promise<void | boolean>;
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -74,8 +74,18 @@ function SectionHeader({ title, goal, icon: Icon, kps }: {
   );
 }
 
-function CompletionFooter({ onComplete }: { onComplete?: () => void }) {
+function CompletionFooter({ onComplete }: { onComplete?: () => void | boolean | Promise<void | boolean> }) {
   const [done, setDone] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const complete = async () => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      if (await onComplete?.() !== false) setDone(true);
+    } finally {
+      setSaving(false);
+    }
+  };
   if (done) {
     return (
       <div className="mt-8 bg-emerald-50 border border-emerald-200 rounded-2xl p-6 text-center animate-fade-in">
@@ -90,11 +100,12 @@ function CompletionFooter({ onComplete }: { onComplete?: () => void }) {
   return (
     <div className="mt-8 flex justify-center">
       <button
-        onClick={() => { setDone(true); onComplete?.(); }}
+        onClick={() => void complete()}
+        disabled={saving}
         className="inline-flex items-center gap-2.5 px-8 py-3.5 bg-gradient-to-r from-blue-500 to-violet-500 text-white rounded-2xl font-semibold text-sm shadow-lg shadow-blue-500/25 hover:shadow-xl hover:shadow-blue-500/30 hover:scale-[1.02] active:scale-[0.98] transition-all duration-200"
       >
         <CheckCircle2 size={18} />
-        标记完成
+        {saving ? '正在保存…' : '标记完成'}
       </button>
     </div>
   );
