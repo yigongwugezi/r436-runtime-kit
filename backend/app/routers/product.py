@@ -5151,6 +5151,16 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
         subject_id = str(subjectId).strip()
         _ensure_session_linked(session_id, subject_id=subject_id)
 
+        def _display_summary(base: dict[str, Any], stages: list[dict[str, Any]]) -> str:
+            raw = str(base.get("description") or "").lower()
+            labels = {"learning objectives": "教学目标", "course content": "教学内容", "teaching methods": "教学方法", "assessment methods": "考核方式", "course structure": "课程结构"}
+            mapped = [label for key, label in labels.items() if key in raw]
+            focus = next((str(stage.get("title") or stage.get("objective") or "").strip() for stage in stages if str(stage.get("title") or stage.get("objective") or "").strip()), "当前学习目标")
+            if any(marker in focus.lower() for marker in ("quiz_result", "practice_result", "task_complete", "resourceid", "taskid", "complete one", "submit feedback", "review learning_path", "path_session_")):
+                focus = "当前学习目标"
+            advice = "、".join(mapped[:2]) if mapped else "当前阶段的核心概念"
+            return f"当前学习重点是{focus}。建议先复习{advice}，再完成一组针对性练习。"
+
         def _build_path(stages: list[dict[str, Any]], base: dict[str, Any]) -> dict[str, Any]:
             stages = _apply_node_progress(stages, session_id)
             all_nodes = [n for s in stages for n in s.get("nodes", [])]
@@ -5190,6 +5200,7 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
                 "totalDays": base.get("estimatedDays", 14),
                 "dailyMinutes": base.get("dailyMinutes", 60),
                 "source": "agent_generated",
+                "displaySummary": _display_summary(base, stages),
                 "adjustments": base.get("adjustments", []),
                 "pathVersion": base.get("pathVersion", int(time.time() * 1000)),
             }

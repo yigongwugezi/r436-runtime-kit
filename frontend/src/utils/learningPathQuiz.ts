@@ -1,6 +1,6 @@
 import type { LinkedQuestion } from '../types/assessment';
 
-export type LearningPathQuiz = { quizId: string; questions: LinkedQuestion[]; questionCount: number };
+export type LearningPathQuiz = { quizId: string; questions: LinkedQuestion[]; questionCount: number; taskId: string; semanticFingerprint: string; taskSemanticSnapshot: Record<string, unknown>; [key: string]: unknown };
 
 const quizEnsures = new Map<string, Promise<LearningPathQuiz>>();
 
@@ -14,7 +14,13 @@ export function learningPathQuizScope(body: Record<string, unknown>): string {
 export function normalizeLearningPathQuiz(response: any): LearningPathQuiz {
   const quiz = [response?.data?.quiz, response?.quiz, response?.data, response].find((value) => value && typeof value === 'object') || {};
   const questions = Array.isArray(quiz.questions) ? quiz.questions.map((question: any) => ({ ...question, questionId: question.questionId || question.question_id || question.id || '' })).filter((question: any) => question.questionId) : [];
-  return { quizId: String(quiz.quizId || quiz.quiz_id || quiz.id || ''), questions, questionCount: Number(quiz.questionCount || quiz.question_count || questions.length) };
+  return { quizId: String(quiz.quizId || quiz.quiz_id || quiz.id || ''), questions, questionCount: Number(quiz.questionCount || quiz.question_count || questions.length), taskId: String(quiz.taskId || quiz.task_id || ''), semanticFingerprint: String(quiz.semanticFingerprint || ''), taskSemanticSnapshot: quiz.taskSemanticSnapshot || {}, ...quiz };
+}
+
+export function matchesLearningPathQuiz(quiz: LearningPathQuiz, scope: Record<string, unknown>): boolean {
+  const snapshot = quiz.taskSemanticSnapshot || {};
+  return ['taskId', 'sessionId', 'subjectId', 'pathId', 'stageId', 'dayId', 'globalDayIndex'].every((key) => String((quiz as any)[key] ?? snapshot[key] ?? '') === String(scope[key] ?? ''))
+    && ['taskType', 'taskTitle', 'taskDescription', 'learningObjectives', 'knowledgePoints'].every((key) => JSON.stringify(snapshot[key] ?? '') === JSON.stringify(scope[key] ?? ''));
 }
 
 export function ensureScopedLearningPathQuiz(taskId: string, body: Record<string, unknown>, loader: (taskId: string, body: Record<string, unknown>) => Promise<any>): Promise<LearningPathQuiz> {

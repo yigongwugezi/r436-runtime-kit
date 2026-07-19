@@ -280,7 +280,7 @@ export default function LearningPathPage() {
           <section className="max-w-3xl">
             <p className="mb-3 text-xs font-semibold uppercase tracking-[0.24em] text-primary-500">个性化学习计划</p>
             <h1 className="text-[32px] font-bold leading-[1.05] tracking-[-0.045em] text-surface-800 sm:text-[36px]">{path?.title || '学习路径'}</h1>
-            <p className="mt-4 text-sm leading-7 text-surface-400">{path?.description || 'AI 根据你的学习表现持续优化这条路径'}</p>
+            {path?.displaySummary && <p className="mt-4 text-sm leading-7 text-surface-400">{path.displaySummary}</p>}
           </section>
         </header>
 

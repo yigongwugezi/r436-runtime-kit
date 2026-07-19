@@ -59,6 +59,10 @@ def main() -> None:
             old = client.post(f"/api/learning-path/tasks/{TASK}/quiz/ensure", json=scope)
             assert old.status_code == 200 and len(old.json()["data"]["quiz"]["questions"]) == 5, old.text
             old_quiz = old.json()["data"]["quiz"]
+            assert old_quiz["taskId"] == TASK
+            assert old_quiz["semanticFingerprint"]
+            assert all(old_quiz[key] == scope[key] for key in ("sessionId", "subjectId", "pathId", "stageId", "dayId", "globalDayIndex"))
+            assert old_quiz["taskSemanticSnapshot"]["taskId"] == TASK
             replace_task(factory, "Outline element matching", ["learning objectives", "course content", "assessment methods"])
             new = client.post(f"/api/learning-path/tasks/{TASK}/quiz/ensure", json=scope)
             assert new.status_code == 200 and len(new.json()["data"]["quiz"]["questions"]) == 5, new.text

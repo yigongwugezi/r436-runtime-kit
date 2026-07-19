@@ -188,9 +188,14 @@ def _safe_task_quiz(quiz: QuizModel, db) -> dict:
         PracticeQuestionModel.question_set_id == quiz.id,
         PracticeQuestionModel.session_id == quiz.session_id,
     ).all()
+    metadata = quiz.questions if isinstance(quiz.questions, dict) else {}
+    snapshot = metadata.get("taskSemanticSnapshot") if isinstance(metadata.get("taskSemanticSnapshot"), dict) else {}
     return {
         "quizId": quiz.id, "taskId": quiz.section_id, "title": quiz.title,
         "passingScore": 60, "version": 1,
+        "semanticFingerprint": metadata.get("semanticFingerprint", ""),
+        "taskSemanticSnapshot": snapshot,
+        **{key: snapshot.get(key) for key in ("sessionId", "subjectId", "pathId", "stageId", "dayId", "globalDayIndex")},
         "questions": [{"questionId": q.question_id, "type": q.type, "stem": q.stem,
                        "options": q.options or [], "difficulty": q.difficulty,
                        "knowledgePoints": q.knowledge_points or []} for q in linked],

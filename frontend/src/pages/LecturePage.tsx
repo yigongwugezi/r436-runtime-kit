@@ -9,6 +9,7 @@ import { ChevronLeft, ChevronRight, Sparkles, MessageCircle, Send, Brain, BookOp
 import Markdown from '../utils/markdown';
 import MermaidDiagram from '../utils/mermaid';
 import { ensureScopedLearningPathQuiz, generateSectionQuiz, retryScopedLearningPathQuiz, submitLearningPathQuiz, submitQuizAttempt } from '../api/assessment';
+import { matchesLearningPathQuiz } from '../utils/learningPathQuiz';
 import type { Chapter, LearningStage, PathNode, Section, ContentStatus } from '../types/learningPath';
 import type { LinkedQuestion, QuizResult, WeakPoint } from '../types/assessment';
 import SectionResourceWorkspace from '../components/learning/SectionResourceWorkspace';
@@ -135,7 +136,7 @@ export default function LecturePage() {
     sessionId: canonicalTaskScope.sessionId, subjectId: canonicalTaskScope.subjectId, pathId: canonicalTaskScope.pathId,
     stageId: canonicalTaskScope.stageId, dayId: canonicalTaskScope.dayId, globalDayIndex: canonicalTaskScope.globalDayIndex, taskId: canonicalTaskScope.taskId,
   };
-  const canonicalScopeKey = canonicalTaskScope ? [canonicalTaskScope.sessionId, canonicalTaskScope.subjectId, canonicalTaskScope.pathId, canonicalTaskScope.stageId, canonicalTaskScope.dayId, canonicalTaskScope.globalDayIndex, canonicalTaskScope.taskId].join('|') : '';
+  const canonicalScopeKey = canonicalTaskScope ? [canonicalTaskScope.sessionId, canonicalTaskScope.subjectId, canonicalTaskScope.pathId, canonicalTaskScope.stageId, canonicalTaskScope.dayId, canonicalTaskScope.globalDayIndex, canonicalTaskScope.taskId, (path as any)?.pathVersion || (path as any)?.currentVersion || (path as any)?.version || ''].join('|') : '';
   const lectureSemanticKey = canonicalTaskScope ? JSON.stringify({
     taskType: canonicalTaskScope.task.type || canonicalTaskScope.task.task_type || focusedTaskType,
     taskTitle: canonicalTaskScope.task.title || '',
@@ -143,7 +144,7 @@ export default function LecturePage() {
     learningObjectives: canonicalTaskScope.task.learningObjectives || canonicalTaskScope.task.learning_objectives || [],
     knowledgePoints: canonicalTaskScope.task.knowledgePoints || canonicalTaskScope.task.knowledge_points || [],
     stageTitle: canonicalTaskScope.stage.title || '',
-    pathVersion: (path as any)?.currentVersion || (path as any)?.version || '',
+    pathVersion: (path as any)?.pathVersion || (path as any)?.currentVersion || (path as any)?.version || '',
   }) : '';
   // Task URLs keep their scope for refresh/recovery.  The focused layout is
   // legacy-only; normal learning-path navigation always uses the full workspace.
@@ -278,6 +279,7 @@ export default function LecturePage() {
   const [quizQuestions, setQuizQuestions] = useState<LinkedQuestion[]>(cachedQuiz?.questions || []);
   const [quizId, setQuizId] = useState(cachedQuiz?.quizId || '');
   const quizSubmitIdempotencyKeyRef = useRef('');
+  const quizScopeRetryRef = useRef('');
   const [quizAnswers, setQuizAnswers] = useState<Record<string, string>>(cachedQuiz?.answers || {});
   const [quizResults, setQuizResults] = useState<QuizResult[]>(cachedQuiz?.results || []);
   const [quizTotalScore, setQuizTotalScore] = useState<number | null>(cachedQuiz?.totalScore ?? null);
@@ -306,6 +308,11 @@ export default function LecturePage() {
   const [quizSuggestion, setQuizSuggestion] = useState('');
   const [quizPathCompletion, setQuizPathCompletion] = useState<{ task?: boolean; unlocked?: boolean }>({});
   const [quizWeakPoints, setQuizWeakPoints] = useState<WeakPoint[]>([]);
+  const clearQuiz = useCallback(() => {
+    setQuizQuestions([]); setQuizId(''); setQuizAnswers({}); setQuizResults([]); setQuizTotalScore(null);
+    setQuizSuggestion(''); setQuizWeakPoints([]); setQuizPathCompletion({}); setQuizError(''); setQuizState('idle');
+    setQuizRetry(0); quizSubmitIdempotencyKeyRef.current = ''; useLectureStore.getState().clearSection(cacheKey);
+  }, [cacheKey]);
 
   // Reset quiz & viewing state when section changes
   useEffect(() => {
@@ -357,16 +364,22 @@ export default function LecturePage() {
       knowledgePoints: canonicalTaskScope.task.knowledgePoints || canonicalTaskScope.task.knowledge_points || [],
       pathVersion: (path as any)?.currentVersion || (path as any)?.version || '' };
     let active = true;
-    setQuizError(''); setQuizQuestions([]); setQuizId(''); setQuizState('generating');
+    clearQuiz(); setQuizState('generating');
     ensureScopedLearningPathQuiz(focusedTaskId, scope)
       .then((quiz) => {
-        if (!quiz.questions.length) throw new Error('题目生成失败，请稍后重试');
+        if (!quiz.questions.length || !matchesLearningPathQuiz(quiz, scope)) {
+          if (quizScopeRetryRef.current !== canonicalScopeKey) {
+            quizScopeRetryRef.current = canonicalScopeKey;
+            retryScopedLearningPathQuiz(scope); setQuizRetry((value) => value + 1); return;
+          }
+          throw new Error('当前小测与学习任务不匹配，请返回学习路径重新进入。');
+        }
         if (!active) return;
         setQuizId(quiz.quizId); setQuizQuestions(quiz.questions); setQuizAnswers({}); setQuizResults([]); setQuizTotalScore(null); setQuizState('answering');
       })
       .catch((error: any) => { if (active) { if (error?.response?.status === 409) setTaskScopeRejected(true); else { setQuizError(error?.response?.data?.detail || error?.message || '题目加载失败'); setQuizState('failed'); } } });
     return () => { active = false; };
-  }, [executionMode, canonicalTaskScope, workspaceScopeInvalid, sessionId, focusedPathId, focusedStageId, focusedTaskId, focusedSubjectId, workflowSubjectId, resourceDayScope.dayId, resourceDayScope.globalDayIndex, quizRetry]);
+  }, [executionMode, canonicalTaskScope, workspaceScopeInvalid, sessionId, focusedPathId, focusedStageId, focusedTaskId, focusedSubjectId, workflowSubjectId, resourceDayScope.dayId, resourceDayScope.globalDayIndex, quizRetry, clearQuiz]);
   const retryLearningPathQuiz = () => { if (!canonicalTaskScope || workspaceScopeInvalid) return; retryScopedLearningPathQuiz({ ...canonicalRequestScope!, taskType: canonicalTaskScope.task.type || canonicalTaskScope.task.task_type || focusedTaskType, taskTitle: canonicalTaskScope.task.title || '', taskDescription: canonicalTaskScope.task.description || canonicalTaskScope.task.goal || '', learningObjectives: canonicalTaskScope.task.learningObjectives || canonicalTaskScope.task.learning_objectives || [], knowledgePoints: canonicalTaskScope.task.knowledgePoints || canonicalTaskScope.task.knowledge_points || [], pathVersion: (path as any)?.currentVersion || (path as any)?.version || '' }); setQuizRetry((value) => value + 1); };
   const [videoResources, setVideoResources] = useState<any[]>([]);
   const [videoStatus, setVideoStatus] = useState<'idle' | 'loading' | 'failed' | 'empty' | 'search_unavailable' | 'no_high_relevance' | 'expanded_no_results' | 'invalid_urls' | 'empty_response' | 'persisted' | 'new_search' | 'stale'>('idle');
@@ -377,13 +390,11 @@ export default function LecturePage() {
   const videoRefreshRequested = useRef(false);
   const [focusedCompletionError, setFocusedCompletionError] = useState('');
   useEffect(() => {
-    setTaskScopeRejected(false);
-    setQuizQuestions([]); setQuizId(''); setQuizAnswers({}); setQuizResults([]); setQuizTotalScore(null); setQuizError('');
-    setQuizSuggestion(''); setQuizWeakPoints([]); setQuizPathCompletion({}); setQuizRetry(0);
+    setTaskScopeRejected(false); clearQuiz();
     setVideoResources([]); setVideoStatus('idle'); setVideoLectureFallback(false); setVideoOpened(false); setVideoFallbackSelected(false); setVideoRetry(0);
     setLectureLoaded(false); setLectureMissing(false); setLectureEnsureUnavailable(false); setFocusedCompletionError('');
-    quizSubmitIdempotencyKeyRef.current = ''; focusedGenerationRef.current = ''; lastEnsureScope.current = ''; videoRefreshRequested.current = false;
-  }, [canonicalScopeKey, lectureSemanticKey]);
+    quizSubmitIdempotencyKeyRef.current = ''; quizScopeRetryRef.current = ''; focusedGenerationRef.current = ''; lastEnsureScope.current = ''; videoRefreshRequested.current = false;
+  }, [canonicalScopeKey, lectureSemanticKey, clearQuiz]);
   useEffect(() => { setVideoLectureFallback(false); setVideoOpened(false); setVideoFallbackSelected(false); }, [resourceTaskId]);
   const videoScope = useMemo(() => canonicalRequestScope
     ? canonicalRequestScope
@@ -1290,7 +1301,7 @@ export default function LecturePage() {
                     className="flex items-center gap-1.5 px-4 py-2 text-sm text-primary-600 hover:text-primary-700 hover:bg-primary-50 rounded-xl transition-colors">
                     <RefreshCw size={14} />重新答题
                   </button>
-                  <button onClick={() => { setQuizState('idle'); setPrevLecture(''); }}
+                  <button onClick={() => { clearQuiz(); setPrevLecture(''); useChatStore.getState().bumpDataVersion(); nav('/path'); }}
                     className="px-4 py-2 text-sm text-surface-500 hover:text-surface-700 hover:bg-surface-100 rounded-xl transition-colors">关闭小测</button>
                 </div>
               )}
