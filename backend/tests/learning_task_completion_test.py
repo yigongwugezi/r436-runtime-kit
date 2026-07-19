@@ -16,7 +16,7 @@ def main():
     t0, t1 = f"{stage}_d1_t0", f"{stage}_d2_t0"
     Base.metadata.create_all(engine); db = SessionLocal()
     try:
-        db.add_all([LearnerModel(id="owner"), LearnerModel(id="other"), PersonalSubjectModel(id=subject, learner_id="owner", name="x"), SessionModel(id=session, learner_id="owner", subject_id=subject), LearningPathModel(id=path, session_id=session, estimated_days=2, stages=[{"id": stage, "days": [{"id": f"{stage}_d1", "globalDayIndex": 1, "tasks": [{"id": t0, "task_id": t0, "type": "read_doc", "mastery": 0}]}, {"id": f"{stage}_d2", "globalDayIndex": 2, "tasks": [{"id": t1, "task_id": t1, "type": "read_doc", "mastery": 0}]}]}]), ResourceModel(id="lecture", session_id=session, type="lecture", title="x", content="ready lecture", related_section_id=t0)])
+        db.add_all([LearnerModel(id="owner"), LearnerModel(id="other"), PersonalSubjectModel(id=subject, learner_id="owner", name="x"), SessionModel(id=session, learner_id="owner", subject_id=subject), LearningPathModel(id=path, session_id=session, subject_id=subject, estimated_days=2, stages=[{"id": stage, "days": [{"id": f"{stage}_d1", "globalDayIndex": 1, "tasks": [{"id": t0, "task_id": t0, "type": "read_doc", "mastery": 0}]}, {"id": f"{stage}_d2", "globalDayIndex": 2, "tasks": [{"id": t1, "task_id": t1, "type": "read_doc", "mastery": 0}]}]}]), ResourceModel(id="lecture", session_id=session, type="lecture", title="x", content="ready lecture", related_section_id=t0)])
         db.commit()
     finally: db.close()
     headers = lambda who: {"Authorization": f"Bearer {create_token(who, 'student')}"}
