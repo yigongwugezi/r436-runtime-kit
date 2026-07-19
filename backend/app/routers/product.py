@@ -39,7 +39,7 @@ from app.agents.diagnosis_agent import DiagnosisAgent
 from app.agents.multimodal_agent import MultimodalAgent
 from app.config import settings
 from app.db.engine import SessionLocal
-from app.db.models import AnswerRecordModel, DailyTaskModel, LearnerModel, LearningEventModel, LearningPathModel, PersonalSubjectModel, PlanningDraftModel, PracticeQuestionModel, ResourceModel, SessionModel
+from app.db.models import AnswerRecordModel, AttemptModel, DailyTaskModel, LearnerModel, LearningEventModel, LearningPathModel, PersonalSubjectModel, PlanningDraftModel, PracticeQuestionModel, ResourceModel, SessionModel
 from app.db.repository import (
     get_bookmarked_ids,
     get_daily_tasks as repo_get_daily_tasks,
@@ -4779,6 +4779,15 @@ def complete_learning_path_task(task_id: str, payload: dict[str, Any], auth: Aut
             raise HTTPException(status_code=404, detail="learning path task not found")
         task = entry["task"]
         if str(task.get("task_type") or task.get("type") or "") != "read_doc":
+            task_type = str(task.get("task_type") or task.get("type") or "").lower()
+            if task_type in {"quiz", "do_quiz", "assessment", "test"}:
+                passed = db.query(AttemptModel).filter(
+                    AttemptModel.session_id == scope.session_id, AttemptModel.path_id == path_id,
+                    AttemptModel.stage_id == stage_id, AttemptModel.task_id == task_id,
+                    AttemptModel.learner_id == auth.learner_id, AttemptModel.total_score >= 60,
+                ).first()
+                if not passed:
+                    raise HTTPException(status_code=409, detail="a passing quiz attempt is required before completion")
             raise HTTPException(status_code=409, detail="task requires its own completion evidence")
         lecture = db.query(ResourceModel).filter(
             ResourceModel.session_id == scope.session_id, ResourceModel.related_section_id == task_id,

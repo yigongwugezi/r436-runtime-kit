@@ -8,7 +8,7 @@ import { useLectureStore } from '../store/lectureStore';
 import { ChevronLeft, ChevronRight, Sparkles, MessageCircle, Send, Brain, BookOpen, ArrowLeft, ArrowRight, Target, Lightbulb, Layers, Clock, GraduationCap, Hash, CheckCircle2, Check, X, Loader2, HelpCircle, RefreshCw, FileText, FileDown, Lock } from 'lucide-react';
 import Markdown from '../utils/markdown';
 import MermaidDiagram from '../utils/mermaid';
-import { generateSectionQuiz, submitQuizAttempt } from '../api/assessment';
+import { ensureLearningPathQuiz, generateSectionQuiz, submitLearningPathQuiz, submitQuizAttempt } from '../api/assessment';
 import type { Chapter, LearningStage, PathNode, Section, ContentStatus } from '../types/learningPath';
 import type { LinkedQuestion, QuizResult, WeakPoint } from '../types/assessment';
 import SectionResourceWorkspace from '../components/learning/SectionResourceWorkspace';
@@ -329,6 +329,17 @@ export default function LecturePage() {
   const resourceTaskId = focusedTaskId || activeSectionId;
   const resourceDayScope = useMemo(() => taskDayScope(path, resourceTaskId), [path, resourceTaskId]);
   const executionMode = resolveTaskExecutionMode(resourceDayScope.task || { type: focusedTaskType });
+  useEffect(() => {
+    if (executionMode !== 'quiz' || !sessionId || !focusedPathId || !focusedStageId || !focusedTaskId || !resourceDayScope.globalDayIndex) return;
+    setQuizState('generating');
+    ensureLearningPathQuiz(focusedTaskId, { sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId, stageId: focusedStageId, taskId: focusedTaskId, dayId: resourceDayScope.dayId, globalDayIndex: resourceDayScope.globalDayIndex })
+      .then((response: any) => {
+        const quiz = response?.data?.quiz;
+        if (!quiz) throw new Error('quiz unavailable');
+        setQuizId(quiz.quizId); setQuizQuestions(quiz.questions); setQuizAnswers({}); setQuizResults([]); setQuizTotalScore(null); setQuizState('answering');
+      })
+      .catch(() => setQuizState('idle'));
+  }, [executionMode, sessionId, focusedPathId, focusedStageId, focusedTaskId, focusedSubjectId, workflowSubjectId, resourceDayScope.dayId, resourceDayScope.globalDayIndex]);
   const [videoResources, setVideoResources] = useState<any[]>([]);
   const [videoStatus, setVideoStatus] = useState<'idle' | 'loading' | 'failed' | 'empty' | 'search_unavailable' | 'no_high_relevance' | 'expanded_no_results' | 'invalid_urls' | 'empty_response'>('idle');
   const [videoLectureFallback, setVideoLectureFallback] = useState(false);
@@ -394,7 +405,7 @@ export default function LecturePage() {
 
   // ── 加载已有文档（优先读缓存）──
   useEffect(() => {
-    if (executionMode === 'video' && !videoLectureFallback) return;
+    if ((executionMode === 'video' && !videoLectureFallback) || executionMode === 'quiz') return;
     if (!activeSectionId || !sessionId) return;
     const key = `${sessionId}:${activeSectionId}`;
     const ensureScope = [sessionId, focusedSubjectId || workflowSubjectId, focusedPathId || path?.id, focusedStageId || chapterCtx?.stage.id, focusedTaskId || activeSectionId].join('|');
@@ -717,14 +728,20 @@ export default function LecturePage() {
       if (!quizSubmitIdempotencyKeyRef.current) {
         quizSubmitIdempotencyKeyRef.current = crypto.randomUUID();
       }
-      const res = await submitQuizAttempt(quizId, {
+      const payload = {
         sessionId: sessionId || `lecture_${activeSectionId}`,
         answers,
         idempotencyKey: quizSubmitIdempotencyKeyRef.current,
-        pathId: focusedTask ? focusedPathId : (path?.id || ''),
-        stageId: focusedTask ? focusedStageId : (chapterCtx?.stage.id || ''),
-        taskId: focusedTask ? focusedTaskId : activeSectionId,
-      }) as any;
+        pathId: focusedPathId || path?.id || '',
+        stageId: focusedStageId || chapterCtx?.stage.id || '',
+        taskId: focusedTaskId || activeSectionId,
+        subjectId: focusedSubjectId || workflowSubjectId,
+        dayId: resourceDayScope.dayId,
+        globalDayIndex: resourceDayScope.globalDayIndex,
+      };
+      const res = (executionMode === 'quiz'
+        ? await submitLearningPathQuiz(focusedTaskId, { ...payload, quizId })
+        : await submitQuizAttempt(quizId, payload)) as any;
       const data = res?.data || res;
       if (data?.results && data.results.length > 0) {
         setQuizResults(data.results);

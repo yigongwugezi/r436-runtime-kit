@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 
 from app.db.engine import SessionLocal
-from app.db.models import AnswerRecordModel, AttemptModel, ExamSetModel, PracticeQuestionModel, QuizModel
+from app.db.models import AnswerRecordModel, AttemptModel, ExamSetModel, LearningPathModel, PracticeQuestionModel, QuizModel, SessionModel
 from app.db.repository import (
     check_quiz_result_event_exists,
     create_attempt,
@@ -92,7 +92,7 @@ def _assessment_path_context(db, parent, body: "QuizSubmitRequest", learner_id: 
     if not context or str(context[0].get("id") or context[0].get("stage_id") or "") != values["stage_id"]:
         raise HTTPException(status_code=403, detail="assessment task is not in the requested path stage")
     task_type = str(context[1].get("task_type") or context[1].get("type") or context[1].get("content_type") or "").lower()
-    if task_type not in {"quiz", "practice", "exam", "assessment", "test"}:
+    if task_type not in {"quiz", "do_quiz", "practice", "exam", "assessment", "test"}:
         raise HTTPException(status_code=403, detail="path task is not an assessment")
     stage = _apply_stage_progress(path.stages)[path.stages.index(context[0])]
     if stage["progressStatus"] == "locked":
@@ -100,6 +100,99 @@ def _assessment_path_context(db, parent, body: "QuizSubmitRequest", learner_id: 
     return values
 
 router = APIRouter(tags=["assessment"])
+
+
+def _task_quiz_questions(task: dict, task_id: str) -> list[dict]:
+    """Small, persistent MCQ set for one path task; answers stay server-side."""
+    topic = str(task.get("title") or task.get("topic") or task.get("name") or task_id)
+    return [{
+        "id": f"{task_id}-q{i}", "type": "choice",
+        "stem": f"关于“{topic}”，以下哪项最符合本任务的核心学习目标？",
+        "options": [f"A. 理解并应用 {topic}", "B. 跳过关键概念", "C. 只记忆无关事实", "D. 不进行任何验证"],
+        "correct": "A", "explanation": f"本题检验对“{topic}”核心概念的理解与应用。",
+        "knowledge_points": [topic], "difficulty": "medium",
+    } for i in range(1, 6)]
+
+
+def _safe_task_quiz(quiz: QuizModel, db) -> dict:
+    linked = db.query(PracticeQuestionModel).filter(
+        PracticeQuestionModel.question_set_id == quiz.id,
+        PracticeQuestionModel.session_id == quiz.session_id,
+    ).all()
+    return {
+        "quizId": quiz.id, "taskId": quiz.section_id, "title": quiz.title,
+        "passingScore": 60, "version": 1,
+        "questions": [{"questionId": q.question_id, "type": q.type, "stem": q.stem,
+                       "options": q.options or [], "difficulty": q.difficulty,
+                       "knowledgePoints": q.knowledge_points or []} for q in linked],
+    }
+
+
+def _require_task_quiz_scope(db, task_id: str, payload: dict, learner_id: str) -> tuple[LearningPathModel, dict, str]:
+    session_id, path_id, stage_id = (str(payload.get(key) or "") for key in ("sessionId", "pathId", "stageId"))
+    subject_id = str(payload.get("subjectId") or "")
+    if not all((session_id, path_id, stage_id, task_id)):
+        raise HTTPException(status_code=400, detail="sessionId, pathId, stageId and taskId are required")
+    session = require_owned_session(db, session_id, learner_id)
+    if subject_id and session.subject_id and subject_id != session.subject_id:
+        raise HTTPException(status_code=409, detail="subject scope does not match session")
+    path = db.query(LearningPathModel).filter(LearningPathModel.id == path_id, LearningPathModel.session_id == session_id).first()
+    if not path:
+        raise HTTPException(status_code=404, detail="learning path not found")
+    from app.routers.product import _apply_stage_progress, normalize_learning_path
+    normalized = normalize_learning_path({"id": path.id, "estimatedDays": path.estimated_days, "stages": path.stages})
+    entry = normalized["task_index"].get(task_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="learning path task not found")
+    if entry["stage_id"] != stage_id:
+        raise HTTPException(status_code=409, detail="task scope does not match path stage")
+    if payload.get("dayId") and str(payload["dayId"]) != entry["day_id"]:
+        raise HTTPException(status_code=409, detail="task scope does not match day")
+    if payload.get("globalDayIndex") is not None and int(payload["globalDayIndex"]) != entry["global_day_index"]:
+        raise HTTPException(status_code=409, detail="task scope does not match day")
+    stage = _apply_stage_progress(path.stages)[entry["_stage_index"]]
+    if stage["progressStatus"] == "locked":
+        raise HTTPException(status_code=403, detail="please complete the current stage first")
+    if str(entry["task"].get("task_type") or entry["task"].get("type") or "").lower() not in {"quiz", "do_quiz", "assessment", "test"}:
+        raise HTTPException(status_code=409, detail="task is not a quiz")
+    return path, entry, session.subject_id or subject_id
+
+
+@router.post("/learning-path/tasks/{task_id}/quiz/ensure")
+def ensure_task_quiz(task_id: str, payload: dict, auth: AuthContext = Depends(require_auth)) -> dict:
+    db = SessionLocal()
+    try:
+        path, entry, _ = _require_task_quiz_scope(db, task_id, payload, auth.learner_id)
+        quiz = db.query(QuizModel).filter(QuizModel.session_id == path.session_id, QuizModel.path_id == path.id,
+            QuizModel.stage_id == entry["stage_id"], QuizModel.section_id == task_id).order_by(QuizModel.created_at.desc()).first()
+        if not quiz:
+            questions = _task_quiz_questions(entry["task"], task_id)
+            quiz = save_quiz(db, {"id": f"quiz_{uuid.uuid4().hex[:12]}", "title": str(entry["task"].get("title") or "Task quiz"),
+                "session_id": path.session_id, "scope_type": "section", "scope_id": task_id, "path_id": path.id,
+                "stage_id": entry["stage_id"], "section_id": task_id, "question_count": len(questions),
+                "questions": {"version": 1, "passingScore": 60}, "source": "learning_path_task"})
+            for item in questions:
+                db.add(PracticeQuestionModel(question_id=item["id"], question_set_id=quiz.id, session_id=path.session_id,
+                    type=item["type"], stem=item["stem"], options=item["options"], correct=item["correct"],
+                    explanation=item["explanation"], knowledge_points=item["knowledge_points"], difficulty=item["difficulty"]))
+            db.commit()
+        return {"status": "success", "data": {"status": "ready", "quiz": _safe_task_quiz(quiz, db)}}
+    finally:
+        db.close()
+
+
+@router.post("/learning-path/tasks/{task_id}/quiz/submit")
+def submit_task_quiz(task_id: str, body: QuizSubmitRequest, auth: AuthContext = Depends(require_auth)) -> dict:
+    db = SessionLocal()
+    try:
+        _, entry, _ = _require_task_quiz_scope(db, task_id, body.model_dump(by_alias=True), auth.learner_id)
+        quiz = require_owned_quiz(db, body.quiz_id, auth.learner_id)
+        if quiz.path_id != body.path_id or quiz.stage_id != body.stage_id or quiz.section_id != task_id:
+            raise HTTPException(status_code=409, detail="quiz does not belong to task")
+        body.task_id = task_id
+        return submit_quiz(body.quiz_id, body, auth)
+    finally:
+        db.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -198,6 +291,10 @@ class QuizSubmitRequest(BaseModel):
     path_id: str = Field(default="", alias="pathId")
     stage_id: str = Field(default="", alias="stageId")
     task_id: str = Field(default="", alias="taskId")
+    quiz_id: str = Field(default="", alias="quizId")
+    subject_id: str = Field(default="", alias="subjectId")
+    day_id: str = Field(default="", alias="dayId")
+    global_day_index: int | None = Field(default=None, alias="globalDayIndex")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -220,7 +317,7 @@ def _quiz_dict(q) -> dict:
         "knowledgePointIds": q.knowledge_point_ids or [],
         "difficulty": q.difficulty,
         "questionCount": q.question_count,
-        "questions": q.questions or [],
+        "questions": [],
         "source": q.source,
         "archivePolicy": q.archive_policy,
         "createdAt": q.created_at.isoformat() if q.created_at else None,
@@ -1332,7 +1429,7 @@ def submit_quiz(
         )
         db.commit()  # persist fallback mappings + event
         path_completion = {"pathTaskCompleted": False, "stageCompleted": False, "nextStageUnlocked": False, "pathProgress": None}
-        if path_context:
+        if path_context and avg_score >= 60:
             from app.routers.product import complete_path_task
             path_completion = complete_path_task(
                 db, session_id=session_id, subject_id=subject_id, source="assessment_submission", **path_context,
@@ -1412,6 +1509,11 @@ def submit_quiz(
                 "results": results,
                 "totalScore": avg_score,
                 "maxScore": 100,
+                "score": avg_score,
+                "passingScore": 60,
+                "passed": avg_score >= 60,
+                "correctCount": sum(1 for item in results if item["isCorrect"]),
+                "totalCount": len(linked),
                 "sectionStatusSuggestion": suggestion,
                 "weakPoints": weak_points,
                 "knowledgePointResults": kp_results,
