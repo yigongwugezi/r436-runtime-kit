@@ -34,7 +34,7 @@ export default function LearningPathPage() {
   const nav = useNavigate();
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { path, loading, error, fetchPath, generatePath } = useLearningPath();
+  const { path, loading, error, clearError, fetchPath, generatePath } = useLearningPath();
   const { profileV2 } = useProfile();
   const subject = profileV2?.subject_context || {};
   const [existingDraft, setExistingDraft] = useState<any>(null);
@@ -214,6 +214,7 @@ export default function LearningPathPage() {
   }, [middleTab, fetchRecommendations]);
 
   if (loading) return <PageLoading text="加载学习路径中…" />;
+  if (error === 'CURRENT_PATH_UNRESOLVED') return <div className="flex flex-col items-center py-20 text-center"><h3 className="text-lg font-bold text-surface-700 mb-2">当前学习路径尚未确定</h3><p className="text-sm text-surface-400 mb-6">请返回对话确认学习目标，或重新生成学习路径。</p><div className="flex gap-3"><button onClick={() => nav('/chat')} className="px-5 py-2.5 bg-surface-100 rounded-xl text-sm font-semibold">返回对话</button><button onClick={() => { setExistingDraft({}); clearError(); }} className="px-5 py-2.5 bg-accent-600 text-white rounded-xl text-sm font-semibold">重新生成学习路径</button></div></div>;
   if (error && stages.length === 0) return <PageError title="加载失败" description={error} onRetry={fetchPath} />;
   if (path && stages.length === 0 && !draftLoading && !pathGenerating) return <PageError title={displayPath.formatInvalid ? "路径数据格式异常，请刷新重试" : "路径暂无阶段"} description={displayPath.formatInvalid ? "学习路径返回了非数组字段。" : "当前学习路径尚未包含可展示的阶段。"} onRetry={fetchPath} />;
 

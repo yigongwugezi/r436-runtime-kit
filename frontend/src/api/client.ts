@@ -122,8 +122,11 @@ function extractApiError(err: any): ApiError {
 
     // 优先使用后端返回的安全消息（detail/message/error）
     const detail = body?.detail || body?.message || body?.error || null;
+    if (detail && typeof detail === 'object') code = detail.code || code;
 
-    if (detail && typeof detail === 'string') {
+    if (code === 'CURRENT_PATH_UNRESOLVED') {
+      message = code;
+    } else if (detail && typeof detail === 'string') {
       message = detail;
     } else if (STATUS_MESSAGES[status]) {
       message = STATUS_MESSAGES[status];

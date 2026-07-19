@@ -24,11 +24,19 @@ from app.services.agent_service import (
     get_learning_path as ag_get_learning_path,
     get_resources as ag_get_resources,
 )
+from app.db.repository import CurrentPathUnresolvedError
 from app.middleware.auth import AuthContext, get_auth
 
 logger = logging.getLogger("app.knowledge_graph")
 
 router = APIRouter(prefix="/knowledge-graph", tags=["knowledge-graph"])
+
+
+def _current_path_or_none(session_id: str, subject_id: str) -> dict[str, Any] | None:
+    try:
+        return ag_get_learning_path(session_id, subject_id)
+    except CurrentPathUnresolvedError:
+        return None
 
 
 @router.get("")
@@ -47,7 +55,7 @@ def get_knowledge_graph(
     _ensure_session_linked(session_id, subject_id=subject_id)
 
     # 1. Get learning path
-    path = ag_get_learning_path(session_id)
+    path = _current_path_or_none(session_id, subject_id)
     if not path:
         return _product_response(
             {"nodes": [], "edges": [], "meta": {"totalNodes": 0, "totalEdges": 0, "masteredCount": 0, "chapters": []}},
@@ -194,7 +202,7 @@ def get_node_detail(
     session_id = _resolve_session_id(sessionId, subjectId)
 
     # Find node in learning path
-    path = ag_get_learning_path(session_id)
+    path = _current_path_or_none(session_id, str(subjectId).strip())
     node_info: dict[str, Any] | None = None
     linked_sections: list[dict] = []
     prerequisites: list[dict] = []

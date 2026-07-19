@@ -68,6 +68,7 @@ export function useLearningPath() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [generationWorkflow, setGenerationWorkflow] = useState<WorkflowState | null>(null);
+  const clearError = useCallback(() => setError(null), []);
   const lastVersionRef = useRef<number>(0);
   const pathVersionRef = useRef<number>(0);
   const hasDataRef = useRef(false);
@@ -231,5 +232,5 @@ export function useLearningPath() {
   useEffect(() => { if (dataVersion <= 0 || dataVersion === lastVersionRef.current) return; lastVersionRef.current = dataVersion; fetchPath(true); }, [dataVersion, fetchPath]);
 
   /** 从 workflow 完成结果直接设置路径，不依赖 API 二次查询 */
-  return { path, loading, error, generationWorkflow, fetchPath, generatePath, updateNode, updateNodeStatus, updateKnowledgePoint, updateChapterStatus, updateSectionStatus };
+  return { path, loading, error, clearError, generationWorkflow, fetchPath, generatePath, updateNode, updateNodeStatus, updateKnowledgePoint, updateChapterStatus, updateSectionStatus };
 }
