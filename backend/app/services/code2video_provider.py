@@ -139,7 +139,7 @@ class Code2VideoProvider:
                 )
                 if narration_text and len(narration_text) > 5:
                     agent.section_narrations[section.id] = narration_text
-                    audio_path = self._tts_narration(narration_text, f"{job_id}_{section.id}") or self._tts_chattts(narration_text, f"{job_id}_{section.id}")
+                    audio_path = self._tts_narration(narration_text, f"{job_id}_{section.id}")
                     if audio_path:
                         dur = self._get_audio_duration(audio_path)
                         agent.section_durations[section.id] = dur
@@ -363,30 +363,6 @@ class Code2VideoProvider:
                 return str(mp3_path)
         except Exception:
             pass
-        return ""
-
-    def _tts_chattts(self, text: str, job_id: str) -> str:
-        """Use ChatTTS for high-quality Chinese TTS. Falls back to edge-tts if not installed."""
-        try:
-            from ChatTTS import Chat
-            import numpy as np
-            chat = Chat()
-            chat.load(compile=False)
-            texts = [s.strip() for s in text.replace('\n', '。').split('。') if s.strip()]
-            if not texts:
-                return ""
-            wavs = chat.infer(texts, use_decoder=True)
-            import soundfile as sf
-            wav_path = self.output_dir / f"{job_id}_narration_chattts.wav"
-            combined = np.concatenate([w for w in wavs])
-            sf.write(str(wav_path), combined, 24000)
-            if wav_path.exists():
-                logger.info("ChatTTS generated: %s (%d segments)", wav_path, len(texts))
-                return str(wav_path)
-        except ImportError:
-            logger.info("ChatTTS not installed, using edge-tts fallback")
-        except Exception as e:
-            logger.warning("ChatTTS failed: %s, falling back to edge-tts", e)
         return ""
 
     def _merge_audio_video(self, video_path: str, audio_path: str, job_id: str) -> str:
