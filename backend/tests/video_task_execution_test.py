@@ -1,5 +1,6 @@
 """Focused video-task evidence and canonical completion regression."""
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,6 +15,7 @@ from app.db.models import Base, CurrentLearningPathModel, LearningEventModel, Le
 from app.db.repository import upsert_learning_path
 from app.middleware.auth import AuthContext
 from app.routers import product
+from app.services.workflow_tasks import workflow_task_manager
 
 
 def main():
@@ -60,27 +62,50 @@ def main():
 
 
 def fallback_main():
+    class FakeLectureClient:
+        def chat(self, **_kwargs):
+            return "# Canonical Video Title\n\n## Core concept\nA complete fallback lecture.\n\n## Summary\nReview the concept."
+
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine); factory = sessionmaker(bind=engine)
     app = FastAPI(); app.include_router(product.router, prefix="/api")
     app.dependency_overrides[product.require_auth] = lambda: AuthContext(learner_id="owner")
     with patch.object(product, "SessionLocal", factory):
         db = factory(); db.add_all([SessionModel(id="fallback-s", learner_id="owner", subject_id="fallback-sub"), PersonalSubjectModel(id="fallback-sub", learner_id="owner", name="x")])
-        upsert_learning_path(db, "fallback-s", {"id": "fallback-p", "subject_id": "fallback-sub", "stages": [{"id": "stage", "days": [{"id": "stage_d1", "globalDayIndex": 1, "tasks": [{"id": "video-fallback", "type": "video"}]}]}]})
+        upsert_learning_path(db, "fallback-s", {"id": "fallback-p", "subject_id": "fallback-sub", "stages": [{"id": "stage", "days": [{"id": "stage_d1", "globalDayIndex": 1, "tasks": [{"id": "video-fallback", "type": "video", "title": "Canonical Video Title", "goal": "Watch the canonical video"}]}]}]})
         db.add(CurrentLearningPathModel(learner_id="owner", session_id="fallback-s", subject_id="fallback-sub", path_id="fallback-p"))
         db.add(ResourceModel(id="fallback-lecture", session_id="fallback-s", type="lecture", content="alternative text", related_section_id="video-fallback", task_id="video-fallback", resource_metadata={"deliveryMode": "video_fallback_lecture", "sourceTaskType": "video"})); db.commit(); db.close()
         payload = {"sessionId": "fallback-s", "subjectId": "fallback-sub", "pathId": "fallback-p", "stageId": "stage", "dayId": "stage_d1", "globalDayIndex": 1}
         client = TestClient(app)
         assert client.post("/api/learning-path/tasks/video-fallback/video-fallback/lecture/ensure", json=payload).status_code == 409
         assert client.post("/api/learning-path/tasks/video-fallback/video-fallback-selected", json=payload).status_code == 200
+        canonical_payload, _ = product._video_fallback_payload("video-fallback", {**payload, "sectionTitle": "forged", "taskTitle": "forged"}, AuthContext(learner_id="owner"))
+        assert canonical_payload["taskTitle"] == "Canonical Video Title"
+        assert canonical_payload["sectionTitle"] == "Canonical Video Title"
+        assert canonical_payload["sectionId"] == canonical_payload["taskId"] == "video-fallback"
         assert client.post("/api/sections/video-fallback/lecture/ensure", json={**payload, "taskId": "video-fallback", "taskType": "video"}).status_code == 409
-        assert client.post("/api/learning-path/tasks/video-fallback/video-fallback/lecture/ensure", json=payload).status_code == 200
+        with patch.object(product, "_llm_client", return_value=FakeLectureClient()):
+            started = client.post("/api/learning-path/tasks/video-fallback/video-fallback/lecture/ensure", json=payload)
+            assert started.status_code == 200 and started.json()["status"] == "running", started.text
+            workflow_id = started.json()["workflowId"]
+            for _ in range(50):
+                workflow = workflow_task_manager.get(workflow_id, "owner", "fallback-s")
+                if workflow.status in {"completed", "failed"}:
+                    break
+                time.sleep(0.02)
+            assert workflow.status == "completed" and workflow.result_available is True
+        db = factory(); generated = db.query(ResourceModel).filter(ResourceModel.id == workflow.result["data"]["lecture"]["id"]).one()
+        assert generated.content and generated.resource_metadata["deliveryMode"] == "video_fallback_lecture"
+        assert generated.resource_metadata["originalTaskId"] == "video-fallback"
+        assert generated.resource_metadata["canonicalScope"]["dayId"] == "stage_d1"; generated_id = generated.id; db.close()
+        reused = client.post("/api/learning-path/tasks/video-fallback/video-fallback/lecture/ensure", json=payload)
+        assert reused.status_code == 200 and reused.json()["status"] == "ready"
         assert client.post("/api/learning-path/tasks/video-fallback/complete", json=payload).status_code == 409
         assert client.post("/api/learning-path/tasks/video-fallback/video-fallback-lecture-opened", json=payload).status_code == 200
         completed = client.post("/api/learning-path/tasks/video-fallback/complete", json=payload)
         assert completed.status_code == 200 and completed.json()["data"]["taskId"] == "video-fallback"
         db = factory(); event = db.query(LearningEventModel).filter(LearningEventModel.event_type == "video_fallback_selected").one()
-        assert event.metadata_["lectureResourceId"] == "fallback-lecture" and event.metadata_["lectureContentReady"] is True; db.close()
+        assert event.metadata_["lectureResourceId"] == generated_id and event.metadata_["lectureContentReady"] is True; db.close()
     print("video fallback completion: PASS")
 
 

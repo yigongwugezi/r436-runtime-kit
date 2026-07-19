@@ -8126,10 +8126,11 @@ def _video_fallback_payload(task_id: str, payload: dict[str, Any], auth: AuthCon
         if not _video_evidence_exists(db, session_id=scope.session_id, subject_id=scope.subject_id, path_id=path_id, stage_id=stage_id, task_id=task_id, event_type="video_fallback_selected"):
             raise HTTPException(status_code=409, detail={"code": "FALLBACK_NOT_SELECTED", "message": "select text fallback before generating a lecture"})
         task = entry["task"]
+        title = str(task.get("title") or task.get("goal") or "视频学习图文讲解").strip()
         return ({**payload, "sessionId": scope.session_id, "subjectId": scope.subject_id, "pathId": path_id, "stageId": stage_id,
             "dayId": day_id, "globalDayIndex": global_day_index, "taskId": task_id, "sectionId": task_id, "taskType": task_type,
             "originalTaskId": task_id, "deliveryMode": "video_fallback_lecture", "fallbackVersion": 1,
-            "taskTitle": task.get("title") or payload.get("taskTitle") or "", "taskDescription": task.get("description") or task.get("goal") or payload.get("taskDescription") or "",
+            "taskTitle": title, "sectionTitle": title, "taskDescription": task.get("description") or task.get("goal") or payload.get("taskDescription") or "",
             "learningObjectives": task.get("learningObjectives") or task.get("learning_objectives") or payload.get("learningObjectives") or [],
             "knowledgePoints": task.get("knowledgePoints") or task.get("knowledge_points") or payload.get("knowledgePoints") or []}, scope)
     finally:
