@@ -60,7 +60,7 @@ function groupTasksByDay(stages: any[]) {
     const days: { dayIndex: number; tasks: any[]; stageIdx: number }[] = [];
     const dayMap = new Map<number, any[]>();
     tasks.forEach((t: any) => {
-      const d = typeof t.day === 'number' ? t.day : 0;
+      const d = Number(t.day ?? t.day_index ?? t.dayIndex) || 0;
       if (!dayMap.has(d)) dayMap.set(d, []);
       dayMap.get(d)!.push(t);
     });

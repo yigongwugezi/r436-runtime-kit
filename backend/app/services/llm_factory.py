@@ -139,8 +139,10 @@ def _get_role_provider(role: str) -> str:
 
 role_defaults = {
     "planner": "deepseek",
-    "coder": "qwen",
-    "critic": "qwen",
+    # Auxiliary roles must follow the configured main provider unless an
+    # operator explicitly overrides them in the environment.
+    "coder": "deepseek",
+    "critic": "deepseek",
 }
 
 

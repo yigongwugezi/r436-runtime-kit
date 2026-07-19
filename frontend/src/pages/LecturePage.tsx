@@ -112,7 +112,9 @@ export default function LecturePage() {
   const focusedPathId = searchParams.get('pathId') || '';
   const focusedSubjectId = searchParams.get('subjectId') || '';
   const focusedTaskType = searchParams.get('taskType') || 'read_doc';
-  const focusedTask = Boolean(routeSessionId && focusedPathId && focusedStageId && focusedTaskId);
+  // Task URLs keep their scope for refresh/recovery.  The focused layout is
+  // legacy-only; normal learning-path navigation always uses the full workspace.
+  const focusedTask = searchParams.get('legacy') === '1' && Boolean(routeSessionId && focusedPathId && focusedStageId && focusedTaskId);
   const focusedReadingTask = ['reading', 'document', 'lecture', 'read_doc'].includes(focusedTaskType);
   const returnPathMode = ['textbook', 'daily', 'project', 'focus'].includes(searchParams.get('pathMode') || '')
     ? searchParams.get('pathMode')
@@ -174,6 +176,7 @@ export default function LecturePage() {
 
   // ── 本地临时状态 ──
   const [lectureLoaded, setLectureLoaded] = useState(false);
+  const [lectureMissing, setLectureMissing] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [lectureWorkflow, setLectureWorkflow] = useState<WorkflowState | null>(null);
   const lectureWorkflowAbort = useRef<AbortController | null>(null);
@@ -351,6 +354,7 @@ export default function LecturePage() {
   useEffect(() => {
     if (!activeSectionId || !sessionId) return;
     const key = `${sessionId}:${activeSectionId}`;
+    setLectureMissing(false);
     if (store.lectureCache[key]) { setLectureLoaded(true); return; }
     setLectureLoaded(false);
     const params = new URLSearchParams({ sessionId });
@@ -362,6 +366,7 @@ export default function LecturePage() {
     fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/lecture?${params}`, { headers: authHeaders() })
       .then(async r => {
         if (r.status === 403) setFocusedAccessDenied(true);
+        if (r.status === 404) setLectureMissing(true);
         return r.ok ? r.json() : null;
       })
       .then(d => {
@@ -668,12 +673,12 @@ export default function LecturePage() {
   };
 
   useEffect(() => {
-    if (!focusedTask || !currentSection || !sessionId || !lectureLoaded || lecture || generating) return;
+    if (!currentSection || !sessionId || !lectureLoaded || !lectureMissing || lecture || generating) return;
     const key = `${sessionId}:${focusedSubjectId}:${focusedPathId}:${focusedStageId}:${focusedTaskId}:${activeSectionId}`;
     if (focusedGenerationRef.current === key) return;
     focusedGenerationRef.current = key;
     void handleGenerate();
-  }, [focusedTask, currentSection, sessionId, lectureLoaded, lecture, generating, focusedStageId, activeSectionId, handleGenerate]);
+  }, [currentSection, sessionId, lectureLoaded, lectureMissing, lecture, generating, focusedSubjectId, focusedPathId, focusedStageId, focusedTaskId, activeSectionId, handleGenerate]);
 
   const completeFocusedTask = async () => {
     if (!focusedTaskId || !focusedReadingTask || focusedCompleting || !effectiveLectureContent || generating || (lectureWorkflow && isActiveWorkflowStatus(lectureWorkflow.status))) return;
