@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass
 from threading import Event, Lock
 from typing import Any, Callable
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.request import Request, urlopen
 
 from app.config import settings
 from app.services.search_client import SearchError, get_search_client, search_arxiv, search_crossref
@@ -46,6 +47,7 @@ _RESOURCE_SUFFIX = re.compile(
 )
 _PAPER_HOSTS = ("arxiv.org", "semanticscholar.org", "dl.acm.org", "ieeexplore.ieee.org", "dblp.org", "doi.org", "cnki", "wanfang")
 _COURSE_HOSTS = ("icourse163.org", "xuetangx.com", "smartedu.cn", "imooc.com", "coursera.org", "edx.org", "ocw.mit.edu")
+_DOMESTIC_VIDEO_PLATFORMS = {"bilibili", "icourse163", "xuetangx", "icourses", "smartedu"}
 
 ProgressCallback = Callable[[dict[str, Any]], None]
 
@@ -167,6 +169,10 @@ def classify_platform(url: str) -> str | None:
         return "icourse163"
     if host.endswith("xuetangx.com") and ("/learn/" in path or "/course/" in path):
         return "xuetangx"
+    if host.endswith("icourses.cn") and path not in {"", "/"}:
+        return "icourses"
+    if host.endswith("smartedu.cn") and ("/course/" in path or "/resource/" in path):
+        return "smartedu"
     if host.endswith("smartedu.cn") and ("/course/" in path or "/resource/" in path):
         return "smartedu"
     if host.endswith("imooc.com") and ("/learn/" in path or "/video/" in path):
@@ -208,6 +214,11 @@ def classify_resource_type(url: str, title: str = "", snippet: str = "") -> str:
 
 def validate_resource_url(url: str, resource_type: str | None = None, title: str = "", snippet: str = "") -> str:
     """Reject home pages, search pages, unsafe schemes, and type mismatches."""
+    if urlparse(str(url or "").strip()).netloc.lower().removeprefix("www.") == "b23.tv":
+        try:
+            url = urlopen(Request(str(url), method="HEAD"), timeout=3).geturl()
+        except Exception:
+            return ""
     normalized = normalize_url(url)
     if not normalized:
         return ""
@@ -576,6 +587,10 @@ class SectionResourceRecommendationService:
             cn_hints.extend(["入门", "基础"]); en_hints.extend(["beginner", "basics"])
         hint = " ".join(cn_hints)
         english_hint = " ".join(en_hints)
+        if resource_type == "video":
+            return [(f"site:bilibili.com/video {course} {topic} 视频".strip(), "exact_topic"),
+                    (f"site:icourse163.org {course} {topic} 视频".strip(), "chapter_level"),
+                    (f"site:xuetangx.com {course} {topic} 视频".strip(), "chapter_level")]
         if resource_type == "article":
             base = [(f"{course} {topic} {hint}".strip(), "exact_topic"),
                     (f"{keywords} 教程 {hint}".strip(), "exact_topic")]
@@ -705,6 +720,19 @@ class SectionResourceRecommendationService:
                 "feedback": feedback,
             })
         return diversify_results(resources)
+
+    @staticmethod
+    def _prefer_domestic_videos(resources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        videos = [item for item in resources if item.get("resource_type") == "video"]
+        domestic = [item for item in videos if item.get("platform") in _DOMESTIC_VIDEO_PLATFORMS]
+        if domestic:
+            domestic_urls = {item["url"] for item in domestic}
+            return [item for item in resources if item.get("resource_type") != "video" or item["url"] in domestic_urls]
+        for item in videos:
+            item["access_region"] = "overseas"
+            item["access_note"] = "部分地区可能无法访问"
+            item["reason"] = f"{item.get('reason', '')}；部分地区可能无法访问"
+        return resources
 
     @staticmethod
     def _cache_key(context: dict[str, Any], requested: list[str], language: str, scope_key: str = "") -> str:
@@ -968,6 +996,7 @@ class SectionResourceRecommendationService:
                     selected_urls.add(item["url"])
             resources.extend(item for item in ranked if item["url"] not in selected_urls)
             resources = resources[:settings.search_max_results_all]
+        resources = self._prefer_domestic_videos(resources)
         diagnostics["final_count"] = len(resources)
         if resources:
             status = "completed"
