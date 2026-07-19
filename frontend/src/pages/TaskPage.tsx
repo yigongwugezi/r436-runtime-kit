@@ -113,10 +113,21 @@ export default function TaskPage() {
       const r = await fetch(`/api/sections/${encodeURIComponent(taskId)}/generated-resources?${params}`, { headers: authHeaders() }).then(r => r.json());
       const list = r.resources || [];
       setResources(list);
+      // v1.2: 若讲义资源返回了教材页码，立刻写入本地 task 对象，
+      // 使 hasTextbookPages 变为 true → PDF 浏览器替代文字展示
+      if (isTextbookMode && !hasTextbookPages) {
+        const lec = (list as any[]).find((x: any) => x?.type === 'lecture');
+        if (lec?.textbookPageStart && lec?.textbookPageEnd) {
+          if (taskAny) {
+            taskAny.textbookPageStart = lec.textbookPageStart;
+            taskAny.textbookPageEnd = lec.textbookPageEnd;
+          }
+        }
+      }
       if (list.length > 0) return true;
     } catch {}
     return false;
-  }, [taskId, sessionId, subjectId, path?.id, stage?.id]);
+  }, [taskId, sessionId, subjectId, path?.id, stage?.id, isTextbookMode, hasTextbookPages, taskAny]);
 
   useEffect(() => {
     if (!taskId || !sessionId) return;

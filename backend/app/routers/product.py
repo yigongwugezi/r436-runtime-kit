@@ -7409,47 +7409,63 @@ def _try_textbook_lecture(
             return None
 
         # 3) Extract textbook pages as markdown
-        from app.services.textbook_processor import extract_pdf_content
-
         storage_root = settings.project_root / "backend" / settings.textbook_storage_path.lstrip("./")
         pdf_path = storage_root / textbook.id / f"{textbook.id}.pdf"
         if not pdf_path.exists():
             logger.warning("Textbook PDF not found: %s", pdf_path)
             return None
 
-        all_pages = extract_pdf_content(str(pdf_path))
-        relevant = [p for p in all_pages if page_start <= p["page_number"] <= page_end]
-        if not relevant:
+        # 3b) Lightweight validation: ensure page range is within the PDF
+        from app.services.textbook_processor import get_pdf_page_count
+        total_pages = get_pdf_page_count(str(pdf_path))
+        if page_start > total_pages:
             return None
-        content = "\n\n".join(
-            f"## 第{p['page_number']}页\n\n{p['content']}" for p in relevant
-        )
+        page_end = min(page_end, total_pages)
 
-        # 4) Persist as ResourceModel
+        # 4) Write textbook page numbers back to the task in the learning path
+        #    so the frontend can detect them and show the PDF viewer (not text).
+        if task:
+            task["textbookPageStart"] = page_start
+            task["textbookPageEnd"] = page_end
+            task["textbookSectionId"] = str(task.get("source_section_ids", [])[0] if task.get("source_section_ids") else "")
+            # Also update the path_model stages in DB
+            path_model.stages = list(path_model.stages)
+            db.add(path_model)
+            db.commit()
+
+        # 5) Persist a lightweight marker ResourceModel — no extracted text,
+        #    the PDF viewer renders pages directly.  Page numbers are stored in
+        #    resource_metadata so `generated-resources` can return them.
         db2 = SessionLocal()
         try:
             upsert_resource(db2, session_id, {
-                "type": "lecture", "format": "text",
+                "type": "lecture", "format": "textbook",
                 "title": section_title,
-                "content": content,
+                "content": "",  # 空内容：教材由前端 PDF 浏览器直接渲染
                 "related_section_id": section_id,
                 "related_stage_id": stage_id,
                 "task_id": task_id,
+                "resource_metadata": {
+                    "textbookPageStart": page_start,
+                    "textbookPageEnd": page_end,
+                },
             })
             db2.commit()
         finally:
             db2.close()
 
         logger.info(
-            "Textbook lecture extracted: session=%s pages=%d-%d chars=%d",
-            session_id, page_start, page_end, len(content),
+            "Textbook pages resolved: session=%s pages=%d-%d task=%s",
+            session_id, page_start, page_end, task_id,
         )
         return _product_response({"lecture": {
             "id": f"tb_{section_id}",
             "title": section_title,
-            "content": content,
+            "content": "",
             "sectionId": section_id,
             "stageId": stage_id,
+            "textbookPageStart": page_start,
+            "textbookPageEnd": page_end,
             "createdAt": int(time.time() * 1000),
         }}, session_id=session_id, source="textbook")
     finally:

@@ -182,7 +182,8 @@ class SectionGeneratedResourcesService:
     def serialize(resource: ResourceModel) -> dict[str, Any]:
         tags = resource.tags or []
         generated_type = next((tag for tag in tags if tag in RESOURCE_DEFINITIONS), resource.task_id or "")
-        return {
+        meta = resource.resource_metadata if isinstance(resource.resource_metadata, dict) else {}
+        item: dict[str, Any] = {
             "id": resource.id,
             "title": resource.title,
             "content": resource.content or "",
@@ -194,12 +195,18 @@ class SectionGeneratedResourcesService:
             "stageId": resource.related_stage_id or "",
             "mermaidDef": resource.mermaid_def or "",
             "format": resource.format or "text",
-            "quality": resource.resource_metadata.get("quality_status") if isinstance(resource.resource_metadata, dict) else "",
-            "qualityScore": resource.resource_metadata.get("quality_score") if isinstance(resource.resource_metadata, dict) else None,
-            "workflowTrace": resource.resource_metadata.get("workflow_trace", []) if isinstance(resource.resource_metadata, dict) else [],
-            "personalization": resource.resource_metadata.get("personalization", {}) if isinstance(resource.resource_metadata, dict) else {},
+            "quality": meta.get("quality_status", ""),
+            "qualityScore": meta.get("quality_score"),
+            "workflowTrace": meta.get("workflow_trace", []),
+            "personalization": meta.get("personalization", {}),
             "createdAt": int(resource.created_at.timestamp() * 1000) if resource.created_at else 0,
         }
+        # v1.2: 教材页码透传（供前端 PDF 浏览器使用）
+        if meta.get("textbookPageStart"):
+            item["textbookPageStart"] = meta["textbookPageStart"]
+        if meta.get("textbookPageEnd"):
+            item["textbookPageEnd"] = meta["textbookPageEnd"]
+        return item
 
     @staticmethod
     def _workflow_trace(
