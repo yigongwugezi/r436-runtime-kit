@@ -8,7 +8,7 @@ import { DEFAULT_QUICK_COMMANDS } from '../utils/constants';
 import { timeAgo, uid } from '../utils/format';
 import { runtimeStorageKeys, writeStorageItem } from '../utils/storageKeys';
 import type { ChatAttachment, ChatMessage, GenerationProgress, ProgressStep, QuickCommand } from '../types/chat';
-import { Send, Sparkles, Square, Copy, Check, AlertCircle, Bot, RefreshCw, XCircle, Loader2, BrainCircuit, ImagePlus, Trash2, MessageCircle, Globe, Target } from 'lucide-react';
+import { Send, Sparkles, Square, Copy, Check, AlertCircle, Bot, RefreshCw, XCircle, Loader2, BrainCircuit, ImagePlus, Trash2, MessageCircle, Globe, Target, ChevronRight } from 'lucide-react';
 import { getCurrentLearner } from '../store/authStore';
 import Markdown from '../utils/markdown';
 import MarkmapDiagram from '../utils/markmap';
@@ -458,6 +458,7 @@ function MultimodalResultView({ result }: { result: ChatMessage['multimodalResul
 }
 
 const MessageBubble = memo(function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onClarificationSelect?: (prompt: string) => void }) {
+  const nav = useNavigate();
   const isUser = msg.role === 'user'; const [copied, setCopied] = useState(false);
   const [thinkingExpanded, setThinkingExpanded] = useState(true);
   const hasThinking = !isUser && msg.reasoningContent && msg.reasoningContent.trim().length > 0;
@@ -518,6 +519,27 @@ const MessageBubble = memo(function MessageBubble({ msg, onClarificationSelect }
                   );
                 })()}
                 {msg.multimodalResult && <MultimodalResultView result={msg.multimodalResult} />}
+                {!isUser && !msg.streaming && msg.resourceCards && msg.resourceCards.length > 0 && (
+                  <div className="mt-3 space-y-2">
+                    <p className="text-xs font-medium text-surface-500 ml-1">📦 已生成资源</p>
+                    {msg.resourceCards.map((card: any, idx: number) => (
+                      <button
+                        key={card.id || idx}
+                        onClick={() => nav(`/resources/${card.id}`)}
+                        className="w-full flex items-center gap-3 p-3 rounded-xl border border-surface-200 bg-white hover:bg-surface-50 hover:border-primary-300 transition-all text-left shadow-sm"
+                      >
+                        <span className="text-lg flex-shrink-0">
+                          {card.type === 'mindmap' ? '🧠' : card.type === 'quiz' ? '✏️' : card.type === 'lecture' ? '📖' : card.type === 'reading' ? '📚' : card.type === 'practice' ? '🏋️' : card.type === 'video' || card.type === 'multimodal' ? '🎬' : card.type === 'ppt' ? '📊' : card.type === 'image' ? '🖼️' : '📄'}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium text-surface-800 truncate">{card.title}</p>
+                          {card.description && <p className="text-xs text-surface-400 truncate mt-0.5">{card.description}</p>}
+                        </div>
+                        <ChevronRight size={14} className="text-surface-300 flex-shrink-0" />
+                      </button>
+                    ))}
+                  </div>
+                )}
                 {msg.streaming && msg.content && (
                   <span className="inline-block w-1.5 h-4 bg-gray-400 animate-pulse rounded ml-0.5 align-text-bottom" />
                 )}
@@ -575,26 +597,18 @@ function AgentPipelineProgress({ progress, onRetry, onNavigate }: { progress: Ge
 
 const ModeToggleBar = memo(function ModeToggleBar() {
   const chatMode = useChatStore((s) => s.chatMode);
+  // 只有规划模式激活时才显示切换条，纯自由模式无需切换
+  if (chatMode !== 'planning') return null;
   return (
     <div className="flex-shrink-0 px-4 pt-2 pb-1 w-full min-w-0">
       <div className="max-w-[48rem] mx-auto flex items-center gap-1.5 rounded-xl bg-surface-100 p-1 w-fit">
         <button
           onClick={() => useChatStore.getState().setChatMode('free')}
-          className={`rounded-lg px-4 py-1.5 text-xs font-medium transition-colors ${
-            chatMode === 'free' ? 'bg-white text-surface-800 shadow-sm' : 'text-surface-500 hover:text-surface-700'
-          }`}
+          className="rounded-lg px-4 py-1.5 text-xs font-medium transition-colors text-surface-500 hover:text-surface-700"
         >自由学习</button>
-        <button
-          onClick={() => useChatStore.getState().setChatMode('invoke')}
-          className={`rounded-lg px-4 py-1.5 text-xs font-medium transition-colors ${
-            chatMode === 'invoke' ? 'bg-white text-surface-800 shadow-sm' : 'text-surface-500 hover:text-surface-700'
-          }`}
-        >调用模式</button>
-        {chatMode === 'planning' && (
-          <span className="rounded-lg px-4 py-1.5 text-xs font-medium bg-accent-100 text-accent-700 shadow-sm flex items-center gap-1.5">
-            <Target size={12} />规划模式
-          </span>
-        )}
+        <span className="rounded-lg px-4 py-1.5 text-xs font-medium bg-accent-100 text-accent-700 shadow-sm flex items-center gap-1.5">
+          <Target size={12} />规划模式
+        </span>
       </div>
     </div>
   );
