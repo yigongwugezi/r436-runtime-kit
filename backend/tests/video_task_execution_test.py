@@ -72,7 +72,33 @@ def fallback_main():
         assert client.post("/api/learning-path/tasks/video-fallback/video-fallback-selected", json=payload).status_code == 200
         completed = client.post("/api/learning-path/tasks/video-fallback/complete", json=payload)
         assert completed.status_code == 200 and completed.json()["data"]["taskId"] == "video-fallback"
+        db = factory(); event = db.query(LearningEventModel).filter(LearningEventModel.event_type == "video_fallback_selected").one()
+        assert event.metadata_["lectureResourceId"] == "fallback-lecture" and event.metadata_["lectureContentReady"] is True; db.close()
     print("video fallback completion: PASS")
 
 
-if __name__ == "__main__": main(); fallback_main()
+def recommendations_main():
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine); factory = sessionmaker(bind=engine)
+    app = FastAPI(); app.include_router(product.router, prefix="/api")
+    app.dependency_overrides[product.require_auth] = lambda: AuthContext(learner_id="owner")
+    with patch.object(product, "SessionLocal", factory):
+        db = factory(); db.add_all([SessionModel(id="video-s", learner_id="owner", subject_id="video-sub"), PersonalSubjectModel(id="video-sub", learner_id="owner", name="x")])
+        upsert_learning_path(db, "video-s", {"id": "video-p", "stages": [{"id": "stage", "days": [{"id": "stage_d2", "globalDayIndex": 2, "tasks": [{"id": "watch", "type": "watch_video", "title": "Big O"}]}]}]}); db.close()
+        payload = {"sessionId": "video-s", "subjectId": "video-sub", "pathId": "video-p", "stageId": "stage", "dayId": "stage_d2", "globalDayIndex": 2, "taskId": "watch", "resourceTypes": ["video"]}
+        good = {"resources": [{"resource_type": "video", "title": "Big O", "url": "https://www.bilibili.com/video/BV1abc"}], "status": "completed", "warnings": []}
+        with patch("app.services.section_resource_recommendations.SectionResourceRecommendationService.recommend", return_value=good) as search:
+            first = TestClient(app).post("/api/resources/recommendations/for-learning", json=payload)
+            assert first.status_code == 200 and first.json()["data"]["recommendations"]["presentationStatus"] == "new_search"
+            assert search.call_count == 1
+        with patch("app.services.section_resource_recommendations.SectionResourceRecommendationService.recommend", return_value={"resources": [], "status": "search_unavailable", "warnings": ["timeout"]}):
+            stale = TestClient(app).post("/api/resources/recommendations/for-learning", json={**payload, "refresh": True})
+            recommendation = stale.json()["data"]["recommendations"]
+            assert recommendation["presentationStatus"] == "stale" and recommendation["resources"][0]["title"] == "Big O", recommendation
+        with patch("app.services.section_resource_recommendations.SectionResourceRecommendationService.recommend", side_effect=AssertionError("persisted result must skip search")):
+            restored = TestClient(app).post("/api/resources/recommendations/for-learning", json=payload)
+            assert restored.json()["data"]["recommendations"]["presentationStatus"] == "persisted"
+    print("video recommendation persistence: PASS")
+
+
+if __name__ == "__main__": main(); fallback_main(); recommendations_main()

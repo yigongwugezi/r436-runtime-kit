@@ -5,7 +5,7 @@ const resolver = readFileSync(new URL('../src/utils/taskExecutionMode.ts', impor
 const page = readFileSync(new URL('../src/pages/LecturePage.tsx', import.meta.url), 'utf8');
 const videos = readFileSync(new URL('../src/api/videoRecommendations.ts', import.meta.url), 'utf8');
 assert.match(resolver, /\['video', 'watch_video'\].*return 'video'/);
-assert.match(resolver, /\['quiz', 'do_quiz', 'assessment', 'test'\].*return 'quiz'/);
+assert.match(resolver, /\['quiz', 'do_quiz', 'quiz_prac', 'assessment', 'test'\].*return 'quiz'/);
 assert.match(page, /ensureLearningPathQuiz\(focusedTaskId/);
 assert.match(page, /executionMode === 'quiz'\) return;/);
 assert.match(page, /if \(executionMode === 'video' && !videoLectureFallback\) return;/);

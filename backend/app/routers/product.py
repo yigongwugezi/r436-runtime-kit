@@ -3443,8 +3443,35 @@ def recommend_general_resources(payload: dict[str, Any]) -> dict[str, Any]:
     return _product_response({"recommendations": result}, session_id=session_id, source="search")
 
 
+def _video_recommendation_scope(payload: dict[str, Any]) -> tuple[str, str, str, str, str, int, str]:
+    """The durable identity for one video-task recommendation set."""
+    values = (
+        _payload_session_id(payload), str(payload.get("subjectId") or ""), str(payload.get("pathId") or ""),
+        str(payload.get("stageId") or ""), str(payload.get("dayId") or ""), payload.get("globalDayIndex"),
+        str(payload.get("taskId") or ""),
+    )
+    if not all(value is not None and str(value) != "" for value in values):
+        raise HTTPException(status_code=400, detail="canonical video task scope required")
+    try:
+        return (*values[:5], int(values[5]), values[6])
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="invalid globalDayIndex") from exc
+
+
+def _valid_video_recommendations(resources: list[Any]) -> list[dict[str, Any]]:
+    from app.services.section_resource_recommendations import validate_resource_url
+    valid: list[dict[str, Any]] = []
+    for item in resources:
+        if not isinstance(item, dict) or str(item.get("resource_type") or item.get("resourceType") or "") != "video":
+            continue
+        url = validate_resource_url(str(item.get("url") or ""), "video", str(item.get("title") or ""), str(item.get("snippet") or ""))
+        if url:
+            valid.append({**item, "url": url, "resource_type": "video"})
+    return valid
+
+
 @router.post("/resources/recommendations/for-learning")
-def recommend_resources_for_learning(payload: dict[str, Any]) -> dict[str, Any]:
+def recommend_resources_for_learning(payload: dict[str, Any], auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
     """基于当前学习阶段的上下文推荐外部资源。
     
     根据 stage 的知识点 + 学生画像 + 薄弱点，从外部搜索聚合推荐资源。
@@ -3452,7 +3479,21 @@ def recommend_resources_for_learning(payload: dict[str, Any]) -> dict[str, Any]:
     session_id = _payload_session_id(payload)
     stage_id = str(payload.get("stageId", "") or payload.get("stage_id", ""))
     path_id, task_id, subject_id = str(payload.get("pathId") or ""), str(payload.get("taskId") or ""), str(payload.get("subjectId") or "")
-    from app.services.conversation_state import conversation_store
+    video_scope = None
+    refresh = bool(payload.get("refresh", False))
+    if payload.get("resourceTypes") == ["video"]:
+        video_scope = _video_recommendation_scope(payload)
+        resolve_resource_scope(auth, session_id=video_scope[0], subject_id=video_scope[1], path_id=video_scope[2], stage_id=video_scope[3], task_id=video_scope[6], section_id=video_scope[6])
+        resource_id = f"video-recommendations-{hashlib.sha256('|'.join(map(str, video_scope)).encode()).hexdigest()[:32]}"
+        db = SessionLocal()
+        try:
+            saved = db.query(ResourceModel).filter(ResourceModel.id == resource_id, ResourceModel.session_id == session_id).first()
+            metadata = saved.resource_metadata if saved and isinstance(saved.resource_metadata, dict) else {}
+            cached = _valid_video_recommendations(metadata.get("resources") if isinstance(metadata.get("resources"), list) else [])
+            if cached and not refresh:
+                return _product_response({"recommendations": {"resources": cached, "status": "completed", "presentationStatus": "persisted"}}, session_id=session_id, subject_id=video_scope[1], source="db")
+        finally:
+            db.close()
     from app.services.section_resource_recommendations import (
         SectionResourceRecommendationService, RESOURCE_TYPES,
     )
@@ -3523,10 +3564,37 @@ def recommend_resources_for_learning(payload: dict[str, Any]) -> dict[str, Any]:
         weak_points=weak_kps,
         course_name=course_name,
         resource_types=payload.get("resourceTypes") if isinstance(payload.get("resourceTypes"), list) else None,
-        refresh=bool(payload.get("refresh", False)),
+        refresh=refresh,
         cache_scope="|".join((session_id, subject_id, path_id, stage_id, task_id)),
     )
-    return _product_response({"recommendations": result}, session_id=session_id, source="recommend")
+    if video_scope:
+        valid = _valid_video_recommendations(result.get("resources") if isinstance(result.get("resources"), list) else [])
+        if valid:
+            resource_id = f"video-recommendations-{hashlib.sha256('|'.join(map(str, video_scope)).encode()).hexdigest()[:32]}"
+            db = SessionLocal()
+            try:
+                row = db.query(ResourceModel).filter(ResourceModel.id == resource_id, ResourceModel.session_id == session_id).first()
+                metadata = {"canonicalScope": {"learnerId": auth.learner_id, "sessionId": video_scope[0], "subjectId": video_scope[1], "pathId": video_scope[2], "stageId": video_scope[3], "dayId": video_scope[4], "globalDayIndex": video_scope[5], "taskId": video_scope[6], "resourceType": "video"}, "resources": valid, "savedAt": datetime.now(timezone.utc).isoformat()}
+                if row is None:
+                    row = ResourceModel(id=resource_id, session_id=session_id, learner_id=auth.learner_id, subject_id=video_scope[1], path_id=video_scope[2], type="video", title="Video recommendations", content=json.dumps(valid, ensure_ascii=False), format="video", source="system_inferred", related_stage_id=video_scope[3], related_section_id=video_scope[6], task_id=video_scope[6], resource_metadata=metadata)
+                    db.add(row)
+                else:
+                    row.content, row.resource_metadata = json.dumps(valid, ensure_ascii=False), metadata
+                db.commit()
+            finally:
+                db.close()
+            result = {**result, "resources": valid, "presentationStatus": "new_search"}
+        else:
+            # Failed/empty refreshes never overwrite a prior non-empty row.
+            db = SessionLocal()
+            try:
+                row = db.query(ResourceModel).filter(ResourceModel.id == f"video-recommendations-{hashlib.sha256('|'.join(map(str, video_scope)).encode()).hexdigest()[:32]}", ResourceModel.session_id == session_id).first()
+                previous = _valid_video_recommendations((row.resource_metadata or {}).get("resources") if row and isinstance(row.resource_metadata, dict) else [])
+            finally:
+                db.close()
+            if previous:
+                result = {**result, "resources": previous, "presentationStatus": "stale", "warnings": [*result.get("warnings", []), "本次搜索暂不可用，正在展示上次有效结果。"]}
+    return _product_response({"recommendations": result}, session_id=session_id, subject_id=video_scope[1] if video_scope else subject_id, source="recommend")
 
 
 _ONLINE_SEARCH_RESOURCE_TYPES = {"article", "video", "course", "document", "paper"}
@@ -4850,6 +4918,15 @@ def complete_learning_path_task(task_id: str, payload: dict[str, Any], auth: Aut
             ).order_by(ResourceModel.created_at.desc()).first()
             if not opened and not (fallback and lecture and str(lecture.content or "").strip() and not _is_profile_json(lecture.content or "")):
                 raise HTTPException(status_code=409, detail="open a video or complete the selected text fallback first")
+            if fallback and not opened:
+                fallback_event = next((event for event in db.query(LearningEventModel).filter(
+                    LearningEventModel.session_id == scope.session_id,
+                    LearningEventModel.event_type == "video_fallback_selected",
+                ) if (event.metadata_ or {}).get("subjectId") == scope.subject_id and (event.metadata_ or {}).get("pathId") == path_id
+                    and (event.metadata_ or {}).get("stageId") == stage_id and (event.metadata_ or {}).get("taskId") == task_id), None)
+                if fallback_event:
+                    fallback_event.metadata_ = {**(fallback_event.metadata_ or {}), "lectureResourceId": lecture.id, "lectureContentReady": True}
+                    flag_modified(fallback_event, "metadata_")
             source = "video_opened" if opened else "video_fallback"
         elif task_type != "read_doc":
             if task_type in {"quiz", "do_quiz", "quiz_prac", "assessment", "test"}:

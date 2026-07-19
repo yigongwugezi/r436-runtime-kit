@@ -342,11 +342,13 @@ export default function LecturePage() {
       .catch(() => setQuizState('idle'));
   }, [executionMode, sessionId, focusedPathId, focusedStageId, focusedTaskId, focusedSubjectId, workflowSubjectId, resourceDayScope.dayId, resourceDayScope.globalDayIndex]);
   const [videoResources, setVideoResources] = useState<any[]>([]);
-  const [videoStatus, setVideoStatus] = useState<'idle' | 'loading' | 'failed' | 'empty' | 'search_unavailable' | 'no_high_relevance' | 'expanded_no_results' | 'invalid_urls' | 'empty_response'>('idle');
+  const [videoStatus, setVideoStatus] = useState<'idle' | 'loading' | 'failed' | 'empty' | 'search_unavailable' | 'no_high_relevance' | 'expanded_no_results' | 'invalid_urls' | 'empty_response' | 'persisted' | 'new_search' | 'stale'>('idle');
   const [videoLectureFallback, setVideoLectureFallback] = useState(false);
   const [videoOpened, setVideoOpened] = useState(false);
   const [videoFallbackSelected, setVideoFallbackSelected] = useState(false);
   const [videoRetry, setVideoRetry] = useState(0);
+  const videoRefreshRequested = useRef(false);
+  const [focusedCompletionError, setFocusedCompletionError] = useState('');
   useEffect(() => { setVideoLectureFallback(false); setVideoOpened(false); setVideoFallbackSelected(false); }, [resourceTaskId]);
   const videoScope = useMemo(() => ({ sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId || path?.id, stageId: focusedStageId || chapterCtx?.stage.id, taskId: resourceTaskId, dayId: resourceDayScope.dayId, globalDayIndex: resourceDayScope.globalDayIndex }), [sessionId, focusedSubjectId, workflowSubjectId, focusedPathId, path?.id, focusedStageId, chapterCtx?.stage.id, resourceTaskId, resourceDayScope.dayId, resourceDayScope.globalDayIndex]);
   const videoScopeKey = videoRecommendationScope(videoScope);
@@ -446,12 +448,13 @@ export default function LecturePage() {
     if (executionMode !== 'video' || videoLectureFallback || !videoScopeKey) return;
     let active = true;
     setVideoStatus('loading');
-    requestVideoRecommendations(videoScope, authHeaders())
-      .then(({ resources, status }) => { if (active) { setVideoResources(resources); setVideoStatus(resources.length ? 'idle' : ['search_unavailable', 'no_high_relevance', 'expanded_no_results', 'invalid_urls', 'empty_response'].includes(status) ? status as typeof videoStatus : 'empty'); } })
+    const refresh = videoRefreshRequested.current; videoRefreshRequested.current = false;
+    requestVideoRecommendations(videoScope, authHeaders(), refresh)
+      .then(({ resources, status, presentationStatus }) => { if (active) { setVideoResources(resources); setVideoStatus(resources.length ? (presentationStatus === 'persisted' || presentationStatus === 'new_search' || presentationStatus === 'stale' ? presentationStatus : 'idle') : ['search_unavailable', 'no_high_relevance', 'expanded_no_results', 'invalid_urls', 'empty_response'].includes(status) ? status as typeof videoStatus : 'empty'); } })
       .catch(() => { if (active) setVideoStatus('failed'); });
     return () => { active = false; };
   }, [executionMode, videoLectureFallback, videoScopeKey, videoRetry]);
-  const retryVideoSearch = () => { retryVideoRecommendations(videoScope); setVideoRetry((value) => value + 1); };
+  const retryVideoSearch = () => { videoRefreshRequested.current = true; retryVideoRecommendations(videoScope); setVideoRetry((value) => value + 1); };
 
   const totalKps = chapterCtx?.chapter.sections?.reduce((s, sec) => s + (sec.knowledgePoints?.length ?? 0), 0) ?? 0;
   const masteredKps = chapterCtx?.chapter.sections?.reduce((s, sec) => s + (sec.knowledgePoints?.filter(k => k.status === 'mastered').length ?? 0), 0) ?? 0;
@@ -772,6 +775,7 @@ export default function LecturePage() {
 
   const recordVideoEvidence = async (resourceUrl = '', fallback = false) => {
     if (!focusedTaskId || ['completed', 'mastered'].includes(resourceDayScope.status || '') || (fallback ? videoFallbackSelected : videoOpened)) return;
+    setFocusedCompletionError('');
     await recordVideoTaskEvidence(focusedTaskId, {
       sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId || path?.id || '',
       stageId: focusedStageId || chapterCtx?.stage.id || '', dayId: resourceDayScope.dayId,
@@ -783,7 +787,7 @@ export default function LecturePage() {
   const completeFocusedTask = async () => {
     const videoReady = executionMode === 'video' && (videoOpened || (videoLectureFallback && videoFallbackSelected && !!effectiveLectureContent));
     if (!focusedTaskId || focusedCompleting || generating || !resourceDayScope.globalDayIndex || (lectureWorkflow && isActiveWorkflowStatus(lectureWorkflow.status)) || !(focusedReadingTask ? !!effectiveLectureContent : videoReady)) return;
-    setFocusedCompleting(true);
+    setFocusedCompletionError(''); setFocusedCompleting(true);
     try {
       await completeLearningPathTask(focusedTaskId, {
         sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId || path?.id || '',
@@ -791,6 +795,8 @@ export default function LecturePage() {
         globalDayIndex: resourceDayScope.globalDayIndex,
       });
       await fetchPath(true);
+    } catch (error: any) {
+      setFocusedCompletionError(error?.response?.data?.detail || error?.message || '完成失败，请稍后重试。');
     } finally {
       setFocusedCompleting(false);
     }
@@ -828,12 +834,13 @@ export default function LecturePage() {
                   <span className={`rounded-full px-2.5 py-1 text-xs ${completed ? 'bg-emerald-50 text-emerald-600' : 'bg-blue-50 text-blue-600'}`}>{completed ? '已完成' : '进行中'}</span>
                 </div>
                 {currentSection.knowledgePoints?.length > 0 && <div className="mb-5 flex flex-wrap gap-2">{currentSection.knowledgePoints.map(kp => <span key={kp.id} className="rounded-full bg-surface-100 px-2.5 py-1 text-xs text-surface-600">{kp.name}</span>)}</div>}
-                {executionMode === 'video' && !videoLectureFallback ? <div className="space-y-3"><h2 className="text-lg font-semibold">视频学习</h2>{videoStatus === 'loading' ? <div className="flex min-h-48 items-center gap-2 text-sm text-surface-500"><Loader2 size={16} className="animate-spin" />正在查找高相关视频…</div> : videoStatus === 'failed' ? <div className="rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">视频资源搜索失败，请重试或返回学习路径。<button onClick={retryVideoSearch} className="ml-2 underline">重新搜索</button></div> : videoResources.length ? videoResources.map((item: any) => <a key={item.url} href={item.url} target="_blank" rel="noreferrer" onClick={() => void recordVideoEvidence(item.url)} className="block rounded-xl border border-surface-200 p-4 hover:border-primary-300"><strong>{item.title}</strong><p className="mt-1 text-sm text-surface-500">{item.source} · {item.reason}</p><span className="mt-2 inline-block text-sm text-primary-600">打开外部视频</span></a>) : <div className="rounded-xl border border-surface-200 p-4 text-sm text-surface-600">暂未找到与当前任务高度相关的视频资源</div>}<button onClick={() => void recordVideoEvidence('', true).then(() => setVideoLectureFallback(true))} className="rounded-lg border border-primary-200 px-4 py-2 text-sm text-primary-700">切换为图文讲解</button></div>
+                {executionMode === 'video' && !videoLectureFallback ? <div className="space-y-3"><h2 className="text-lg font-semibold">视频学习</h2>{videoStatus === 'loading' ? <div className="flex min-h-48 items-center gap-2 text-sm text-surface-500"><Loader2 size={16} className="animate-spin" />正在查找高相关视频…</div> : videoStatus === 'failed' ? <div className="rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">视频资源搜索失败。<button onClick={retryVideoSearch} className="ml-2 underline">重新搜索</button></div> : videoResources.length ? <>{videoStatus === 'persisted' && <p className="text-sm text-surface-500">已显示持久化视频。</p>}{videoStatus === 'new_search' && <p className="text-sm text-surface-500">已显示本次新搜索视频。</p>}{videoStatus === 'stale' && <p className="rounded-xl border border-amber-100 bg-amber-50 p-3 text-sm text-amber-800">本次搜索暂不可用，正在展示上次有效结果。</p>}{videoResources.map((item: any) => <a key={item.url} href={item.url} target="_blank" rel="noreferrer" onClick={() => void recordVideoEvidence(item.url)} className="block rounded-xl border border-surface-200 p-4 hover:border-primary-300"><strong>{item.title}</strong><p className="mt-1 text-sm text-surface-500">{item.source} · {item.reason}</p><span className="mt-2 inline-block text-sm text-primary-600">打开外部视频</span></a>)}</> : <div className="rounded-xl border border-surface-200 p-4 text-sm text-surface-600">{videoStatus === 'search_unavailable' ? '搜索暂不可用，请稍后重新搜索。' : '暂无高相关视频'}</div>}<button onClick={() => void recordVideoEvidence('', true).then(() => setVideoLectureFallback(true)).catch((error) => setFocusedCompletionError(error?.response?.data?.detail || error?.message || '切换失败'))} className="rounded-lg border border-primary-200 px-4 py-2 text-sm text-primary-700">切换为图文讲解</button></div>
                 : !lectureLoaded || generating ? <div className="flex min-h-48 items-center justify-center gap-2 text-sm text-surface-500"><Loader2 size={16} className="animate-spin" />正在准备真实讲义…</div>
                   : effectiveLectureContent ? <Markdown content={effectiveLectureContent} />
                   : <div className="rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">{lectureEnsureUnavailable ? '教材服务接口不可用，请刷新或重启后端' : '讲义暂不可用。'}<button onClick={() => { const scope = [sessionId, focusedSubjectId || workflowSubjectId, focusedPathId || path?.id, focusedStageId || chapterCtx?.stage.id, focusedTaskId || activeSectionId].join('|'); unavailableEnsureGuard.current.retry(scope); setLectureEnsureUnavailable(false); focusedGenerationRef.current = ''; void handleGenerate(); }} className="ml-2 font-medium underline">重新加载</button></div>}
                 <div className="mt-8 border-t border-surface-100 pt-4">
                   <button disabled={completed || focusedCompleting || !resourceDayScope.globalDayIndex || generating || !!(lectureWorkflow && isActiveWorkflowStatus(lectureWorkflow.status)) || !(focusedReadingTask ? !!effectiveLectureContent : executionMode === 'video' && (videoOpened || videoLectureFallback && videoFallbackSelected && !!effectiveLectureContent))} onClick={completeFocusedTask} className="flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"><Check size={15} />{completed ? '任务已完成' : focusedCompleting ? '保存中…' : executionMode === 'video' ? videoOpened || videoFallbackSelected ? '完成视频学习' : '请先打开视频或切换图文讲解' : focusedReadingTask ? '标记完成' : '请先完成练习'}</button>
+                  {focusedCompletionError && <p className="mt-2 text-sm text-red-600">完成失败：{focusedCompletionError}</p>}
                 </div>
               </article>
               <aside className="flex min-h-0 flex-col overflow-hidden rounded-2xl bg-white shadow-soft">
@@ -1260,7 +1267,7 @@ export default function LecturePage() {
                       updateKnowledgePoint(kp.id || kp.name, { status: 'mastered' });
                     });
                   }
-                  // Emit section_complete with content_type for mode-specific analytics
+                  if (executionMode === 'video') return;
                   logStudyEvent({
                     sessionId: sessionId || '',
                     event: 'section_complete',
