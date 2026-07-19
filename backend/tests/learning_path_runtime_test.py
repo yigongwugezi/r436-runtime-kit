@@ -57,8 +57,7 @@ def main() -> None:
         except RuntimeError as exc:
             assert exc.error_code == "LEARNING_PATH_UNAVAILABLE"
 
-    # ── Test 4: agents_filter includes resource_agent for quality gate ──
-    # Verify the filter change ensures resource generation + review
+    # ── Test 4: path generation persists without pre-generating resources ──
     with patch.object(product, "SessionLocal", session_factory), \
          patch.object(product, "_ensure_session_linked"), \
          patch.object(product, "_run_agents", return_value={
@@ -73,7 +72,7 @@ def main() -> None:
     path2 = resp2["data"]["path"]
     assert path2["id"]  # path persisted
     assert resp2["data"].get("generated")  # generation flag
-    print("  agents_filter with resource_agent: ok")
+    print("  path generation without resource pre-generation: ok")
 
     # ── Test 5: Unified path output structure validation ──
     # Simulate what the unified _generate_chapters returns (stages→chapters→sections→knowledge_points)

@@ -90,6 +90,7 @@ export default function LearningPathPage() {
   const masteredNodes = allNodes.filter(n => n.status === 'mastered' || n.status === 'completed').length;
   const progress = path?.overallProgress ?? (totalNodes > 0 ? Math.round((masteredNodes / totalNodes) * 100) : 0);
   const estimatedDays = path?.estimatedDays ?? 14;
+  const dailyMinutes = path?.dailyMinutes ?? 60;
   const hasProfile = stages.length > 0 && stages.some(s =>
     (s.tasks || []).length > 0 || (s.nodes || []).length > 0 || (s.chapters || []).length > 0 || (s.sections || []).length > 0
   );
@@ -309,6 +310,7 @@ export default function LearningPathPage() {
                 <strong className="mt-2 block text-xl leading-tight tracking-[-0.03em] text-surface-800">{estimatedDays} 天</strong>
               </div>
               <div className="lg:pl-6">
+                <p className="text-xs font-semibold text-surface-400">Daily {dailyMinutes} min</p>
                 <p className="text-xs font-semibold uppercase tracking-[0.18em] text-surface-400">阶段进度</p>
                 <strong className="mt-2 block text-xl leading-tight tracking-[-0.03em] text-accent-500">{completedStages}/{stages.length} 完成</strong>
               </div>

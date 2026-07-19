@@ -758,11 +758,9 @@ def _chapter_stages_to_frontend(stages: list[dict[str, Any]]) -> list[dict[str, 
                         "isKeyPoint": kp.get("type") == "concept",
                     })
 
-        stage_days = max(1, sum(
-            sec.get("estimatedMinutes", 45)
-            for ch in chapters
-            for sec in ch.get("sections", [])
-        ) // 60)
+        stage_days = int(stage.get("estimatedDays", stage.get("estimated_days", 0)) or 0)
+        if stage_days <= 0:
+            stage_days = max(1, sum(sec.get("estimatedMinutes", 45) for ch in chapters for sec in ch.get("sections", [])) // 60)
 
         result.append({
             "id": stage.get("stage_id", f"stage_{stage_index}"),
@@ -773,7 +771,7 @@ def _chapter_stages_to_frontend(stages: list[dict[str, Any]]) -> list[dict[str, 
             "nodes": all_kps,  # backward compat
             "objective": "",
             "estimatedDays": stage_days or 1,
-            "tasks": [],
+            "tasks": list(stage.get("tasks", [])),
             "resourceTypes": [],
             "orderingReason": "",
             # ── Preserve mode markers ──
@@ -942,6 +940,7 @@ def _to_learning_path(result: dict[str, Any]) -> dict[str, Any]:
         "createdAt": int(time.time() * 1000),
         "overallProgress": result.get("overallProgress", 0),
         "estimatedDays": estimated_days,
+        "dailyMinutes": result.get("dailyMinutes", 60),
         "source": "agent_generated",
         "adjustments": result.get("adjustments", []),
         "pathVersion": int(time.time() * 1000),
@@ -4828,7 +4827,7 @@ def _generate_learning_path(payload: dict[str, Any], auth: AuthContext, workflow
     result = _run_agents(
         message,
         session_id=session_id,
-        agents_filter=["profile_agent", "planner_agent", "resource_agent"],
+        agents_filter=["profile_agent", "planner_agent"],
         progress_callback=progress_callback,
         max_tasks=2,
     )

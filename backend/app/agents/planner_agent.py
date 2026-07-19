@@ -63,6 +63,7 @@ class PlannerAgent(BaseAgent):
         time_text = self._collect_time_text(context)
         total_days = self._infer_days(time_text, profile)
         diag_meta = self._build_diagnosis_meta(diagnosis, weak_points, total_days, profile, time_text)
+        diag_meta["daily_minutes"] = self._infer_daily_minutes(context, profile)
 
         # ── Filter profile_facts to current course only (prevent cross-subject contamination) ──
         course_id = str(context.get("course_id", "") or "")
@@ -141,6 +142,8 @@ class PlannerAgent(BaseAgent):
         chapters = personalized if personalized else chapters
 
         chapters = self._validate_prerequisites(chapters, context)
+        chapters = self._normalize_stage_days(chapters, total_days)
+        self._materialize_daily_tasks(chapters, diag_meta["daily_minutes"], context)
 
         # ── 构建 _agent_context 供下游 agent 协同 ──
         ctx = {
@@ -687,6 +690,7 @@ class PlannerAgent(BaseAgent):
             "- 每条 task 必填：title（任务名）、type（从上述选）、estimated_minutes（分钟）、goal（目标）、resource_types（如[\"lecture\",\"quiz\"]）",
             "- 每天的任务数根据知识点密度和学生可用时间灵活决定",
         ]
+        parts.append("Use 4 to 6 stages, ordered by prerequisites rather than textbook chapter count.")
         for b in [tbb, pb, wb, sb]:
             if b: parts.append(b.strip())
         parts.extend(["", "【输出格式】",
@@ -878,6 +882,7 @@ class PlannerAgent(BaseAgent):
             "chapters": stages_with_chapters,
             "day_plan": day_plan,
             "estimatedDays": total_days,
+            "dailyMinutes": diag_meta.get("daily_minutes", 60),
             "estimated_minutes_total": estimated_minutes_total,
             "version": int(time.time() * 1000),
             "section_count": total_sections,
@@ -895,14 +900,19 @@ class PlannerAgent(BaseAgent):
         """从 stages 生成按天组织的学习计划。"""
         try:
             weekend_off = bool(diag_meta.get("time_basis", {}).get("schedule_limited", False)) if diag_meta else False
-            return build_day_plan(stages, daily_minutes=60, weekend_off=weekend_off)
+            return build_day_plan(stages, daily_minutes=diag_meta.get("daily_minutes", 60), weekend_off=weekend_off)
         except Exception:
             logger.exception("build_day_plan failed")
             return {}
 
     def _fallback_path(self, context, planning_points, total_days, profile, diag_meta):
         rule_path = self._build_rule_path(planning_points, profile, total_days, diag_meta)
+        diag_meta["daily_minutes"] = self._infer_daily_minutes(context, profile)
+        rule_path = self._normalize_stage_days(rule_path, total_days)
+        self._materialize_daily_tasks(rule_path, diag_meta["daily_minutes"], context)
         result = self._make_result(rule_path, total_days, diag_meta)
+        result["dailyMinutes"] = diag_meta["daily_minutes"]
+        result["day_plan"] = self._build_day_plan(rule_path, diag_meta)
         result["review_tasks"] = self._generate_review_tasks(rule_path)
         result["planner_metadata"] = {"stages": len(rule_path), "reviewed": False, "revisions": 0, "backtracked": False, "revision_notes": "LLM不可用，使用规则生成"}
         return result
@@ -1344,7 +1354,8 @@ class PlannerAgent(BaseAgent):
         """Ensure stage estimated_days sum to approximately total_days."""
         if not stages:
             return stages
-        raw_days = [s.get("estimated_days", s.get("estimatedDays", 0)) for s in stages]
+        raw_days = [s.get("estimated_days", s.get("estimatedDays", 0)) or (re.findall(r"\d+", str(s.get("duration", ""))) or [0])[0] for s in stages]
+        raw_days = [int(days) for days in raw_days]
         raw_sum = sum(raw_days)
         if raw_sum <= 0 or raw_sum == total_days:
             return stages
@@ -1635,6 +1646,9 @@ class PlannerAgent(BaseAgent):
         return " ".join(parts)
 
     def _infer_days(self, time_text: str, profile: dict) -> int:
+        explicit_days = self._rule_infer_days(time_text, {})
+        if self._has_explicit_duration(time_text):
+            return self._clamp_days(explicit_days)
         # Single source of truth: if ProfileAgent already normalized time_budget or
         # learning_rhythm to a numeric score, extract days from it directly.
         for dim_key in ("learning_rhythm", "time_budget"):
@@ -1647,7 +1661,7 @@ class PlannerAgent(BaseAgent):
             val = (dim.get("value", "") if isinstance(dim, dict) else "")
             if val and isinstance(val, str):
                 days = self._rule_infer_days(val, profile)
-                if 1 <= days <= 60:
+                if 1 <= days <= 365:
                     return self._clamp_days(days)
 
         # Fallback: LLM or rule-based from time_text
@@ -1658,7 +1672,56 @@ class PlannerAgent(BaseAgent):
         return self._clamp_days(self._rule_infer_days(time_text, profile))
 
     def _clamp_days(self, days: int) -> int:
-        return max(1, min(60, int(days)))
+        return max(1, min(365, int(days)))
+
+    @staticmethod
+    def _has_explicit_duration(text: str) -> bool:
+        return bool(re.search(r"(?:\d+|[一二两三四五六七八九十]+)\s*(?:个?月|周|星期|天|日)", text or ""))
+
+    @staticmethod
+    def _infer_daily_minutes(context: dict, profile: dict) -> int:
+        facts = context.get("profile_facts") if isinstance(context.get("profile_facts"), dict) else {}
+        value = facts.get("daily_minutes") or context.get("daily_minutes")
+        try:
+            if value is not None:
+                return max(15, min(240, int(value)))
+        except (TypeError, ValueError):
+            pass
+        text = " ".join(str(item or "") for item in (context.get("user_message"), context.get("time_budget"), facts.get("time_budget")))
+        hours = re.search(r"每天\s*(\d+)\s*(?:个?小时|h)", text, re.I)
+        minutes = re.search(r"每天\s*(\d+)\s*分钟", text)
+        if hours:
+            return max(15, min(240, int(hours.group(1)) * 60))
+        if minutes:
+            return max(15, min(240, int(minutes.group(1))))
+        return 60
+
+    @staticmethod
+    def _materialize_daily_tasks(stages: list[dict], daily_minutes: int, context: dict) -> None:
+        task_types = (("read_doc", "阅读讲义"), ("practice", "专项练习"), ("write_code", "代码实践"), ("do_quiz", "小测"), ("method", "图解梳理"), ("review", "复盘"))
+        day = 1
+        exam_goal = "考研" in str((context.get("profile_facts") or {}).get("learning_goal", ""))
+        for stage_index, stage in enumerate(stages):
+            sections = [sec for chapter in stage.get("chapters", []) for sec in chapter.get("sections", [])]
+            if not sections:
+                sections = [{"title": task.get("title", "") if isinstance(task, dict) else str(task), "goal": stage.get("goal", "")}
+                            for task in stage.get("tasks", [])]
+            if not sections:
+                continue
+            tasks = []
+            duration = int(stage.get("estimatedDays", stage.get("estimated_days", 1)) or 1)
+            for offset in range(duration):
+                section = sections[offset % len(sections)]
+                primary, label = task_types[(day - 1) % len(task_types)]
+                if offset == duration - 1:
+                    primary, label = ("mock", "综合训练") if exam_goal else ("do_quiz", "阶段小测")
+                first_minutes = 40 if primary in {"practice", "write_code", "mock"} else 30
+                tasks.extend((
+                    {"task_id": f"{stage.get('stage_id', stage_index)}_d{day}_a", "day": day, "title": f"{section.get('title', '')}：{label}", "type": primary, "goal": section.get("goal", "") or section.get("title", ""), "estimated_minutes": first_minutes, "status": "not_started"},
+                    {"task_id": f"{stage.get('stage_id', stage_index)}_d{day}_b", "day": day, "title": f"{section.get('title', '')}：巩固与回顾", "type": "review" if primary != "review" else "practice", "goal": "巩固当天知识点并记录疑问", "estimated_minutes": daily_minutes - first_minutes, "status": "not_started"},
+                ))
+                day += 1
+            stage["tasks"] = tasks
 
     def _llm_infer_days(self, time_text: str, profile: dict) -> int | None:
         profile_text = self._compact_profile_text(profile)
