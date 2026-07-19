@@ -86,6 +86,13 @@ function legacyNodeSection(node: PathNode): Section {
   };
 }
 
+/** v1.3: 从 task 对象复制教材字段到合成 section，使 PDF viewer 守卫条件通过 */
+function _copyTextbookFields(section: any, task: any): void {
+  for (const f of ['source_section_ids', 'textbookPageStart', 'textbookPageEnd', 'textbookSectionId']) {
+    if (task[f] != null) section[f] = task[f];
+  }
+}
+
 function legacyStageSection(stage: { id: string; title: string }, sectionId: string): Section {
   return {
     id: sectionId,
@@ -222,14 +229,54 @@ export default function LecturePage() {
         return { chapter: { id: stage.id, title: stage.title, order: stage.order, status: 'not_started' as ContentStatus, sections: [legacyNodeSection(legacyNode)] }, stage };
       }
       if (sectionId && sectionId.startsWith(`${stage.id}_`)) {
-        return { chapter: { id: stage.id, title: stage.title, order: stage.order, status: 'not_started' as ContentStatus, sections: [legacyStageSection(stage, sectionId)] }, stage };
+        // v1.3: 在退回 legacyStageSection 之前先查找真实 task 标题 + 教材字段
+        let foundTitle = '';
+        const stageAny = stage as any;
+        const allT = [
+          ...(stage.tasks || []),
+          ...(stageAny.days || []).flatMap((d: any) => d.tasks || []),
+        ];
+        const found = allT.find((t: any) => {
+          if (typeof t === 'string') return t === sectionId;
+          return (t.task_id || t.id || t.title || '') === sectionId;
+        });
+        if (found && typeof found !== 'string' && found.title) {
+          foundTitle = found.title;
+        }
+        const displayStage = foundTitle ? { id: stage.id, title: foundTitle || stage.title } : stage;
+        const synthSection = legacyStageSection(displayStage, sectionId);
+        // 从 task 复制教材字段到合成 section，使 PDF viewer 守卫条件通过
+        if (found && typeof found !== 'string') {
+          _copyTextbookFields(synthSection, found as any);
+        }
+        return { chapter: { id: stage.id, title: displayStage.title, order: stage.order, status: 'not_started' as ContentStatus, sections: [synthSection] }, stage };
       }
     }
-    const routeStageId = sectionId?.match(/^(.*)_node_\d+$/)?.[1];
+    const routeStageId = sectionId?.match(/^(.*?)(?:_node_\d+|_d\d+_[ab])$/)?.[1];
     if (sectionId && routeStageId) {
-      const stageTitle = lecture.match(/^#\s*学习《(.+?)》核心内容/m)?.[1] || '当前章节';
-      const routeStage = { id: routeStageId, title: stageTitle };
-      return { chapter: { id: routeStageId, title: stageTitle, order: 0, status: 'not_started' as ContentStatus, sections: [legacyStageSection(routeStage, sectionId)] }, stage: { id: routeStageId, title: stageTitle, order: 0, description: '', nodes: [], chapters: [], objective: '', estimatedDays: 0 } as LearningStage };
+      // v1.3: 从实际 task 数据中查找标题（node 格式 + 每日任务格式均覆盖）
+      let stageTitle = '';
+      let found2: any = null;
+      const routeStage = path?.stages?.find((s: any) => s.id === routeStageId);
+      if (routeStage) {
+        const stageAny2 = routeStage as any;
+        const allTasks = [
+          ...(routeStage.tasks || []),
+          ...(stageAny2.days || []).flatMap((d: any) => d.tasks || []),
+        ];
+        found2 = allTasks.find((t: any) => {
+          if (typeof t === 'string') return t === sectionId;
+          return (t.task_id || t.id || t.title || '') === sectionId;
+        });
+        stageTitle = (found2 && typeof found2 !== 'string' ? found2.title : '') || routeStage.title || '当前章节';
+      }
+      if (!stageTitle) stageTitle = '当前章节';
+      const resolvedStage = { id: routeStageId, title: stageTitle };
+      const synthSection2 = legacyStageSection(resolvedStage, sectionId);
+      if (found2 && typeof found2 !== 'string') {
+        _copyTextbookFields(synthSection2, found2 as any);
+      }
+      return { chapter: { id: routeStageId, title: stageTitle, order: 0, status: 'not_started' as ContentStatus, sections: [synthSection2] }, stage: { id: routeStageId, title: stageTitle, order: 0, description: '', nodes: [], chapters: [], objective: '', estimatedDays: 0 } as LearningStage };
     }
     return null;
   }, [path, chapterId, sectionId, lecture]);
@@ -1132,11 +1179,11 @@ export default function LecturePage() {
           )}
 
           {/* ── Textbook mode: PDF viewer ── */}
-          {isTextbookMode && activeSubject && currentSection ? (
+          {isTextbookMode && activeSubject && currentSection && (currentSection.textbookPageStart || ((currentSection as any).source_section_ids?.length > 0)) ? (
             <TextbookViewer
               subjectId={activeSubject.id}
               pageStart={currentSection.textbookPageStart ?? 1}
-              pageEnd={currentSection.textbookPageEnd ?? (currentSection.textbookPageStart ?? 1) + 5}
+              pageEnd={currentSection.textbookPageEnd ?? currentSection.textbookPageStart ?? 1}
             />
           ) : quizState !== 'idle' ? null : sectionContent ? (
             /* ── Section content — routed by content_type ── */

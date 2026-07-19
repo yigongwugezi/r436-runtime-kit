@@ -34,19 +34,17 @@ const TYPE_META: Record<string, { label: string; icon: React.ReactNode; gradient
 };
 const UNSUPPORTED_META = { label: '暂不支持', icon: <FileText size={18} />, gradient: 'from-slate-500 to-slate-600' };
 
-function findTask(stages: any[], taskId: string): { task: Task; stage: any } | null {
+function findTask(stages: any[], taskId: string): { task: any; stage: any } | null {
+  // v1.2: 同时搜索 stages→tasks 与 stages→days→tasks（_rewrite_stage_ids 后的格式）
   for (const stage of stages) {
-    for (const t of (stage.tasks || [])) {
+    const candidates = [...(stage.tasks || []), ...(stage.days || []).flatMap((d: any) => d.tasks || [])];
+    for (const t of candidates) {
       const tid = typeof t === 'string' ? t : (t.task_id || t.id || t.title || '');
       if (tid === taskId) {
-        const task: Task = typeof t === 'string'
+        // 直接返回原始 task 对象的引用（保留所有后端字段：textbookPageStart/End/SectionId 等）
+        const task: any = typeof t === 'string'
           ? { title: t, type: 'read_doc', goal: t.slice(0, 100), estimated_minutes: 45 }
-          : { title: t.title || '', type: t.type || 'read_doc', goal: t.goal || '', estimated_minutes: t.estimated_minutes || 45 };
-        if (typeof t !== 'string') {
-          task.task_id = t.task_id || t.id;
-          task.id = t.id || t.task_id;
-          task.status = t.status;
-        }
+          : { ...t, task_id: t.task_id || t.id, id: t.id || t.task_id, title: t.title || '', type: t.type || 'read_doc', goal: t.goal || '', estimated_minutes: t.estimated_minutes || 45, status: t.status };
         return { task, stage };
       }
     }
@@ -76,7 +74,9 @@ export default function TaskPage() {
   // ── Textbook mode ──
   const isTextbookMode = !!useSubjectStore((s) => s.activeSubject)?.textbookId;
   const activeSubjectId = useSubjectStore((s) => s.activeSubject?.id ?? s.activeClassSubject?.subject);
-  const hasTextbookPages = isTextbookMode && !!(taskAny?.textbookPageStart);
+  // v1.2: 教材判定仅看 source_section_ids（页码由后端 GET /learning-path 富化）
+  const hasTextbookPages = isTextbookMode
+    && Array.isArray(taskAny?.source_section_ids) && taskAny.source_section_ids.length > 0;
   const [textbookLectureContent, setTextbookLectureContent] = useState('');
 
   useEffect(() => {
@@ -113,21 +113,10 @@ export default function TaskPage() {
       const r = await fetch(`/api/sections/${encodeURIComponent(taskId)}/generated-resources?${params}`, { headers: authHeaders() }).then(r => r.json());
       const list = r.resources || [];
       setResources(list);
-      // v1.2: 若讲义资源返回了教材页码，立刻写入本地 task 对象，
-      // 使 hasTextbookPages 变为 true → PDF 浏览器替代文字展示
-      if (isTextbookMode && !hasTextbookPages) {
-        const lec = (list as any[]).find((x: any) => x?.type === 'lecture');
-        if (lec?.textbookPageStart && lec?.textbookPageEnd) {
-          if (taskAny) {
-            taskAny.textbookPageStart = lec.textbookPageStart;
-            taskAny.textbookPageEnd = lec.textbookPageEnd;
-          }
-        }
-      }
       if (list.length > 0) return true;
     } catch {}
     return false;
-  }, [taskId, sessionId, subjectId, path?.id, stage?.id, isTextbookMode, hasTextbookPages, taskAny]);
+  }, [taskId, sessionId, subjectId, path?.id, stage?.id]);
 
   useEffect(() => {
     if (!taskId || !sessionId) return;
@@ -204,7 +193,7 @@ export default function TaskPage() {
                   <span className="inline-flex items-center gap-1 text-xs text-white/70 bg-white/10 px-2 py-0.5 rounded-full"><Eye size={12} />预览</span>
                 )}
               </div>
-              <h1 className="text-2xl sm:text-3xl font-bold text-white leading-tight tracking-tight">{task.title}</h1>
+              <h1 className="text-2xl sm:text-3xl font-bold text-white leading-tight tracking-tight line-clamp-2">{task.title}</h1>
               {task.goal && <p className="mt-2 text-base text-white/80 max-w-2xl leading-relaxed">{task.goal}</p>}
             </div>
           </div>
@@ -212,8 +201,8 @@ export default function TaskPage() {
       </div>
 
       <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-        {/* ── Textbook PDF viewer (when task has textbook pages) ── */}
-        {hasTextbookPages && activeSubjectId && (
+        {/* ── Textbook PDF viewer / fallback ── */}
+        {hasTextbookPages && activeSubjectId ? (
           <section className="bg-white rounded-2xl border border-surface-200 shadow-sm overflow-hidden">
             <div className="px-6 py-4 border-b border-surface-100 flex items-center gap-3">
               <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-50 text-blue-600"><BookOpen size={18} /></span>
@@ -225,12 +214,41 @@ export default function TaskPage() {
             <div className="h-[600px]">
               <TextbookViewer
                 subjectId={activeSubjectId}
-                pageStart={taskAny.textbookPageStart ?? 1}
-                pageEnd={taskAny.textbookPageEnd ?? (taskAny.textbookPageStart ?? 1) + 5}
+                pageStart={taskAny.textbookPageStart!}
+                pageEnd={taskAny.textbookPageEnd!}
               />
             </div>
           </section>
-        )}
+        ) : isTextbookMode && !hasTextbookPages ? (
+          <section className="bg-white rounded-2xl border border-surface-200 shadow-sm overflow-hidden">
+            <div className="px-6 py-4 border-b border-surface-100 flex items-center gap-3">
+              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-50 text-amber-600"><BookOpen size={18} /></span>
+              <h2 className="text-base font-semibold text-surface-800">教材内容</h2>
+              <span className="text-xs text-amber-500">尚未关联教材章节</span>
+            </div>
+            <div className="px-6 py-10 flex flex-col items-center justify-center gap-4 text-center">
+              <BookOpen size={40} className="text-surface-200" />
+              <div>
+                <p className="text-sm text-surface-500 max-w-sm">
+                  此任务未关联教材的具体章节。规划时教材信息可能未能被正确识别。
+                </p>
+                <p className="text-xs text-surface-400 mt-1">
+                  点击下方按钮回到智能对话重新规划，或返回学习路径页面。
+                </p>
+              </div>
+              <div className="flex items-center gap-3">
+                <button onClick={() => nav('/chat', { state: { chatMode: 'planning' } })}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium hover:bg-brand-600 transition-colors shadow-sm">
+                  <Sparkles size={16} />去对话重新规划
+                </button>
+                <button onClick={() => nav('/path')}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-surface-100 text-surface-600 rounded-lg text-sm font-medium hover:bg-surface-200 transition-colors">
+                  <ArrowLeft size={16} />返回学习路径
+                </button>
+              </div>
+            </div>
+          </section>
+        ) : null}
 
         {loading ? (
           <div className="flex items-center justify-center py-20">
