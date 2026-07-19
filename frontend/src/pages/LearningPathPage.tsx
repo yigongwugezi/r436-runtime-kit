@@ -3,6 +3,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { useLearningPath } from '../hooks/useLearningPath';
 import { useChatStore } from '../store/chatStore';
+import { useSubjectStore } from '../store/subjectStore';
 import { enableProfileExtraction, listPlanningDrafts, getWorkflowTask } from '../api/learningPath';
 import { useProfile } from '../hooks/useProfile';
 import PlanningWizard from '../components/learning/PlanningWizard';
@@ -240,6 +241,18 @@ export default function LearningPathPage() {
             先通过对话了解你的学习目标、基础和时间安排，AI 将为你量身定制专属学习计划。
           </p>
           <button onClick={() => { useChatStore.getState().setChatMode('planning');
+            const subId = subject.subject_id;
+            const subName = subject.subject_name;
+            if (subId) {
+              // 将当前科目写入 subjectStore，使规划模式的智能对话可感知科目与关联课本
+              useSubjectStore.getState().setActive({
+                id: subId,
+                name: subName || '当前科目',
+                textbookId: subject.textbook_id ?? null,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+              });
+            }
             const sid = useChatStore.getState().currentSessionId; nav('/chat', { state: { chatMode: 'planning' } });
             if (sid) enableProfileExtraction(sid).catch(() => {}); }}
             className="inline-flex items-center gap-2 px-8 py-3 bg-primary-500 text-white rounded-[14px] text-sm font-medium hover:bg-primary-600 transition-all shadow-md">
@@ -253,12 +266,17 @@ export default function LearningPathPage() {
   const openTask = (task: any, stage: any) => {
     const dayId = task.dayId || task.day_id || '';
     const globalDayIndex = Number(task.globalDayIndex);
-    if (!dayId || !Number.isFinite(globalDayIndex)) return;
-    nav(learningTaskRoute(task.type || 'read_doc', {
+    // dayId / globalDayIndex are optional — legacy plans may not carry them.
+    // `learningTaskRoute` and the lecture page safely handle missing values.
+    const routeContext: any = {
       sessionId, subjectId: subject.subject_id, pathId: path?.id, stageId: stage.stageId || stage.id,
       taskId: task.id || task.task_id, sectionId: task.section_id || task.id || task.task_id, taskType: task.type,
-      dayId, globalDayIndex,
-    }));
+    };
+    if (dayId && Number.isFinite(globalDayIndex)) {
+      routeContext.dayId = dayId;
+      routeContext.globalDayIndex = globalDayIndex;
+    }
+    nav(learningTaskRoute(task.type || 'read_doc', routeContext));
   };
 
   return (

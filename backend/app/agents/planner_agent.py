@@ -213,8 +213,8 @@ class PlannerAgent(BaseAgent):
     def _build_textbook_context_prompt(textbook_chapters: list[dict]) -> str:
         """Build a textbook structure summary for LLM prompt injection.
 
-        Includes section_id and page ranges for each section so the LLM
-        can output explicit textbook_section_ids in its response.
+        Shows only chapter/section titles and section IDs — the planner is
+        NOT allowed to know page numbers, only section assignments.
         """
         lines = [
             "【教材参考 — 你必须按照以下结构规划学习路径】",
@@ -222,30 +222,25 @@ class PlannerAgent(BaseAgent):
             "你正在为一位使用指定教材的学生规划学习路径。以下是该教材的完整章节目录。",
             "你的任务是：",
             "1. 整体上严格遵循教材的章节顺序，不得跳过核心教学内容",
-            "2. 可以将多个简短的教材小节合并为一个学习小节（在 textbook_section_ids 中列出所有合并的ID）",
+            "2. 可以将多个简短的教材小节合并为一个学习小节（在 source_section_ids 中列出所有合并的ID）",
             "3. 可以根据学生基础调整节奏（章间插入复习日、调整小节顺序等），但不能遗漏教材的核心知识点",
-            "4. 每个学习小节的输出中必须包含 textbook_section_ids 字段（字符串数组），填入对应的教材小节ID",
-            "5. 如果某个学习小节没有对应的教材小节（如复习日），textbook_section_ids 填 []",
+            "4. 每个学习小节的输出中必须包含 source_section_ids 字段（字符串数组），填入对应的教材小节ID。",
+            "5. 如果某个学习小节没有对应的教材小节（如复习日），source_section_ids 填 []。",
             "",
         ]
         for ch in textbook_chapters:
             ch_title = ch.get("title", "")
-            ch_start = ch.get("start_page", 0)
-            ch_end = ch.get("end_page", 0)
-            page_info = f"（第{ch_start}-{ch_end}页）" if ch_start > 0 else ""
-            lines.append(f"## {ch_title} {page_info}")
+            sec_count = len(ch.get("sections", []) or [])
+            lines.append(f"## {ch_title}（{sec_count}个小节）")
             for sec in ch.get("sections", []):
                 sec_id = sec.get("section_id", "")
                 sec_title = sec.get("title", "")
-                sec_start = sec.get("start_page", 0)
-                sec_end = sec.get("end_page", 0)
                 if sec_title:
-                    lines.append(
-                        f"  - [{sec_id}] {sec_title}（第{sec_start}-{sec_end}页）"
-                    )
+                    lines.append(f"  - [{sec_id}] {sec_title}")
             lines.append("")
         lines.append(
-            "以上方括号中的ID（如 sec_01_01）就是你要填入 textbook_section_ids 的值。"
+            "以上方括号中的ID（如 sec_01_01）就是你要填入 source_section_ids 的值。"
+            "注意：你只负责分配章节 ID，不应输出、不应知晓任何页码信息。"
         )
         return "\n".join(lines)
 
@@ -253,12 +248,13 @@ class PlannerAgent(BaseAgent):
     def _resolve_textbook_pages(
         llm_chapters: list[dict], textbook_chapters: list[dict]
     ) -> list[dict]:
-        """Resolve LLM-assigned textbook_section_ids to actual page ranges.
+        """Strip residual textbook page-number fields from LLM output.
 
-        The LLM outputs textbook_section_ids on each section (e.g. ["sec_01_01"]).
-        We look up those IDs in the textbook data to get start_page/end_page.
-
-        This is deterministic — no title matching needed.
+        All page-number fields (textbookPageStart/End/SectionId) are
+        unconditionally removed from every task/section — the planner
+        agent is NOT permitted to write page numbers.  Pages are resolved
+        at display time from the textbook TOC via
+        _enrich_textbook_pages_for_response.
         """
         # Build ID → section data lookup
         tb_section_by_id: dict[str, dict] = {}
@@ -268,28 +264,28 @@ class PlannerAgent(BaseAgent):
                 if sec_id:
                     tb_section_by_id[sec_id] = sec
 
+        # v1.2: 此函数仅负责清理可能残留的 LLM 编造页码字段。
+        # 不设置、不验证 source_section_ids——展示层从教材 TOC 按 section_id
+        # 动态解析页码；无效 ID 在展示时自然无页码，不影响任务显示。
+        _tb_clean = ("textbookPageStart", "textbookPageEnd", "textbookSectionId")
+
         for stage in llm_chapters:
+            # ── New format: stages→tasks (direct) ──
+            for task in stage.get("tasks", []):
+                for _k in _tb_clean:
+                    task.pop(_k, None)
+
+            # ── New format: stages→days→tasks (after _rewrite_stage_ids) ──
+            for day in stage.get("days", []):
+                for task in day.get("tasks", []):
+                    for _k in _tb_clean:
+                        task.pop(_k, None)
+
+            # ── Old format: stages→chapters→sections ──
             for ch in stage.get("chapters", []):
                 for sec in ch.get("sections", []):
-                    sec_ids = sec.get("textbook_section_ids", [])
-                    if not sec_ids:
-                        continue
-                    # Collect page ranges from ALL assigned textbook sections
-                    pages: list[tuple[int, int]] = []
-                    primary_id = ""
-                    for sid in sec_ids:
-                        tb_sec = tb_section_by_id.get(sid)
-                        if tb_sec:
-                            pages.append((
-                                tb_sec.get("start_page", 1),
-                                tb_sec.get("end_page", 1),
-                            ))
-                            if not primary_id:
-                                primary_id = sid
-                    if pages:
-                        sec["textbookPageStart"] = min(p[0] for p in pages)
-                        sec["textbookPageEnd"] = max(p[1] for p in pages)
-                        sec["textbookSectionId"] = primary_id
+                    for _k in _tb_clean:
+                        sec.pop(_k, None)
 
         return llm_chapters
 
@@ -410,6 +406,13 @@ class PlannerAgent(BaseAgent):
             parts = ["为学生规划学习路径。课程：" + course + "。需求：" + message + "。"]
             if total_days:
                 parts.append("总学时：" + str(total_days) + "天。")
+            # ── v1.2: 教材上下文注入（与 _generate_chapters 一致）──
+            textbook_ctx = str(context.get("textbook_context", "") or "")
+            if textbook_ctx:
+                parts.append(chr(10) * 2 + "【教材参考】" + chr(10) + textbook_ctx)
+                parts.append("")
+                parts.append("教材参考如上。*** 重要 ***：每个 read_doc 类型任务**必须**包含 source_section_ids 字段，填入对应的教材小节 section_id（取自教材参考）。允许多个小节合并到一个任务中。其他类型（quiz_prac、review 等）不需要此字段。")
+            # ────────────────────────────────────────────────────────
             parts.append("请按 stages->tasks 层级输出，每个 stage 直接包含 tasks。")
             parts.append("任务类型必须多样化，从以下选取（每阶段至少3种）：read_doc(阅读讲义)|watch_video(视频)|quiz_prac(练习)|mind_map(导图)|hands_on(实操)|review(复习)")
             parts.append("阶段数量根据知识点自然聚类决定，不设上限。")
@@ -690,6 +693,17 @@ class PlannerAgent(BaseAgent):
             "- 每条 task 必填：title（任务名）、type（从上述选）、estimated_minutes（分钟）、goal（目标）、resource_types（如[\"lecture\",\"quiz\"]）",
             "- 每天的任务数根据知识点密度和学生可用时间灵活决定",
         ]
+        # ── Textbook context instruction ──
+        if tbb:
+            parts.extend([
+                "",
+                "【教材参考 — 重要】",
+                "上面提供了这本教材的完整章节目录。你必须遵循以下规则：",
+                "- read_doc 类型的任务应当对应教材中的小节。在 source_section_ids 字段中填入教材小节ID（方括号中的值，如 sec_01_01）。",
+                "- 可以将多个短小的教材小节合并为一个 read_doc 任务（source_section_ids 填入多个ID）。",
+                "- 不是所有任务都需要教材小节——quiz_prac、review 等类型的任务可以不填 source_section_ids。",
+                "- source_section_ids 为可选字段，无对应教材小节时可省略或填 []。",
+            ])
         parts.append("Use 4 to 6 stages, ordered by prerequisites rather than textbook chapter count.")
         for b in [tbb, pb, wb, sb]:
             if b: parts.append(b.strip())
@@ -701,7 +715,8 @@ class PlannerAgent(BaseAgent):
             '      "estimated_days": 3,', '      "tasks": [', '        {',
             '          "title": "阅读讲义",', '          "type": "read_doc",',
             '          "estimated_minutes": 30,', '          "goal": "理解核心概念",',
-            '          "required": true,', '          "resource_types": ["lecture","reading"]',
+            '          "required": true,', '          "resource_types": ["lecture","reading"],',
+            '          "source_section_ids": ["sec_01_01"]',
             '        },', '        {',
             '          "title": "巩固练习",', '          "type": "quiz_prac",',
             '          "estimated_minutes": 35,', '          "goal": "通过做题检验理解",',
@@ -776,7 +791,10 @@ class PlannerAgent(BaseAgent):
                         "source": t.get("source", "generated"),
                         "_adjustment": t.get("_adjustment", ""),
                         "_adjustment_reason": t.get("_adjustment_reason", ""),
-                        "textbook_section_ids": t.get("textbook_section_ids", []),
+                        # ── Textbook fields: only preserve section IDs — page
+                        #    numbers are resolved later by _resolve_textbook_pages
+                        #    (the sole authority), never trust LLM output.
+                        "source_section_ids": t.get("source_section_ids") or t.get("textbook_section_ids", []),
                     })
                 day_list.append({"day": day_num, "tasks": task_list})
             # 确保多样性
@@ -856,24 +874,43 @@ class PlannerAgent(BaseAgent):
         # Normalize stage estimated_days to sum to total_days
         stages_with_chapters = self._normalize_stage_days(stages_with_chapters, total_days)
 
-        total_chapters = sum(len(s.get("chapters", [])) for s in stages_with_chapters)
-        total_sections = sum(
-            len(c.get("sections", []))
-            for s in stages_with_chapters
-            for c in s.get("chapters", [])
-        )
-        total_kps = sum(
-            len(sec.get("knowledge_points", []))
-            for s in stages_with_chapters
-            for c in s.get("chapters", [])
-            for sec in c.get("sections", [])
-        )
-        estimated_minutes_total = sum(
-            sec.get("estimated_minutes", 45)
-            for s in stages_with_chapters
-            for c in s.get("chapters", [])
-            for sec in c.get("sections", [])
-        )
+        # v1.2: 兼容扁平 stages→days→tasks 格式（新）与层级 stages→chapters→sections（旧）
+        _has_flat = any(s.get("days") for s in stages_with_chapters) if stages_with_chapters else False
+        if _has_flat:
+            total_chapters = sum(
+                sum(1 for d in s.get("days", []) for _t in d.get("tasks", []))
+                for s in stages_with_chapters
+            )
+            total_sections = total_chapters  # 扁平格式中 task 即"节"
+            total_kps = sum(
+                len(s.get("knowledge_points", s.get("knowledgePoints", [])))
+                for s in stages_with_chapters
+            )
+            estimated_minutes_total = sum(
+                t.get("estimated_minutes", 45)
+                for s in stages_with_chapters
+                for d in s.get("days", [])
+                for t in d.get("tasks", [])
+            )
+        else:
+            total_chapters = sum(len(s.get("chapters", [])) for s in stages_with_chapters)
+            total_sections = sum(
+                len(c.get("sections", []))
+                for s in stages_with_chapters
+                for c in s.get("chapters", [])
+            )
+            total_kps = sum(
+                len(sec.get("knowledge_points", []))
+                for s in stages_with_chapters
+                for c in s.get("chapters", [])
+                for sec in c.get("sections", [])
+            )
+            estimated_minutes_total = sum(
+                sec.get("estimated_minutes", 45)
+                for s in stages_with_chapters
+                for c in s.get("chapters", [])
+                for sec in c.get("sections", [])
+            )
         # ── 生成按天组织的学习计划 ──
         day_plan = self._build_day_plan(stages_with_chapters, diag_meta)
         return {
@@ -1716,10 +1753,17 @@ class PlannerAgent(BaseAgent):
                 if offset == duration - 1:
                     primary, label = ("mock", "综合训练") if exam_goal else ("do_quiz", "阶段小测")
                 first_minutes = 40 if primary in {"practice", "write_code", "mock"} else 30
-                tasks.extend((
-                    {"task_id": f"{stage.get('stage_id', stage_index)}_d{day}_a", "day": day, "title": f"{section.get('title', '')}：{label}", "type": primary, "goal": section.get("goal", "") or section.get("title", ""), "estimated_minutes": first_minutes, "status": "not_started"},
-                    {"task_id": f"{stage.get('stage_id', stage_index)}_d{day}_b", "day": day, "title": f"{section.get('title', '')}：巩固与回顾", "type": "review" if primary != "review" else "practice", "goal": "巩固当天知识点并记录疑问", "estimated_minutes": daily_minutes - first_minutes, "status": "not_started"},
-                ))
+                # v1.2: 保留原任务中的教材字段（source_section_ids / textbookPageStart / etc.）
+                _tb_fields = {}
+                _src = section if isinstance(section, dict) else {}
+                # v1.2: 仅保留 source_section_ids——页码由展示层按 TOC 动态解析
+                if _src.get("source_section_ids"):
+                    _tb_fields["source_section_ids"] = _src["source_section_ids"]
+                _a = {"task_id": f"{stage.get('stage_id', stage_index)}_d{day}_a", "day": day, "title": f"{section.get('title', '')}：{label}", "type": primary, "goal": section.get("goal", "") or section.get("title", ""), "estimated_minutes": first_minutes, "status": "not_started", **_tb_fields}
+                _b = {"task_id": f"{stage.get('stage_id', stage_index)}_d{day}_b", "day": day, "title": f"{section.get('title', '')}：巩固与回顾", "type": "review" if primary != "review" else "practice", "goal": "巩固当天知识点并记录疑问", "estimated_minutes": daily_minutes - first_minutes, "status": "not_started"}
+                if primary in ("read_doc",) and _tb_fields:
+                    _b.update(_tb_fields)  # 巩固任务也关联同一教材章节
+                tasks.extend((_a, _b))
                 day += 1
             stage["tasks"] = tasks
 
