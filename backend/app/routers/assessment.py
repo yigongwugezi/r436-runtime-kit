@@ -580,6 +580,9 @@ def _trigger_post_submit_assessment(
     """
     if not session_id:
         return
+    # assessment_processing is the persisted, attempt-idempotent runner.
+    # Do not also launch an untracked daemon assessment for the same submit.
+    return
 
     def _run() -> None:
         try:
@@ -619,6 +622,9 @@ def _create_diagnosis_refresh_task(
 
     Returns the ``task_id``, or ``None`` if creation failed.
     """
+    # assessment_processing owns this attempt's diagnosis; a second workflow
+    # creates duplicate snapshots and planner side effects.
+    return None
     try:
         from app.services.workflow_tasks import workflow_task_manager
         payload: dict[str, Any] = {

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import * as learningPathApi from '../api/learningPath';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
@@ -58,6 +59,7 @@ function mapPathHierarchy(
 }
 
 export function useLearningPath() {
+  const location = useLocation();
   const subjectId = useSubjectStore((s) => s.activeSubject?.id ?? s.activeClassSubject?.subject);
   const sessionId = useChatStore((state) => state.dataSessionId);
   const canonicalStatus = useChatStore((state) => state.canonicalSession.status);
@@ -83,7 +85,8 @@ export function useLearningPath() {
     if (force) { hasDataRef.current = false; pathVersionRef.current = -1; }
     if (force || !hasDataRef.current) { setLoading(true); setError(null); }
     try {
-      const res = await learningPathApi.getLearningPath({ sessionId: effectiveSessionId, subjectId }, controller.signal);
+      const pathId = new URLSearchParams(location.search).get('pathId') || undefined;
+      const res = await learningPathApi.getLearningPath({ sessionId: effectiveSessionId, subjectId, pathId }, controller.signal);
       const p = normalizeLearningPathForClient(res?.path ?? null);
       const finalPath = p;
       if (requestId !== requestIdRef.current) return;
@@ -108,7 +111,7 @@ export function useLearningPath() {
       if (force || !hasDataRef.current) setLoading(false);
       initialLoadRef.current = false;
     }
-  }, [canonicalStatus, sessionId, subjectId]);
+  }, [canonicalStatus, sessionId, subjectId, location.search]);
 
   const generatePath = useCallback(async (params: { subjectId?: string; targetTopics?: string[]; planMode?: string; pathMode?: string; totalDays?: number; weekends?: boolean; dynamicAdjust?: boolean; reviewEnabled?: boolean; userMessage?: string }) => {
     setLoading(true); setError(null);

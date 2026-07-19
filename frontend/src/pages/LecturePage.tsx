@@ -1301,7 +1301,7 @@ export default function LecturePage() {
                     className="flex items-center gap-1.5 px-4 py-2 text-sm text-primary-600 hover:text-primary-700 hover:bg-primary-50 rounded-xl transition-colors">
                     <RefreshCw size={14} />重新答题
                   </button>
-                  <button onClick={() => { clearQuiz(); setPrevLecture(''); useChatStore.getState().bumpDataVersion(); nav('/path'); }}
+                  <button onClick={() => { clearQuiz(); setPrevLecture(''); useChatStore.getState().bumpDataVersion(); nav(`/path?sessionId=${encodeURIComponent(canonicalTaskScope?.sessionId || sessionId)}&subjectId=${encodeURIComponent(canonicalTaskScope?.subjectId || focusedSubjectId || workflowSubjectId)}&pathId=${encodeURIComponent(canonicalTaskScope?.pathId || path?.id || '')}`); }}
                     className="px-4 py-2 text-sm text-surface-500 hover:text-surface-700 hover:bg-surface-100 rounded-xl transition-colors">关闭小测</button>
                 </div>
               )}

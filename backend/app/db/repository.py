@@ -578,11 +578,10 @@ def get_latest_learning_path(db: Session, session_id: str, subject_id: str = "")
             (LearningPathModel.subject_id == subject_id)
             | ((LearningPathModel.subject_id == "") & LearningPathModel.session.has(subject_id=subject_id))
         )
-    return (
-        query
-        .order_by(desc(LearningPathModel.updated_at))
-        .first()
-    )
+    paths = query.order_by(desc(LearningPathModel.updated_at)).limit(2).all()
+    # Without a canonical pointer, an ambiguous session must not silently
+    # replace one active path with whichever row happened to update last.
+    return paths[0] if len(paths) == 1 else None
 
 
 # ── Resources ────────────────────────────────────────────────────────────

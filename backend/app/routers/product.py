@@ -5145,7 +5145,7 @@ def _apply_node_progress(stages: list[dict[str, Any]], session_id: str = "") -> 
 
 
 @router.get("/learning-path")
-def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
+def get_learning_path(sessionId: str = "", subjectId: str = "", pathId: str = "") -> dict[str, Any]:
     try:
         session_id = _resolve_session_id(sessionId, subjectId)
         subject_id = str(subjectId).strip()
@@ -5205,7 +5205,9 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
                 "pathVersion": base.get("pathVersion", int(time.time() * 1000)),
             }
 
-        db_path = ag_get_learning_path(session_id, subjectId)
+        db_path = ag_get_learning_path(session_id, subjectId, pathId)
+        if pathId and not db_path:
+            raise HTTPException(status_code=404, detail="learning path is outside the requested scope")
         if db_path:
             raw_stages = db_path.get("stages", [])
             if isinstance(raw_stages, list):

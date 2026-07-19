@@ -16,6 +16,7 @@ import asyncio
 from typing import Any, Callable
 
 from app.db.engine import SessionLocal
+from app.db.models import LearningPathModel
 from app.db.repository import (
     get_event_analytics,
     get_latest_learning_path as repo_get_latest_path,
@@ -208,14 +209,16 @@ def _extract_task_id(r) -> str:
 # ── Read: get latest learning path from DB ────────────────────────────
 
 
-def get_learning_path(session_id: str, subject_id: str = "") -> dict[str, Any] | None:
+def get_learning_path(session_id: str, subject_id: str = "", path_id: str = "") -> dict[str, Any] | None:
     """Read the latest learning path from the database.
 
     Returns *None* if no path has been saved yet.
     """
     try:
         db = SessionLocal()
-        path = repo_get_latest_path(db, session_id, subject_id)
+        path = db.get(LearningPathModel, path_id) if path_id else repo_get_latest_path(db, session_id, subject_id)
+        if path and (path.session_id != session_id or (subject_id and path.subject_id not in ("", subject_id))):
+            return None
         if path is None:
             return None
 

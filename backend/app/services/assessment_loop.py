@@ -532,7 +532,7 @@ def run_post_quiz_assessment(
         mastery_changed = _detect_mastery_change(session_id, new_mastery)
         new_weak_points = new_diagnosis.get("weak_knowledge_points", [])
         has_actionable_weakness = bool(new_weak_points or weak_points)
-        should_adjust = mastery_changed or has_actionable_weakness
+        should_adjust = (quiz_score is not None and quiz_score < 60) and (mastery_changed or has_actionable_weakness)
         if should_adjust:
             try:
                 planner_agent = factory.get("planner_agent")
