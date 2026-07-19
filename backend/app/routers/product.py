@@ -728,6 +728,58 @@ def _raw_stages_to_nodes(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return _task_stages_to_frontend(stages)
 
 
+def normalize_learning_path(raw_path: dict[str, Any]) -> dict[str, Any]:
+    """Return stable task IDs for every persisted learning-path shape."""
+    path = deepcopy(raw_path)
+    path_id = str(path.get("id") or path.get("path_id") or "")
+    stages = path.get("stages") if isinstance(path.get("stages"), list) else []
+    task_index: dict[str, dict[str, Any]] = {}
+    global_day_index = 0
+
+    for stage_index, stage in enumerate(stages):
+        if not isinstance(stage, dict):
+            continue
+        stage_id = str(stage.get("stage_id") or stage.get("id") or f"{path_id}_s{stage_index}")
+        stage["stage_id"] = stage_id
+        stage.setdefault("id", stage_id)
+        days = [day for day in stage.get("days", []) if isinstance(day, dict)]
+        task_groups: list[tuple[int, int, list[Any]]] = []
+        if days:
+            for day_index, day in enumerate(days, start=1):
+                day_number = int(day.get("day") or day.get("day_index") or day.get("dayIndex") or day_index)
+                day["day"] = day_number
+                task_groups.append((day_number, day_index, day.get("tasks", [])))
+        else:
+            grouped: dict[int, list[Any]] = {}
+            for task in stage.get("tasks", []):
+                day_number = int(task.get("day") or task.get("day_index") or task.get("dayIndex") or 1) if isinstance(task, dict) else 1
+                grouped.setdefault(day_number, []).append(task)
+            task_groups = [(day_number, day_number, tasks) for day_number, tasks in sorted(grouped.items())]
+
+        for day_number, source_day_index, tasks in task_groups:
+            global_day_index += 1
+            for task_index_in_day, task in enumerate(tasks):
+                if not isinstance(task, dict):
+                    continue
+                task_id = str(task.get("task_id") or task.get("id") or task.get("section_id") or f"{path_id}_s{stage_index}_d{day_number}_t{task_index_in_day}")
+                task["task_id"] = task_id
+                task.setdefault("id", task_id)
+                task.setdefault("day", day_number)
+                task_index[task_id] = {
+                    "path_id": path_id,
+                    "stage_id": stage_id,
+                    "day_id": str(task.get("day_id") or task.get("dayId") or f"{stage_id}_d{day_number}"),
+                    "global_day_index": global_day_index,
+                    "stage_day_index": day_number,
+                    "task": task,
+                    "_stage_index": stage_index,
+                    "_day_index": source_day_index,
+                    "_task_index": task_index_in_day,
+                }
+    path["stages"] = stages
+    return {"path": path, "stages": stages, "task_index": task_index}
+
+
 def _chapter_stages_to_frontend(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert chapter-structured stages to frontend format preserving hierarchy.
 
@@ -922,7 +974,8 @@ def _to_learning_path(result: dict[str, Any]) -> dict[str, Any]:
         or str(course_id)
     )
     raw_stages = result.get("learning_path", [])
-    stages = _raw_stages_to_nodes(raw_stages)
+    path_id = f"path_{course_id}"
+    stages = _raw_stages_to_nodes(normalize_learning_path({"id": path_id, "stages": raw_stages})["stages"])
     # computed fallback from stage durations
     fallback_days = _estimated_path_days(raw_stages)
     raw_est = result.get("estimatedDays")
@@ -932,7 +985,7 @@ def _to_learning_path(result: dict[str, Any]) -> dict[str, Any]:
         estimated_days = fallback_days
 
     return {
-        "id": f"path_{course_id}",
+        "id": path_id,
         "title": f"{course_name}个性化学习路径",
         "description": result.get("diagnosis", {}).get("recommended_strategy", ""),
         "courseName": course_name,
@@ -4354,7 +4407,8 @@ def _nkey(session_id: str, node_id: str) -> str:
 def _set_path_node_progress(stages: list[dict[str, Any]], node_id: str, status: str, mastery: int) -> bool:
     """Update one existing task/chapter/section/KP in the persisted path."""
     for stage in stages:
-        for task in stage.get("tasks", []):
+        tasks = _stage_items(stage) if isinstance(stage, dict) else []
+        for task in tasks:
             if isinstance(task, dict) and str(task.get("task_id") or task.get("id") or "") == node_id:
                 task["status"], task["mastery"] = status, mastery
                 return True
@@ -4379,6 +4433,9 @@ def _set_path_node_progress(stages: list[dict[str, Any]], node_id: str, status: 
 
 def _stage_items(stage: dict[str, Any]) -> list[dict[str, Any]]:
     """Return executable items only; containers never complete a stage."""
+    daily_tasks = [task for day in stage.get("days", []) if isinstance(day, dict) for task in day.get("tasks", []) if isinstance(task, dict)]
+    if daily_tasks:
+        return daily_tasks
     if stage.get("tasks"):
         return [item for item in stage["tasks"] if isinstance(item, dict)]
     if stage.get("nodes"):
@@ -4422,12 +4479,17 @@ def _apply_stage_progress(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return stages
 
 
-def _path_task_context(stages: list[dict[str, Any]], node_id: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    for stage in stages:
-        for item in _stage_items(stage):
-            if node_id in {str(item.get(key) or "") for key in ("id", "task_id", "section_id")}:
-                return stage, item
-    return None
+def _path_task_context(stages: list[dict[str, Any]], node_id: str, path_id: str = "") -> tuple[dict[str, Any], dict[str, Any]] | None:
+    normalized = normalize_learning_path({"id": path_id, "stages": stages})
+    entry = normalized["task_index"].get(node_id)
+    if not entry:
+        return None
+    stage = stages[entry["_stage_index"]]
+    if stage.get("days"):
+        task = stage["days"][entry["_day_index"] - 1]["tasks"][entry["_task_index"]]
+    else:
+        task = stage["tasks"][entry["_task_index"]]
+    return stage, task
 
 
 def complete_path_task(
@@ -4442,7 +4504,7 @@ def complete_path_task(
         raise HTTPException(status_code=404, detail="learning path not found")
     stages = path.stages
     stage = next((s for s in stages if str(s.get("id") or s.get("stage_id") or "") == stage_id), None)
-    context = _path_task_context(stages, task_id)
+    context = _path_task_context(stages, task_id, path.id)
     if not stage or not context or context[0] is not stage:
         raise HTTPException(status_code=404, detail="learning path task not found")
     if _apply_stage_progress(deepcopy(stages))[stages.index(stage)].get("progressStatus") == "locked":
@@ -4544,33 +4606,18 @@ def _require_task_stage_access(
     try:
         path = repo_get_latest_learning_path(db, session_id)
         if not path or not isinstance(path.stages, list):
-            raise HTTPException(status_code=404, detail="learning path not found")
+            raise HTTPException(status_code=404, detail={"code": "path_not_found", "message": "learning path not found"})
         if path_id and path.id != path_id:
-            raise HTTPException(status_code=404, detail="learning path not found")
-        stages = _apply_stage_progress(path.stages)
+            raise HTTPException(status_code=404, detail={"code": "path_not_found", "message": "learning path not found"})
+        normalized = normalize_learning_path({"id": path.id, "stages": path.stages})
+        requested_task_id = task_id or section_id
+        entry = normalized["task_index"].get(requested_task_id)
+        if not entry:
+            raise HTTPException(status_code=404, detail={"code": "task_not_found", "message": "learning path task not found"})
+        if entry["stage_id"] != stage_id or section_id != requested_task_id:
+            raise HTTPException(status_code=409, detail={"code": "invalid_task_scope", "message": "learning path task scope mismatch"})
+        stages = _apply_stage_progress(normalized["stages"])
         stage = next((item for item in stages if str(item.get("stage_id") or item.get("id") or "") == stage_id), None)
-        if not stage:
-            raise HTTPException(status_code=404, detail="learning path stage not found")
-        item_ids = {
-            str(item.get(key) or "")
-            for item in _stage_items(stage)
-            for key in ("task_id", "section_id", "id")
-        }
-        item_ids.update(
-            str(section.get("section_id") or section.get("id") or "")
-            for chapter in stage.get("chapters", [])
-            for section in chapter.get("sections", [])
-            if isinstance(section, dict)
-        )
-        # Legacy persisted paths may have title-only stage tasks while the
-        # frontend already uses the deterministic day/task id.  Accept that
-        # canonical compatibility id here instead of treating it as absent.
-        stage_index = next((i for i, candidate in enumerate(stages) if candidate is stage), 0)
-        for index, item in enumerate(_stage_items(stage)):
-            day = int(item.get("day") or item.get("day_index") or item.get("dayIndex") or 1) if isinstance(item, dict) else 1
-            item_ids.add(f"{path.id}_s{stage_index}_d{day}_t{index}")
-        if section_id not in item_ids or (task_id and task_id not in item_ids):
-            raise HTTPException(status_code=404, detail="learning path task not found")
         if stage["progressStatus"] == "locked":
             raise HTTPException(status_code=403, detail="请先完成当前阶段")
     finally:
@@ -4706,7 +4753,8 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
         if db_path:
             raw_stages = db_path.get("stages", [])
             if isinstance(raw_stages, list):
-                stages = _raw_stages_to_nodes(raw_stages)
+                normalized = normalize_learning_path({"id": db_path.get("id", f"path_{session_id}"), "stages": raw_stages})
+                stages = _raw_stages_to_nodes(normalized["stages"])
             else:
                 stages = []
             if not stages:
@@ -4996,7 +5044,7 @@ def update_node_progress(node_id: str, payload: dict[str, Any]) -> dict[str, Any
             ).first()
             if path_id else repo_get_latest_learning_path(db, session_id)
         )
-        context = _path_task_context(path.stages, node_id) if path and isinstance(path.stages, list) else None
+        context = _path_task_context(path.stages, node_id, path.id) if path and isinstance(path.stages, list) else None
         was_complete = bool(context and _is_complete(context[1]))
         if not path or not isinstance(path.stages, list) or not context or not _set_path_node_progress(path.stages, node_id, status, mastery):
             raise HTTPException(status_code=404, detail="learning path node not found")
@@ -5004,8 +5052,8 @@ def update_node_progress(node_id: str, payload: dict[str, Any]) -> dict[str, Any
         db.add(path)
         db.commit()
         db.refresh(path)
-        if not was_complete and _is_complete(_path_task_context(path.stages, node_id)[1]):
-            stage, task = _path_task_context(path.stages, node_id)
+        if not was_complete and _is_complete(_path_task_context(path.stages, node_id, path.id)[1]):
+            stage, task = _path_task_context(path.stages, node_id, path.id)
             session = db.get(SessionModel, session_id)
             metadata = {
                 "eventType": "task_complete", "learnerId": session.learner_id if session else None,

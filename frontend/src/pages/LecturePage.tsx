@@ -23,6 +23,7 @@ import DailyTaskPage from './DailyTaskPage';
 import FocusSprintPage from './FocusSprintPage';
 import WorkflowProgress from '../components/common/WorkflowProgress';
 import { cancelWorkflow, consumeWorkflowEvents, ensureLecture, readWorkflow, type WorkflowState } from '../api/workflows';
+import { createLectureEnsureGuard } from '../utils/lectureEnsureGuard';
 import {
   clearWorkflowTask,
   isActiveWorkflowStatus,
@@ -178,10 +179,13 @@ export default function LecturePage() {
   const [focusedAccessDenied, setFocusedAccessDenied] = useState(false);
   const [focusedCompleting, setFocusedCompleting] = useState(false);
   const focusedGenerationRef = useRef('');
+  const unavailableEnsureGuard = useRef(createLectureEnsureGuard());
+  const lastEnsureScope = useRef('');
 
   // ── 本地临时状态 ──
   const [lectureLoaded, setLectureLoaded] = useState(false);
   const [lectureMissing, setLectureMissing] = useState(false);
+  const [lectureEnsureUnavailable, setLectureEnsureUnavailable] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [lectureWorkflow, setLectureWorkflow] = useState<WorkflowState | null>(null);
   const lectureWorkflowAbort = useRef<AbortController | null>(null);
@@ -359,8 +363,15 @@ export default function LecturePage() {
   useEffect(() => {
     if (!activeSectionId || !sessionId) return;
     const key = `${sessionId}:${activeSectionId}`;
+    const ensureScope = [sessionId, focusedSubjectId || workflowSubjectId, focusedPathId || path?.id, focusedStageId || chapterCtx?.stage.id, focusedTaskId || activeSectionId].join('|');
+    if (lastEnsureScope.current !== ensureScope) {
+      unavailableEnsureGuard.current.retry(ensureScope);
+      lastEnsureScope.current = ensureScope;
+    }
     setLectureMissing(false);
+    setLectureEnsureUnavailable(false);
     if (store.lectureCache[key]) { setLectureLoaded(true); return; }
+    if (unavailableEnsureGuard.current.blocks(ensureScope)) { setLectureMissing(true); setLectureEnsureUnavailable(true); setLectureLoaded(true); return; }
     setLectureLoaded(false);
     ensureLecture(activeSectionId, { sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId || path?.id, stageId: focusedStageId || chapterCtx?.stage.id, taskId: focusedTaskId || activeSectionId })
       .then(d => {
@@ -372,7 +383,14 @@ export default function LecturePage() {
           store.markGenerated(activeSectionId);
         }
       })
-      .catch(() => store.markLoaded(activeSectionId))
+      .catch((error) => {
+        if (error?.response?.status === 404) {
+          unavailableEnsureGuard.current.recordError(ensureScope, 404);
+          setLectureMissing(true);
+          setLectureEnsureUnavailable(true);
+        }
+        store.markLoaded(activeSectionId);
+      })
       .finally(() => setLectureLoaded(true));
   }, [activeSectionId, sessionId, focusedTask, focusedPathId, focusedStageId, focusedTaskId]);
 
@@ -678,12 +696,12 @@ export default function LecturePage() {
   };
 
   useEffect(() => {
-    if (!currentSection || !sessionId || !lectureLoaded || !lectureMissing || lecture || generating) return;
+    if (!currentSection || !sessionId || !lectureLoaded || !lectureMissing || lecture || generating || lectureEnsureUnavailable) return;
     const key = `${sessionId}:${focusedSubjectId}:${focusedPathId}:${focusedStageId}:${focusedTaskId}:${activeSectionId}`;
     if (focusedGenerationRef.current === key) return;
     focusedGenerationRef.current = key;
     void handleGenerate();
-  }, [currentSection, sessionId, lectureLoaded, lectureMissing, lecture, generating, focusedSubjectId, focusedPathId, focusedStageId, focusedTaskId, activeSectionId, handleGenerate]);
+  }, [currentSection, sessionId, lectureLoaded, lectureMissing, lecture, generating, lectureEnsureUnavailable, focusedSubjectId, focusedPathId, focusedStageId, focusedTaskId, activeSectionId, handleGenerate]);
 
   const completeFocusedTask = async () => {
     if (!focusedTaskId || !focusedReadingTask || focusedCompleting || !effectiveLectureContent || generating || (lectureWorkflow && isActiveWorkflowStatus(lectureWorkflow.status))) return;
@@ -731,7 +749,7 @@ export default function LecturePage() {
                 {currentSection.knowledgePoints?.length > 0 && <div className="mb-5 flex flex-wrap gap-2">{currentSection.knowledgePoints.map(kp => <span key={kp.id} className="rounded-full bg-surface-100 px-2.5 py-1 text-xs text-surface-600">{kp.name}</span>)}</div>}
                 {!lectureLoaded || generating ? <div className="flex min-h-48 items-center justify-center gap-2 text-sm text-surface-500"><Loader2 size={16} className="animate-spin" />正在准备真实讲义…</div>
                   : effectiveLectureContent ? <Markdown content={effectiveLectureContent} />
-                  : <div className="rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">讲义暂不可用。<button onClick={() => { focusedGenerationRef.current = ''; void handleGenerate(); }} className="ml-2 font-medium underline">重新加载</button></div>}
+                  : <div className="rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">{lectureEnsureUnavailable ? '教材服务接口不可用，请刷新或重启后端' : '讲义暂不可用。'}<button onClick={() => { const scope = [sessionId, focusedSubjectId || workflowSubjectId, focusedPathId || path?.id, focusedStageId || chapterCtx?.stage.id, focusedTaskId || activeSectionId].join('|'); unavailableEnsureGuard.current.retry(scope); setLectureEnsureUnavailable(false); focusedGenerationRef.current = ''; void handleGenerate(); }} className="ml-2 font-medium underline">重新加载</button></div>}
                 <div className="mt-8 border-t border-surface-100 pt-4">
                   <button disabled={completed || !focusedReadingTask || focusedCompleting || !effectiveLectureContent || generating || !!(lectureWorkflow && isActiveWorkflowStatus(lectureWorkflow.status))} onClick={completeFocusedTask} className="flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"><Check size={15} />{completed ? '任务已完成' : focusedCompleting ? '保存中…' : focusedReadingTask ? '标记完成' : '请先完成练习'}</button>
                 </div>
