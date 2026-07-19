@@ -22,7 +22,7 @@ import { logStudyEvent } from '../api/feedback';
 import DailyTaskPage from './DailyTaskPage';
 import FocusSprintPage from './FocusSprintPage';
 import WorkflowProgress from '../components/common/WorkflowProgress';
-import { cancelWorkflow, consumeWorkflowEvents, readWorkflow, startWorkflow, type WorkflowState } from '../api/workflows';
+import { cancelWorkflow, consumeWorkflowEvents, ensureLecture, readWorkflow, type WorkflowState } from '../api/workflows';
 import {
   clearWorkflowTask,
   isActiveWorkflowStatus,
@@ -362,20 +362,18 @@ export default function LecturePage() {
     setLectureMissing(false);
     if (store.lectureCache[key]) { setLectureLoaded(true); return; }
     setLectureLoaded(false);
-    const params = new URLSearchParams({ sessionId });
-    if (focusedPathId && focusedStageId && focusedTaskId) {
-      params.set('pathId', focusedPathId);
-      params.set('stageId', focusedStageId);
-      params.set('taskId', focusedTaskId);
-    }
-    fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/lecture?${params}`, { headers: authHeaders() })
+    fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/lecture/ensure`, {
+      method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId || path?.id, stageId: focusedStageId || chapterCtx?.stage.id, taskId: focusedTaskId || activeSectionId }),
+    })
       .then(async r => {
         if (r.status === 403) setFocusedAccessDenied(true);
-        if (r.status === 404) setLectureMissing(true);
+        if (r.status === 409) setLectureMissing(false);
         return r.ok ? r.json() : null;
       })
       .then(d => {
         store.markLoaded(activeSectionId);
+        if (d?.status === 'running') setLectureMissing(true);
         const content = lectureContent(d);
         if (content) {
           store.setLecture(key, content);
@@ -400,7 +398,7 @@ export default function LecturePage() {
     const controller = new AbortController();
     lectureWorkflowAbort.current = controller;
     try {
-      const started = await startWorkflow('lecture_generation', {
+      const ensured = await ensureLecture(activeSectionId, {
           sessionId,
           sectionId: activeSectionId,
           sectionTitle: currentSection.title,
@@ -414,6 +412,14 @@ export default function LecturePage() {
           knowledgePoints: currentSection.knowledgePoints || [],
           requirements: requirements || '',
       });
+      const ensuredContent = lectureContent(ensured);
+      if (ensured.status === 'ready' && ensuredContent) {
+        store.setLecture(`${sessionId}:${activeSectionId}`, ensuredContent);
+        store.markGenerated(activeSectionId);
+        return;
+      }
+      if (ensured.status === 'failed' || !ensured.workflowId) throw new Error(ensured.errorMessage || '教材生成失败，请稍后重试');
+      const started = { task_id: ensured.workflowId, workflow_type: 'lecture_generation', status: 'running' as const };
       setLectureWorkflow({ taskId: started.task_id, workflowType: started.workflow_type, status: started.status, events: [], preview: '', elapsedMs: 0 });
       const workflowScope: WorkflowTaskScope = { ...lectureWorkflowScope, workflowType: started.workflow_type };
       saveWorkflowTask({ ...workflowScope, taskId: started.task_id, createdAt: Date.now() });

@@ -35,6 +35,11 @@ export async function startWorkflow(workflowType: string, payload: Record<string
   return data as { task_id: string; workflow_type: string; status: WorkflowStatus; events_url: string; reused_existing?: boolean };
 }
 
+export async function ensureLecture(sectionId: string, payload: Record<string, unknown>) {
+  const { data } = await client.post(`/api/sections/${encodeURIComponent(sectionId)}/lecture/ensure`, payload);
+  return data as { status: 'ready' | 'running' | 'failed'; workflowId: string | null; lecture: any | null; errorCode?: string | null; errorMessage?: string | null };
+}
+
 export async function readWorkflow(taskId: string, sessionId?: string) {
   const { data } = await client.get(`/api/workflows/${encodeURIComponent(taskId)}`, { params: sessionId ? { sessionId } : undefined });
   return data;
