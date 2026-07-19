@@ -93,6 +93,7 @@ def init_db() -> None:
             "subject_id": "VARCHAR(64)",
         },
         "learning_paths": {
+            "subject_id": "VARCHAR(64) DEFAULT ''",
             "description": "TEXT",
             "textbook_id": "VARCHAR(64)",
             "pending_revision": "JSON",

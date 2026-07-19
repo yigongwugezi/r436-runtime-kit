@@ -535,6 +535,7 @@ def upsert_learning_path(
     path = LearningPathModel(
         id=path_data.get("id", f"path_{session_id}"),
         session_id=session_id,
+        subject_id=path_data.get("subject_id", ""),
         course_id=path_data.get("course_id", ""),
         course_name=path_data.get("course_name", ""),
         description=path_data.get("description"),
@@ -546,6 +547,7 @@ def upsert_learning_path(
     existing = db.get(LearningPathModel, path.id)
     if existing:
         existing.session_id = session_id
+        existing.subject_id = path.subject_id or existing.subject_id
         existing.course_id = path.course_id
         existing.course_name = path.course_name
         existing.description = path.description
@@ -569,10 +571,15 @@ def upsert_learning_path(
     return path
 
 
-def get_latest_learning_path(db: Session, session_id: str) -> LearningPathModel | None:
+def get_latest_learning_path(db: Session, session_id: str, subject_id: str = "") -> LearningPathModel | None:
+    query = db.query(LearningPathModel).filter(LearningPathModel.session_id == session_id)
+    if subject_id:
+        query = query.filter(
+            (LearningPathModel.subject_id == subject_id)
+            | ((LearningPathModel.subject_id == "") & LearningPathModel.session.has(subject_id=subject_id))
+        )
     return (
-        db.query(LearningPathModel)
-        .filter(LearningPathModel.session_id == session_id)
+        query
         .order_by(desc(LearningPathModel.updated_at))
         .first()
     )

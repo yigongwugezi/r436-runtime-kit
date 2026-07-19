@@ -564,6 +564,10 @@ def _trigger_post_submit_assessment(
     quiz_title: str = "",
     quiz_score: int | None = None,
     weak_points: list[dict] | None = None,
+    subject_id: str = "",
+    path_id: str = "",
+    task_id: str = "",
+    attempt_id: str = "",
 ) -> None:
     """Fire-and-forget: run diagnosis + recommendation update after quiz submission.
 
@@ -581,6 +585,10 @@ def _trigger_post_submit_assessment(
                 quiz_title=quiz_title,
                 quiz_score=quiz_score,
                 weak_points=weak_points,
+                subject_id=subject_id,
+                path_id=path_id,
+                task_id=task_id,
+                attempt_id=attempt_id,
             )
         except Exception:
             logger.exception(
@@ -1596,6 +1604,10 @@ def submit_quiz(
             quiz_title=quiz.title,
             quiz_score=avg_score,
             weak_points=weak_points,
+            subject_id=subject_id,
+            path_id=(path_context or {}).get("path_id", ""),
+            task_id=(path_context or {}).get("task_id", ""),
+            attempt_id=attempt.attempt_id,
         )
 
         response_attempt = _attempt_dict(get_attempt(db, attempt.attempt_id))
@@ -2367,6 +2379,10 @@ def submit_exam_set(
             quiz_title=exam_set.title,
             quiz_score=avg_score,
             weak_points=weak_points,
+            subject_id=subject_id,
+            path_id=(path_context or {}).get("path_id", ""),
+            task_id=(path_context or {}).get("task_id", ""),
+            attempt_id=attempt.attempt_id,
         )
 
         response_attempt = _attempt_dict(get_attempt(db, attempt.attempt_id))

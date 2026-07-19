@@ -208,14 +208,14 @@ def _extract_task_id(r) -> str:
 # ── Read: get latest learning path from DB ────────────────────────────
 
 
-def get_learning_path(session_id: str) -> dict[str, Any] | None:
+def get_learning_path(session_id: str, subject_id: str = "") -> dict[str, Any] | None:
     """Read the latest learning path from the database.
 
     Returns *None* if no path has been saved yet.
     """
     try:
         db = SessionLocal()
-        path = repo_get_latest_path(db, session_id)
+        path = repo_get_latest_path(db, session_id, subject_id)
         if path is None:
             return None
 
@@ -230,6 +230,7 @@ def get_learning_path(session_id: str) -> dict[str, Any] | None:
         return {
             "id": path.id,
             "course_id": path.course_id,
+            "subject_id": path.subject_id,
             "course_name": path.course_name,
             "description": path.description or "",
             "stages": stages,

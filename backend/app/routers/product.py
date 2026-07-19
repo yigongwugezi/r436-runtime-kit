@@ -5194,7 +5194,7 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
                 "pathVersion": base.get("pathVersion", int(time.time() * 1000)),
             }
 
-        db_path = ag_get_learning_path(session_id)
+        db_path = ag_get_learning_path(session_id, subjectId)
         if db_path:
             raw_stages = db_path.get("stages", [])
             if isinstance(raw_stages, list):
@@ -5607,6 +5607,8 @@ def accept_pending_revision(session_id: str, subjectId: str = "", pathId: str = 
     _scope, revision = _revision_scope(session_id, subjectId, pathId, revisionId, auth)
     if revision is None:
         raise HTTPException(status_code=404, detail="No pending revision found")
+    if revision.get("status") != "ready_for_review":
+        raise HTTPException(status_code=409, detail="revision is not pending")
     result = conversation_store.apply_pending_revision(session_id)
     if not result:
         raise HTTPException(status_code=404, detail="No pending revision found")

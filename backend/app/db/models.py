@@ -292,6 +292,7 @@ class LearningPathModel(Base):
     session_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("sessions.id", ondelete="CASCADE"), index=True
     )
+    subject_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     course_id: Mapped[str] = mapped_column(String(64), default="")
     course_name: Mapped[str] = mapped_column(String(256), default="")
     description: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
