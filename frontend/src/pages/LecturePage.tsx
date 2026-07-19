@@ -389,8 +389,11 @@ export default function LecturePage() {
   const [fallbackStateLoading, setFallbackStateLoading] = useState(true);
   const fallbackSelectionPending = useRef(false);
   const fallbackEnsureScope = useRef('');
+  const fallbackRecoveryRetry = useRef('');
   const [fallbackEnsureError, setFallbackEnsureError] = useState(false);
   const [fallbackEnsureRetry, setFallbackEnsureRetry] = useState(0);
+  const [fallbackWorkflowId, setFallbackWorkflowId] = useState('');
+  const [fallbackWorkflowChecked, setFallbackWorkflowChecked] = useState(false);
   const [videoRetry, setVideoRetry] = useState(0);
   const videoRefreshRequested = useRef(false);
   const [focusedCompletionError, setFocusedCompletionError] = useState('');
@@ -398,9 +401,10 @@ export default function LecturePage() {
     setTaskScopeRejected(false); clearQuiz();
     setVideoResources([]); setVideoStatus('idle'); setVideoLectureFallback(false); setVideoOpened(false); setVideoFallbackSelected(false); setFallbackStateLoading(true); setFallbackEnsureError(false); setFallbackEnsureRetry(0); setVideoRetry(0);
     setLectureLoaded(false); setLectureMissing(false); setLectureEnsureUnavailable(false); setLectureEnsureRetry(0); setFocusedCompletionError('');
-    quizSubmitIdempotencyKeyRef.current = ''; quizScopeRetryRef.current = ''; lastEnsureScope.current = ''; fallbackEnsureScope.current = ''; fallbackSelectionPending.current = false; videoRefreshRequested.current = false;
+    quizSubmitIdempotencyKeyRef.current = ''; quizScopeRetryRef.current = ''; lastEnsureScope.current = ''; fallbackEnsureScope.current = ''; fallbackRecoveryRetry.current = ''; fallbackSelectionPending.current = false; videoRefreshRequested.current = false;
+    setFallbackWorkflowId(''); setFallbackWorkflowChecked(false);
   }, [canonicalScopeKey, lectureSemanticKey, clearQuiz]);
-  useEffect(() => { setVideoLectureFallback(false); setVideoOpened(false); setVideoFallbackSelected(false); setFallbackStateLoading(true); setFallbackEnsureError(false); fallbackEnsureScope.current = ''; fallbackSelectionPending.current = false; }, [resourceTaskId]);
+  useEffect(() => { setVideoLectureFallback(false); setVideoOpened(false); setVideoFallbackSelected(false); setFallbackStateLoading(true); setFallbackEnsureError(false); fallbackEnsureScope.current = ''; fallbackRecoveryRetry.current = ''; fallbackSelectionPending.current = false; setFallbackWorkflowId(''); setFallbackWorkflowChecked(false); }, [resourceTaskId]);
   const deliveryMode = executionMode !== 'video' ? executionMode : fallbackStateLoading ? 'resolving' : videoFallbackSelected ? 'video_fallback_lecture' : 'video';
   const videoScope = useMemo(() => canonicalRequestScope
     ? canonicalRequestScope
@@ -410,6 +414,11 @@ export default function LecturePage() {
     workflowType: 'lecture_generation', sessionId, subjectId: workflowSubjectId,
     pathId: path?.id || '', stageId: chapterCtx?.stage.id || '', chapterId: chapterCtx?.chapter.id || '', sectionId: activeSectionId,
   };
+  const fallbackWorkflowScope: WorkflowTaskScope | null = canonicalRequestScope ? {
+    workflowType: 'video_fallback_lecture', sessionId: canonicalRequestScope.sessionId, subjectId: canonicalRequestScope.subjectId,
+    pathId: canonicalRequestScope.pathId, stageId: canonicalRequestScope.stageId, sectionId: activeSectionId,
+    recoveryKey: [canonicalRequestScope.dayId, canonicalRequestScope.globalDayIndex, resourceTaskId, (path as any)?.pathVersion || (path as any)?.currentVersion || (path as any)?.version || ''].join('|'),
+  } : null;
 
   useEffect(() => {
     if (!sessionId || !activeSectionId) return;
@@ -504,23 +513,72 @@ export default function LecturePage() {
     if (workspaceScopeInvalid || executionMode !== 'video' || !canonicalRequestScope || !resourceTaskId) return;
     let active = true;
     getVideoFallbackState(resourceTaskId, canonicalRequestScope).then((state) => {
-      if (!active || !state?.selected) return;
+      if (!active) return;
+      if (!state?.selected) { setFallbackWorkflowChecked(true); return; }
       setVideoFallbackSelected(true); setVideoLectureFallback(true);
       const content = lectureContent(state.lecture);
-      if (content) { store.setLecture(cacheKey, content); void recordVideoFallbackLectureOpened(resourceTaskId, canonicalRequestScope); }
+      if (content) { store.setLecture(cacheKey, content); clearWorkflowTask(fallbackWorkflowScope!); setLectureLoaded(true); void recordVideoFallbackLectureOpened(resourceTaskId, canonicalRequestScope); }
+      else setFallbackWorkflowId(readWorkflowTask(fallbackWorkflowScope!)?.taskId || '');
+      setFallbackWorkflowChecked(true);
     }).catch(() => undefined).finally(() => { if (active) setFallbackStateLoading(false); });
     return () => { active = false; };
   }, [executionMode, resourceTaskId, canonicalScopeKey, workspaceScopeInvalid]);
 
   useEffect(() => {
-    if (workspaceScopeInvalid || deliveryMode !== 'video_fallback_lecture' || !canonicalRequestScope || !resourceTaskId) return;
+    if (workspaceScopeInvalid || deliveryMode !== 'video_fallback_lecture' || !canonicalRequestScope || !resourceTaskId || !fallbackWorkflowScope) return;
+    if (fallbackWorkflowId) { setFallbackWorkflowChecked(true); return; }
+    setFallbackWorkflowChecked(true);
+  }, [deliveryMode, canonicalScopeKey, resourceTaskId, fallbackWorkflowId, workspaceScopeInvalid]);
+
+  useEffect(() => {
+    if (workspaceScopeInvalid || deliveryMode !== 'video_fallback_lecture' || !canonicalRequestScope || !resourceTaskId || !fallbackWorkflowScope || !fallbackWorkflowChecked || fallbackWorkflowId) return;
     const scope = [...Object.values(canonicalRequestScope), resourceTaskId, 'video_fallback'].join('|');
     if (fallbackEnsureScope.current === scope || store.lectureCache[cacheKey]) return;
     fallbackEnsureScope.current = scope; setFallbackEnsureError(false); setLectureLoaded(false);
     ensureVideoFallbackLecture(resourceTaskId, { ...canonicalRequestScope, taskTitle: canonicalTaskScope?.task.title || currentSection?.title || '', taskDescription: canonicalTaskScope?.task.description || canonicalTaskScope?.task.goal || '', learningObjectives: canonicalTaskScope?.task.learningObjectives || canonicalTaskScope?.task.learning_objectives || [], knowledgePoints: canonicalTaskScope?.task.knowledgePoints || canonicalTaskScope?.task.knowledge_points || [], stageTitle: canonicalTaskScope?.stage.title || '', pathVersion: (path as any)?.currentVersion || (path as any)?.version || '' })
-      .then((data) => { const content = lectureContent(data); if (content) { store.setLecture(cacheKey, content); void recordVideoFallbackLectureOpened(resourceTaskId, canonicalRequestScope); } })
+      .then((data) => {
+        const content = lectureContent(data);
+        if (content) { store.setLecture(cacheKey, content); clearWorkflowTask(fallbackWorkflowScope); void recordVideoFallbackLectureOpened(resourceTaskId, canonicalRequestScope); return; }
+        if (data.status === 'running' && data.workflowId) { saveWorkflowTask({ ...fallbackWorkflowScope, taskId: data.workflowId, createdAt: Date.now() }); setFallbackWorkflowId(data.workflowId); return; }
+        throw new Error(data.errorMessage || '图文讲解生成失败');
+      })
       .catch(() => setFallbackEnsureError(true)).finally(() => setLectureLoaded(true));
-  }, [deliveryMode, canonicalScopeKey, resourceTaskId, cacheKey, workspaceScopeInvalid, fallbackEnsureRetry]);
+  }, [deliveryMode, canonicalScopeKey, resourceTaskId, cacheKey, workspaceScopeInvalid, fallbackEnsureRetry, fallbackWorkflowChecked, fallbackWorkflowId]);
+
+  useEffect(() => {
+    if (!fallbackWorkflowId || !fallbackWorkflowScope || !canonicalRequestScope || !resourceTaskId) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const finish = async () => {
+      for (let attempt = 0; attempt < 3 && active; attempt += 1) {
+        const state = await getVideoFallbackState(resourceTaskId, canonicalRequestScope);
+        const content = lectureContent(state?.lecture);
+        if (content) {
+          store.setLecture(cacheKey, content); clearWorkflowTask(fallbackWorkflowScope); void recordVideoFallbackLectureOpened(resourceTaskId, canonicalRequestScope);
+          setFallbackWorkflowId(''); setFallbackEnsureError(false); setLectureLoaded(true); return;
+        }
+        if (attempt < 2) await new Promise((resolve) => { timer = setTimeout(resolve, 800); });
+      }
+      if (active) { clearWorkflowTask(fallbackWorkflowScope); setFallbackWorkflowId(''); setFallbackEnsureError(true); setLectureLoaded(true); }
+    };
+    const poll = async () => {
+      try {
+        const workflow = await readWorkflow(fallbackWorkflowId, canonicalRequestScope.sessionId);
+        if (!active) return;
+        if (isActiveWorkflowStatus(workflow.status)) { timer = setTimeout(poll, 1000); return; }
+        if (workflow.status === 'completed') await finish();
+        else { clearWorkflowTask(fallbackWorkflowScope); setFallbackWorkflowId(''); setFallbackEnsureError(true); setLectureLoaded(true); }
+      } catch (error: any) {
+        if (!active) return;
+        clearWorkflowTask(fallbackWorkflowScope); setFallbackWorkflowId('');
+        if (error?.response?.status === 404 && fallbackRecoveryRetry.current !== canonicalScopeKey) {
+          fallbackRecoveryRetry.current = canonicalScopeKey; fallbackEnsureScope.current = ''; setFallbackEnsureRetry((value) => value + 1);
+        } else { setFallbackEnsureError(true); setLectureLoaded(true); }
+      }
+    };
+    setLectureLoaded(false); void poll();
+    return () => { active = false; if (timer) clearTimeout(timer); };
+  }, [fallbackWorkflowId, canonicalScopeKey, resourceTaskId, cacheKey]);
 
   useEffect(() => {
     if (workspaceScopeInvalid || deliveryMode !== 'video' || !videoScopeKey) return;
@@ -927,9 +985,9 @@ export default function LecturePage() {
                 </div>
                 {currentSection.knowledgePoints?.length > 0 && <div className="mb-5 flex flex-wrap gap-2">{currentSection.knowledgePoints.map(kp => <span key={kp.id} className="rounded-full bg-surface-100 px-2.5 py-1 text-xs text-surface-600">{kp.name}</span>)}</div>}
                 {executionMode === 'video' && !videoLectureFallback ? <div className="space-y-3"><h2 className="text-lg font-semibold">视频学习</h2>{videoStatus === 'loading' ? <div className="flex min-h-48 items-center gap-2 text-sm text-surface-500"><Loader2 size={16} className="animate-spin" />正在查找高相关视频…</div> : videoStatus === 'failed' ? <div className="rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">视频资源搜索失败。<button onClick={retryVideoSearch} className="ml-2 underline">重新搜索</button></div> : videoResources.length ? <>{videoResources.map((item: any) => <a key={item.url} href={item.url} target="_blank" rel="noreferrer" onClick={() => void recordVideoEvidence(item.url)} className="block rounded-xl border border-surface-200 p-4 hover:border-primary-300"><strong>{item.title}</strong><p className="mt-1 text-sm text-surface-500">{item.source} · {item.reason}</p></a>)}</> : <div className="rounded-xl border border-surface-200 p-4 text-sm text-surface-600">暂无高相关视频</div>}<button onClick={selectVideoFallback} className="rounded-lg border border-primary-200 px-4 py-2 text-sm text-primary-700">切换为图文讲解</button></div>
-                : !lectureLoaded || generating ? <div className="flex min-h-48 items-center justify-center gap-2 text-sm text-surface-500"><Loader2 size={16} className="animate-spin" />{executionMode === 'video' ? '正在生成图文讲解…' : '正在准备真实讲义…'}</div>
-                  : effectiveLectureContent ? <Markdown content={effectiveLectureContent} />
-                  : <div className="rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">{fallbackEnsureError ? '图文讲解生成失败，请重试或返回学习路径。' : lectureEnsureUnavailable ? '当前讲义任务无法加载，请返回学习路径重新进入。' : '讲义暂不可用。'}<button onClick={() => nav('/path')} className="ml-2 font-medium underline">返回学习路径</button>{fallbackEnsureError && <button onClick={() => { fallbackEnsureScope.current = ''; setFallbackEnsureError(false); setFallbackEnsureRetry((value) => value + 1); }} className="ml-2 font-medium underline">重试</button>}</div>}
+                : !lectureLoaded || generating ? <div className="flex min-h-48 flex-col items-center justify-center gap-2 text-sm text-surface-500"><Loader2 size={16} className="animate-spin" />{executionMode === 'video' ? <><strong>正在生成图文讲解</strong><span>AI 正在将本视频任务转换为可阅读的图文教材，请稍候…</span></> : '正在准备真实讲义…'}</div>
+                  : effectiveLectureContent ? <>{executionMode === 'video' && <div className="mb-4 rounded-xl bg-blue-50 p-3 text-sm text-blue-700"><strong>图文讲解</strong><br />已从视频学习切换为图文学习</div>}<Markdown content={effectiveLectureContent} /></>
+                  : <div className="rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">{fallbackEnsureError ? '图文讲解生成失败。' : lectureEnsureUnavailable ? '当前讲义任务无法加载，请返回学习路径重新进入。' : '讲义暂不可用。'}<button onClick={() => nav('/path')} className="ml-2 font-medium underline">返回学习路径</button>{fallbackEnsureError && <button onClick={() => { fallbackEnsureScope.current = ''; setFallbackEnsureError(false); setFallbackEnsureRetry((value) => value + 1); }} className="ml-2 font-medium underline">重新生成图文讲解</button>}</div>}
                 <div className="mt-8 border-t border-surface-100 pt-4">
                   <button disabled={completed || focusedCompleting || !resourceDayScope.globalDayIndex || generating || !!(lectureWorkflow && isActiveWorkflowStatus(lectureWorkflow.status)) || !(focusedReadingTask ? !!effectiveLectureContent : executionMode === 'video' && (videoOpened || videoLectureFallback && videoFallbackSelected && !!effectiveLectureContent))} onClick={completeFocusedTask} className="flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"><Check size={15} />{completed ? '任务已完成' : focusedCompleting ? '保存中…' : executionMode === 'video' ? videoOpened || videoFallbackSelected ? '完成视频学习' : '请先打开视频或切换图文讲解' : focusedReadingTask ? '标记完成' : '请先完成练习'}</button>
                   {focusedCompletionError && <p className="mt-2 text-sm text-red-600">完成失败：{focusedCompletionError}</p>}

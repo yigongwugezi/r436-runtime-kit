@@ -11,4 +11,10 @@ test('video fallback uses one delivery mode and never exposes ordinary generatio
   assert.match(page, /deliveryMode !== 'video_fallback_lecture'/);
   assert.match(page, /if \(executionMode === 'video'\) return/);
   assert.match(page, /const selectVideoFallback/);
+  assert.match(page, /workflowType: 'video_fallback_lecture'/);
+  assert.match(page, /recoveryKey: \[canonicalRequestScope\.dayId, canonicalRequestScope\.globalDayIndex, resourceTaskId/);
+  assert.match(page, /saveWorkflowTask\(\{ \.\.\.fallbackWorkflowScope, taskId: data\.workflowId/);
+  assert.match(page, /const workflow = await readWorkflow\(fallbackWorkflowId/);
+  assert.match(page, /await getVideoFallbackState\(resourceTaskId, canonicalRequestScope\)/);
+  assert.match(page, /重新生成图文讲解/);
 });
