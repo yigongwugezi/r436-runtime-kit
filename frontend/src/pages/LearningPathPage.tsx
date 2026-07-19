@@ -204,7 +204,7 @@ export default function LearningPathPage() {
     try {
       const r = await fetch('/api/resources/recommendations/for-learning', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId, stageId: activeDayStage.stageId }),
+        body: JSON.stringify({ sessionId, subjectId: subject.subject_id, pathId: path?.id, stageId: activeDayStage.stageId, taskId: activeDayTasks.find((task: any) => task.status !== 'completed' && task.status !== 'mastered')?.id || activeDayTasks[0]?.id }),
       }).then(res => res.json());
       setRecommendedResources(r?.recommendations?.resources || r?.resources || []);
     } catch { setRecommendedResources([]); }
@@ -546,7 +546,7 @@ export default function LearningPathPage() {
                           </div>
                         ) : (
                           <div className="text-center py-16">
-                            <p className="text-sm text-surface-400">暂无推荐资源</p>
+                            <p className="text-sm text-surface-400">暂无高相关资源</p>
                             <button type="button" onClick={fetchRecommendations}
                               className="mt-3 text-xs font-semibold text-primary-500 hover:text-primary-600">重新加载</button>
                           </div>

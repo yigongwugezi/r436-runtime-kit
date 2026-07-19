@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 RESOURCE_TYPES = ("article", "video", "course", "document", "paper")
 _ACTION_TERMS = ("用纸笔", "手动模拟", "画出", "一个简单", "每一层", "请", "完成")
 _CONCEPTS = (
+    ("数据结构", "data structure"), ("算法", "algorithm"),
+    ("时间复杂度", "time complexity"), ("空间复杂度", "space complexity"),
+    ("大O", "big o"), ("线性表", "linear list"),
+    ("顺序表", "array"), ("链表", "linked list"),
     ("递归", "recursion"), ("调用栈", "call stack"), ("栈帧", "stack frame"),
     ("局部变量", "local variables"), ("返回地址", "return address"),
     ("阶乘", "factorial"), ("斐波那契", "fibonacci"),
@@ -703,13 +707,14 @@ class SectionResourceRecommendationService:
         return diversify_results(resources)
 
     @staticmethod
-    def _cache_key(context: dict[str, Any], requested: list[str], language: str) -> str:
+    def _cache_key(context: dict[str, Any], requested: list[str], language: str, scope_key: str = "") -> str:
         public_key = "|".join((
             str(context.get("primary_topic") or "").strip().lower(),
             str(context.get("course_name") or "").strip().lower(),
             ",".join(requested),
             language or "zh-CN",
             settings.search_strategy,
+            scope_key,
         ))
         return sha256(public_key.encode("utf-8")).hexdigest()
 
@@ -870,8 +875,8 @@ class SectionResourceRecommendationService:
         progress_callback: ProgressCallback | None = None,
         refresh: bool = False,
         cancel_event: Event | None = None,
+        cache_scope: str = "",
     ) -> dict[str, Any]:
-        del session_id, section_id  # External results are transient and never persisted.
         requested = [kind for kind in RESOURCE_TYPES if kind in {str(item).lower() for item in resource_types or RESOURCE_TYPES}]
         points = self._point_names(knowledge_points)
         weak = self._point_names(weak_points)
@@ -887,7 +892,7 @@ class SectionResourceRecommendationService:
         primary_call_limit = provider_call_limit - fallback_reserve
         diagnostics: dict[str, Any] = {"queries": [], "raw_count": 0, "url_valid_count": 0, "relevance_candidate_count": 0, "relevant_count": 0, "final_count": 0, "filtered": Counter(), "provider_calls": 0, "provider_call_limit": provider_call_limit, "provider_calls_by_type": Counter(), "cache": "miss", "_deadline": time.monotonic() + total_budget}
         target_count = 1 if len(requested) > 1 else settings.search_min_results_single_type
-        cache_key = self._cache_key(context, requested, language)
+        cache_key = self._cache_key(context, requested, language, cache_scope or f"{session_id}|{section_id}")
         cache_state, cached = SearchCascade.get(cache_key) if self._use_cache else ("miss", None)
         stale = cached if cache_state == "stale" else None
         self._emit(progress_callback, "topic_analysis", "completed")

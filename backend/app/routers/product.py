@@ -3451,6 +3451,7 @@ def recommend_resources_for_learning(payload: dict[str, Any]) -> dict[str, Any]:
     """
     session_id = _payload_session_id(payload)
     stage_id = str(payload.get("stageId", "") or payload.get("stage_id", ""))
+    path_id, task_id, subject_id = str(payload.get("pathId") or ""), str(payload.get("taskId") or ""), str(payload.get("subjectId") or "")
     from app.services.conversation_state import conversation_store
     from app.services.section_resource_recommendations import (
         SectionResourceRecommendationService, RESOURCE_TYPES,
@@ -3468,6 +3469,23 @@ def recommend_resources_for_learning(payload: dict[str, Any]) -> dict[str, Any]:
     if not target_stage:
         target_stage = path[0] if path and isinstance(path[0], dict) else {}
 
+    # Prefer the persisted canonical task over stale conversation planning data.
+    if path_id and task_id:
+        db = SessionLocal()
+        try:
+            persisted = db.query(LearningPathModel).filter(LearningPathModel.id == path_id, LearningPathModel.session_id == session_id).first()
+            normalized = _normalize_persisted_learning_path(persisted) if persisted else None
+            entry = normalized and normalized["task_index"].get(task_id)
+            if entry and entry["stage_id"] == stage_id:
+                target_stage = normalized["stages"][entry["_stage_index"]]
+                target_stage = {**target_stage, "_active_task": entry["task"]}
+            if subject_id:
+                subject = db.get(PersonalSubjectModel, subject_id)
+                if subject and subject.name:
+                    payload = {**payload, "_course_name": subject.name}
+        finally:
+            db.close()
+
     # 提取知识点和上下文
     kps: list[dict] = []
     sections: list[str] = []
@@ -3483,7 +3501,13 @@ def recommend_resources_for_learning(payload: dict[str, Any]) -> dict[str, Any]:
     diagnosis = lr.get("diagnosis", {})
     weak_kps = diagnosis.get("weak_knowledge_points", []) or diagnosis.get("weak_topics", [])
 
+    active_task = target_stage.get("_active_task", {}) if isinstance(target_stage, dict) else {}
+    if active_task:
+        sections.insert(0, str(active_task.get("title") or active_task.get("topic") or ""))
+        kps.extend(active_task.get("knowledge_points") or active_task.get("knowledgePoints") or [])
     course_name = (
+        payload.get("_course_name", "")
+        or
         profile_facts.get("target_course", "")
         or lr.get("course", {}).get("course_name", "")
         or target_stage.get("title", "")
@@ -3493,12 +3517,13 @@ def recommend_resources_for_learning(payload: dict[str, Any]) -> dict[str, Any]:
     result = svc.recommend(
         session_id=session_id,
         section_id=stage_id,
-        section_title=target_stage.get("title", ""),
+        section_title=str(active_task.get("title") or active_task.get("topic") or target_stage.get("title", "")),
         knowledge_points=kps if kps else [{"name": sections[0]}] if sections else [],
         profile=profile,
         weak_points=weak_kps,
         course_name=course_name,
         refresh=bool(payload.get("refresh", False)),
+        cache_scope="|".join((session_id, subject_id, path_id, stage_id, task_id)),
     )
     return _product_response({"recommendations": result}, session_id=session_id, source="recommend")
 
