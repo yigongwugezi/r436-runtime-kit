@@ -1444,8 +1444,15 @@ def submit_quiz(
             section_id=quiz.section_id,
         )
         db.commit()  # persist fallback mappings + event
+        prior_scores = [row[0] for row in db.query(AttemptModel.total_score).filter(
+            AttemptModel.session_id == session_id, AttemptModel.path_id == (path_context or {}).get("path_id"),
+            AttemptModel.stage_id == (path_context or {}).get("stage_id"), AttemptModel.task_id == (path_context or {}).get("task_id"),
+            AttemptModel.total_score.isnot(None),
+        ).all()]
+        best_score = max(prior_scores or [avg_score])
+        attempt_passed, ever_passed = avg_score >= 60, best_score >= 60
         path_completion = {"pathTaskCompleted": False, "stageCompleted": False, "nextStageUnlocked": False, "pathProgress": None}
-        if path_context and avg_score >= 60:
+        if path_context and ever_passed:
             from app.routers.product import complete_path_task
             path_completion = complete_path_task(
                 db, session_id=session_id, subject_id=subject_id, source="assessment_submission", **path_context,
@@ -1528,6 +1535,10 @@ def submit_quiz(
                 "score": avg_score,
                 "passingScore": 60,
                 "passed": avg_score >= 60,
+                "attemptPassed": attempt_passed,
+                "everPassed": ever_passed,
+                "latestAttemptScore": avg_score,
+                "bestScore": best_score,
                 "correctCount": sum(1 for item in results if item["isCorrect"]),
                 "totalCount": len(linked),
                 "sectionStatusSuggestion": suggestion,
