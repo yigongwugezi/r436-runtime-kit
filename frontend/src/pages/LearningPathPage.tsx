@@ -3,6 +3,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useLearningPath } from '../hooks/useLearningPath';
 import { useChatStore } from '../store/chatStore';
+import { useSubjectStore } from '../store/subjectStore';
 import { enableProfileExtraction, listPlanningDrafts, getWorkflowTask } from '../api/learningPath';
 import { useProfile } from '../hooks/useProfile';
 import PlanningWizard from '../components/learning/PlanningWizard';
@@ -255,6 +256,18 @@ export default function LearningPathPage() {
             先通过对话了解你的学习目标、基础和时间安排，AI 将为你量身定制专属学习计划。
           </p>
           <button onClick={() => { useChatStore.getState().setChatMode('planning');
+            const subId = subject.subject_id;
+            const subName = subject.subject_name;
+            if (subId) {
+              // 将当前科目写入 subjectStore，使规划模式的智能对话可感知科目与关联课本
+              useSubjectStore.getState().setActive({
+                id: subId,
+                name: subName || '当前科目',
+                textbookId: subject.textbook_id ?? null,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+              });
+            }
             const sid = useChatStore.getState().currentSessionId; nav('/chat', { state: { chatMode: 'planning' } });
             if (sid) enableProfileExtraction(sid).catch(() => {}); }}
             className="inline-flex items-center gap-2 px-8 py-3 bg-primary-500 text-white rounded-[14px] text-sm font-medium hover:bg-primary-600 transition-all shadow-md">
