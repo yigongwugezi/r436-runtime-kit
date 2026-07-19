@@ -362,15 +362,7 @@ export default function LecturePage() {
     setLectureMissing(false);
     if (store.lectureCache[key]) { setLectureLoaded(true); return; }
     setLectureLoaded(false);
-    fetch(`/api/sections/${encodeURIComponent(activeSectionId)}/lecture/ensure`, {
-      method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId || path?.id, stageId: focusedStageId || chapterCtx?.stage.id, taskId: focusedTaskId || activeSectionId }),
-    })
-      .then(async r => {
-        if (r.status === 403) setFocusedAccessDenied(true);
-        if (r.status === 409) setLectureMissing(false);
-        return r.ok ? r.json() : null;
-      })
+    ensureLecture(activeSectionId, { sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId || path?.id, stageId: focusedStageId || chapterCtx?.stage.id, taskId: focusedTaskId || activeSectionId })
       .then(d => {
         store.markLoaded(activeSectionId);
         if (d?.status === 'running') setLectureMissing(true);
@@ -424,7 +416,7 @@ export default function LecturePage() {
       const workflowScope: WorkflowTaskScope = { ...lectureWorkflowScope, workflowType: started.workflow_type };
       saveWorkflowTask({ ...workflowScope, taskId: started.task_id, createdAt: Date.now() });
       await consumeWorkflowEvents(started.task_id, (event) => setLectureWorkflow((current) => {
-        return current?.taskId === started.task_id ? workflowStateFromEvent(current, event) : current;
+        return current && current.taskId === started.task_id ? workflowStateFromEvent(current, event) : current;
       }), controller.signal);
       const task = await readWorkflow(started.task_id, sessionId);
       const data = task.result;

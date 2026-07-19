@@ -35,9 +35,17 @@ export async function startWorkflow(workflowType: string, payload: Record<string
   return data as { task_id: string; workflow_type: string; status: WorkflowStatus; events_url: string; reused_existing?: boolean };
 }
 
-export async function ensureLecture(sectionId: string, payload: Record<string, unknown>) {
-  const { data } = await client.post(`/api/sections/${encodeURIComponent(sectionId)}/lecture/ensure`, payload);
-  return data as { status: 'ready' | 'running' | 'failed'; workflowId: string | null; lecture: any | null; errorCode?: string | null; errorMessage?: string | null };
+const pendingLectureEnsures = new Map<string, Promise<any>>();
+
+export function ensureLecture(sectionId: string, payload: Record<string, unknown>) {
+  const key = [payload.sessionId, payload.subjectId, payload.pathId, payload.stageId, payload.taskId].join('|');
+  const pending = pendingLectureEnsures.get(key);
+  if (pending) return pending;
+  const request = client.post(`/api/sections/${encodeURIComponent(sectionId)}/lecture/ensure`, payload)
+    .then(({ data }) => data as { status: 'ready' | 'running' | 'failed'; workflowId: string | null; lecture: any | null; errorCode?: string | null; errorMessage?: string | null })
+    .finally(() => pendingLectureEnsures.delete(key));
+  pendingLectureEnsures.set(key, request);
+  return request;
 }
 
 export async function readWorkflow(taskId: string, sessionId?: string) {
