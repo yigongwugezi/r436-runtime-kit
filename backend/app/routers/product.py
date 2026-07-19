@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from app.middleware.auth import AuthContext, get_auth, reject_parent, require_auth, validate_anonymous_learner_id
 
@@ -39,7 +39,7 @@ from app.agents.diagnosis_agent import DiagnosisAgent
 from app.agents.multimodal_agent import MultimodalAgent
 from app.config import settings
 from app.db.engine import SessionLocal
-from app.db.models import AnswerRecordModel, DailyTaskModel, LearnerModel, LearningEventModel, LearningPathModel, PersonalSubjectModel, PlanningDraftModel, PracticeQuestionModel, ResourceModel, SessionModel
+from app.db.models import AnswerRecordModel, AttemptModel, DailyTaskModel, LearnerModel, LearningEventModel, LearningPathModel, PersonalSubjectModel, PlanningDraftModel, PracticeQuestionModel, ResourceModel, SessionModel
 from app.db.repository import (
     get_bookmarked_ids,
     get_daily_tasks as repo_get_daily_tasks,
@@ -59,6 +59,9 @@ from app.db.repository import (
     upsert_learning_path,
     update_task_completion as repo_update_task_completion,
     delete_session as repo_delete_session,
+    CurrentPathUnresolvedError,
+    persist_generated_learning_path,
+    resolve_current_learning_path,
 )
 from app.services.agent_service import (
     get_analytics as ag_get_analytics,
@@ -712,6 +715,137 @@ def _stage_estimated_days(duration: Any) -> int:
     return 1
 
 
+def _task_minutes(task: dict[str, Any]) -> int:
+    value = task.get("durationMinutes", task.get("estimated_minutes", task.get("estimatedMinutes", task.get("minutes", 45))))
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return 45
+
+
+def _stage_tasks(stage: dict[str, Any]) -> list[dict[str, Any]]:
+    days = stage.get("days") if isinstance(stage.get("days"), list) else []
+    tasks = [task for day in days if isinstance(day, dict) for task in day.get("tasks", []) if isinstance(task, dict)]
+    if tasks:
+        return tasks
+    return [task for task in stage.get("tasks", []) if isinstance(task, dict)]
+
+
+def _stage_day_counts(stages: list[dict[str, Any]], total_days: int) -> list[int]:
+    """Allocate non-empty days by workload with deterministic largest remainder."""
+    task_counts = [len(_stage_tasks(stage)) for stage in stages]
+    weights = [sum(_task_minutes(task) for task in _stage_tasks(stage)) or count for stage, count in zip(stages, task_counts)]
+    active = [index for index, count in enumerate(task_counts) if count]
+    if not active:
+        return [0] * len(stages)
+    # A real task owns each persisted day; the requested paths have enough tasks.
+    target = min(total_days, sum(task_counts))
+    counts = [0] * len(stages)
+    for index in active:
+        counts[index] = 1
+    remaining = target - len(active)
+    total_weight = sum(weights[index] for index in active) or len(active)
+    ideals = {index: target * weights[index] / total_weight for index in active}
+    for index in active:
+        counts[index] = min(task_counts[index], max(1, int(ideals[index])))
+    remaining = target - sum(counts)
+    while remaining > 0:
+        choices = [index for index in active if counts[index] < task_counts[index]]
+        if not choices:
+            break
+        index = max(choices, key=lambda item: (ideals[item] - counts[item], weights[item], -item))
+        counts[index] += 1
+        remaining -= 1
+    while remaining < 0:
+        choices = [index for index in active if counts[index] > 1]
+        index = min(choices, key=lambda item: (ideals[item] - counts[item], weights[item], item))
+        counts[index] -= 1
+        remaining += 1
+    return counts
+
+
+def _partition_stage_tasks(tasks: list[dict[str, Any]], day_count: int) -> list[list[dict[str, Any]]]:
+    """Keep task order while choosing 1-3-task days closest to 60 minutes."""
+    task_count = len(tasks)
+    if not task_count or not day_count:
+        return []
+    scores: dict[tuple[int, int], tuple[int, list[list[dict[str, Any]]]]] = {(0, 0): (0, [])}
+    for offset in range(task_count):
+        for used_days in range(day_count):
+            current = scores.get((offset, used_days))
+            if current is None:
+                continue
+            for size in range(1, min(3, task_count - offset) + 1):
+                next_offset, next_days = offset + size, used_days + 1
+                if next_days > day_count or task_count - next_offset < day_count - next_days:
+                    continue
+                minutes = sum(_task_minutes(task) for task in tasks[offset:next_offset])
+                planned = max(45, minutes)
+                penalty = (planned - 60) ** 2 + (10000 if minutes > 75 else 0)
+                if offset == 0 and size > 1:
+                    penalty += 5  # prefer a single first reading task when equally suitable
+                candidate = (current[0] + penalty, current[1] + [tasks[offset:next_offset]])
+                existing = scores.get((next_offset, next_days))
+                if existing is None or candidate[0] < existing[0]:
+                    scores[(next_offset, next_days)] = candidate
+    return scores[(task_count, day_count)][1]
+
+
+def _upgrade_path_days(path: dict[str, Any]) -> bool:
+    """Materialize stable Day nodes once; preserves every existing task ID."""
+    stages = path.get("stages") if isinstance(path.get("stages"), list) else []
+    total_days = int(path.get("totalDays", path.get("estimatedDays", path.get("estimated_days", 0))) or 0)
+    if total_days <= 0 or not stages:
+        return False
+    existing_days = [day for stage in stages if isinstance(stage, dict) for day in stage.get("days", []) if isinstance(day, dict)]
+    if len(existing_days) == total_days and all(day.get("globalDayIndex") for day in existing_days):
+        return False
+
+    path_id = str(path.get("id") or path.get("path_id") or "")
+    counts = _stage_day_counts(stages, total_days)
+    global_day = 0
+    for stage_index, stage in enumerate(stages):
+        if not isinstance(stage, dict):
+            continue
+        stage_id = str(stage.get("stage_id") or stage.get("id") or f"{path_id}_s{stage_index}")
+        tasks = _stage_tasks(stage)
+        day_count = counts[stage_index]
+        groups = _partition_stage_tasks(tasks, day_count)
+        stage["stage_id"] = stage_id
+        stage["id"] = stage_id
+        stage["stageIndex"] = stage_index
+        stage["durationDays"] = day_count
+        stage["estimatedDays"] = day_count
+        stage["startDay"] = global_day + 1 if day_count else global_day
+        days: list[dict[str, Any]] = []
+        for stage_day, group in enumerate(groups, start=1):
+            global_day += 1
+            day_id = f"{stage_id}_d{stage_day}"
+            planned_minutes = sum(_task_minutes(task) for task in group)
+            if planned_minutes < 45 and group:
+                group[-1]["durationMinutes"] = _task_minutes(group[-1]) + (45 - planned_minutes)
+                planned_minutes = 45
+            for task_index, task in enumerate(group):
+                task_id = str(task.get("task_id") or task.get("id") or task.get("section_id") or f"{stage_id}_d{stage_day}_t{task_index}")
+                task.update({
+                    "task_id": task_id, "id": task_id, "pathId": path_id, "stageId": stage_id,
+                    "dayId": day_id, "day_id": day_id, "day": stage_day, "dayIndex": stage_day,
+                    "day_index": stage_day, "globalDayIndex": global_day, "taskIndex": task_index,
+                    "durationMinutes": _task_minutes(task),
+                })
+            days.append({
+                "id": day_id, "dayId": day_id, "pathId": path_id, "stageId": stage_id,
+                "day": stage_day, "stageDayIndex": stage_day, "globalDayIndex": global_day,
+                "title": f"Day {global_day}", "plannedMinutes": planned_minutes, "tasks": group,
+            })
+        stage["endDay"] = global_day
+        stage["days"] = days
+        stage["tasks"] = [task for day in days for task in day["tasks"]]
+    path["totalDays"] = global_day
+    path["estimatedDays"] = global_day
+    return True
+
+
 def _raw_stages_to_nodes(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert raw orchestrator-format stages to frontend-format stages.
 
@@ -726,6 +860,70 @@ def _raw_stages_to_nodes(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if stages and isinstance(stages[0], dict) and stages[0].get("chapters"):
         return _chapter_stages_to_frontend(stages)
     return _task_stages_to_frontend(stages)
+
+
+def normalize_learning_path(raw_path: dict[str, Any]) -> dict[str, Any]:
+    """Return stable task IDs for every persisted learning-path shape."""
+    path = deepcopy(raw_path)
+    path_id = str(path.get("id") or path.get("path_id") or "")
+    upgraded = _upgrade_path_days(path)
+    stages = path.get("stages") if isinstance(path.get("stages"), list) else []
+    task_index: dict[str, dict[str, Any]] = {}
+    global_day_index = 0
+
+    for stage_index, stage in enumerate(stages):
+        if not isinstance(stage, dict):
+            continue
+        stage_id = str(stage.get("stage_id") or stage.get("id") or f"{path_id}_s{stage_index}")
+        stage["stage_id"] = stage_id
+        stage.setdefault("id", stage_id)
+        days = [day for day in stage.get("days", []) if isinstance(day, dict)]
+        task_groups: list[tuple[int, int, list[Any]]] = []
+        if days:
+            for day_index, day in enumerate(days, start=1):
+                day_number = int(day.get("day") or day.get("day_index") or day.get("dayIndex") or day_index)
+                day["day"] = day_number
+                task_groups.append((day_number, day_index, day.get("tasks", [])))
+        else:
+            grouped: dict[int, list[Any]] = {}
+            for task in stage.get("tasks", []):
+                day_number = int(task.get("day") or task.get("day_index") or task.get("dayIndex") or 1) if isinstance(task, dict) else 1
+                grouped.setdefault(day_number, []).append(task)
+            task_groups = [(day_number, day_number, tasks) for day_number, tasks in sorted(grouped.items())]
+
+        for day_number, source_day_index, tasks in task_groups:
+            global_day_index += 1
+            for task_index_in_day, task in enumerate(tasks):
+                if not isinstance(task, dict):
+                    continue
+                task_id = str(task.get("task_id") or task.get("id") or task.get("section_id") or f"{path_id}_s{stage_index}_d{day_number}_t{task_index_in_day}")
+                task["task_id"] = task_id
+                task.setdefault("id", task_id)
+                task.setdefault("day", day_number)
+                task_index[task_id] = {
+                    "path_id": path_id,
+                    "stage_id": stage_id,
+                    "day_id": str(task.get("day_id") or task.get("dayId") or f"{stage_id}_d{day_number}"),
+                    "global_day_index": global_day_index,
+                    "stage_day_index": day_number,
+                    "task": task,
+                    "_stage_index": stage_index,
+                    "_day_index": source_day_index,
+                    "_task_index": task_index_in_day,
+                }
+    path["stages"] = stages
+    return {"path": path, "stages": stages, "task_index": task_index, "upgraded": upgraded}
+
+
+def _normalize_persisted_learning_path(path: LearningPathModel) -> dict[str, Any]:
+    normalized = normalize_learning_path({
+        "id": path.id, "estimatedDays": path.estimated_days, "stages": path.stages,
+    })
+    if normalized["upgraded"]:
+        path.stages = normalized["stages"]
+        path.estimated_days = normalized["path"]["estimatedDays"]
+        flag_modified(path, "stages")
+    return normalized
 
 
 def _chapter_stages_to_frontend(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -851,11 +1049,10 @@ def _task_stages_to_frontend(stages: list[dict[str, Any]]) -> list[dict[str, Any
         if not isinstance(stage, dict):
             continue
         # ── 展平 days.tasks 到 tasks（planner 产出 stages→days→tasks 格式时用）──
-        stage_tasks = list(stage.get("tasks", []))
         days_list = list(stage.get("days", []))
-        for d in days_list:
-            if isinstance(d, dict):
-                stage_tasks.extend(d.get("tasks", []))
+        stage_tasks = [task for d in days_list if isinstance(d, dict) for task in d.get("tasks", [])]
+        if not stage_tasks:
+            stage_tasks = list(stage.get("tasks", []))
         # ── Build nodes from flattened tasks ──
         all_tasks_for_nodes = stage_tasks if stage_tasks else stage.get("tasks", [])
         nodes = [
@@ -889,7 +1086,10 @@ def _task_stages_to_frontend(stages: list[dict[str, Any]]) -> list[dict[str, Any
             "chapters": [],
             "sections": [],
             "objective": stage.get("goal", stage.get("theme", "")),
-            "estimatedDays": _stage_estimated_days(stage.get("duration", "")),
+            "estimatedDays": int(stage.get("durationDays", stage.get("estimatedDays", stage.get("estimated_days", _stage_estimated_days(stage.get("duration", ""))))) or 1),
+            "durationDays": int(stage.get("durationDays", stage.get("estimatedDays", stage.get("estimated_days", 1))) or 1),
+            "startDay": stage.get("startDay"),
+            "endDay": stage.get("endDay"),
             "tasks": stage_tasks,           # ← 展平后的 tasks
             "days": days_list,              # ← 保留原始 days
             "resourceTypes": stage.get("resource_types", []),
@@ -922,7 +1122,8 @@ def _to_learning_path(result: dict[str, Any]) -> dict[str, Any]:
         or str(course_id)
     )
     raw_stages = result.get("learning_path", [])
-    stages = _raw_stages_to_nodes(raw_stages)
+    path_id = f"path_{course_id}"
+    stages = _raw_stages_to_nodes(normalize_learning_path({"id": path_id, "stages": raw_stages})["stages"])
     # computed fallback from stage durations
     fallback_days = _estimated_path_days(raw_stages)
     raw_est = result.get("estimatedDays")
@@ -932,7 +1133,7 @@ def _to_learning_path(result: dict[str, Any]) -> dict[str, Any]:
         estimated_days = fallback_days
 
     return {
-        "id": f"path_{course_id}",
+        "id": path_id,
         "title": f"{course_name}个性化学习路径",
         "description": result.get("diagnosis", {}).get("recommended_strategy", ""),
         "courseName": course_name,
@@ -3245,15 +3446,57 @@ def recommend_general_resources(payload: dict[str, Any]) -> dict[str, Any]:
     return _product_response({"recommendations": result}, session_id=session_id, source="search")
 
 
+def _video_recommendation_scope(payload: dict[str, Any]) -> tuple[str, str, str, str, str, int, str]:
+    """The durable identity for one video-task recommendation set."""
+    values = (
+        _payload_session_id(payload), str(payload.get("subjectId") or ""), str(payload.get("pathId") or ""),
+        str(payload.get("stageId") or ""), str(payload.get("dayId") or ""), payload.get("globalDayIndex"),
+        str(payload.get("taskId") or ""),
+    )
+    if not all(value is not None and str(value) != "" for value in values):
+        raise HTTPException(status_code=400, detail="canonical video task scope required")
+    try:
+        return (*values[:5], int(values[5]), values[6])
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="invalid globalDayIndex") from exc
+
+
+def _valid_video_recommendations(resources: list[Any]) -> list[dict[str, Any]]:
+    from app.services.section_resource_recommendations import validate_resource_url
+    valid: list[dict[str, Any]] = []
+    for item in resources:
+        if not isinstance(item, dict) or str(item.get("resource_type") or item.get("resourceType") or "") != "video":
+            continue
+        url = validate_resource_url(str(item.get("url") or ""), "video", str(item.get("title") or ""), str(item.get("snippet") or ""))
+        if url:
+            valid.append({**item, "url": url, "resource_type": "video"})
+    return valid
+
+
 @router.post("/resources/recommendations/for-learning")
-def recommend_resources_for_learning(payload: dict[str, Any]) -> dict[str, Any]:
+def recommend_resources_for_learning(payload: dict[str, Any], auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
     """基于当前学习阶段的上下文推荐外部资源。
     
     根据 stage 的知识点 + 学生画像 + 薄弱点，从外部搜索聚合推荐资源。
     """
     session_id = _payload_session_id(payload)
     stage_id = str(payload.get("stageId", "") or payload.get("stage_id", ""))
-    from app.services.conversation_state import conversation_store
+    path_id, task_id, subject_id = str(payload.get("pathId") or ""), str(payload.get("taskId") or ""), str(payload.get("subjectId") or "")
+    video_scope = None
+    refresh = bool(payload.get("refresh", False))
+    if payload.get("resourceTypes") == ["video"]:
+        video_scope = _video_recommendation_scope(payload)
+        resolve_resource_scope(auth, session_id=video_scope[0], subject_id=video_scope[1], path_id=video_scope[2], stage_id=video_scope[3], task_id=video_scope[6], section_id=video_scope[6])
+        resource_id = f"video-recommendations-{hashlib.sha256('|'.join(map(str, video_scope)).encode()).hexdigest()[:32]}"
+        db = SessionLocal()
+        try:
+            saved = db.query(ResourceModel).filter(ResourceModel.id == resource_id, ResourceModel.session_id == session_id).first()
+            metadata = saved.resource_metadata if saved and isinstance(saved.resource_metadata, dict) else {}
+            cached = _valid_video_recommendations(metadata.get("resources") if isinstance(metadata.get("resources"), list) else [])
+            if cached and not refresh:
+                return _product_response({"recommendations": {"resources": cached, "status": "completed", "presentationStatus": "persisted"}}, session_id=session_id, subject_id=video_scope[1], source="db")
+        finally:
+            db.close()
     from app.services.section_resource_recommendations import (
         SectionResourceRecommendationService, RESOURCE_TYPES,
     )
@@ -3270,6 +3513,23 @@ def recommend_resources_for_learning(payload: dict[str, Any]) -> dict[str, Any]:
     if not target_stage:
         target_stage = path[0] if path and isinstance(path[0], dict) else {}
 
+    # Prefer the persisted canonical task over stale conversation planning data.
+    if path_id and task_id:
+        db = SessionLocal()
+        try:
+            persisted = db.query(LearningPathModel).filter(LearningPathModel.id == path_id, LearningPathModel.session_id == session_id).first()
+            normalized = _normalize_persisted_learning_path(persisted) if persisted else None
+            entry = normalized and normalized["task_index"].get(task_id)
+            if entry and entry["stage_id"] == stage_id:
+                target_stage = normalized["stages"][entry["_stage_index"]]
+                target_stage = {**target_stage, "_active_task": entry["task"]}
+            if subject_id:
+                subject = db.get(PersonalSubjectModel, subject_id)
+                if subject and subject.name:
+                    payload = {**payload, "_course_name": subject.name}
+        finally:
+            db.close()
+
     # 提取知识点和上下文
     kps: list[dict] = []
     sections: list[str] = []
@@ -3285,7 +3545,13 @@ def recommend_resources_for_learning(payload: dict[str, Any]) -> dict[str, Any]:
     diagnosis = lr.get("diagnosis", {})
     weak_kps = diagnosis.get("weak_knowledge_points", []) or diagnosis.get("weak_topics", [])
 
+    active_task = target_stage.get("_active_task", {}) if isinstance(target_stage, dict) else {}
+    if active_task:
+        sections.insert(0, str(active_task.get("title") or active_task.get("topic") or ""))
+        kps.extend(active_task.get("knowledge_points") or active_task.get("knowledgePoints") or [])
     course_name = (
+        payload.get("_course_name", "")
+        or
         profile_facts.get("target_course", "")
         or lr.get("course", {}).get("course_name", "")
         or target_stage.get("title", "")
@@ -3295,14 +3561,43 @@ def recommend_resources_for_learning(payload: dict[str, Any]) -> dict[str, Any]:
     result = svc.recommend(
         session_id=session_id,
         section_id=stage_id,
-        section_title=target_stage.get("title", ""),
+        section_title=str(active_task.get("title") or active_task.get("topic") or target_stage.get("title", "")),
         knowledge_points=kps if kps else [{"name": sections[0]}] if sections else [],
         profile=profile,
         weak_points=weak_kps,
         course_name=course_name,
-        refresh=bool(payload.get("refresh", False)),
+        resource_types=payload.get("resourceTypes") if isinstance(payload.get("resourceTypes"), list) else None,
+        refresh=refresh,
+        cache_scope="|".join((session_id, subject_id, path_id, stage_id, task_id)),
     )
-    return _product_response({"recommendations": result}, session_id=session_id, source="recommend")
+    if video_scope:
+        valid = _valid_video_recommendations(result.get("resources") if isinstance(result.get("resources"), list) else [])
+        if valid:
+            resource_id = f"video-recommendations-{hashlib.sha256('|'.join(map(str, video_scope)).encode()).hexdigest()[:32]}"
+            db = SessionLocal()
+            try:
+                row = db.query(ResourceModel).filter(ResourceModel.id == resource_id, ResourceModel.session_id == session_id).first()
+                metadata = {"canonicalScope": {"learnerId": auth.learner_id, "sessionId": video_scope[0], "subjectId": video_scope[1], "pathId": video_scope[2], "stageId": video_scope[3], "dayId": video_scope[4], "globalDayIndex": video_scope[5], "taskId": video_scope[6], "resourceType": "video"}, "resources": valid, "savedAt": datetime.now(timezone.utc).isoformat()}
+                if row is None:
+                    row = ResourceModel(id=resource_id, session_id=session_id, learner_id=auth.learner_id, subject_id=video_scope[1], path_id=video_scope[2], type="video", title="Video recommendations", content=json.dumps(valid, ensure_ascii=False), format="video", source="system_inferred", related_stage_id=video_scope[3], related_section_id=video_scope[6], task_id=video_scope[6], resource_metadata=metadata)
+                    db.add(row)
+                else:
+                    row.content, row.resource_metadata = json.dumps(valid, ensure_ascii=False), metadata
+                db.commit()
+            finally:
+                db.close()
+            result = {**result, "resources": valid, "presentationStatus": "new_search"}
+        else:
+            # Failed/empty refreshes never overwrite a prior non-empty row.
+            db = SessionLocal()
+            try:
+                row = db.query(ResourceModel).filter(ResourceModel.id == f"video-recommendations-{hashlib.sha256('|'.join(map(str, video_scope)).encode()).hexdigest()[:32]}", ResourceModel.session_id == session_id).first()
+                previous = _valid_video_recommendations((row.resource_metadata or {}).get("resources") if row and isinstance(row.resource_metadata, dict) else [])
+            finally:
+                db.close()
+            if previous:
+                result = {**result, "resources": previous, "presentationStatus": "stale", "warnings": [*result.get("warnings", []), "本次搜索暂不可用，正在展示上次有效结果。"]}
+    return _product_response({"recommendations": result}, session_id=session_id, subject_id=video_scope[1] if video_scope else subject_id, source="recommend")
 
 
 _ONLINE_SEARCH_RESOURCE_TYPES = {"article", "video", "course", "document", "paper"}
@@ -4362,11 +4657,26 @@ def _nkey(session_id: str, node_id: str) -> str:
 
 def _set_path_node_progress(stages: list[dict[str, Any]], node_id: str, status: str, mastery: int) -> bool:
     """Update one existing task/chapter/section/KP in the persisted path."""
+    task_updated = False
     for stage in stages:
-        for task in stage.get("tasks", []):
+        if not isinstance(stage, dict):
+            continue
+        # The persisted Day contract keeps a legacy flat task list for older
+        # consumers. Update both representations because JSON serialization
+        # does not preserve their in-memory shared references.
+        task_lists = [stage.get("tasks", [])]
+        task_lists.extend(day.get("tasks", []) for day in stage.get("days", []) if isinstance(day, dict))
+        for tasks in task_lists:
+            for task in tasks if isinstance(tasks, list) else []:
+                if isinstance(task, dict) and str(task.get("task_id") or task.get("id") or "") == node_id:
+                    task["status"], task["mastery"] = status, mastery
+                    task_updated = True
+        if task_updated:
+            continue
+        for task in _stage_items(stage):
             if isinstance(task, dict) and str(task.get("task_id") or task.get("id") or "") == node_id:
                 task["status"], task["mastery"] = status, mastery
-                return True
+                task_updated = True
         for node in stage.get("nodes", []):
             if str(node.get("id") or "") == node_id:
                 node["status"], node["mastery"] = status, mastery
@@ -4383,11 +4693,14 @@ def _set_path_node_progress(stages: list[dict[str, Any]], node_id: str, status: 
                     if str(point.get("kp_id") or point.get("id") or "") == node_id:
                         point["status"], point["mastery"] = status, mastery
                         return True
-    return False
+    return task_updated
 
 
 def _stage_items(stage: dict[str, Any]) -> list[dict[str, Any]]:
     """Return executable items only; containers never complete a stage."""
+    daily_tasks = [task for day in stage.get("days", []) if isinstance(day, dict) for task in day.get("tasks", []) if isinstance(task, dict)]
+    if daily_tasks:
+        return daily_tasks
     if stage.get("tasks"):
         return [item for item in stage["tasks"] if isinstance(item, dict)]
     if stage.get("nodes"):
@@ -4409,6 +4722,7 @@ def _is_complete(item: dict[str, Any]) -> bool:
 def _apply_stage_progress(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Derive the only stage-access state from persisted path JSON."""
     current_seen = False
+    current_day_seen = False
     for stage in stages:
         items = _stage_items(stage)
         required = [item for item in items if not item.get("optional", False)]
@@ -4428,20 +4742,41 @@ def _apply_stage_progress(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         stage["requiredTaskCount"] = len(required)
         stage["progressPercent"] = round(done * 100 / len(required)) if required else 0
         stage["accessible"] = status != "locked"
+        for day in stage.get("days", []) if isinstance(stage.get("days"), list) else []:
+            if not isinstance(day, dict):
+                continue
+            day_required = [item for item in day.get("tasks", []) if isinstance(item, dict) and not item.get("optional", False)]
+            day_done = sum(_is_complete(item) for item in day_required)
+            if day_required and day_done == len(day_required):
+                day_status = "completed"
+            elif not current_day_seen:
+                day_status = "current"
+                current_day_seen = True
+            else:
+                day_status = "locked"
+            day["progressStatus"] = day_status
+            day["accessible"] = day_status != "locked"
+            day["completedTaskCount"] = day_done
+            day["requiredTaskCount"] = len(day_required)
     return stages
 
 
-def _path_task_context(stages: list[dict[str, Any]], node_id: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    for stage in stages:
-        for item in _stage_items(stage):
-            if node_id in {str(item.get(key) or "") for key in ("id", "task_id", "section_id")}:
-                return stage, item
-    return None
+def _path_task_context(stages: list[dict[str, Any]], node_id: str, path_id: str = "") -> tuple[dict[str, Any], dict[str, Any]] | None:
+    normalized = normalize_learning_path({"id": path_id, "stages": stages})
+    entry = normalized["task_index"].get(node_id)
+    if not entry:
+        return None
+    stage = stages[entry["_stage_index"]]
+    if stage.get("days"):
+        task = stage["days"][entry["_day_index"] - 1]["tasks"][entry["_task_index"]]
+    else:
+        task = stage["tasks"][entry["_task_index"]]
+    return stage, task
 
 
 def complete_path_task(
     db, *, session_id: str, subject_id: str, path_id: str, stage_id: str,
-    task_id: str, source: str = "learning_path",
+    task_id: str, source: str = "learning_path", preserve_mastery: bool = False,
 ) -> dict[str, Any]:
     """Persist one verified path task completion using the lecture semantics."""
     path = db.query(LearningPathModel).filter(
@@ -4449,9 +4784,10 @@ def complete_path_task(
     ).first()
     if not path or not isinstance(path.stages, list):
         raise HTTPException(status_code=404, detail="learning path not found")
+    _normalize_persisted_learning_path(path)
     stages = path.stages
     stage = next((s for s in stages if str(s.get("id") or s.get("stage_id") or "") == stage_id), None)
-    context = _path_task_context(stages, task_id)
+    context = _path_task_context(stages, task_id, path.id)
     if not stage or not context or context[0] is not stage:
         raise HTTPException(status_code=404, detail="learning path task not found")
     if _apply_stage_progress(deepcopy(stages))[stages.index(stage)].get("progressStatus") == "locked":
@@ -4460,7 +4796,9 @@ def complete_path_task(
     _, task = context
     was_complete = _is_complete(task)
     if not was_complete:
-        task["status"], task["mastery"] = "completed", 100
+        task["status"] = "completed"
+        if not preserve_mastery:
+            task["mastery"] = 100
         task["completedAt"] = datetime.now(timezone.utc).isoformat()
         task["completionSource"] = source
         flag_modified(path, "stages")
@@ -4495,6 +4833,237 @@ def complete_path_task(
     }
 
 
+def _video_evidence_exists(db, *, session_id: str, subject_id: str, path_id: str, stage_id: str, task_id: str, event_type: str) -> bool:
+    for event in db.query(LearningEventModel).filter(
+        LearningEventModel.session_id == session_id, LearningEventModel.event_type == event_type,
+    ):
+        metadata = event.metadata_ if isinstance(event.metadata_, dict) else {}
+        if (metadata.get("subjectId") == subject_id and metadata.get("pathId") == path_id
+                and metadata.get("stageId") == stage_id and metadata.get("taskId") == task_id):
+            return True
+    return False
+
+
+def _record_video_evidence(task_id: str, payload: dict[str, Any], auth: AuthContext, *, event_type: str) -> dict[str, Any]:
+    session_id, subject_id = _payload_session_id(payload), _payload_subject_id(payload)
+    path_id, stage_id = str(payload.get("pathId") or ""), str(payload.get("stageId") or "")
+    day_id, global_day_index = str(payload.get("dayId") or ""), payload.get("globalDayIndex")
+    if not path_id or not stage_id or (not day_id and global_day_index is None):
+        raise HTTPException(status_code=400, detail="pathId, stageId and day scope required")
+    try:
+        global_day_index = int(global_day_index) if global_day_index is not None else None
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="invalid globalDayIndex")
+    resource_url = str(payload.get("resourceUrl") or "").strip()
+    if event_type == "video_opened":
+        parsed = urlparse(resource_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise HTTPException(status_code=422, detail="a valid video resource URL is required")
+    scope = resolve_resource_scope(auth, session_id=session_id, subject_id=subject_id, path_id=path_id, stage_id=stage_id,
+        task_id=task_id, section_id=task_id, day_id=day_id, global_day_index=global_day_index)
+    db = SessionLocal()
+    try:
+        path = db.query(LearningPathModel).filter(LearningPathModel.id == path_id, LearningPathModel.session_id == scope.session_id).first()
+        normalized = _normalize_persisted_learning_path(path) if path else None
+        entry = normalized and normalized["task_index"].get(task_id)
+        task_type = str((entry or {}).get("task", {}).get("task_type") or (entry or {}).get("task", {}).get("type") or "").lower()
+        if not entry or entry["stage_id"] != stage_id or task_type not in {"video", "watch_video"}:
+            raise HTTPException(status_code=409, detail="video task required")
+        timestamp = datetime.now(timezone.utc).isoformat()
+        resource_id = f"{path_id}:{task_id}:{event_type}:{hashlib.sha256(resource_url.encode()).hexdigest()[:16]}"
+        exists = db.query(LearningEventModel).filter(LearningEventModel.session_id == scope.session_id,
+            LearningEventModel.event_type == event_type, LearningEventModel.resource_id == resource_id).first()
+        if not exists:
+            db.add(LearningEventModel(session_id=scope.session_id, learner_id=auth.learner_id, subject_id=scope.subject_id,
+                event_type=event_type, resource_id=resource_id, metadata_={"eventType": event_type, "learnerId": auth.learner_id,
+                "sessionId": scope.session_id, "subjectId": scope.subject_id, "pathId": path_id, "stageId": stage_id,
+                "dayId": day_id or entry["day_id"], "globalDayIndex": global_day_index or entry["global_day_index"],
+                "taskId": task_id, "resourceUrl": resource_url or None, "timestamp": timestamp}))
+            db.commit()
+        return _product_response({"recorded": not bool(exists), "eventType": event_type}, session_id=scope.session_id, subject_id=scope.subject_id, source="user_action")
+    finally:
+        db.close()
+
+
+@router.post("/learning-path/tasks/{task_id}/video-opened")
+def record_video_opened(task_id: str, payload: dict[str, Any], auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
+    return _record_video_evidence(task_id, payload, auth, event_type="video_opened")
+
+
+@router.post("/learning-path/tasks/{task_id}/video-fallback-selected")
+def record_video_fallback_selected(task_id: str, payload: dict[str, Any], auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
+    return _record_video_evidence(task_id, payload, auth, event_type="video_fallback_selected")
+
+
+@router.post("/learning-path/tasks/{task_id}/video-fallback-lecture-opened")
+def record_video_fallback_lecture_opened(task_id: str, payload: dict[str, Any], auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
+    return _record_video_evidence(task_id, payload, auth, event_type="video_fallback_lecture_opened")
+
+
+@router.post("/learning-path/tasks/{task_id}/delivery-mode")
+def set_video_delivery_mode(task_id: str, payload: dict[str, Any], auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
+    mode = str(payload.get("mode") or "").strip()
+    if mode not in {"video", "video_fallback_lecture"}:
+        raise HTTPException(status_code=422, detail="mode must be video or video_fallback_lecture")
+    canonical, scope = _video_fallback_payload(task_id, payload, auth, require_selected=False)
+    db = SessionLocal()
+    try:
+        if mode == "video_fallback_lecture" and not _video_evidence_exists(db, session_id=scope.session_id, subject_id=scope.subject_id, path_id=canonical["pathId"], stage_id=canonical["stageId"], task_id=task_id, event_type="video_fallback_selected"):
+            raise HTTPException(status_code=409, detail="select text fallback before switching to it")
+        resource_id = f"{canonical['pathId']}:{task_id}:active_delivery_mode"
+        event = db.query(LearningEventModel).filter(LearningEventModel.session_id == scope.session_id,
+            LearningEventModel.event_type == "video_delivery_mode_selected", LearningEventModel.resource_id == resource_id).first()
+        metadata = {"eventType": "video_delivery_mode_selected", "learnerId": auth.learner_id,
+            "sessionId": scope.session_id, "subjectId": scope.subject_id, "pathId": canonical["pathId"], "stageId": canonical["stageId"],
+            "dayId": canonical["dayId"], "globalDayIndex": canonical["globalDayIndex"], "taskId": task_id, "activeDeliveryMode": mode,
+            "timestamp": datetime.now(timezone.utc).isoformat()}
+        if event:
+            if (event.metadata_ or {}).get("activeDeliveryMode") != mode:
+                event.metadata_ = metadata; flag_modified(event, "metadata_")
+        else:
+            db.add(LearningEventModel(session_id=scope.session_id, learner_id=auth.learner_id, subject_id=scope.subject_id,
+                event_type="video_delivery_mode_selected", resource_id=resource_id, metadata_=metadata))
+        db.commit()
+        return _product_response({"activeDeliveryMode": mode}, session_id=scope.session_id, subject_id=scope.subject_id, source="user_action")
+    finally:
+        db.close()
+
+
+@router.post("/learning-path/tasks/{task_id}/complete")
+def complete_learning_path_task(task_id: str, payload: dict[str, Any], auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
+    """Persist one explicit, ready reading-task completion without inflating mastery."""
+    session_id, subject_id = _payload_session_id(payload), _payload_subject_id(payload)
+    path_id, stage_id = str(payload.get("pathId") or ""), str(payload.get("stageId") or "")
+    day_id = str(payload.get("dayId") or "")
+    global_day_index = payload.get("globalDayIndex")
+    if not path_id or not stage_id or (not day_id and global_day_index is None):
+        raise HTTPException(status_code=400, detail="pathId, stageId and day scope required")
+    try:
+        global_day_index = int(global_day_index) if global_day_index is not None else None
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="invalid globalDayIndex")
+    scope = resolve_resource_scope(
+        auth, session_id=session_id, subject_id=subject_id, path_id=path_id, stage_id=stage_id,
+        task_id=task_id, section_id=task_id, day_id=day_id, global_day_index=global_day_index,
+    )
+    db = SessionLocal()
+    try:
+        path = db.query(LearningPathModel).filter(LearningPathModel.id == path_id, LearningPathModel.session_id == scope.session_id).first()
+        normalized = _normalize_persisted_learning_path(path) if path else None
+        entry = normalized and normalized["task_index"].get(task_id)
+        if not entry:
+            raise HTTPException(status_code=404, detail="learning path task not found")
+        task = entry["task"]
+        task_type = str(task.get("task_type") or task.get("type") or "").lower()
+        fallback_lecture = None
+        if task_type in {"video", "watch_video"}:
+            opened = _video_evidence_exists(db, session_id=scope.session_id, subject_id=scope.subject_id, path_id=path_id, stage_id=stage_id, task_id=task_id, event_type="video_opened")
+            fallback = _video_evidence_exists(db, session_id=scope.session_id, subject_id=scope.subject_id, path_id=path_id, stage_id=stage_id, task_id=task_id, event_type="video_fallback_selected")
+            fallback_opened = _video_evidence_exists(db, session_id=scope.session_id, subject_id=scope.subject_id, path_id=path_id, stage_id=stage_id, task_id=task_id, event_type="video_fallback_lecture_opened")
+            lecture = db.query(ResourceModel).filter(
+                ResourceModel.session_id == scope.session_id, ResourceModel.related_section_id == task_id,
+                ResourceModel.type == "lecture",
+            ).order_by(ResourceModel.created_at.desc()).all()
+            lecture = next((item for item in lecture if (item.resource_metadata or {}).get("deliveryMode") == "video_fallback_lecture"), None)
+            fallback_completion = str(payload.get("evidenceType") or "") == "video_fallback_lecture_completed"
+            if fallback and not opened and not fallback_completion:
+                raise HTTPException(status_code=422, detail="FALLBACK_COMPLETION_EVIDENCE_INVALID")
+            if fallback_completion:
+                scope_metadata = (lecture.resource_metadata or {}).get("canonicalScope") if lecture else None
+                expected_scope = {"sessionId": scope.session_id, "subjectId": scope.subject_id, "pathId": path_id,
+                    "stageId": stage_id, "dayId": entry["day_id"], "globalDayIndex": entry["global_day_index"], "taskId": task_id}
+                mode_event = next((event for event in db.query(LearningEventModel).filter(
+                    LearningEventModel.session_id == scope.session_id,
+                    LearningEventModel.event_type == "video_delivery_mode_selected",
+                ) if (event.metadata_ or {}).get("subjectId") == scope.subject_id and (event.metadata_ or {}).get("pathId") == path_id
+                    and (event.metadata_ or {}).get("stageId") == stage_id and (event.metadata_ or {}).get("taskId") == task_id), None)
+                if str(payload.get("deliveryMode") or "") != "video_fallback_lecture" or str(payload.get("originalTaskId") or "") != task_id:
+                    raise HTTPException(status_code=422, detail="FALLBACK_COMPLETION_EVIDENCE_INVALID")
+                if not fallback_opened or str(payload.get("openedEvidenceType") or "") != "video_fallback_lecture_opened":
+                    raise HTTPException(status_code=409, detail="FALLBACK_LECTURE_NOT_OPENED")
+                if not lecture or lecture.id != str(payload.get("resourceId") or "") or not str(lecture.content or "").strip() or _is_profile_json(lecture.content or ""):
+                    raise HTTPException(status_code=409, detail="FALLBACK_RESOURCE_NOT_FOUND")
+                if not isinstance(scope_metadata, dict) or any(scope_metadata.get(key) != value for key, value in expected_scope.items()):
+                    raise HTTPException(status_code=409, detail="TASK_SCOPE_MISMATCH")
+                if mode_event and (mode_event.metadata_ or {}).get("activeDeliveryMode") != "video_fallback_lecture":
+                    raise HTTPException(status_code=409, detail="FALLBACK_DELIVERY_MODE_NOT_ACTIVE")
+                if not mode_event and not fallback:
+                    raise HTTPException(status_code=409, detail="FALLBACK_DELIVERY_MODE_NOT_ACTIVE")
+                fallback_lecture = lecture
+            if not opened and not (fallback and fallback_opened and lecture and str(lecture.content or "").strip() and not _is_profile_json(lecture.content or "")):
+                raise HTTPException(status_code=409, detail="open a video or complete the selected text fallback first")
+            if fallback and not opened:
+                fallback_event = next((event for event in db.query(LearningEventModel).filter(
+                    LearningEventModel.session_id == scope.session_id,
+                    LearningEventModel.event_type == "video_fallback_selected",
+                ) if (event.metadata_ or {}).get("subjectId") == scope.subject_id and (event.metadata_ or {}).get("pathId") == path_id
+                    and (event.metadata_ or {}).get("stageId") == stage_id and (event.metadata_ or {}).get("taskId") == task_id), None)
+                if fallback_event:
+                    fallback_event.metadata_ = {**(fallback_event.metadata_ or {}), "lectureResourceId": lecture.id, "lectureContentReady": True}
+                    flag_modified(fallback_event, "metadata_")
+            source = "video_opened" if opened else "video_fallback"
+        elif task_type != "read_doc":
+            if task_type in {"quiz", "do_quiz", "quiz_prac", "assessment", "test"}:
+                passed = db.query(AttemptModel).filter(
+                    AttemptModel.session_id == scope.session_id, AttemptModel.path_id == path_id,
+                    AttemptModel.stage_id == stage_id, AttemptModel.task_id == task_id,
+                    AttemptModel.learner_id == auth.learner_id, AttemptModel.total_score >= 60,
+                ).first()
+                if not passed:
+                    raise HTTPException(status_code=409, detail="a passing quiz attempt is required before completion")
+            raise HTTPException(status_code=409, detail="task requires its own completion evidence")
+        else:
+            lecture = db.query(ResourceModel).filter(
+                ResourceModel.session_id == scope.session_id, ResourceModel.related_section_id == task_id,
+                ResourceModel.type == "lecture",
+            ).order_by(ResourceModel.created_at.desc()).first()
+            if not lecture or not str(lecture.content or "").strip() or _is_profile_json(lecture.content or ""):
+                raise HTTPException(status_code=409, detail="ready lecture required before completion")
+            source = "explicit_reading"
+        result = complete_path_task(
+            db, session_id=scope.session_id, subject_id=scope.subject_id, path_id=path_id,
+            stage_id=stage_id, task_id=task_id, source=source, preserve_mastery=True,
+        )
+        if task_type == "read_doc":
+            event = db.query(LearningEventModel).filter(
+                LearningEventModel.session_id == scope.session_id,
+                LearningEventModel.event_type == "task_complete",
+                LearningEventModel.resource_id == f"{path.id}:{task_id}",
+            ).first()
+            if event:
+                event.metadata_ = {**(event.metadata_ or {}), "lectureResourceId": lecture.id,
+                    "evidenceType": str(payload.get("evidenceType") or "lecture_loaded_explicit_completion")}
+                flag_modified(event, "metadata_")
+        elif fallback_lecture:
+            event = db.query(LearningEventModel).filter(
+                LearningEventModel.session_id == scope.session_id,
+                LearningEventModel.event_type == "task_complete",
+                LearningEventModel.resource_id == f"{path.id}:{task_id}",
+            ).first()
+            if event:
+                event.metadata_ = {**(event.metadata_ or {}), "evidenceType": "video_fallback_lecture_completed",
+                    "deliveryMode": "video_fallback_lecture", "lectureResourceId": fallback_lecture.id,
+                    "openedEvidenceType": "video_fallback_lecture_opened"}
+                flag_modified(event, "metadata_")
+        path.overall_progress = result["pathProgress"]["taskProgressPercent"]
+        db.commit()
+        normalized = normalize_learning_path({"id": path.id, "estimatedDays": path.estimated_days, "stages": path.stages})
+        entry = normalized["task_index"][task_id]
+        day_tasks = [item["task"] for item in normalized["task_index"].values() if item["day_id"] == entry["day_id"]]
+        ordered = sorted(normalized["task_index"].values(), key=lambda item: (item["global_day_index"], item["_task_index"]))
+        next_entry = next((item for item in ordered if not _is_complete(item["task"])), None)
+        result.update({
+            "taskId": task_id, "taskStatus": entry["task"].get("status"), "completedAt": entry["task"].get("completedAt"),
+            "dayProgress": {"dayId": entry["day_id"], "globalDayIndex": entry["global_day_index"], "completed": sum(_is_complete(item) for item in day_tasks), "total": len(day_tasks)},
+            "unlockedDay": next_entry["global_day_index"] if next_entry else None,
+            "unlockedStage": next_entry["stage_id"] if next_entry else None,
+            "nextTask": result["pathProgress"].get("nextTask"),
+        })
+        return _product_response(result, session_id=scope.session_id, subject_id=scope.subject_id, source="user_action")
+    finally:
+        db.close()
+
+
 def _path_progress(path: LearningPathModel, *, session_id: str, subject_id: str) -> dict[str, Any]:
     stages = _apply_stage_progress(deepcopy(path.stages or [])) if isinstance(path.stages, list) else []
     required_items = [(stage, item) for stage in stages for item in _stage_items(stage) if not item.get("optional", False)]
@@ -4512,6 +5081,10 @@ def _path_progress(path: LearningPathModel, *, session_id: str, subject_id: str)
             "accessible": True,
             "routeContext": {"sessionId": session_id, "subjectId": subject_id, "pathId": path.id, "stageId": stage_id, "taskId": task_id, "sectionId": section_id},
         }
+        entry = normalize_learning_path({"id": path.id, "estimatedDays": path.estimated_days, "stages": path.stages})["task_index"].get(task_id)
+        if entry:
+            next_task.update({"dayId": entry["day_id"], "globalDayIndex": entry["global_day_index"]})
+            next_task["routeContext"].update({"dayId": entry["day_id"], "globalDayIndex": entry["global_day_index"]})
     total_required = len(required_items)
     completed_required = sum(_is_complete(item) for _, item in required_items)
     completed_stages = sum(stage.get("progressStatus") == "completed" for stage in stages)
@@ -4547,41 +5120,46 @@ def _require_stage_access(session_id: str, stage_id: str) -> None:
 
 def _require_task_stage_access(
     session_id: str, stage_id: str, section_id: str, path_id: str = "", task_id: str = "",
-) -> None:
+    day_id: str = "", global_day_index: int | None = None, subject_id: str = "", learner_id: str = "",
+) -> dict[str, Any]:
     """Validate a task URL against the persisted path before serving its content."""
     db = SessionLocal()
     try:
-        path = repo_get_latest_learning_path(db, session_id)
+        session = db.get(SessionModel, session_id)
+        resolved_subject_id = subject_id or str(session.subject_id or "") if session else ""
+        resolved_learner_id = learner_id or str(session.learner_id or "") if session else ""
+        if not session or (subject_id and session.subject_id != subject_id):
+            raise HTTPException(status_code=403, detail={"code": "invalid_task_scope", "message": "learning path subject scope mismatch"})
+        try:
+            path = resolve_current_learning_path(
+                db, learner_id=resolved_learner_id, session_id=session_id, subject_id=resolved_subject_id,
+            )
+        except CurrentPathUnresolvedError as exc:
+            raise HTTPException(status_code=409, detail={"code": "CURRENT_PATH_UNRESOLVED", "message": str(exc)}) from exc
         if not path or not isinstance(path.stages, list):
-            raise HTTPException(status_code=404, detail="learning path not found")
-        if path_id and path.id != path_id:
-            raise HTTPException(status_code=404, detail="learning path not found")
-        stages = _apply_stage_progress(path.stages)
+            raise HTTPException(status_code=404, detail={"code": "path_not_found", "message": "learning path not found"})
+        if path.id != path_id:
+            raise HTTPException(status_code=404, detail={"code": "path_not_found", "message": "learning path not found"})
+        normalized = _normalize_persisted_learning_path(path)
+        if normalized["upgraded"]:
+            db.commit()
+        requested_task_id = task_id or section_id
+        entry = normalized["task_index"].get(requested_task_id)
+        if not entry:
+            raise HTTPException(status_code=404, detail={"code": "task_not_found", "message": "learning path task not found"})
+        task = entry["task"]
+        compatible_section_id = str(task.get("section_id") or task.get("sectionId") or requested_task_id)
+        if entry["stage_id"] != stage_id or section_id not in {requested_task_id, compatible_section_id}:
+            raise HTTPException(status_code=409, detail={"code": "invalid_task_scope", "message": "learning path task scope mismatch"})
+        if day_id and entry["day_id"] != day_id:
+            raise HTTPException(status_code=409, detail={"code": "invalid_task_scope", "message": "learning path day scope mismatch"})
+        if global_day_index is not None and entry["global_day_index"] != global_day_index:
+            raise HTTPException(status_code=409, detail={"code": "invalid_task_scope", "message": "learning path day scope mismatch"})
+        stages = _apply_stage_progress(normalized["stages"])
         stage = next((item for item in stages if str(item.get("stage_id") or item.get("id") or "") == stage_id), None)
-        if not stage:
-            raise HTTPException(status_code=404, detail="learning path stage not found")
-        item_ids = {
-            str(item.get(key) or "")
-            for item in _stage_items(stage)
-            for key in ("task_id", "section_id", "id")
-        }
-        item_ids.update(
-            str(section.get("section_id") or section.get("id") or "")
-            for chapter in stage.get("chapters", [])
-            for section in chapter.get("sections", [])
-            if isinstance(section, dict)
-        )
-        # Legacy persisted paths may have title-only stage tasks while the
-        # frontend already uses the deterministic day/task id.  Accept that
-        # canonical compatibility id here instead of treating it as absent.
-        stage_index = next((i for i, candidate in enumerate(stages) if candidate is stage), 0)
-        for index, item in enumerate(_stage_items(stage)):
-            day = int(item.get("day") or item.get("day_index") or item.get("dayIndex") or 1) if isinstance(item, dict) else 1
-            item_ids.add(f"{path.id}_s{stage_index}_d{day}_t{index}")
-        if section_id not in item_ids or (task_id and task_id not in item_ids):
-            raise HTTPException(status_code=404, detail="learning path task not found")
         if stage["progressStatus"] == "locked":
             raise HTTPException(status_code=403, detail="请先完成当前阶段")
+        return entry
     finally:
         db.close()
 
@@ -4664,17 +5242,27 @@ def _apply_node_progress(stages: list[dict[str, Any]], session_id: str = "") -> 
 
 
 @router.get("/learning-path")
-def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
+def get_learning_path(sessionId: str = "", subjectId: str = "", pathId: str = "") -> dict[str, Any]:
     try:
         session_id = _resolve_session_id(sessionId, subjectId)
         subject_id = str(subjectId).strip()
         _ensure_session_linked(session_id, subject_id=subject_id)
 
+        def _display_summary(base: dict[str, Any], stages: list[dict[str, Any]]) -> str:
+            raw = str(base.get("description") or "").lower()
+            labels = {"learning objectives": "教学目标", "course content": "教学内容", "teaching methods": "教学方法", "assessment methods": "考核方式", "course structure": "课程结构"}
+            mapped = [label for key, label in labels.items() if key in raw]
+            focus = next((str(stage.get("title") or stage.get("objective") or "").strip() for stage in stages if str(stage.get("title") or stage.get("objective") or "").strip()), "当前学习目标")
+            if any(marker in focus.lower() for marker in ("quiz_result", "practice_result", "task_complete", "resourceid", "taskid", "complete one", "submit feedback", "review learning_path", "path_session_")):
+                focus = "当前学习目标"
+            advice = "、".join(mapped[:2]) if mapped else "当前阶段的核心概念"
+            return f"当前学习重点是{focus}。建议先复习{advice}，再完成一组针对性练习。"
+
         def _build_path(stages: list[dict[str, Any]], base: dict[str, Any]) -> dict[str, Any]:
             stages = _apply_node_progress(stages, session_id)
             all_nodes = [n for s in stages for n in s.get("nodes", [])]
             mastered = sum(1 for n in all_nodes if n.get("status") == "mastered")
-            overall = round(mastered / len(all_nodes) * 100) if all_nodes else 0
+            overall = base.get("overallProgress", round(mastered / len(all_nodes) * 100) if all_nodes else 0)
 
             stage_resource_stats: dict[str, dict[str, int]] = {}
             stage_ids = [s.get("id", "") for s in stages]
@@ -4706,16 +5294,41 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
                 "createdAt": base.get("createdAt", int(time.time() * 1000)),
                 "overallProgress": overall,
                 "estimatedDays": base.get("estimatedDays", 14),
+                "totalDays": base.get("estimatedDays", 14),
+                "dailyMinutes": base.get("dailyMinutes", 60),
                 "source": "agent_generated",
+                "displaySummary": _display_summary(base, stages),
                 "adjustments": base.get("adjustments", []),
                 "pathVersion": base.get("pathVersion", int(time.time() * 1000)),
             }
 
-        db_path = ag_get_learning_path(session_id)
+        try:
+            db_path = ag_get_learning_path(session_id, subjectId, pathId)
+        except CurrentPathUnresolvedError as exc:
+            raise HTTPException(status_code=409, detail={"code": "CURRENT_PATH_UNRESOLVED"}) from exc
+        if pathId and not db_path:
+            raise HTTPException(status_code=404, detail="learning path is outside the requested scope")
         if db_path:
             raw_stages = db_path.get("stages", [])
             if isinstance(raw_stages, list):
-                stages = _raw_stages_to_nodes(raw_stages)
+                normalized = normalize_learning_path({
+                    "id": db_path.get("id", f"path_{session_id}"),
+                    "estimatedDays": db_path.get("estimated_days", 14), "stages": raw_stages,
+                })
+                if normalized["upgraded"]:
+                    db = SessionLocal()
+                    try:
+                        persisted = db.get(LearningPathModel, db_path["id"])
+                        if persisted:
+                            persisted.stages = normalized["stages"]
+                            persisted.estimated_days = normalized["path"]["estimatedDays"]
+                            flag_modified(persisted, "stages")
+                            db.commit()
+                    finally:
+                        db.close()
+                    db_path["stages"] = normalized["stages"]
+                    db_path["estimated_days"] = normalized["path"]["estimatedDays"]
+                stages = _raw_stages_to_nodes(normalized["stages"])
             else:
                 stages = []
             if not stages:
@@ -4729,28 +5342,17 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
                     "courseId": db_path.get("course_id", ""),
                     "createdAt": _datetime_to_ms(db_path.get("created_at")),
                     "estimatedDays": db_path.get("estimated_days", 14),
+                    "overallProgress": db_path.get("overall_progress", 0),
                     "adjustments": [],
                     "pathVersion": _datetime_to_ms(db_path.get("updated_at")),
                 })},
                 session_id=session_id, subject_id=subjectId, source="db",
             )
 
-        state = conversation_store.get(session_id)
-        if state.last_result:
-            path = _to_learning_path(state.last_result)
-            if not path.get("stages"):
-                return _product_response({"path": _empty_learning_path(session_id)}, session_id=session_id, subject_id=subjectId, source="none")
-            path["source"] = "agent_generated"
-            path["day_plan"] = state.last_result.get("day_plan")
-            path["diagnosis"] = state.last_result.get("diagnosis", {})
-            path["stages"] = _apply_node_progress(path["stages"], session_id)
-            all_nodes = [n for s in path["stages"] for n in s.get("nodes", [])]
-            mastered = sum(1 for n in all_nodes if n.get("status") == "mastered")
-            path["overallProgress"] = round(mastered / len(all_nodes) * 100) if all_nodes else 0
-            return _product_response({"path": path}, session_id=session_id, subject_id=subjectId, source="agent")
-
         return _product_response({"path": _empty_learning_path(session_id)}, session_id=session_id, subject_id=subjectId, source="none")
 
+    except HTTPException:
+        raise
     except Exception:
         logger.warning(
             "get_learning_path failed for sessionId=%s subjectId=%s",
@@ -4855,19 +5457,32 @@ def _generate_learning_path(payload: dict[str, Any], auth: AuthContext, workflow
         error.safe_error_message = "路径生成服务暂不可用，未保存空路径。"
         raise error
     # ── 异步触发资源生成（如果上面的调用链快速返回但资源未完成）──
-    path["id"] = f"path_{session_id}"
     path["courseId"] = course_id or str(result.get("course_id", ""))
+    normalized = normalize_learning_path({
+        "id": "generated", "estimatedDays": path["estimatedDays"],
+        "dailyMinutes": path.get("dailyMinutes", 60), "stages": result.get("learning_path", []),
+    })
+    path["stages"] = _raw_stages_to_nodes(normalized["stages"])
+    path["estimatedDays"] = normalized["path"]["estimatedDays"]
     db = SessionLocal()
     try:
-        saved = upsert_learning_path(db, session_id, {
-            "id": path["id"], "course_id": path["courseId"], "course_name": path["courseName"],
-            "description": path["description"], "stages": result.get("learning_path", []),
+        workflow_id = str(getattr(workflow_task, "task_id", "") or payload.get("generationId") or "synchronous")
+        session = db.get(SessionModel, session_id)
+        learner_id = str(getattr(auth, "learner_id", "") or (session.learner_id if session else "") or "anonymous")
+        saved = persist_generated_learning_path(db, learner_id=learner_id, session_id=session_id, subject_id=subject_id, workflow_id=workflow_id, path_data={
+            "course_id": path["courseId"], "course_name": path["courseName"],
+            "description": path["description"], "stages": normalized["stages"],
             "overallProgress": path["overallProgress"], "estimatedDays": path["estimatedDays"],
         })
+        db.commit()
+        saved_id = saved.id
+        saved_version = saved.current_version
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
-    path["id"] = saved.id
-    return _product_response({"path": path, "pathId": saved.id, "generated": True}, session_id=session_id, subject_id=subject_id, source="agent")
+    return _product_response({"persisted": True, "pathId": saved_id, "pathVersion": saved_version, "subjectId": subject_id, "sourceWorkflowId": workflow_id, "generated": True}, session_id=session_id, subject_id=subject_id, source="agent")
 
 
 @router.post("/learning-path/generate")
@@ -5005,7 +5620,9 @@ def update_node_progress(node_id: str, payload: dict[str, Any]) -> dict[str, Any
             ).first()
             if path_id else repo_get_latest_learning_path(db, session_id)
         )
-        context = _path_task_context(path.stages, node_id) if path and isinstance(path.stages, list) else None
+        if path and isinstance(path.stages, list):
+            _normalize_persisted_learning_path(path)
+        context = _path_task_context(path.stages, node_id, path.id) if path and isinstance(path.stages, list) else None
         was_complete = bool(context and _is_complete(context[1]))
         if not path or not isinstance(path.stages, list) or not context or not _set_path_node_progress(path.stages, node_id, status, mastery):
             raise HTTPException(status_code=404, detail="learning path node not found")
@@ -5013,8 +5630,8 @@ def update_node_progress(node_id: str, payload: dict[str, Any]) -> dict[str, Any
         db.add(path)
         db.commit()
         db.refresh(path)
-        if not was_complete and _is_complete(_path_task_context(path.stages, node_id)[1]):
-            stage, task = _path_task_context(path.stages, node_id)
+        if not was_complete and _is_complete(_path_task_context(path.stages, node_id, path.id)[1]):
+            stage, task = _path_task_context(path.stages, node_id, path.id)
             session = db.get(SessionModel, session_id)
             metadata = {
                 "eventType": "task_complete", "learnerId": session.learner_id if session else None,
@@ -5098,6 +5715,8 @@ def accept_pending_revision(session_id: str, subjectId: str = "", pathId: str = 
     _scope, revision = _revision_scope(session_id, subjectId, pathId, revisionId, auth)
     if revision is None:
         raise HTTPException(status_code=404, detail="No pending revision found")
+    if revision.get("status") != "ready_for_review":
+        raise HTTPException(status_code=409, detail="revision is not pending")
     result = conversation_store.apply_pending_revision(session_id)
     if not result:
         raise HTTPException(status_code=404, detail="No pending revision found")
@@ -5704,14 +6323,18 @@ class ResourceScope:
 
 def resolve_resource_scope(
     auth: AuthContext, *, session_id: str, subject_id: str = "", path_id: str = "", stage_id: str = "",
-    task_id: str = "", section_id: str = "", resource_id: str = "",
+    task_id: str = "", section_id: str = "", resource_id: str = "", day_id: str = "",
+    global_day_index: int | None = None,
 ) -> ResourceScope:
     """Resolve owned resource scope before any resource read, write, or provider call."""
     if not isinstance(auth, AuthContext):  # direct unit callers are not HTTP entry points
         return ResourceScope("", session_id, subject_id, path_id, stage_id, task_id, section_id)
     base = resolve_analytics_scope(auth, session_id=session_id, subject_id=subject_id, path_id=path_id, stage_id=stage_id)
     if stage_id and (section_id or task_id):
-        _require_task_stage_access(base.session_id, stage_id, section_id or task_id, path_id, task_id)
+        _require_task_stage_access(
+            base.session_id, stage_id, section_id or task_id, path_id, task_id,
+            day_id, global_day_index,
+        )
     if resource_id:
         db = SessionLocal()
         try:
@@ -7305,6 +7928,7 @@ def _generate_section_lecture(section_id: str, payload: dict[str, Any], workflow
     requirements = str(payload.get("requirements", "")).strip()
     course_name = str(payload.get("courseId", "")).strip()
     task_type = str(payload.get("task_type", "")).strip()
+    fingerprint = str(payload.get("semanticFingerprint") or "")
 
     if not section_title:
         return _product_response(None, session_id=session_id, status="error", message="sectionTitle required", source="agent")
@@ -7314,9 +7938,10 @@ def _generate_section_lecture(section_id: str, payload: dict[str, Any], workflow
     try:
         existing = db.query(ResourceModel).filter(
             ResourceModel.session_id == session_id,
-            ResourceModel.related_section_id == section_id,
+            ResourceModel.task_id == str(payload.get("taskId") or section_id),
             ResourceModel.type == "lecture",
-        ).order_by(ResourceModel.updated_at.desc()).first()
+        ).order_by(ResourceModel.updated_at.desc()).all()
+        existing = next((item for item in existing if not fingerprint or (item.resource_metadata or {}).get("semanticFingerprint") == fingerprint), None)
         if existing and existing.content and not _is_profile_json(existing.content):
             return _product_response({"lecture": {
                 "id": existing.id, "title": existing.title or "", "content": existing.content,
@@ -7458,7 +8083,7 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
     raw = _inject_spark_images(raw, section_title)
 
     # Persist as Resource
-    resource_id = f"lecture_{section_id}"
+    resource_id = f"lecture_{fingerprint[:48]}" if fingerprint else f"lecture_{section_id}"
     try:
         db = SessionLocal()
         from app.db.repository import upsert_resource
@@ -7477,6 +8102,11 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
             "related_section_id": section_id,
             "task_id": str(payload.get("taskId") or section_id),
             "knowledge_points": [kp.get("name", str(kp)) if isinstance(kp, dict) else str(kp) for kp in (knowledge_points or [])],
+            "resource_metadata": {
+                "semanticFingerprint": fingerprint,
+                "canonicalScope": {key: payload.get(key) for key in ("sessionId", "subjectId", "pathId", "stageId", "dayId", "globalDayIndex", "taskId", "taskType")},
+                **({"sourceTaskType": "video", "deliveryMode": "video_fallback_lecture", "originalTaskId": payload.get("originalTaskId") or payload.get("taskId")} if payload.get("deliveryMode") == "video_fallback_lecture" else {}),
+            },
         }
         _attach_personalization_metadata(resource_dict, session_id, subject_id)
         upsert_resource(db, session_id, resource_dict)
@@ -7495,6 +8125,19 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
     return _product_response({"lecture": lecture_data}, session_id=session_id, source="agent")
 
 
+def _lecture_semantic_fingerprint(payload: dict[str, Any], learner_id: str) -> str:
+    """Stable identity for a lecture's learning-path meaning, not its position."""
+    fields = (
+        "sessionId", "subjectId", "pathId", "stageId", "dayId", "globalDayIndex",
+        "taskId", "taskType", "taskTitle", "taskDescription", "learningObjectives",
+        "knowledgePoints", "stageTitle", "pathVersion", "deliveryMode", "originalTaskId", "fallbackVersion",
+    )
+    identity = {key: payload.get(key) for key in fields}
+    identity["learnerId"] = learner_id
+    encoded = json.dumps(identity, sort_keys=True, ensure_ascii=False, default=str, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 @router.post("/sections/{section_id}/lecture/ensure")
 def ensure_section_lecture(section_id: str, payload: dict[str, Any], auth: AuthContext = Depends(get_auth)) -> dict[str, Any]:
     """Atomically return the persisted lecture or the single active generator."""
@@ -7503,23 +8146,102 @@ def ensure_section_lecture(section_id: str, payload: dict[str, Any], auth: AuthC
     task_id = str(payload.get("taskId") or section_id).strip()
     stage_id = str(payload.get("stageId") or "").strip()
     path_id = str(payload.get("pathId") or "").strip()
-    if not stage_id or not path_id or not task_id:
-        raise HTTPException(status_code=400, detail="pathId, stageId and taskId are required")
-    _require_task_stage_access(session_id, stage_id, section_id, path_id, task_id)
+    subject_id = _payload_subject_id(payload)
+    if not subject_id or not stage_id or not path_id or not task_id:
+        raise HTTPException(status_code=400, detail="subjectId, pathId, stageId and taskId are required")
+    entry = _require_task_stage_access(session_id, stage_id, section_id, path_id, task_id, subject_id=subject_id, learner_id=auth.learner_id)
+    task_type = str(entry["task"].get("type") or entry["task"].get("task_type") or "read_doc")
+    requested_task_type = str(payload.get("taskType") or task_type)
+    if task_type != "read_doc" or requested_task_type != task_type:
+        raise HTTPException(status_code=409, detail={"code": "invalid_task_type", "message": "lecture ensure requires a read_doc task"})
+    payload = {
+        **payload, "sessionId": session_id, "subjectId": subject_id, "pathId": path_id,
+        "stageId": stage_id, "dayId": entry["day_id"], "globalDayIndex": entry["global_day_index"],
+        "taskId": task_id, "sectionId": section_id, "taskType": task_type,
+    }
+    fingerprint = _lecture_semantic_fingerprint(payload, auth.learner_id)
     db = SessionLocal()
     try:
         lecture = db.query(ResourceModel).filter(
             ResourceModel.session_id == session_id,
-            ResourceModel.related_section_id == section_id,
+            ResourceModel.task_id == task_id,
             ResourceModel.type == "lecture",
-        ).order_by(ResourceModel.created_at.desc()).first()
+        ).order_by(ResourceModel.created_at.desc()).all()
+        lecture = next((item for item in lecture if (item.resource_metadata or {}).get("semanticFingerprint") == fingerprint), None)
         if lecture and str(lecture.content or "").strip():
             return {"status": "ready", "workflowId": None, "lecture": {"id": lecture.id, "content": lecture.content}, "errorCode": None, "errorMessage": None}
     finally:
         db.close()
     from app.routers.workflows import _start
-    task, _ = _start("lecture_generation", {**payload, "sessionId": session_id, "sectionId": section_id, "taskId": task_id}, auth)
+    task, _ = _start("lecture_generation", {**payload, "semanticFingerprint": fingerprint}, auth)
     return {"status": "running", "workflowId": task.task_id, "lecture": None, "errorCode": None, "errorMessage": None}
+
+
+def _video_fallback_payload(task_id: str, payload: dict[str, Any], auth: AuthContext, *, require_selected: bool = True) -> tuple[dict[str, Any], ResourceScope]:
+    session_id, subject_id = _payload_session_id(payload), _payload_subject_id(payload)
+    path_id, stage_id, day_id = (str(payload.get(key) or "").strip() for key in ("pathId", "stageId", "dayId"))
+    try:
+        global_day_index = int(payload.get("globalDayIndex"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail={"code": "TASK_SCOPE_MISMATCH", "message": "complete canonical task scope is required"})
+    scope = resolve_resource_scope(auth, session_id=session_id, subject_id=subject_id, path_id=path_id, stage_id=stage_id,
+        task_id=task_id, section_id=task_id, day_id=day_id, global_day_index=global_day_index)
+    db = SessionLocal()
+    try:
+        path = db.query(LearningPathModel).filter(LearningPathModel.id == path_id, LearningPathModel.session_id == scope.session_id).first()
+        normalized = _normalize_persisted_learning_path(path) if path else None
+        entry = normalized and normalized["task_index"].get(task_id)
+        if not entry:
+            raise HTTPException(status_code=404, detail={"code": "CANONICAL_TASK_NOT_FOUND", "message": "learning path task not found"})
+        if entry["stage_id"] != stage_id or entry["day_id"] != day_id or entry["global_day_index"] != global_day_index:
+            raise HTTPException(status_code=409, detail={"code": "TASK_SCOPE_MISMATCH", "message": "learning path task scope mismatch"})
+        task_type = str(entry["task"].get("task_type") or entry["task"].get("type") or "").lower()
+        if task_type not in {"video", "watch_video"}:
+            raise HTTPException(status_code=409, detail={"code": "TASK_TYPE_NOT_VIDEO", "message": "video task required"})
+        if require_selected and not _video_evidence_exists(db, session_id=scope.session_id, subject_id=scope.subject_id, path_id=path_id, stage_id=stage_id, task_id=task_id, event_type="video_fallback_selected"):
+            raise HTTPException(status_code=409, detail={"code": "FALLBACK_NOT_SELECTED", "message": "select text fallback before generating a lecture"})
+        task = entry["task"]
+        title = str(task.get("title") or task.get("goal") or "视频学习图文讲解").strip()
+        return ({**payload, "sessionId": scope.session_id, "subjectId": scope.subject_id, "pathId": path_id, "stageId": stage_id,
+            "dayId": day_id, "globalDayIndex": global_day_index, "taskId": task_id, "sectionId": task_id, "taskType": task_type,
+            "originalTaskId": task_id, "deliveryMode": "video_fallback_lecture", "fallbackVersion": 1,
+            "taskTitle": title, "sectionTitle": title, "taskDescription": task.get("description") or task.get("goal") or payload.get("taskDescription") or "",
+            "learningObjectives": task.get("learningObjectives") or task.get("learning_objectives") or payload.get("learningObjectives") or [],
+            "knowledgePoints": task.get("knowledgePoints") or task.get("knowledge_points") or payload.get("knowledgePoints") or []}, scope)
+    finally:
+        db.close()
+
+
+@router.post("/learning-path/tasks/{task_id}/video-fallback/lecture/ensure")
+def ensure_video_fallback_lecture(task_id: str, payload: dict[str, Any], auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
+    payload, scope = _video_fallback_payload(task_id, payload, auth)
+    fingerprint = _lecture_semantic_fingerprint(payload, auth.learner_id)
+    db = SessionLocal()
+    try:
+        lecture = next((item for item in db.query(ResourceModel).filter(ResourceModel.session_id == scope.session_id, ResourceModel.task_id == task_id, ResourceModel.type == "lecture").order_by(ResourceModel.created_at.desc()) if (item.resource_metadata or {}).get("semanticFingerprint") == fingerprint), None)
+        if lecture and str(lecture.content or "").strip():
+            return {"status": "ready", "workflowId": None, "lecture": {"id": lecture.id, "content": lecture.content}, "errorCode": None, "errorMessage": None}
+    finally:
+        db.close()
+    from app.routers.workflows import _start
+    task, _ = _start("lecture_generation", {**payload, "operation": "video_fallback_lecture", "semanticFingerprint": fingerprint}, auth)
+    return {"status": "running", "workflowId": task.task_id, "lecture": None, "errorCode": None, "errorMessage": None}
+
+
+@router.get("/learning-path/tasks/{task_id}/video-fallback/state")
+def video_fallback_state(task_id: str, sessionId: str, subjectId: str, pathId: str, stageId: str, dayId: str, globalDayIndex: int, auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
+    payload, scope = _video_fallback_payload(task_id, {"sessionId": sessionId, "subjectId": subjectId, "pathId": pathId, "stageId": stageId, "dayId": dayId, "globalDayIndex": globalDayIndex}, auth, require_selected=False)
+    db = SessionLocal()
+    try:
+        lecture = next((item for item in db.query(ResourceModel).filter(ResourceModel.session_id == scope.session_id, ResourceModel.task_id == task_id, ResourceModel.type == "lecture").order_by(ResourceModel.created_at.desc()) if (item.resource_metadata or {}).get("deliveryMode") == "video_fallback_lecture"), None)
+        selected = _video_evidence_exists(db, session_id=scope.session_id, subject_id=scope.subject_id, path_id=pathId, stage_id=stageId, task_id=task_id, event_type="video_fallback_selected")
+        mode_event = next((event for event in db.query(LearningEventModel).filter(LearningEventModel.session_id == scope.session_id, LearningEventModel.event_type == "video_delivery_mode_selected").order_by(LearningEventModel.created_at.desc()) if (event.metadata_ or {}).get("subjectId") == scope.subject_id and (event.metadata_ or {}).get("pathId") == pathId and (event.metadata_ or {}).get("stageId") == stageId and (event.metadata_ or {}).get("taskId") == task_id), None)
+        active_mode = (mode_event.metadata_ or {}).get("activeDeliveryMode") if mode_event else ("video_fallback_lecture" if selected else "video")
+        recommendations = any((item.resource_metadata or {}).get("canonicalScope", {}).get("pathId") == pathId and (item.resource_metadata or {}).get("canonicalScope", {}).get("stageId") == stageId and (item.resource_metadata or {}).get("canonicalScope", {}).get("dayId") == dayId and (item.resource_metadata or {}).get("canonicalScope", {}).get("globalDayIndex") == globalDayIndex for item in db.query(ResourceModel).filter(ResourceModel.session_id == scope.session_id, ResourceModel.task_id == task_id, ResourceModel.type == "video"))
+        fallback_resource = {"id": lecture.id, "content": lecture.content} if lecture and lecture.content else None
+        return {"selected": selected, "fallbackSelected": selected, "activeDeliveryMode": active_mode, "lecture": fallback_resource, "fallbackResource": fallback_resource, "videoRecommendations": recommendations}
+    finally:
+        db.close()
 
 
 @router.post("/sections/{section_id}/lecture/generate")
@@ -8575,6 +9297,8 @@ def get_generated_section_resources(
     pathId: str = "",
     stageId: str = "",
     taskId: str = "",
+    dayId: str = "",
+    globalDayIndex: int | None = None,
     auth: AuthContext = Depends(require_auth),
 ) -> dict[str, Any]:
     """Read only resources generated for the current section."""
@@ -8592,6 +9316,8 @@ def get_generated_section_resources(
         stage_id=stageId,
         task_id=taskId,
         section_id=section_id,
+        day_id=dayId,
+        global_day_index=globalDayIndex,
     )
     session_id, subject_id = scope.session_id, scope.subject_id
     from app.services.section_generated_resources import SectionGeneratedResourcesService

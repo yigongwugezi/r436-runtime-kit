@@ -4,6 +4,7 @@ import { ExternalLink, FileText, Loader2, RefreshCw, Search, User, ArrowRight, B
 import { useNavigate } from 'react-router-dom';
 import { recommendV2, type RecommendCategory, type RecommendGroup, type WebSearchResultItem, type GeneratedResourceItem } from '../../api/resources';
 import { useProfile } from '../../hooks/useProfile';
+import { profileDisplayCompleteness } from '../../utils/profileCompleteness';
 import { useChatStore } from '../../store/chatStore';
 import { useSubjectStore } from '../../store/subjectStore';
 import { PageLoading, PageEmpty } from '../common/PageState';
@@ -87,7 +88,7 @@ function ProfileSummaryCard() {
         <div><span className="text-surface-400">专业背景</span><p className="mt-0.5 text-surface-700 truncate">{background}</p></div>
         <div><span className="text-surface-400">内容偏好</span><p className="mt-0.5 text-surface-700 truncate">{prefs}</p></div>
         <div><span className="text-surface-400">薄弱环节</span><p className="mt-0.5 text-surface-700 truncate">{weakPoints.length > 0 ? `${weakPoints.length} 项` : '—'}</p></div>
-        <div><span className="text-surface-400">画像完整度</span><p className="mt-0.5 text-surface-700">{Math.round((profileV2.profile_completeness || 0) * 100)}%</p></div>
+        <div><span className="text-surface-400">画像完整度</span><p className="mt-0.5 text-surface-700">{profileDisplayCompleteness(profileV2.subject_context).percent}%</p></div>
       </div>
     </div>
   );

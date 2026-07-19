@@ -2,8 +2,8 @@ import client from './client';
 import type { LearningPath } from '../types/learningPath';
 
 /** 获取学习路径 */
-export async function getLearningPath(params: { sessionId: string; subjectId?: string }): Promise<{ path: LearningPath }> {
-  const { data } = await client.get('/api/learning-path', { params });
+export async function getLearningPath(params: { sessionId: string; subjectId?: string; pathId?: string }, signal?: AbortSignal): Promise<{ path: LearningPath }> {
+  const { data } = await client.get('/api/learning-path', { params, signal });
   return data;
 }
 
@@ -25,6 +25,37 @@ export async function updateNodeProgress(
   params: { sessionId: string; subjectId?: string; pathId?: string; status?: string },
 ): Promise<void> {
   await client.patch(`/api/learning-path/nodes/${nodeId}`, { mastery, ...params });
+}
+
+export async function completeLearningPathTask(taskId: string, payload: {
+  sessionId: string; subjectId: string; pathId: string; stageId: string; dayId?: string; globalDayIndex?: number;
+  taskType?: string; evidenceType?: string; deliveryMode?: 'video_fallback_lecture'; resourceId?: string;
+  originalTaskId?: string; openedEvidenceType?: string; completedAt?: string;
+}): Promise<any> {
+  const { data } = await client.post(`/api/learning-path/tasks/${encodeURIComponent(taskId)}/complete`, payload);
+  return data.data;
+}
+
+export async function recordVideoTaskEvidence(taskId: string, payload: {
+  sessionId: string; subjectId: string; pathId: string; stageId: string; dayId?: string; globalDayIndex?: number; resourceUrl?: string;
+}, fallback = false): Promise<any> {
+  const { data } = await client.post(`/api/learning-path/tasks/${encodeURIComponent(taskId)}/${fallback ? 'video-fallback-selected' : 'video-opened'}`, payload);
+  return data.data;
+}
+
+export async function getVideoFallbackState(taskId: string, payload: { sessionId: string; subjectId: string; pathId: string; stageId: string; dayId: string; globalDayIndex: number }): Promise<any> {
+  const { data } = await client.get(`/api/learning-path/tasks/${encodeURIComponent(taskId)}/video-fallback/state`, { params: payload });
+  return data?.data || data;
+}
+
+export async function setVideoDeliveryMode(taskId: string, payload: { sessionId: string; subjectId: string; pathId: string; stageId: string; dayId: string; globalDayIndex: number }, mode: 'video' | 'video_fallback_lecture'): Promise<any> {
+  const { data } = await client.post(`/api/learning-path/tasks/${encodeURIComponent(taskId)}/delivery-mode`, { ...payload, mode });
+  return data?.data || data;
+}
+
+export async function recordVideoFallbackLectureOpened(taskId: string, payload: { sessionId: string; subjectId: string; pathId: string; stageId: string; dayId?: string; globalDayIndex?: number }): Promise<any> {
+  const { data } = await client.post(`/api/learning-path/tasks/${encodeURIComponent(taskId)}/video-fallback-lecture-opened`, payload);
+  return data.data;
 }
 
 /** 验证课程名称 */

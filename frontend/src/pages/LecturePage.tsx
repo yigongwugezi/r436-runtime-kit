@@ -8,7 +8,8 @@ import { useLectureStore } from '../store/lectureStore';
 import { ChevronLeft, ChevronRight, Sparkles, MessageCircle, Send, Brain, BookOpen, ArrowLeft, ArrowRight, Target, Lightbulb, Layers, Clock, GraduationCap, Hash, CheckCircle2, Check, X, Loader2, HelpCircle, RefreshCw, FileText, FileDown, Lock } from 'lucide-react';
 import Markdown from '../utils/markdown';
 import MermaidDiagram from '../utils/mermaid';
-import { generateSectionQuiz, submitQuizAttempt } from '../api/assessment';
+import { ensureScopedLearningPathQuiz, generateSectionQuiz, retryScopedLearningPathQuiz, submitLearningPathQuiz, submitQuizAttempt } from '../api/assessment';
+import { matchesLearningPathQuiz } from '../utils/learningPathQuiz';
 import type { Chapter, LearningStage, PathNode, Section, ContentStatus } from '../types/learningPath';
 import type { LinkedQuestion, QuizResult, WeakPoint } from '../types/assessment';
 import SectionResourceWorkspace from '../components/learning/SectionResourceWorkspace';
@@ -18,11 +19,15 @@ import TextbookTocPanel from '../components/learning/TextbookTocPanel';
 import { getTextbookTOC, getTextbookContent } from '../api/textbooks';
 import type { TextbookTOC } from '../types/textbook';
 import GeneratePanel, { type GeneratePanelHandle } from '../components/learning/GeneratePanel';
-import { logStudyEvent } from '../api/feedback';
 import DailyTaskPage from './DailyTaskPage';
 import FocusSprintPage from './FocusSprintPage';
 import WorkflowProgress from '../components/common/WorkflowProgress';
-import { cancelWorkflow, consumeWorkflowEvents, ensureLecture, readWorkflow, type WorkflowState } from '../api/workflows';
+import { cancelWorkflow, consumeWorkflowEvents, ensureLecture, ensureVideoFallbackLecture, readWorkflow, type WorkflowState } from '../api/workflows';
+import { createLectureEnsureGuard } from '../utils/lectureEnsureGuard';
+import { completeLearningPathTask, getVideoFallbackState, recordVideoFallbackLectureOpened, recordVideoTaskEvidence, setVideoDeliveryMode as persistVideoDeliveryMode } from '../api/learningPath';
+import { resolveTaskExecutionMode } from '../utils/taskExecutionMode';
+import { requestVideoRecommendations, retryVideoRecommendations, videoRecommendationScope } from '../api/videoRecommendations';
+import { resolveCanonicalLearningTaskScope } from '../utils/learningTaskRoute';
 import {
   clearWorkflowTask,
   isActiveWorkflowStatus,
@@ -53,6 +58,11 @@ function detectContentType(md: string): ContentType {
 function lectureContent(response: any): string {
   const value = response?.data?.lecture?.content ?? response?.lecture?.content ?? response?.data?.content ?? response?.content ?? response?.generated_content;
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function lectureId(response: any): string {
+  const value = response?.data?.lecture?.id ?? response?.lecture?.id ?? response?.data?.fallbackResource?.id ?? response?.fallbackResource?.id;
+  return typeof value === 'string' ? value : '';
 }
 
 const sectionStatusStyle: Record<ContentStatus, { dot: string; bar: string }> = {
@@ -107,27 +117,59 @@ function legacyStageSection(stage: { id: string; title: string }, sectionId: str
 export default function LecturePage() {
   const { chapterId, sectionId } = useParams<{ chapterId?: string; sectionId?: string }>();
   const nav = useNavigate();
-  const [searchParams] = useSearchParams();
-  const { path, updateKnowledgePoint, fetchPath } = useLearningPath();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { path, loading: canonicalPathLoading, updateKnowledgePoint, fetchPath } = useLearningPath();
   const storedSessionId = useChatStore((s) => s.dataSessionId);
   const routeSessionId = searchParams.get('sessionId') || '';
-  const sessionId = routeSessionId || storedSessionId;
-  const focusedTaskId = searchParams.get('taskId') || sectionId || '';
+  const sessionId = storedSessionId;
+  const activeSubject = useSubjectStore((s) => s.activeSubject);
+  const workflowSubjectId = useSubjectStore((s) => s.activeSubject?.id ?? s.activeClassSubject?.subject ?? '');
+  const requestedTaskId = searchParams.get('taskId') || '';
+  const requestedDayId = searchParams.get('dayId') || '';
+  const requestedGlobalDayIndex = Number(searchParams.get('globalDayIndex'));
   const focusedStageId = searchParams.get('stageId') || '';
   const focusedPathId = searchParams.get('pathId') || '';
   const focusedSubjectId = searchParams.get('subjectId') || '';
   const focusedTaskType = searchParams.get('taskType') || 'read_doc';
+  const taskWorkspaceRequest = Boolean(requestedTaskId || focusedPathId || focusedStageId || requestedDayId || searchParams.get('globalDayIndex'));
+  const canonicalTaskScope = useMemo(() => resolveCanonicalLearningTaskScope(path, {
+    sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId, stageId: focusedStageId,
+    taskId: requestedTaskId, dayId: requestedDayId, globalDayIndex: requestedGlobalDayIndex, taskType: focusedTaskType,
+  }), [path, sessionId, focusedSubjectId, workflowSubjectId, focusedPathId, focusedStageId, requestedTaskId, requestedDayId, requestedGlobalDayIndex, focusedTaskType]);
+  const focusedTaskId = canonicalTaskScope?.taskId || '';
+  const canonicalRequestScope = canonicalTaskScope && {
+    sessionId: canonicalTaskScope.sessionId, subjectId: canonicalTaskScope.subjectId, pathId: canonicalTaskScope.pathId,
+    stageId: canonicalTaskScope.stageId, dayId: canonicalTaskScope.dayId, globalDayIndex: canonicalTaskScope.globalDayIndex, taskId: canonicalTaskScope.taskId,
+  };
+  const canonicalScopeKey = canonicalTaskScope ? [canonicalTaskScope.sessionId, canonicalTaskScope.subjectId, canonicalTaskScope.pathId, canonicalTaskScope.stageId, canonicalTaskScope.dayId, canonicalTaskScope.globalDayIndex, canonicalTaskScope.taskId, (path as any)?.pathVersion || (path as any)?.currentVersion || (path as any)?.version || ''].join('|') : '';
+  const lectureSemanticKey = canonicalTaskScope ? JSON.stringify({
+    taskType: canonicalTaskScope.task.type || canonicalTaskScope.task.task_type || focusedTaskType,
+    taskTitle: canonicalTaskScope.task.title || '',
+    taskDescription: canonicalTaskScope.task.description || canonicalTaskScope.task.goal || '',
+    learningObjectives: canonicalTaskScope.task.learningObjectives || canonicalTaskScope.task.learning_objectives || [],
+    knowledgePoints: canonicalTaskScope.task.knowledgePoints || canonicalTaskScope.task.knowledge_points || [],
+    stageTitle: canonicalTaskScope.stage.title || '',
+    pathVersion: (path as any)?.pathVersion || (path as any)?.currentVersion || (path as any)?.version || '',
+  }) : '';
   // Task URLs keep their scope for refresh/recovery.  The focused layout is
   // legacy-only; normal learning-path navigation always uses the full workspace.
-  const focusedTask = searchParams.get('legacy') === '1' && Boolean(routeSessionId && focusedPathId && focusedStageId && focusedTaskId);
+  const focusedTask = searchParams.get('legacy') === '1' && Boolean(canonicalTaskScope);
   const focusedReadingTask = ['reading', 'document', 'lecture', 'read_doc'].includes(focusedTaskType);
   const returnPathMode = ['textbook', 'daily', 'project', 'focus'].includes(searchParams.get('pathMode') || '')
     ? searchParams.get('pathMode')
     : '';
   const returnViewStage = searchParams.get('viewStage');
   const analyticsReturn = searchParams.get('returnTo') === '/analytics';
+
+  useEffect(() => {
+    if (!sessionId || !routeSessionId || routeSessionId === sessionId) return;
+    const corrected = new URLSearchParams(searchParams);
+    corrected.set('sessionId', sessionId);
+    setSearchParams(corrected, { replace: true });
+  }, [routeSessionId, searchParams, sessionId, setSearchParams]);
+
   const returnToPath = focusedTask
-    ? analyticsReturn ? '/analytics' : `/path?sessionId=${encodeURIComponent(routeSessionId)}&subjectId=${encodeURIComponent(focusedSubjectId)}&pathId=${encodeURIComponent(focusedPathId)}&stage=${encodeURIComponent(focusedStageId)}&task=${encodeURIComponent(focusedTaskId)}`
+    ? analyticsReturn ? '/analytics' : `/path?sessionId=${encodeURIComponent(sessionId)}&subjectId=${encodeURIComponent(focusedSubjectId)}&pathId=${encodeURIComponent(focusedPathId)}&stage=${encodeURIComponent(focusedStageId)}&task=${encodeURIComponent(focusedTaskId)}`
     : returnPathMode
     ? `/path?mode=${encodeURIComponent(returnPathMode)}${returnViewStage ? `&viewStage=${encodeURIComponent(returnViewStage)}` : ''}`
     : '/path';
@@ -177,11 +219,14 @@ export default function LecturePage() {
   const [activeSectionId, setActiveSectionId] = useState(sectionId || '');
   const [focusedAccessDenied, setFocusedAccessDenied] = useState(false);
   const [focusedCompleting, setFocusedCompleting] = useState(false);
-  const focusedGenerationRef = useRef('');
+  const unavailableEnsureGuard = useRef(createLectureEnsureGuard());
+  const lastEnsureScope = useRef('');
 
   // ── 本地临时状态 ──
   const [lectureLoaded, setLectureLoaded] = useState(false);
   const [lectureMissing, setLectureMissing] = useState(false);
+  const [lectureEnsureUnavailable, setLectureEnsureUnavailable] = useState(false);
+  const [lectureEnsureRetry, setLectureEnsureRetry] = useState(0);
   const [generating, setGenerating] = useState(false);
   const [lectureWorkflow, setLectureWorkflow] = useState<WorkflowState | null>(null);
   const lectureWorkflowAbort = useRef<AbortController | null>(null);
@@ -203,7 +248,7 @@ export default function LecturePage() {
   }, [searchParams]);
 
   // ── 派生值 ──
-  const cacheKey = `${sessionId || 'anon'}:${activeSectionId}`;
+  const cacheKey = `${sessionId || 'anon'}:${canonicalScopeKey ? `${canonicalScopeKey}:${lectureSemanticKey}` : activeSectionId}`;
   const lecture = store.lectureCache[cacheKey] || '';
   const loadedSectionIds = store.loadedSectionIds;
   const generatedSectionIds = store.generatedSectionIds;
@@ -239,13 +284,12 @@ export default function LecturePage() {
   const [quizQuestions, setQuizQuestions] = useState<LinkedQuestion[]>(cachedQuiz?.questions || []);
   const [quizId, setQuizId] = useState(cachedQuiz?.quizId || '');
   const quizSubmitIdempotencyKeyRef = useRef('');
+  const quizScopeRetryRef = useRef('');
   const [quizAnswers, setQuizAnswers] = useState<Record<string, string>>(cachedQuiz?.answers || {});
   const [quizResults, setQuizResults] = useState<QuizResult[]>(cachedQuiz?.results || []);
   const [quizTotalScore, setQuizTotalScore] = useState<number | null>(cachedQuiz?.totalScore ?? null);
 
   // ── Textbook mode state ──
-  const activeSubject = useSubjectStore((s) => s.activeSubject);
-  const workflowSubjectId = useSubjectStore((s) => s.activeSubject?.id ?? s.activeClassSubject?.subject ?? '');
   const isTextbookMode = !!activeSubject?.textbookId;
   const [textbookToc, setTextbookToc] = useState<TextbookTOC | null>(null);
 
@@ -263,10 +307,17 @@ export default function LecturePage() {
   // ── Textbook content for resource generation ──
   const [textbookLectureContent, setTextbookLectureContent] = useState('');
 
-  const [quizState, setQuizState] = useState<'idle' | 'generating' | 'answering' | 'submitted'>('idle');
+  const [quizState, setQuizState] = useState<'idle' | 'generating' | 'answering' | 'submitted' | 'failed'>('idle');
+  const [quizError, setQuizError] = useState('');
+  const [quizRetry, setQuizRetry] = useState(0);
   const [quizSuggestion, setQuizSuggestion] = useState('');
   const [quizPathCompletion, setQuizPathCompletion] = useState<{ task?: boolean; unlocked?: boolean }>({});
   const [quizWeakPoints, setQuizWeakPoints] = useState<WeakPoint[]>([]);
+  const clearQuiz = useCallback(() => {
+    setQuizQuestions([]); setQuizId(''); setQuizAnswers({}); setQuizResults([]); setQuizTotalScore(null);
+    setQuizSuggestion(''); setQuizWeakPoints([]); setQuizPathCompletion({}); setQuizError(''); setQuizState('idle');
+    setQuizRetry(0); quizSubmitIdempotencyKeyRef.current = ''; useLectureStore.getState().clearSection(cacheKey);
+  }, [cacheKey]);
 
   // Reset quiz & viewing state when section changes
   useEffect(() => {
@@ -289,7 +340,7 @@ export default function LecturePage() {
     }
     const planned = currentSection?.contentType as ContentType | undefined;
     store.setContentType(planned || (lecture ? detectContentType(lecture) : 'lecture'));
-  }, [activeSectionId]);
+  }, [activeSectionId, canonicalScopeKey]);
 
   useEffect(() => {
     setActiveSectionId(sectionId || sections[0]?.id || '');
@@ -299,10 +350,83 @@ export default function LecturePage() {
   const currentIdx = sections.findIndex((s: Section) => s.id === activeSectionId);
   const prevSection = currentIdx > 0 ? sections[currentIdx - 1] : null;
   const nextSection = currentIdx < sections.length - 1 ? sections[currentIdx + 1] : null;
+  const [taskScopeRejected, setTaskScopeRejected] = useState(false);
+  const canonicalScopePending = taskWorkspaceRequest && canonicalPathLoading;
+  const taskScopeInvalid = taskWorkspaceRequest && !canonicalPathLoading && !canonicalTaskScope;
+  const workspaceScopeInvalid = taskScopeInvalid || taskScopeRejected;
+  const taskScopeMessage = '\u5b66\u4e60\u8def\u5f84\u5df2\u66f4\u65b0\uff0c\u8bf7\u8fd4\u56de\u5b66\u4e60\u8def\u5f84\u91cd\u65b0\u9009\u62e9\u4efb\u52a1\u3002';
+  const resourceTaskId = focusedTaskId || (taskWorkspaceRequest ? '' : activeSectionId);
+  const resourceDayScope: { dayId?: string; globalDayIndex?: number; status?: string; task?: any } = canonicalTaskScope
+    ? { dayId: canonicalTaskScope.dayId, globalDayIndex: canonicalTaskScope.globalDayIndex, status: canonicalTaskScope.task.status, task: canonicalTaskScope.task }
+    : {};
+  const completed = ['completed', 'mastered'].includes(resourceDayScope.status || '');
+  const executionMode = resolveTaskExecutionMode(resourceDayScope.task || { type: focusedTaskType });
+  useEffect(() => {
+    if (workspaceScopeInvalid || executionMode !== 'quiz' || !canonicalTaskScope) return;
+    const scope = { ...canonicalRequestScope!, taskType: canonicalTaskScope.task.type || canonicalTaskScope.task.task_type || focusedTaskType,
+      taskTitle: canonicalTaskScope.task.title || '', taskDescription: canonicalTaskScope.task.description || canonicalTaskScope.task.goal || '',
+      learningObjectives: canonicalTaskScope.task.learningObjectives || canonicalTaskScope.task.learning_objectives || [],
+      knowledgePoints: canonicalTaskScope.task.knowledgePoints || canonicalTaskScope.task.knowledge_points || [],
+      pathVersion: (path as any)?.currentVersion || (path as any)?.version || '' };
+    let active = true;
+    clearQuiz(); setQuizState('generating');
+    ensureScopedLearningPathQuiz(focusedTaskId, scope)
+      .then((quiz) => {
+        if (!quiz.questions.length || !matchesLearningPathQuiz(quiz, scope)) {
+          if (quizScopeRetryRef.current !== canonicalScopeKey) {
+            quizScopeRetryRef.current = canonicalScopeKey;
+            retryScopedLearningPathQuiz(scope); setQuizRetry((value) => value + 1); return;
+          }
+          throw new Error('当前小测与学习任务不匹配，请返回学习路径重新进入。');
+        }
+        if (!active) return;
+        setQuizId(quiz.quizId); setQuizQuestions(quiz.questions); setQuizAnswers({}); setQuizResults([]); setQuizTotalScore(null); setQuizState('answering');
+      })
+      .catch((error: any) => { if (active) { if (error?.response?.status === 409) setTaskScopeRejected(true); else { setQuizError(error?.response?.data?.detail || error?.message || '题目加载失败'); setQuizState('failed'); } } });
+    return () => { active = false; };
+  }, [executionMode, canonicalTaskScope, workspaceScopeInvalid, sessionId, focusedPathId, focusedStageId, focusedTaskId, focusedSubjectId, workflowSubjectId, resourceDayScope.dayId, resourceDayScope.globalDayIndex, quizRetry, clearQuiz]);
+  const retryLearningPathQuiz = () => { if (!canonicalTaskScope || workspaceScopeInvalid) return; retryScopedLearningPathQuiz({ ...canonicalRequestScope!, taskType: canonicalTaskScope.task.type || canonicalTaskScope.task.task_type || focusedTaskType, taskTitle: canonicalTaskScope.task.title || '', taskDescription: canonicalTaskScope.task.description || canonicalTaskScope.task.goal || '', learningObjectives: canonicalTaskScope.task.learningObjectives || canonicalTaskScope.task.learning_objectives || [], knowledgePoints: canonicalTaskScope.task.knowledgePoints || canonicalTaskScope.task.knowledge_points || [], pathVersion: (path as any)?.currentVersion || (path as any)?.version || '' }); setQuizRetry((value) => value + 1); };
+  const [videoResources, setVideoResources] = useState<any[]>([]);
+  const [videoStatus, setVideoStatus] = useState<'idle' | 'loading' | 'failed' | 'empty' | 'search_unavailable' | 'no_high_relevance' | 'expanded_no_results' | 'invalid_urls' | 'empty_response' | 'persisted' | 'new_search' | 'stale'>('idle');
+  const [videoLectureFallback, setVideoLectureFallback] = useState(false);
+  const [videoOpened, setVideoOpened] = useState(false);
+  const [videoFallbackSelected, setVideoFallbackSelected] = useState(false);
+  const [videoDeliveryMode, setVideoDeliveryMode] = useState<'video' | 'video_fallback_lecture'>('video');
+  const [fallbackResourceId, setFallbackResourceId] = useState('');
+  const [fallbackStateLoading, setFallbackStateLoading] = useState(true);
+  const fallbackSelectionPending = useRef(false);
+  const fallbackEnsureScope = useRef('');
+  const fallbackRecoveryRetry = useRef('');
+  const [fallbackEnsureError, setFallbackEnsureError] = useState(false);
+  const [fallbackEnsureRetry, setFallbackEnsureRetry] = useState(0);
+  const [fallbackWorkflowId, setFallbackWorkflowId] = useState('');
+  const [fallbackWorkflowChecked, setFallbackWorkflowChecked] = useState(false);
+  const [videoRetry, setVideoRetry] = useState(0);
+  const videoRefreshRequested = useRef(false);
+  const [focusedCompletionError, setFocusedCompletionError] = useState('');
+  useEffect(() => {
+    setTaskScopeRejected(false); clearQuiz();
+    setVideoResources([]); setVideoStatus('idle'); setVideoLectureFallback(false); setVideoOpened(false); setVideoFallbackSelected(false); setVideoDeliveryMode('video'); setFallbackResourceId(''); setFallbackStateLoading(true); setFallbackEnsureError(false); setFallbackEnsureRetry(0); setVideoRetry(0);
+    setLectureLoaded(false); setLectureMissing(false); setLectureEnsureUnavailable(false); setLectureEnsureRetry(0); setFocusedCompletionError('');
+    quizSubmitIdempotencyKeyRef.current = ''; quizScopeRetryRef.current = ''; lastEnsureScope.current = ''; fallbackEnsureScope.current = ''; fallbackRecoveryRetry.current = ''; fallbackSelectionPending.current = false; videoRefreshRequested.current = false;
+    setFallbackWorkflowId(''); setFallbackWorkflowChecked(false);
+  }, [canonicalScopeKey, lectureSemanticKey, clearQuiz]);
+  useEffect(() => { setVideoLectureFallback(false); setVideoOpened(false); setVideoFallbackSelected(false); setVideoDeliveryMode('video'); setFallbackResourceId(''); setFallbackStateLoading(true); setFallbackEnsureError(false); fallbackEnsureScope.current = ''; fallbackRecoveryRetry.current = ''; fallbackSelectionPending.current = false; setFallbackWorkflowId(''); setFallbackWorkflowChecked(false); }, [resourceTaskId]);
+  const deliveryMode = executionMode !== 'video' ? executionMode : fallbackStateLoading ? 'resolving' : videoDeliveryMode;
+  const isVideoFallbackDelivery = deliveryMode === 'video_fallback_lecture';
+  const videoScope = useMemo(() => canonicalRequestScope
+    ? canonicalRequestScope
+    : { sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId || path?.id, stageId: focusedStageId || chapterCtx?.stage.id, taskId: resourceTaskId, dayId: resourceDayScope.dayId, globalDayIndex: resourceDayScope.globalDayIndex }, [canonicalRequestScope, sessionId, focusedSubjectId, workflowSubjectId, focusedPathId, path?.id, focusedStageId, chapterCtx?.stage.id, resourceTaskId, resourceDayScope.dayId, resourceDayScope.globalDayIndex]);
+  const videoScopeKey = videoRecommendationScope(videoScope);
   const lectureWorkflowScope: WorkflowTaskScope = {
     workflowType: 'lecture_generation', sessionId, subjectId: workflowSubjectId,
     pathId: path?.id || '', stageId: chapterCtx?.stage.id || '', chapterId: chapterCtx?.chapter.id || '', sectionId: activeSectionId,
   };
+  const fallbackWorkflowScope: WorkflowTaskScope | null = canonicalRequestScope ? {
+    workflowType: 'video_fallback_lecture', sessionId: canonicalRequestScope.sessionId, subjectId: canonicalRequestScope.subjectId,
+    pathId: canonicalRequestScope.pathId, stageId: canonicalRequestScope.stageId, sectionId: activeSectionId,
+    recoveryKey: [canonicalRequestScope.dayId, canonicalRequestScope.globalDayIndex, resourceTaskId, (path as any)?.pathVersion || (path as any)?.currentVersion || (path as any)?.version || ''].join('|'),
+  } : null;
 
   useEffect(() => {
     if (!sessionId || !activeSectionId) return;
@@ -325,7 +449,7 @@ export default function LecturePage() {
         const latest = await readWorkflow(record.taskId, sessionId);
         if (!active) return;
         if (latest.status === 'completed' && latest.result?.data?.lecture?.content) {
-          store.setLecture(`${sessionId}:${activeSectionId}`, latest.result.data.lecture.content);
+          store.setLecture(cacheKey, latest.result.data.lecture.content);
           store.markGenerated(activeSectionId);
         }
         if (isTerminalWorkflowStatus(latest.status)) clearWorkflowTask(lectureWorkflowScope);
@@ -357,12 +481,21 @@ export default function LecturePage() {
 
   // ── 加载已有文档（优先读缓存）──
   useEffect(() => {
+    if (deliveryMode !== 'lecture') return;
+    if (workspaceScopeInvalid) return;
     if (!activeSectionId || !sessionId) return;
-    const key = `${sessionId}:${activeSectionId}`;
+    const key = cacheKey;
+    const ensureScope = [sessionId, focusedSubjectId || workflowSubjectId, focusedPathId || path?.id, focusedStageId || chapterCtx?.stage.id, resourceDayScope.dayId, resourceDayScope.globalDayIndex, resourceTaskId, lectureSemanticKey].join('|');
+    if (lastEnsureScope.current !== ensureScope) {
+      unavailableEnsureGuard.current.retry(ensureScope);
+      lastEnsureScope.current = ensureScope;
+    }
     setLectureMissing(false);
+    setLectureEnsureUnavailable(false);
     if (store.lectureCache[key]) { setLectureLoaded(true); return; }
+    if (unavailableEnsureGuard.current.blocks(ensureScope)) { setLectureMissing(true); setLectureEnsureUnavailable(true); setLectureLoaded(true); return; }
     setLectureLoaded(false);
-    ensureLecture(activeSectionId, { sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId || path?.id, stageId: focusedStageId || chapterCtx?.stage.id, taskId: focusedTaskId || activeSectionId })
+    ensureLecture(activeSectionId, { ...(canonicalRequestScope || { sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId || path?.id, stageId: focusedStageId || chapterCtx?.stage.id, taskId: resourceTaskId, dayId: resourceDayScope.dayId, globalDayIndex: resourceDayScope.globalDayIndex }), taskType: canonicalTaskScope?.task.type || canonicalTaskScope?.task.task_type || focusedTaskType, taskTitle: canonicalTaskScope?.task.title || currentSection?.title || '', taskDescription: canonicalTaskScope?.task.description || canonicalTaskScope?.task.goal || '', learningObjectives: canonicalTaskScope?.task.learningObjectives || canonicalTaskScope?.task.learning_objectives || [], knowledgePoints: currentSection?.knowledgePoints || canonicalTaskScope?.task.knowledgePoints || canonicalTaskScope?.task.knowledge_points || [], stageTitle: canonicalTaskScope?.stage.title || '', pathVersion: (path as any)?.currentVersion || (path as any)?.version || '' })
       .then(d => {
         store.markLoaded(activeSectionId);
         if (d?.status === 'running') setLectureMissing(true);
@@ -372,15 +505,109 @@ export default function LecturePage() {
           store.markGenerated(activeSectionId);
         }
       })
-      .catch(() => store.markLoaded(activeSectionId))
+      .catch((error) => {
+        const status = error?.response?.status;
+        if ([403, 404, 409].includes(status)) {
+          unavailableEnsureGuard.current.recordError(ensureScope, status);
+          setLectureMissing(true);
+          setLectureEnsureUnavailable(true);
+        }
+        store.markLoaded(activeSectionId);
+      })
       .finally(() => setLectureLoaded(true));
-  }, [activeSectionId, sessionId, focusedTask, focusedPathId, focusedStageId, focusedTaskId]);
+  }, [activeSectionId, sessionId, focusedTask, focusedPathId, focusedStageId, resourceTaskId, resourceDayScope.dayId, resourceDayScope.globalDayIndex, workspaceScopeInvalid, deliveryMode, lectureSemanticKey, lectureEnsureRetry]);
+
+  useEffect(() => {
+    if (workspaceScopeInvalid || executionMode !== 'video' || !canonicalRequestScope || !resourceTaskId) return;
+    let active = true;
+    getVideoFallbackState(resourceTaskId, canonicalRequestScope).then((state) => {
+      if (!active) return;
+      const mode = state?.activeDeliveryMode === 'video_fallback_lecture' ? 'video_fallback_lecture' : 'video';
+      setVideoDeliveryMode(mode); setVideoFallbackSelected(Boolean(state?.fallbackSelected ?? state?.selected)); setVideoLectureFallback(mode === 'video_fallback_lecture');
+      if (mode !== 'video_fallback_lecture') { setFallbackWorkflowChecked(true); return; }
+      const content = lectureContent(state.lecture);
+      if (content) { setFallbackResourceId(lectureId(state.lecture)); store.setLecture(cacheKey, content); clearWorkflowTask(fallbackWorkflowScope!); setLectureLoaded(true); void recordVideoFallbackLectureOpened(resourceTaskId, canonicalRequestScope); }
+      else setFallbackWorkflowId(readWorkflowTask(fallbackWorkflowScope!)?.taskId || '');
+      setFallbackWorkflowChecked(true);
+    }).catch(() => undefined).finally(() => { if (active) setFallbackStateLoading(false); });
+    return () => { active = false; };
+  }, [executionMode, resourceTaskId, canonicalScopeKey, workspaceScopeInvalid]);
+
+  useEffect(() => {
+    if (workspaceScopeInvalid || deliveryMode !== 'video_fallback_lecture' || !canonicalRequestScope || !resourceTaskId || !fallbackWorkflowScope) return;
+    if (fallbackWorkflowId) { setFallbackWorkflowChecked(true); return; }
+    setFallbackWorkflowChecked(true);
+  }, [deliveryMode, canonicalScopeKey, resourceTaskId, fallbackWorkflowId, workspaceScopeInvalid]);
+
+  useEffect(() => {
+    if (workspaceScopeInvalid || deliveryMode !== 'video_fallback_lecture' || !canonicalRequestScope || !resourceTaskId || !fallbackWorkflowScope || !fallbackWorkflowChecked || fallbackWorkflowId) return;
+    const scope = [...Object.values(canonicalRequestScope), resourceTaskId, 'video_fallback'].join('|');
+    if (fallbackEnsureScope.current === scope || store.lectureCache[cacheKey]) return;
+    fallbackEnsureScope.current = scope; setFallbackEnsureError(false); setLectureLoaded(false);
+    ensureVideoFallbackLecture(resourceTaskId, { ...canonicalRequestScope, taskTitle: canonicalTaskScope?.task.title || currentSection?.title || '', taskDescription: canonicalTaskScope?.task.description || canonicalTaskScope?.task.goal || '', learningObjectives: canonicalTaskScope?.task.learningObjectives || canonicalTaskScope?.task.learning_objectives || [], knowledgePoints: canonicalTaskScope?.task.knowledgePoints || canonicalTaskScope?.task.knowledge_points || [], stageTitle: canonicalTaskScope?.stage.title || '', pathVersion: (path as any)?.currentVersion || (path as any)?.version || '' })
+      .then((data) => {
+        const content = lectureContent(data);
+        if (content) { setFallbackResourceId(lectureId(data)); store.setLecture(cacheKey, content); clearWorkflowTask(fallbackWorkflowScope); void recordVideoFallbackLectureOpened(resourceTaskId, canonicalRequestScope); return; }
+        if (data.status === 'running' && data.workflowId) { saveWorkflowTask({ ...fallbackWorkflowScope, taskId: data.workflowId, createdAt: Date.now() }); setFallbackWorkflowId(data.workflowId); return; }
+        throw new Error(data.errorMessage || '图文讲解生成失败');
+      })
+      .catch(() => setFallbackEnsureError(true)).finally(() => setLectureLoaded(true));
+  }, [deliveryMode, canonicalScopeKey, resourceTaskId, cacheKey, workspaceScopeInvalid, fallbackEnsureRetry, fallbackWorkflowChecked, fallbackWorkflowId]);
+
+  useEffect(() => {
+    if (!fallbackWorkflowId || !fallbackWorkflowScope || !canonicalRequestScope || !resourceTaskId) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const finish = async () => {
+      for (let attempt = 0; attempt < 3 && active; attempt += 1) {
+        const state = await getVideoFallbackState(resourceTaskId, canonicalRequestScope);
+        const content = lectureContent(state?.lecture);
+        if (content) {
+          setFallbackResourceId(lectureId(state.lecture)); store.setLecture(cacheKey, content); clearWorkflowTask(fallbackWorkflowScope); void recordVideoFallbackLectureOpened(resourceTaskId, canonicalRequestScope);
+          setFallbackWorkflowId(''); setFallbackEnsureError(false); setLectureLoaded(true); return;
+        }
+        if (attempt < 2) await new Promise((resolve) => { timer = setTimeout(resolve, 800); });
+      }
+      if (active) { clearWorkflowTask(fallbackWorkflowScope); setFallbackWorkflowId(''); setFallbackEnsureError(true); setLectureLoaded(true); }
+    };
+    const poll = async () => {
+      try {
+        const workflow = await readWorkflow(fallbackWorkflowId, canonicalRequestScope.sessionId);
+        if (!active) return;
+        if (isActiveWorkflowStatus(workflow.status)) { timer = setTimeout(poll, 1000); return; }
+        if (workflow.status === 'completed') await finish();
+        else { clearWorkflowTask(fallbackWorkflowScope); setFallbackWorkflowId(''); setFallbackEnsureError(true); setLectureLoaded(true); }
+      } catch (error: any) {
+        if (!active) return;
+        clearWorkflowTask(fallbackWorkflowScope); setFallbackWorkflowId('');
+        if (error?.response?.status === 404 && fallbackRecoveryRetry.current !== canonicalScopeKey) {
+          fallbackRecoveryRetry.current = canonicalScopeKey; fallbackEnsureScope.current = ''; setFallbackEnsureRetry((value) => value + 1);
+        } else { setFallbackEnsureError(true); setLectureLoaded(true); }
+      }
+    };
+    setLectureLoaded(false); void poll();
+    return () => { active = false; if (timer) clearTimeout(timer); };
+  }, [fallbackWorkflowId, canonicalScopeKey, resourceTaskId, cacheKey]);
+
+  useEffect(() => {
+    if (workspaceScopeInvalid || deliveryMode !== 'video' || !videoScopeKey) return;
+    let active = true;
+    setVideoStatus('loading');
+    const refresh = videoRefreshRequested.current; videoRefreshRequested.current = false;
+    requestVideoRecommendations(videoScope, authHeaders(), refresh)
+      .then(({ resources, status, presentationStatus }) => { if (active) { setVideoResources(resources); setVideoStatus(resources.length ? (presentationStatus === 'persisted' || presentationStatus === 'new_search' || presentationStatus === 'stale' ? presentationStatus : 'idle') : ['search_unavailable', 'no_high_relevance', 'expanded_no_results', 'invalid_urls', 'empty_response'].includes(status) ? status as typeof videoStatus : 'empty'); } })
+      .catch((error) => { if (active) { if ((error as any)?.response?.status === 409) setTaskScopeRejected(true); else setVideoStatus('failed'); } });
+    return () => { active = false; };
+  }, [deliveryMode, videoScopeKey, videoRetry, workspaceScopeInvalid]);
+  const retryVideoSearch = () => { if (!canonicalTaskScope || workspaceScopeInvalid) return; videoRefreshRequested.current = true; retryVideoRecommendations(videoScope); setVideoRetry((value) => value + 1); };
 
   const totalKps = chapterCtx?.chapter.sections?.reduce((s, sec) => s + (sec.knowledgePoints?.length ?? 0), 0) ?? 0;
   const masteredKps = chapterCtx?.chapter.sections?.reduce((s, sec) => s + (sec.knowledgePoints?.filter(k => k.status === 'mastered').length ?? 0), 0) ?? 0;
   const totalMin = chapterCtx?.chapter.sections?.reduce((s, sec) => s + (sec.estimatedMinutes ?? 45), 0) ?? 0;
 
   const handleGenerate = useCallback(async (cardId?: string, requirements?: string) => {
+    if (executionMode === 'video') return;
+    if (workspaceScopeInvalid) return;
     if (!currentSection || !sessionId) return;
     if (generating || (lectureWorkflow && isActiveWorkflowStatus(lectureWorkflow.status))) return;
     setGenerating(true);
@@ -396,17 +623,25 @@ export default function LecturePage() {
           sectionTitle: currentSection.title,
           sectionGoal: currentSection.goal || '',
           chapterId: chapterCtx?.chapter.id || '',
-          stageId: chapterCtx?.stage.id || '',
-          pathId: focusedTask ? focusedPathId : path?.id || '',
-          taskId: focusedTask ? focusedTaskId : activeSectionId,
-          subjectId: focusedSubjectId || workflowSubjectId || undefined,
+          stageId: canonicalRequestScope?.stageId || chapterCtx?.stage.id || '',
+          pathId: canonicalRequestScope?.pathId || path?.id || '',
+          taskId: resourceTaskId,
+          dayId: resourceDayScope.dayId,
+          globalDayIndex: resourceDayScope.globalDayIndex,
+          subjectId: canonicalRequestScope?.subjectId || focusedSubjectId || workflowSubjectId || undefined,
           courseId: path?.courseName || '',
-          knowledgePoints: currentSection.knowledgePoints || [],
+          taskType: canonicalTaskScope?.task.type || canonicalTaskScope?.task.task_type || focusedTaskType,
+          taskTitle: canonicalTaskScope?.task.title || currentSection.title || '',
+          taskDescription: canonicalTaskScope?.task.description || canonicalTaskScope?.task.goal || '',
+          learningObjectives: canonicalTaskScope?.task.learningObjectives || canonicalTaskScope?.task.learning_objectives || [],
+          knowledgePoints: currentSection.knowledgePoints || canonicalTaskScope?.task.knowledgePoints || canonicalTaskScope?.task.knowledge_points || [],
+          stageTitle: canonicalTaskScope?.stage.title || '',
+          pathVersion: (path as any)?.currentVersion || (path as any)?.version || '',
           requirements: requirements || '',
       });
       const ensuredContent = lectureContent(ensured);
       if (ensured.status === 'ready' && ensuredContent) {
-        store.setLecture(`${sessionId}:${activeSectionId}`, ensuredContent);
+        store.setLecture(cacheKey, ensuredContent);
         store.markGenerated(activeSectionId);
         return;
       }
@@ -422,7 +657,7 @@ export default function LecturePage() {
       const data = task.result;
       const content = lectureContent(data);
       if (content) {
-        const key = `${sessionId}:${activeSectionId}`;
+        const key = cacheKey;
         store.setLecture(key, content);
         store.markGenerated(activeSectionId);
         generatePanelRef.current?.updateRecord(cid, { status: 'ready', content });
@@ -432,10 +667,11 @@ export default function LecturePage() {
         if (isTerminalWorkflowStatus(task.status)) clearWorkflowTask(workflowScope);
       }
     } catch (error) {
+      if ((error as any)?.response?.status === 409) setTaskScopeRejected(true);
       if (error instanceof DOMException && error.name === 'AbortError') return;
       generatePanelRef.current?.updateRecord(cid, { status: 'error' });
     } finally { setGenerating(false); }
-  }, [currentSection, activeSectionId, sessionId, chapterCtx, path, focusedTask, focusedPathId, focusedTaskId, focusedSubjectId]);
+  }, [currentSection, activeSectionId, sessionId, chapterCtx, path, focusedTask, focusedPathId, focusedTaskId, focusedSubjectId, executionMode, videoLectureFallback, workspaceScopeInvalid, resourceTaskId, resourceDayScope.dayId, resourceDayScope.globalDayIndex, cacheKey]);
 
   const cancelLectureGeneration = useCallback(async () => {
     if (!lectureWorkflow || !sessionId) return;
@@ -610,7 +846,7 @@ export default function LecturePage() {
         setQuizState('answering');
         quizSubmitIdempotencyKeyRef.current = '';  // reset for new quiz
         // 保存到 store 以便跨页面恢复
-        store.setQuiz(`${sessionId}:${activeSectionId}`, { questions: data.questions, quizId: data.quiz.id, answers: {}, results: [], totalScore: null, submitted: false, suggestion: '', weakPoints: [] });
+        store.setQuiz(cacheKey, { questions: data.questions, quizId: data.quiz.id, answers: {}, results: [], totalScore: null, submitted: false, suggestion: '', weakPoints: [] });
         generatePanelRef.current?.updateRecord(cid, {
           status: 'ready',
           content: 'quiz_stored',
@@ -636,7 +872,7 @@ export default function LecturePage() {
   const handleQuizAnswer = (questionId: string, value: string) => {
     setQuizAnswers(a => {
       const updated = { ...a, [questionId]: value };
-      store.updateQuizAnswers(`${sessionId}:${activeSectionId}`, updated);
+      store.updateQuizAnswers(cacheKey, updated);
       return updated;
     });
   };
@@ -644,7 +880,7 @@ export default function LecturePage() {
   const allAnswered = quizQuestions.every(q => quizAnswers[q.questionId]?.trim());
 
   const handleQuizSubmit = async () => {
-    if (!allAnswered || quizState !== 'answering') return;
+    if (!allAnswered || quizState !== 'answering' || (executionMode === 'quiz' && (!canonicalTaskScope || workspaceScopeInvalid))) return;
     const answers = quizQuestions.map(q => ({
       questionId: q.questionId,
       answer: quizAnswers[q.questionId] || '',
@@ -653,14 +889,14 @@ export default function LecturePage() {
       if (!quizSubmitIdempotencyKeyRef.current) {
         quizSubmitIdempotencyKeyRef.current = crypto.randomUUID();
       }
-      const res = await submitQuizAttempt(quizId, {
-        sessionId: sessionId || `lecture_${activeSectionId}`,
+      const payload = {
+        ...(executionMode === 'quiz' ? canonicalRequestScope! : { sessionId: sessionId || `lecture_${activeSectionId}`, pathId: focusedPathId || path?.id || '', stageId: focusedStageId || chapterCtx?.stage.id || '', taskId: resourceTaskId, subjectId: focusedSubjectId || workflowSubjectId, dayId: resourceDayScope.dayId, globalDayIndex: resourceDayScope.globalDayIndex }),
         answers,
         idempotencyKey: quizSubmitIdempotencyKeyRef.current,
-        pathId: focusedTask ? focusedPathId : (path?.id || ''),
-        stageId: focusedTask ? focusedStageId : (chapterCtx?.stage.id || ''),
-        taskId: focusedTask ? focusedTaskId : activeSectionId,
-      }) as any;
+      };
+      const res = (executionMode === 'quiz'
+        ? await submitLearningPathQuiz(focusedTaskId, { ...payload, quizId })
+        : await submitQuizAttempt(quizId, payload)) as any;
       const data = res?.data || res;
       if (data?.results && data.results.length > 0) {
         setQuizResults(data.results);
@@ -670,27 +906,68 @@ export default function LecturePage() {
         setQuizWeakPoints(data.weakPoints || []);
         setQuizState('submitted');
         // 更新 store 中的答题结果
-        store.setQuiz(`${sessionId}:${activeSectionId}`, { questions: quizQuestions, quizId, answers: quizAnswers, results: data.results, totalScore: data.totalScore ?? null, submitted: true, suggestion: data.sectionStatusSuggestion || '', weakPoints: data.weakPoints || [] });
+        store.setQuiz(cacheKey, { questions: quizQuestions, quizId, answers: quizAnswers, results: data.results, totalScore: data.totalScore ?? null, submitted: true, suggestion: data.sectionStatusSuggestion || '', weakPoints: data.weakPoints || [] });
       }
     } catch (e: any) {
-      alert('提交失败: ' + (e?.message || '请重试'));
+      if (e?.response?.status === 409) setTaskScopeRejected(true);
+      else alert('提交失败: ' + (e?.message || '请重试'));
     }
   };
 
-  useEffect(() => {
-    if (!currentSection || !sessionId || !lectureLoaded || !lectureMissing || lecture || generating) return;
-    const key = `${sessionId}:${focusedSubjectId}:${focusedPathId}:${focusedStageId}:${focusedTaskId}:${activeSectionId}`;
-    if (focusedGenerationRef.current === key) return;
-    focusedGenerationRef.current = key;
-    void handleGenerate();
-  }, [currentSection, sessionId, lectureLoaded, lectureMissing, lecture, generating, focusedSubjectId, focusedPathId, focusedStageId, focusedTaskId, activeSectionId, handleGenerate]);
+  const recordVideoEvidence = async (resourceUrl = '', fallback = false) => {
+    if (!canonicalTaskScope || workspaceScopeInvalid || ['completed', 'mastered'].includes(resourceDayScope.status || '') || (fallback ? videoFallbackSelected : videoOpened)) return;
+    setFocusedCompletionError('');
+    await recordVideoTaskEvidence(focusedTaskId, {
+      ...canonicalRequestScope!, ...(resourceUrl ? { resourceUrl } : {}),
+    }, fallback).catch((error) => { if (error?.response?.status === 409) setTaskScopeRejected(true); throw error; });
+    if (fallback) setVideoFallbackSelected(true); else setVideoOpened(true);
+  };
+  const selectVideoFallback = () => {
+    if (fallbackSelectionPending.current) return;
+    fallbackSelectionPending.current = true;
+    void recordVideoEvidence('', true).then(async () => {
+      if (!canonicalRequestScope) return;
+      await persistVideoDeliveryMode(resourceTaskId, canonicalRequestScope, 'video_fallback_lecture');
+      setVideoDeliveryMode('video_fallback_lecture'); setVideoFallbackSelected(true); setVideoLectureFallback(true);
+    })
+      .catch((error) => setFocusedCompletionError(error?.response?.data?.detail || error?.message || '切换失败'))
+      .finally(() => { fallbackSelectionPending.current = false; });
+  };
+  const selectVideoMode = () => {
+    if (!canonicalRequestScope || fallbackSelectionPending.current) return;
+    fallbackSelectionPending.current = true;
+    void persistVideoDeliveryMode(resourceTaskId, canonicalRequestScope, 'video')
+      .then(() => { setVideoDeliveryMode('video'); setVideoLectureFallback(false); setFallbackEnsureError(false); })
+      .catch((error) => setFocusedCompletionError(error?.response?.data?.detail || error?.message || '切换失败'))
+      .finally(() => { fallbackSelectionPending.current = false; });
+  };
 
-  const completeFocusedTask = async () => {
-    if (!focusedTaskId || !focusedReadingTask || focusedCompleting || !effectiveLectureContent || generating || (lectureWorkflow && isActiveWorkflowStatus(lectureWorkflow.status))) return;
-    setFocusedCompleting(true);
+  const completeFocusedTask = async (): Promise<boolean> => {
+    const fallbackCompletion = executionMode === 'video' && videoLectureFallback;
+    const videoReady = executionMode === 'video' && (videoOpened || (fallbackCompletion && videoFallbackSelected && !!effectiveLectureContent && !!fallbackResourceId));
+    const ready = executionMode === 'video' ? videoReady : focusedReadingTask && !!effectiveLectureContent;
+    if (!canonicalTaskScope || workspaceScopeInvalid || focusedCompleting || generating || resourceDayScope.globalDayIndex == null || (lectureWorkflow && isActiveWorkflowStatus(lectureWorkflow.status)) || !ready) return false;
+    setFocusedCompletionError(''); setFocusedCompleting(true);
     try {
-      await updateKnowledgePoint(focusedTaskId, { status: 'mastered', mastery: 100 });
-      await fetchPath(true);
+      await completeLearningPathTask(focusedTaskId, {
+        ...canonicalRequestScope!,
+        taskType: String(canonicalTaskScope.task.type || canonicalTaskScope.task.task_type || ''),
+        ...(fallbackCompletion ? {
+          evidenceType: 'video_fallback_lecture_completed', deliveryMode: 'video_fallback_lecture' as const,
+          resourceId: fallbackResourceId, originalTaskId: focusedTaskId,
+          openedEvidenceType: 'video_fallback_lecture_opened', completedAt: new Date().toISOString(),
+        } : { evidenceType: 'lecture_loaded_explicit_completion' }),
+      });
+      const refreshed = await fetchPath(true, canonicalTaskScope.sessionId, canonicalTaskScope.pathId, canonicalTaskScope.subjectId);
+      const refreshedTask = refreshed && resolveCanonicalLearningTaskScope(refreshed, canonicalRequestScope!)?.task;
+      if (!refreshedTask || !['completed', 'mastered'].includes(String(refreshedTask.status || ''))) throw new Error('completion state was not confirmed');
+      useChatStore.getState().bumpDataVersion();
+      nav(returnToPath);
+      return true;
+    } catch (error: any) {
+      if (error?.response?.status === 409) setTaskScopeRejected(true);
+      setFocusedCompletionError('完成状态保存失败，请重试。');
+      return false;
     } finally {
       setFocusedCompleting(false);
     }
@@ -699,8 +976,18 @@ export default function LecturePage() {
   const typeLabel = (t: string) => t === 'choice' ? '选择题' : t === 'truefalse' ? '判断题' : t === 'fill' ? '填空题' : '简答题';
 
   // ── Mode delegation ──
+  if (canonicalScopePending) {
+    return <main className="m-auto flex items-center gap-2 text-sm text-surface-500"><Loader2 size={16} className="animate-spin" />正在加载学习任务…</main>;
+  }
+
+  if (workspaceScopeInvalid) {
+    return <main className="m-auto max-w-sm rounded-2xl bg-white p-8 text-center shadow-soft">
+      <p className="text-sm text-surface-600">{taskScopeMessage}</p>
+      <button onClick={() => nav('/path')} className="mt-5 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white">返回学习路径</button>
+    </main>;
+  }
+
   if (focusedTask) {
-    const completed = currentSection?.status === 'mastered';
     return (
       <div className="min-h-screen -m-6 bg-surface-50">
         <div className="mx-auto flex min-h-screen max-w-6xl flex-col">
@@ -729,11 +1016,13 @@ export default function LecturePage() {
                   <span className={`rounded-full px-2.5 py-1 text-xs ${completed ? 'bg-emerald-50 text-emerald-600' : 'bg-blue-50 text-blue-600'}`}>{completed ? '已完成' : '进行中'}</span>
                 </div>
                 {currentSection.knowledgePoints?.length > 0 && <div className="mb-5 flex flex-wrap gap-2">{currentSection.knowledgePoints.map(kp => <span key={kp.id} className="rounded-full bg-surface-100 px-2.5 py-1 text-xs text-surface-600">{kp.name}</span>)}</div>}
-                {!lectureLoaded || generating ? <div className="flex min-h-48 items-center justify-center gap-2 text-sm text-surface-500"><Loader2 size={16} className="animate-spin" />正在准备真实讲义…</div>
-                  : effectiveLectureContent ? <Markdown content={effectiveLectureContent} />
-                  : <div className="rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">讲义暂不可用。<button onClick={() => { focusedGenerationRef.current = ''; void handleGenerate(); }} className="ml-2 font-medium underline">重新加载</button></div>}
+                {executionMode === 'video' && !videoLectureFallback ? <div className="space-y-3"><h2 className="text-lg font-semibold">视频学习</h2>{videoStatus === 'loading' ? <div className="flex min-h-48 items-center gap-2 text-sm text-surface-500"><Loader2 size={16} className="animate-spin" />正在查找高相关视频…</div> : videoStatus === 'failed' ? <div className="rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">视频资源搜索失败。<button onClick={retryVideoSearch} className="ml-2 underline">重新搜索</button></div> : videoResources.length ? <>{videoResources.map((item: any) => <a key={item.url} href={item.url} target="_blank" rel="noreferrer" onClick={() => void recordVideoEvidence(item.url)} className="block rounded-xl border border-surface-200 p-4 hover:border-primary-300"><strong>{item.title}</strong><p className="mt-1 text-sm text-surface-500">{item.source} · {item.reason}</p></a>)}</> : <div className="rounded-xl border border-surface-200 p-4 text-sm text-surface-600">暂无高相关视频</div>}<button onClick={selectVideoFallback} className="rounded-lg border border-primary-200 px-4 py-2 text-sm text-primary-700">切换为图文讲解</button></div>
+                : !lectureLoaded || generating ? <div className="flex min-h-48 flex-col items-center justify-center gap-2 text-sm text-surface-500"><Loader2 size={16} className="animate-spin" />{executionMode === 'video' ? <><strong>正在生成图文讲解</strong><span>AI 正在将本视频任务转换为可阅读的图文教材，请稍候…</span></> : '正在准备真实讲义…'}</div>
+                  : effectiveLectureContent ? <>{executionMode === 'video' && <div className="mb-4 rounded-xl bg-blue-50 p-3 text-sm text-blue-700"><strong>图文讲解</strong><br />当前使用图文讲解替代视频学习<button onClick={selectVideoMode} className="ml-2 font-medium underline">返回视频学习</button></div>}<Markdown content={effectiveLectureContent} /></>
+                  : <div className="rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">{fallbackEnsureError ? '图文讲解生成失败。' : lectureEnsureUnavailable ? '当前讲义任务无法加载，请返回学习路径重新进入。' : '讲义暂不可用。'}<button onClick={() => nav('/path')} className="ml-2 font-medium underline">返回学习路径</button>{fallbackEnsureError && <button onClick={() => { fallbackEnsureScope.current = ''; setFallbackEnsureError(false); setFallbackEnsureRetry((value) => value + 1); }} className="ml-2 font-medium underline">重新生成图文讲解</button>}</div>}
                 <div className="mt-8 border-t border-surface-100 pt-4">
-                  <button disabled={completed || !focusedReadingTask || focusedCompleting || !effectiveLectureContent || generating || !!(lectureWorkflow && isActiveWorkflowStatus(lectureWorkflow.status))} onClick={completeFocusedTask} className="flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"><Check size={15} />{completed ? '任务已完成' : focusedCompleting ? '保存中…' : focusedReadingTask ? '标记完成' : '请先完成练习'}</button>
+                  <button disabled={completed || focusedCompleting || !resourceDayScope.globalDayIndex || generating || !!(lectureWorkflow && isActiveWorkflowStatus(lectureWorkflow.status)) || !(focusedReadingTask ? !!effectiveLectureContent : executionMode === 'video' && (videoOpened || videoLectureFallback && videoFallbackSelected && !!effectiveLectureContent))} onClick={completeFocusedTask} className="flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"><Check size={15} />{completed ? '任务已完成' : focusedCompleting ? '保存中…' : executionMode === 'video' ? videoOpened || videoFallbackSelected ? '完成视频学习' : '请先打开视频或切换图文讲解' : focusedReadingTask ? '标记完成' : '请先完成练习'}</button>
+                  {focusedCompletionError && <p className="mt-2 text-sm text-red-600">完成失败：{focusedCompletionError}</p>}
                 </div>
               </article>
               <aside className="flex min-h-0 flex-col overflow-hidden rounded-2xl bg-white shadow-soft">
@@ -924,10 +1213,10 @@ export default function LecturePage() {
                       style={{ backgroundColor: '#14b8a6' }}>
                       <HelpCircle size={14} />{quizState === 'generating' ? '...' : '生成小测'}
                     </button>
-                    <button onClick={() => handleGenerate()} disabled={generating || loadingLecture}
+                    {deliveryMode === 'lecture' && <button onClick={() => handleGenerate()} disabled={generating || loadingLecture}
                       className="flex items-center gap-1.5 px-4 py-2.5 bg-gradient-to-r from-blue-600 to-violet-600 text-white rounded-xl text-sm font-semibold hover:from-blue-700 hover:to-violet-700 disabled:opacity-50 transition-all shadow-md shadow-blue-200">
                       <Sparkles size={14} />{generating ? 'AI 正在生成…' : lecture ? '重新生成' : '生成教材'}
-                    </button>
+                    </button>}
                   </>
                 )}
               </div>
@@ -1003,6 +1292,8 @@ export default function LecturePage() {
                   <span className="text-sm">正在生成小测题目…</span>
                 </div>
               )}
+
+              {quizState === 'failed' && <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{quizError}<button onClick={retryLearningPathQuiz} className="ml-2 underline">重新生成</button></div>}
 
               {(quizState === 'answering' || quizState === 'submitted') && quizQuestions.map((q, idx) => {
                 const result = quizResults.find(r => r.questionId === q.questionId);
@@ -1101,7 +1392,7 @@ export default function LecturePage() {
               {quizState === 'answering' && (
                 <div className="flex items-center justify-between pt-2">
                   <span className="text-xs text-surface-400">
-                    {allAnswered ? '已完成所有题目' : `已答 ${Object.keys(quizAnswers).filter(k => quizAnswers[k]?.trim()).length} / ${quizQuestions.length} 题`}
+                    {allAnswered ? `已完成全部 ${quizQuestions.length} 题` : `共 ${quizQuestions.length} 题，已答 ${Object.keys(quizAnswers).filter(k => quizAnswers[k]?.trim()).length} / ${quizQuestions.length} 题`}
                   </span>
                   <button onClick={handleQuizSubmit} disabled={!allAnswered}
                     className="px-6 py-2.5 bg-accent-500 text-white rounded-xl text-sm font-medium hover:bg-accent-600 disabled:opacity-40 transition-colors shadow-sm"
@@ -1119,12 +1410,12 @@ export default function LecturePage() {
                     setQuizSuggestion('');
                     setQuizWeakPoints([]);
                     setQuizState('answering');
-                    store.setQuiz(`${sessionId}:${activeSectionId}`, { questions: quizQuestions, quizId, answers: resetAnswers, results: [], totalScore: null, submitted: false, suggestion: '', weakPoints: [] });
+                    store.setQuiz(cacheKey, { questions: quizQuestions, quizId, answers: resetAnswers, results: [], totalScore: null, submitted: false, suggestion: '', weakPoints: [] });
                   }}
                     className="flex items-center gap-1.5 px-4 py-2 text-sm text-primary-600 hover:text-primary-700 hover:bg-primary-50 rounded-xl transition-colors">
                     <RefreshCw size={14} />重新答题
                   </button>
-                  <button onClick={() => { setQuizState('idle'); setPrevLecture(''); }}
+                  <button onClick={() => { clearQuiz(); setPrevLecture(''); useChatStore.getState().bumpDataVersion(); nav(`/path?sessionId=${encodeURIComponent(canonicalTaskScope?.sessionId || sessionId)}&subjectId=${encodeURIComponent(canonicalTaskScope?.subjectId || focusedSubjectId || workflowSubjectId)}&pathId=${encodeURIComponent(canonicalTaskScope?.pathId || path?.id || '')}`); }}
                     className="px-4 py-2 text-sm text-surface-500 hover:text-surface-700 hover:bg-surface-100 rounded-xl transition-colors">关闭小测</button>
                 </div>
               )}
@@ -1132,7 +1423,17 @@ export default function LecturePage() {
           )}
 
           {/* ── Textbook mode: PDF viewer ── */}
-          {isTextbookMode && activeSubject && currentSection ? (
+          {executionMode === 'video' && !videoLectureFallback ? (
+            <div className="mx-auto flex h-full w-full max-w-2xl flex-col justify-center gap-4 p-6">
+              <h3 className="text-xl font-semibold text-surface-900">视频学习</h3>
+              {videoStatus === 'loading' ? <div className="flex items-center gap-2 text-sm text-surface-500"><Loader2 size={16} className="animate-spin" />正在查找高相关视频…</div>
+                : videoStatus === 'failed' ? <div className="rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">视频资源搜索失败，请稍后重试或返回学习路径。<button onClick={retryVideoSearch} className="ml-2 underline">重新搜索</button></div>
+                : videoResources.length ? videoResources.map((item: any) => <a key={item.url} href={item.url} target="_blank" rel="noreferrer" onClick={() => void recordVideoEvidence(item.url)} className="rounded-xl border border-surface-200 bg-white p-4 hover:border-primary-300"><strong>{item.title}</strong><p className="mt-1 text-sm text-surface-500">{item.source} · {item.reason}</p><span className="mt-2 inline-block text-sm text-primary-600">打开外部视频</span></a>)
+                : <p className="rounded-xl border border-surface-200 bg-white p-4 text-sm text-surface-600">暂未找到与当前任务高度相关的视频资源</p>}
+              <button onClick={selectVideoFallback} className="w-fit rounded-lg border border-primary-200 px-4 py-2 text-sm text-primary-700">切换为图文讲解</button>
+              <button disabled={completed || focusedCompleting || !(videoOpened || videoLectureFallback && videoFallbackSelected && !!effectiveLectureContent)} onClick={completeFocusedTask} className="w-fit rounded-lg bg-primary-600 px-4 py-2 text-sm text-white disabled:cursor-not-allowed disabled:opacity-60">{completed ? '本任务已完成' : focusedCompleting ? '保存中…' : videoOpened || videoLectureFallback && videoFallbackSelected ? '完成视频学习' : '请先打开视频或切换图文讲解'}</button>
+            </div>
+          ) : isTextbookMode && activeSubject && currentSection ? (
             <TextbookViewer
               subjectId={activeSubject.id}
               pageStart={currentSection.textbookPageStart ?? 1}
@@ -1141,26 +1442,10 @@ export default function LecturePage() {
           ) : quizState !== 'idle' ? null : sectionContent ? (
             /* ── Section content — routed by content_type ── */
             <div className="px-5 py-4 relative" onMouseUp={handleTextSelection}>
+              {executionMode === 'video' && videoLectureFallback && <div className="mb-3 rounded-lg bg-blue-50 px-3 py-2 text-sm text-blue-700">当前使用图文讲解替代视频学习<button onClick={selectVideoMode} className="ml-2 font-medium underline">返回视频学习</button></div>}
               <SectionContentRouter
                 content={sectionContent}
-                onComplete={() => {
-                  if (currentSection?.id && updateKnowledgePoint) {
-                    (currentSection.knowledgePoints || []).forEach((kp: any) => {
-                      updateKnowledgePoint(kp.id || kp.name, { status: 'mastered' });
-                    });
-                  }
-                  // Emit section_complete with content_type for mode-specific analytics
-                  logStudyEvent({
-                    sessionId: sessionId || '',
-                    event: 'section_complete',
-                    resourceId: activeSectionId,
-                    metadata: {
-                      title: currentSection?.title || '',
-                      content_type: contentType,
-                      task_type: (currentSection as any)?.task_type || '',
-                    },
-                  }).catch(() => {});
-                }}
+                onComplete={() => executionMode !== 'video' || videoLectureFallback ? completeFocusedTask() : false}
               />
               {/* ── 划词引用栏 ── */}
               {quotedText && quotePos && (
@@ -1173,11 +1458,22 @@ export default function LecturePage() {
                 </div>
               )}
             </div>
+          ) : isVideoFallbackDelivery && fallbackEnsureError ? (
+            <div className="mx-auto flex h-full w-full max-w-2xl flex-col items-center justify-center gap-4 p-6 text-center">
+              <div className="rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">图文讲解生成失败。</div>
+              <button onClick={() => { fallbackEnsureScope.current = ''; setFallbackEnsureError(false); setFallbackEnsureRetry((value) => value + 1); }} className="rounded-lg border border-primary-200 px-4 py-2 text-sm text-primary-700">重新生成图文讲解</button>
+            </div>
+          ) : isVideoFallbackDelivery ? (
+            <div className="mx-auto flex h-full w-full max-w-2xl flex-col items-center justify-center gap-2 p-6 text-center text-sm text-surface-500">
+              <Loader2 size={18} className="animate-spin" />
+              <strong className="text-surface-700">正在生成图文讲解</strong>
+              <span>AI 正在将本视频任务转换为可阅读的图文教材，请稍候…</span>
+            </div>
           ) : loadingLecture ? (
             <div className="flex items-center justify-center h-full">
               <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
             </div>
-          ) : !isTextbookMode ? (
+          ) : !isTextbookMode && !isVideoFallbackDelivery ? (
             /* ── No textbook mode: show generate lecture prompt ── */
             <div className="flex flex-col items-center justify-center h-full gap-5">
               <div className="relative">
@@ -1192,10 +1488,10 @@ export default function LecturePage() {
                 <p className="text-base font-semibold text-surface-700">准备开始学习</p>
                 <p className="text-sm text-surface-400 mt-1 max-w-xs">点击「生成教材」，AI 将按正式出版教材的标准编写本节内容</p>
               </div>
-              <button onClick={() => handleGenerate()} disabled={generating || loadingLecture}
+              {deliveryMode === 'lecture' && <button onClick={() => handleGenerate()} disabled={generating || loadingLecture}
                 className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-blue-600 to-violet-600 text-white rounded-xl text-sm font-semibold hover:from-blue-700 hover:to-violet-700 disabled:opacity-50 transition-all shadow-md shadow-blue-200">
                 <Sparkles size={15} />{generating ? '生成中…' : '开始生成教材'}
-              </button>
+              </button>}
             </div>
           ) : null}
         </div>
@@ -1316,9 +1612,12 @@ export default function LecturePage() {
                 pathId={path?.id || ''}
                 stageId={chapterCtx?.stage.id || ''}
                 chapterId={chapterCtx?.chapter.id || ''}
-                chapterTitle={chapterCtx?.chapter.title || ''}
-                section={currentSection}
-                lectureContent={effectiveLectureContent}
+              chapterTitle={chapterCtx?.chapter.title || ''}
+              section={currentSection}
+              taskId={resourceTaskId}
+              dayId={resourceDayScope.dayId}
+              globalDayIndex={resourceDayScope.globalDayIndex}
+              lectureContent={effectiveLectureContent}
                 sections={sections}
                 legacyMindmapId={chapterCtx?.chapter.mindmapId}
               />
@@ -1426,7 +1725,7 @@ export default function LecturePage() {
                     body: JSON.stringify({ sessionId, sectionTitle: currentSection.title, sectionGoal: currentSection.goal || '', chapterId: chapterCtx?.chapter.id || '', stageId: chapterCtx?.stage.id || '', knowledgePoints: currentSection.knowledgePoints || [], lectureContent: effectiveLectureContent }),
                   }).then(r => r.json());
                   const data = res?.data || res;
-                  if (data?.lecture_content) store.setLecture(`${sessionId}:${activeSectionId}`, data.lecture_content);
+                  if (data?.lecture_content) store.setLecture(cacheKey, data.lecture_content);
                   // Check for async video task
                   const videoResource = (data?.resources || []).find((r: any) => r.task_id);
                   if (videoResource?.task_id) {
@@ -1466,6 +1765,9 @@ export default function LecturePage() {
               pathId={path?.id || ''}
               stageId={chapterCtx?.stage.id || ''}
               chapterId={chapterCtx?.chapter.id || ''}
+              taskId={resourceTaskId}
+              dayId={resourceDayScope.dayId}
+              globalDayIndex={resourceDayScope.globalDayIndex}
               lectureContent={effectiveLectureContent}
             />
             </>
@@ -1495,8 +1797,8 @@ export default function LecturePage() {
 }
 
 // ── 资源卡片生成器（小结卡/概念对比/例题详解等）──
-function ResourceCardGenerator({ sessionId, section, pathId, stageId, chapterId, lectureContent }: {
-  sessionId: string; section: any; pathId: string; stageId: string; chapterId: string; lectureContent: string;
+function ResourceCardGenerator({ sessionId, section, pathId, stageId, chapterId, taskId, dayId, globalDayIndex, lectureContent }: {
+  sessionId: string; section: any; pathId: string; stageId: string; chapterId: string; taskId: string; dayId?: string; globalDayIndex?: number; lectureContent: string;
 }) {
   const subjectId = useSubjectStore.getState().activeSubject?.id;
   const [generated, setGenerated] = useState<any[]>([]);
@@ -1505,13 +1807,14 @@ function ResourceCardGenerator({ sessionId, section, pathId, stageId, chapterId,
   const [preview, setPreview] = useState<any>(null);
 
   useEffect(() => {
-    if (!sessionId || !section?.id) { setGenerated([]); return; }
+    if (!sessionId || !section?.id || !pathId || !stageId || !taskId) { setGenerated([]); return; }
     let active = true;
+    const controller = new AbortController();
     import('../api/sectionResources').then(({ getGeneratedSectionResources }) =>
-      getGeneratedSectionResources(section.id, sessionId, subjectId).then(items => active && setGenerated(items)).catch(() => active && setGenerated([]))
+      getGeneratedSectionResources(section.id, sessionId, subjectId, { pathId, stageId, taskId, dayId, globalDayIndex }, controller.signal).then(items => active && setGenerated(items)).catch(() => active && setGenerated([]))
     );
-    return () => { active = false; };
-  }, [sessionId, section?.id, subjectId]);
+    return () => { active = false; controller.abort(); };
+  }, [sessionId, section?.id, subjectId, pathId, stageId, taskId, dayId, globalDayIndex]);
 
   const generate = async (resourceType: string) => {
     if (!sessionId || !section) return;

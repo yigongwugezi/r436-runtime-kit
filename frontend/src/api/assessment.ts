@@ -205,6 +205,23 @@ export async function submitQuizAttempt(
   return data as { status: string; data: QuizSubmitResponse };
 }
 
+export async function ensureLearningPathQuiz(taskId: string, body: Record<string, unknown>) {
+  const { data } = await client.post(`/api/learning-path/tasks/${encodeURIComponent(taskId)}/quiz/ensure`, body);
+  return data;
+}
+
+import { ensureScopedLearningPathQuiz as ensureScoped, retryScopedLearningPathQuiz } from '../utils/learningPathQuiz';
+export { learningPathQuizScope, normalizeLearningPathQuiz, retryScopedLearningPathQuiz } from '../utils/learningPathQuiz';
+
+export function ensureScopedLearningPathQuiz(taskId: string, body: Record<string, unknown>) {
+  return ensureScoped(taskId, body, ensureLearningPathQuiz);
+}
+
+export async function submitLearningPathQuiz(taskId: string, body: Record<string, unknown>) {
+  const { data } = await client.post(`/api/learning-path/tasks/${encodeURIComponent(taskId)}/quiz/submit`, body);
+  return data;
+}
+
 /** Get quiz results with answers and grading after submission. */
 export async function getQuizResults(
   quizId: string,

@@ -34,6 +34,9 @@ interface Props {
   chapterId: string;
   chapterTitle: string;
   section: Section | undefined;
+  taskId: string;
+  dayId?: string;
+  globalDayIndex?: number;
   lectureContent: string;
   sections: Section[];
   legacyMindmapId?: string;
@@ -63,9 +66,14 @@ function safeExternalUrl(url: string): boolean {
   try { return ['http:', 'https:'].includes(new URL(url).protocol); } catch { return false; }
 }
 
+function resourceErrorMessage(error: any): string {
+  const detail = error?.response?.data?.detail;
+  return typeof detail === 'string' ? detail : typeof detail?.message === 'string' ? detail.message : '资源加载失败，请刷新重试。';
+}
+
 export default function SectionResourceWorkspace(props: Props) {
   const nav = useNavigate();
-  const { sessionId, pathId, stageId, chapterId, chapterTitle, section, lectureContent, sections, legacyMindmapId } = props;
+  const { sessionId, pathId, stageId, chapterId, chapterTitle, section, taskId, dayId, globalDayIndex, lectureContent, sections, legacyMindmapId } = props;
   const subjectId = useSubjectStore((state) => state.activeSubject?.id ?? state.activeClassSubject?.subject);
   const [recommendations, setRecommendations] = useState<SectionRecommendationResult | null>(null);
   const [searching, setSearching] = useState(false);
@@ -92,10 +100,13 @@ export default function SectionResourceWorkspace(props: Props) {
 
   useEffect(() => {
     let active = true;
-    if (!sessionId || !section?.id) { setGenerated([]); return; }
-    getGeneratedSectionResources(section.id, sessionId, subjectId).then((items) => active && setGenerated(items)).catch(() => active && setGenerated([]));
-    return () => { active = false; };
-  }, [sessionId, section?.id, subjectId]);
+    if (!sessionId || !section?.id || !pathId || !stageId || !taskId) { setGenerated([]); return; }
+    const controller = new AbortController();
+    getGeneratedSectionResources(section.id, sessionId, subjectId, { pathId, stageId, taskId, dayId, globalDayIndex }, controller.signal)
+      .then((items) => active && setGenerated(items))
+      .catch((error) => { if (active && !controller.signal.aborted) { setGenerated([]); setNotice(resourceErrorMessage(error)); } });
+    return () => { active = false; controller.abort(); };
+  }, [sessionId, section?.id, subjectId, pathId, stageId, taskId, dayId, globalDayIndex]);
 
   useEffect(() => {
     let active = true;
@@ -181,7 +192,7 @@ export default function SectionResourceWorkspace(props: Props) {
             setGenerated((items) => [resource, ...items.filter((item) => item.id !== resource.id)]);
             setPreview(resource);
           } else {
-            const items = await getGeneratedSectionResources(section.id, sessionId, subjectId);
+            const items = await getGeneratedSectionResources(section.id, sessionId, subjectId, { pathId, stageId, taskId, dayId, globalDayIndex });
             if (active) setGenerated(items);
           }
         }
@@ -288,7 +299,7 @@ export default function SectionResourceWorkspace(props: Props) {
       const result = task.result?.data as { resource: GeneratedSectionResource };
       if (!result?.resource) {
         clearWorkflowTask(workflowScope);
-        const items = await getGeneratedSectionResources(section.id, sessionId, subjectId);
+        const items = await getGeneratedSectionResources(section.id, sessionId, subjectId, { pathId, stageId, taskId, dayId, globalDayIndex });
         setGenerated(items);
         return;
       }

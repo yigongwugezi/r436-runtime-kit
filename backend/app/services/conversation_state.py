@@ -152,6 +152,49 @@ def _find_new_stages(old_stages: list, new_stages: list) -> list[dict]:
     return [s for s in new_stages if isinstance(s, dict) and s.get("stage_id", "") not in old_ids]
 
 
+def _preserve_task_progress(old: Any, new: Any) -> Any:
+    """Carry completion evidence to unchanged, stable task identities only."""
+    prior: dict[str, dict] = {}
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            key = next((str(value.get(name) or "") for name in ("task_id", "section_id", "node_id", "id") if value.get(name)), "")
+            if key: prior[key] = value
+            for child in value.values(): collect(child)
+        elif isinstance(value, list):
+            for child in value: collect(child)
+    def merge(value: Any) -> Any:
+        if isinstance(value, dict):
+            result = {key: merge(child) for key, child in value.items()}
+            key = next((str(result.get(name) or "") for name in ("task_id", "section_id", "node_id", "id") if result.get(name)), "")
+            for field in ("status", "mastery", "completed_at", "completedAt", "task_complete", "evidence"):
+                if key in prior and field in prior[key]: result[field] = prior[key][field]
+            return result
+        return [merge(child) for child in value] if isinstance(value, list) else value
+    collect(old)
+    return merge(new)
+
+
+def _proposal_matches_base(base: Any, proposal: Any) -> bool:
+    """Reject a proposal whose content has no meaningful topic overlap."""
+    def terms(value: Any) -> set[str]:
+        text = " ".join(str(item) for item in _strings(value)).lower()
+        latin = set(re.findall(r"[a-z0-9]{3,}", text))
+        han = {text[i:i + 2] for i in range(len(text) - 1) if "\u4e00" <= text[i] <= "\u9fff" and "\u4e00" <= text[i + 1] <= "\u9fff"}
+        return latin | (han - {"学习", "课程", "任务", "复习", "知识", "内容", "方法"})
+    def _strings(value: Any):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key in {"title", "name", "topic", "knowledge_points", "knowledgePoints", "description"}:
+                    yield item
+                yield from _strings(item)
+        elif isinstance(value, list):
+            for item in value: yield from _strings(item)
+        elif isinstance(value, str):
+            yield value
+    base_terms, proposed_terms = terms(base), terms(proposal)
+    return not base_terms or bool(base_terms & proposed_terms)
+
+
 @dataclass
 class ConversationState:
     session_id: str
@@ -597,7 +640,7 @@ class ConversationStore:
     ) -> dict:
         """存储候选路径供用户确认，不覆盖当前 active path。"""
         state = self.get(session_id)
-        if state.pending_revision:
+        if state.pending_revision and state.pending_revision.get("status") == "ready_for_review":
             return state.pending_revision
         revision = {
             "revision_id": f"rev_{int(time.time() * 1000)}",
@@ -609,6 +652,7 @@ class ConversationStore:
             "proposed_stages": proposed_stages,
             "diagnosis_snapshot_id": f"diag_{int(time.time() * 1000)}",
             "path_id": path_id,
+            "base_path_id": path_id,
             "subject_id": subject_id,
             "trigger_source": trigger_source,
             "trigger_id": trigger_id,
@@ -622,15 +666,15 @@ class ConversationStore:
                 from app.db.models import LearningPathModel
                 from app.db.repository import get_or_create_session
                 get_or_create_session(db, session_id)
-                existing = (
-                    db.query(LearningPathModel)
-                    .filter(LearningPathModel.session_id == session_id)
-                    .order_by(LearningPathModel.updated_at.desc())
-                    .first()
-                )
+                existing = db.get(LearningPathModel, path_id) if path_id else None
+                if existing is None:
+                    existing = db.query(LearningPathModel).filter(LearningPathModel.session_id == session_id).order_by(LearningPathModel.updated_at.desc()).first()
                 if existing:
                     revision["path_id"] = revision["path_id"] or existing.id
+                    revision["base_path_id"] = revision["path_id"]
                     revision["subject_id"] = revision["subject_id"] or str(getattr(existing.session, "subject_id", "") or "")
+                    if not _proposal_matches_base(existing.stages or [], proposed_stages):
+                        revision["status"] = "failed"
                 if existing:
                     existing.pending_revision = revision
                 else:
@@ -675,7 +719,7 @@ class ConversationStore:
         # 应用候选路径
         rev["status"] = "applied"
         rev["decided_at"] = time.time()
-        current["learning_path"] = rev["proposed_stages"]
+        current["learning_path"] = _preserve_task_progress(old_path, rev["proposed_stages"])
         current["version"] = int(time.time() * 1000)
         state.last_result = current
         state.pending_revision = None
@@ -694,7 +738,7 @@ class ConversationStore:
                 if existing:
                     existing.pending_revision = None
                     existing.path_revisions = state.path_revisions
-                    existing.stages = rev["proposed_stages"]
+                    existing.stages = current["learning_path"]
                     existing.current_version = len(state.path_revisions)
                     db.commit()
             except Exception:

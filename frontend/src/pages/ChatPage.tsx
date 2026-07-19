@@ -639,6 +639,8 @@ export default function ChatPage() {
     agentProgress,
     lastDebugInfo,
     currentSessionId,
+    dataSessionId,
+    canonicalSession,
     setLoading,
     lastImageAttachment,
     imageAttachmentHistory,
@@ -649,10 +651,11 @@ export default function ChatPage() {
     chatMode,
   } = useChatStore() as any;
   const { send, sendSuggested, abort } = useStreamChat();
+  const chatReady = canonicalSession.status === 'resolved' && !!currentSessionId;
   const setSearchEnabled = (v: boolean) => useChatStore.getState().setSearchEnabled(v);
   const setDeepThinkEnabled = (v: boolean) => useChatStore.getState().setDeepThinkEnabled(v);
   // Closed-loop assessment notifications — poll every 30s, pause during streaming
-  useNotificationPoller(currentSessionId || '', !isStreaming);
+  useNotificationPoller(canonicalSession.status === 'resolved' ? dataSessionId : '', !isStreaming);
   const [messagesLoaded, setMessagesLoaded] = useState(false); const [menuOpen, setMenuOpen] = useState(false); const [historyOpen, setHistoryOpen] = useState(false);
   const [selectedImage, setSelectedImage] = useState<{ file: File; preview: string } | null>(null);
   const [imageContextDisabled, setImageContextDisabled] = useState(false);
@@ -700,7 +703,7 @@ export default function ChatPage() {
     el.addEventListener('scroll', h, { passive: true });
     return () => el.removeEventListener('scroll', h);
   });
-  useEffect(() => { if (useChatStore.getState().messages.length > 0) { setMessagesLoaded(true); setLoading(false); return; } setMessagesLoaded(false); let cancelled = false; (async () => { setLoading(true); try { const res = await getSessionMessages(currentSessionId); if (!cancelled && res.messages?.length) useChatStore.setState({ messages: res.messages }); } catch {} finally { if (!cancelled) { setMessagesLoaded(true); setLoading(false); } } })(); return () => { cancelled = true; }; }, [currentSessionId]);
+  useEffect(() => { if (canonicalSession.status !== 'resolved' || !currentSessionId) { setMessagesLoaded(false); setLoading(false); return; } if (useChatStore.getState().messages.length > 0) { setMessagesLoaded(true); setLoading(false); return; } setMessagesLoaded(false); let cancelled = false; (async () => { setLoading(true); try { const res = await getSessionMessages(currentSessionId); if (!cancelled && res.messages?.length) useChatStore.setState({ messages: res.messages }); } catch {} finally { if (!cancelled) { setMessagesLoaded(true); setLoading(false); } } })(); return () => { cancelled = true; }; }, [canonicalSession.status, currentSessionId]);
   useEffect(() => { if (initialMessage && messages.length === 0 && messagesLoaded) send(initialMessage); }, [initialMessage, messagesLoaded]);
   useEffect(() => { if (initialChatMode) useChatStore.getState().setChatMode(initialChatMode); }, [initialChatMode]);
 
@@ -774,7 +777,7 @@ export default function ChatPage() {
   };
   const handleSend = async () => {
     const text = inputValue.trim();
-    if ((!text && !selectedImage) || isStreaming) return;
+    if ((!text && !selectedImage) || isStreaming || !chatReady) return;
     const finalText = text || '识别这张图片';
 
     // ═══ 检测规划关键词：自由/调用模式自动切换到规划模式 ═══
@@ -1021,7 +1024,7 @@ export default function ChatPage() {
 <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => handleImageChange(e.target.files?.[0])} />
               <button
                 onClick={() => fileRef.current?.click()}
-                disabled={isStreaming}
+                disabled={isStreaming || !chatReady}
                 className="p-1.5 rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-200/60 disabled:opacity-50 transition-colors flex-shrink-0"
                 title="上传图片"
               >
@@ -1029,7 +1032,7 @@ export default function ChatPage() {
               </button>
               <VoiceInputButton
                 onResult={handleVoiceResult}
-                disabled={isStreaming}
+                disabled={isStreaming || !chatReady}
                 size="sm"
               />
               <textarea
@@ -1040,7 +1043,7 @@ export default function ChatPage() {
                 onKeyDown={handleKeyDown}
                 placeholder="输入消息..."
                 rows={1}
-                disabled={isStreaming}
+                disabled={isStreaming || !chatReady}
                 className="flex-1 resize-none bg-transparent text-sm text-gray-800 placeholder:text-gray-400 outline-none py-1 disabled:opacity-50"
                 style={{ minHeight: '24px', maxHeight: '160px' }}
               />
@@ -1051,7 +1054,7 @@ export default function ChatPage() {
               ) : (
                 <button
                   onClick={handleSend}
-                  disabled={!selectedImage && !inputValue.trim()}
+                disabled={!chatReady || (!selectedImage && !inputValue.trim())}
                   className={`p-1.5 rounded-full transition-all flex-shrink-0 ${
                     inputValue.trim() || selectedImage
                       ? 'bg-gray-800 text-white hover:bg-gray-700'
@@ -1062,6 +1065,7 @@ export default function ChatPage() {
                 </button>
               )}
             </div>
+            {!chatReady && <p className="mt-2 text-center text-xs text-surface-400">{canonicalSession.status === 'failed' ? '当前课程会话创建失败，请重试。' : '正在创建当前课程会话…'}</p>}
             {/* Mode toggles — bottom-left, separate from topics */}
             <div className="flex items-center gap-2 mt-2">
               <button

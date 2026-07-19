@@ -4,6 +4,7 @@ import { Brain, ClipboardCheck, Edit3, MessageCircle, RefreshCw, Save, Sparkles,
 import { useNavigate } from 'react-router-dom';
 import { useChatPanel } from '../components/layout/AppLayout';
 import { useProfile } from '../hooks/useProfile';
+import { PROFILE_DISPLAY_DIMENSIONS, profileDisplayCompleteness } from '../utils/profileCompleteness';
 import { useChatStore } from '../store/chatStore';
 import { assessInterest, updateProfileContext, updateProfileSelfReport, updateProfileFact } from '../api/profile';
 import { PageError, PageLoading } from '../components/common/PageState';
@@ -38,7 +39,7 @@ export default function ProfilePage() {
   const nav = useNavigate();
   const chat = useChatPanel();
   const sessionId = useChatStore((state) => state.dataSessionId);
-  const { profileV2, loading, error, fetchProfile } = useProfile();
+  const { profileV2, loading, empty, error, fetchProfile } = useProfile();
   const subjectId = String(profileV2?.subject_context?.subject_id || '');
   const [context, setContext] = useState({});
   const [inlineKey, setInlineKey] = useState<string | null>(null);
@@ -102,9 +103,10 @@ export default function ProfilePage() {
   if (loading && !profileV2) return <PageLoading text="加载学习画像…" />;
   if (error && !profileV2 && !sessionId) return <PageLoading text="等待会话就绪…" />;
   if (error && !profileV2) return <PageError title="画像加载失败" description={error} onRetry={fetchProfile} />;
-  if (!profileV2) return <div className="rounded-2xl bg-white p-10 text-center shadow-sm"><Brain className="mx-auto mb-3 text-surface-300" size={42} /><h2 className="text-xl font-bold">尚未构建学习画像</h2><p className="mt-2 text-sm text-surface-500">在对话中告诉 AI 你的课程、目标和时间安排。</p><button onClick={() => chat.setOpen(true)} className="mt-5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white">开始对话</button></div>;
+  if (!profileV2) return <div className="rounded-2xl bg-white p-10 text-center shadow-sm"><Brain className="mx-auto mb-3 text-surface-300" size={42} /><h2 className="text-xl font-bold">{empty ? '画像信息暂不完整' : '尚未构建学习画像'}</h2><p className="mt-2 text-sm text-surface-500">在对话中告诉 AI 你的课程、目标和时间安排。</p><button onClick={() => chat.setOpen(true)} className="mt-5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white">开始对话</button></div>;
 
   const subject = profileV2.subject_context || {};
+  const displayCompleteness = profileDisplayCompleteness(subject);
   const interestState = profileV2.general_states?.find((item) => item.key === 'interest');
 
   // ── 行内编辑函数：替代传统批量表单，每个字段独立编辑 ──
@@ -150,20 +152,12 @@ export default function ProfilePage() {
   const editFact = async (key: string, current: string) => { if (!sessionId) return; const value = window.prompt('修改画像事实', String(current ?? '')); if (value?.trim()) { setFactBusy(key); try { await updateProfileFact(sessionId, key, 'edit', value.trim()); await fetchProfile(); } finally { setFactBusy(''); } } };
 
   // ── 行内可编辑字段定义 ──
-  const CONTEXT_FIELDS: [string, string, string][] = [
-    ['学习目标', 'learning_goal', subject.learning_goal || '待补充'],
-    ['时间安排', 'daily_minutes', subject.daily_minutes ? `每天${subject.daily_minutes}分钟` : '待补充'],
-    ['专业背景', 'background', subject.background || '待补充'],
-    ['学习历史', 'learning_history', subject.learning_history || '待补充'],
-    ['已有经验', 'prior_experience', (subject.prior_experience || []).join('、') || '待补充'],
-    ['内容偏好', 'content_preferences', preferenceText(subject.content_preferences || []) || '待补充'],
-    ['资源偏好', 'resource_preferences', preferenceText(subject.resource_preferences || []) || '待补充'],
-  ];
+  const CONTEXT_FIELDS: [string, string, string][] = PROFILE_DISPLAY_DIMENSIONS.map(({ label, key }) => [label, key, key === 'daily_minutes' && subject[key] ? `每天${subject[key]}分钟` : Array.isArray(subject[key]) ? preferenceText(subject[key]) || '待补充' : subject[key] || '待补充']);
 
   return <div className="space-y-6 pb-8">
     <header className="rounded-2xl bg-gradient-to-r from-blue-600 to-violet-600 p-6 text-white">
       <p className="text-sm text-blue-100">当前学习概览</p><h2 className="mt-1 text-2xl font-bold">{subjectId ? (subject.subject_name || '已选择学习主题') : '暂未选择学习主题'}</h2>
-      <div className="mt-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-4"><span>目标：{subject.learning_goal || '待补充'}</span><span>每日：{subject.daily_minutes ? `${subject.daily_minutes} 分钟` : '待补充'}</span><span>学习周期：{subject.deadline || '待补充'}</span><span>学习情境完整度：{Math.round((profileV2.profile_completeness || 0) * 100)}%</span></div><div className="mt-3 flex items-center gap-3"><p className="text-xs text-blue-100">该指标表示基础学习信息的完整程度，不代表所有能力与知识点均已完成测评。</p><button onClick={() => nav('/chat', { state: { initialMessage: '我想修改一下我的学习画像信息' } })} className="inline-flex items-center gap-1 rounded-lg bg-white/20 px-3 py-1.5 text-xs font-medium text-white hover:bg-white/30 transition-colors"><MessageCircle size={12} />修改画像</button></div>
+      <div className="mt-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-4"><span>目标：{subject.learning_goal || '待补充'}</span><span>每日：{subject.daily_minutes ? `${subject.daily_minutes} 分钟` : '待补充'}</span><span>学习周期：{subject.deadline || '待补充'}</span><span>学习情境完整度：{displayCompleteness.percent}%（{displayCompleteness.filled}/{displayCompleteness.total}）</span></div><div className="mt-3 flex items-center gap-3"><p className="text-xs text-blue-100">该指标表示基础学习信息的完整程度，不代表所有能力与知识点均已完成测评。</p><button onClick={() => nav('/chat', { state: { initialMessage: '我想修改一下我的学习画像信息' } })} className="inline-flex items-center gap-1 rounded-lg bg-white/20 px-3 py-1.5 text-xs font-medium text-white hover:bg-white/30 transition-colors"><MessageCircle size={12} />修改画像</button></div>
     </header>
     {syncWorkflow && <WorkflowProgress key={`${syncWorkflow.taskId}:${syncWorkflow.status}`} state={syncWorkflow} onRetry={() => syncFromConversation(true)} />}
 

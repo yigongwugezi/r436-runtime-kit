@@ -31,7 +31,34 @@ export async function migratePersonalSubjects(
 
 /** GET /api/subjects/session — resolve the session linked to a subject.
  *  For parent accounts, returns the child's session. */
+export interface CanonicalSubjectSession {
+  sessionId: string;
+  subjectId: string;
+  pathId: string | null;
+  source: string;
+  resolvedAt: string | null;
+}
+
+export async function getCanonicalSubjectSession(subjectId: string, signal?: AbortSignal): Promise<CanonicalSubjectSession | null> {
+  const res = await client.get('/api/subjects/session', { params: { subject_id: subjectId }, signal });
+  const data = res.data;
+  if (!data?.session_id) return null;
+  return {
+    sessionId: data.session_id,
+    subjectId: data.subject_id || subjectId,
+    pathId: data.path_id || null,
+    source: data.source || '',
+    resolvedAt: data.resolved_at || null,
+  };
+}
+
+export async function ensureCanonicalSubjectSession(subjectId: string): Promise<CanonicalSubjectSession> {
+  const res = await client.post(`/api/subjects/${subjectId}/session/ensure`);
+  const data = res.data;
+  return { sessionId: data.session_id, subjectId: data.subject_id, pathId: data.path_id || null, source: data.source || '', resolvedAt: data.resolved_at || null };
+}
+
+/** Compatibility for chat-only callers that only need the ID. */
 export async function getSubjectSession(subjectId: string): Promise<string | null> {
-  const res = await client.get('/api/subjects/session', { params: { subject_id: subjectId } });
-  return res.data?.session_id ?? null;
+  return (await getCanonicalSubjectSession(subjectId))?.sessionId ?? null;
 }

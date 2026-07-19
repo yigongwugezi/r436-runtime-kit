@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import threading
 import time
 import uuid
@@ -14,6 +15,8 @@ from typing import Any, Callable
 
 from app.config import settings
 
+
+logger = logging.getLogger(__name__)
 
 TERMINAL_STATUSES = {"completed", "partial", "cancelled", "failed", "expired"}
 
@@ -312,6 +315,10 @@ class WorkflowTaskManager:
                 if task.cancel_event.is_set():
                     self._mark_cancelled(task)
                 else:
+                    logger.error(
+                        "workflow failed id=%s type=%s stage=%s exception=%s summary=%s",
+                        task.task_id, task.workflow_type, task.current_stage, type(exc).__name__, str(exc).splitlines()[0][:160],
+                    )
                     task.status = "failed"
                     task.finished_elapsed_ms = task.elapsed_ms
                     task.error_code = str(getattr(exc, "error_code", "") or task.error_code or "WORKFLOW_FAILED")

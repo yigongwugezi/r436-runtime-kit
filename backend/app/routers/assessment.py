@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 import threading
 import uuid
+import hashlib
+import json
 from datetime import datetime, timezone
 from typing import Annotated
 
@@ -17,7 +19,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 
 from app.db.engine import SessionLocal
-from app.db.models import AnswerRecordModel, AttemptModel, ExamSetModel, PracticeQuestionModel, QuizModel
+from app.db.models import AnswerRecordModel, AttemptModel, ExamSetModel, LearningPathModel, PracticeQuestionModel, QuizModel, SessionModel
 from app.db.repository import (
     check_quiz_result_event_exists,
     create_attempt,
@@ -60,6 +62,7 @@ _assessment_llm = get_llm_client()
 _assessment_factory = AgentFactory(llm_client=_assessment_llm)
 
 logger = logging.getLogger(__name__)
+_task_quiz_ensure_lock = threading.Lock()  # ponytail: process-local serialization; DB uniqueness covers multi-process races.
 
 
 def _require_path_stage(payload: dict[str, Any]) -> None:
@@ -92,7 +95,7 @@ def _assessment_path_context(db, parent, body: "QuizSubmitRequest", learner_id: 
     if not context or str(context[0].get("id") or context[0].get("stage_id") or "") != values["stage_id"]:
         raise HTTPException(status_code=403, detail="assessment task is not in the requested path stage")
     task_type = str(context[1].get("task_type") or context[1].get("type") or context[1].get("content_type") or "").lower()
-    if task_type not in {"quiz", "practice", "exam", "assessment", "test"}:
+    if task_type not in {"quiz", "do_quiz", "quiz_prac", "practice", "exam", "assessment", "test"}:
         raise HTTPException(status_code=403, detail="path task is not an assessment")
     stage = _apply_stage_progress(path.stages)[path.stages.index(context[0])]
     if stage["progressStatus"] == "locked":
@@ -100,6 +103,194 @@ def _assessment_path_context(db, parent, body: "QuizSubmitRequest", learner_id: 
     return values
 
 router = APIRouter(tags=["assessment"])
+
+
+def _task_quiz_questions(task: dict, task_id: str) -> list[dict]:
+    """Small, persistent MCQ set for one path task; answers stay server-side."""
+    return _build_domain_quiz_fallback(task, task_id)
+    topic = str(task.get("title") or task.get("topic") or task.get("name") or task_id)
+    return [{
+        "id": f"{task_id}-q{i}", "type": "choice",
+        "stem": f"关于“{topic}”，以下哪项最符合本任务的核心学习目标？",
+        "options": [f"A. 理解并应用 {topic}", "B. 跳过关键概念", "C. 只记忆无关事实", "D. 不进行任何验证"],
+        "correct": "A", "explanation": f"本题检验对“{topic}”核心概念的理解与应用。",
+        "knowledge_points": [topic], "difficulty": "medium",
+    } for i in range(1, 6)]
+
+
+def _build_domain_quiz_fallback(task: dict, task_id: str) -> list[dict]:
+    """Bounded deterministic fallback; task knowledge points choose the domain."""
+    text = " ".join(map(str, [task.get("title", ""), task.get("description", ""), *(task.get("knowledge_points", []) or task.get("knowledgePoints", []) or [])])).lower()
+    if any(token in text for token in ("outline", "syllabus", "课程", "大纲", "教学")):
+        rows = [
+            ("Which syllabus element states what learners should be able to achieve?", ["A. Assessment method", "B. Learning objectives", "C. Reading list", "D. Course schedule"], "B", "Learning objectives describe expected learner outcomes.", "learning objectives"),
+            ("Which item belongs in course content rather than assessment?", ["A. Core topics and concepts", "B. Grading weights", "C. Attendance rule", "D. Submission deadline"], "A", "Course content names the topics learners study.", "course content"),
+            ("A plan for lectures, discussion, and projects is primarily the course's:", ["A. Learning objective", "B. Assessment result", "C. Teaching method", "D. Prerequisite"], "C", "Teaching methods explain how learning activities are delivered.", "teaching methods"),
+            ("Which syllabus element explains how student achievement will be measured?", ["A. Chapter sequence", "B. Assessment method", "C. Course description", "D. Teaching material"], "B", "Assessment methods state how learning is evaluated.", "assessment methods"),
+            ("Why list chapters in a course outline?", ["A. To show the learning sequence", "B. To replace learning objectives", "C. To remove assessment", "D. To avoid teaching methods"], "A", "A chapter structure makes the course progression visible.", "course structure"),
+        ]
+        return [{"id": f"{task_id}-q{i + 1}", "type": "choice", "stem": stem, "options": options, "correct": correct, "explanation": explanation, "knowledge_points": [kp], "difficulty": "medium"} for i, (stem, options, correct, explanation, kp) in enumerate(rows)]
+    if not any(token in text for token in ("复杂度", "complexity", "big o", "链表", "顺序表")):
+        text = "复杂度"
+    rows = [
+        ("单层循环执行 n 次常数操作，时间复杂度是？", ["A. O(1)", "B. O(log n)", "C. O(n)", "D. O(n²)"], "C", "循环执行 n 次，所以是 O(n)。", "单层循环时间复杂度"),
+        ("两层循环各执行 n 次，时间复杂度是？", ["A. O(n²)", "B. O(n)", "C. O(log n)", "D. O(1)"], "A", "总执行次数为 n×n。", "嵌套循环时间复杂度"),
+        ("变量每轮乘 2 直到 n，循环次数是？", ["A. O(n)", "B. O(log n)", "C. O(n²)", "D. O(2ⁿ)"], "B", "规模每轮翻倍，轮数为 log₂n。", "对数循环"),
+        ("时间复杂度与空间复杂度的正确区别是？", ["A. 都只衡量时间", "B. 时间衡量步骤增长，空间衡量额外存储", "C. 时间衡量内存，空间衡量步骤", "D. 二者总相同"], "B", "时间关注操作增长，空间关注额外内存。", "时间与空间复杂度"),
+        ("顺序表按下标访问与单链表按位置访问的复杂度分别是？", ["A. O(1) 与 O(n)", "B. O(n) 与 O(1)", "C. 都是 O(1)", "D. 都是 O(log n)"], "A", "数组可直接索引，链表需遍历。", "顺序表与链表操作复杂度"),
+    ]
+    return [{"id": f"{task_id}-q{i + 1}", "type": "choice", "stem": stem, "options": options, "correct": correct, "explanation": explanation, "knowledge_points": [kp], "difficulty": "medium"} for i, (stem, options, correct, explanation, kp) in enumerate(rows)]
+
+
+def _semantic_value(value):
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return {str(key): _semantic_value(value[key]) for key in sorted(value)}
+    if isinstance(value, list):
+        return [_semantic_value(item) for item in value]
+    return str(value).strip()
+
+
+def _task_quiz_identity(path: LearningPathModel, entry: dict, learner_id: str, subject_id: str) -> tuple[str, dict]:
+    task = entry["task"]
+    stage = next((item for item in path.stages if str(item.get("id") or item.get("stage_id") or "") == entry["stage_id"]), {})
+    snapshot = {
+        "learnerId": learner_id, "sessionId": path.session_id, "subjectId": subject_id,
+        "pathId": path.id, "pathVersion": path.current_version, "stageId": entry["stage_id"],
+        "stageTitle": stage.get("title") or "", "dayId": entry["day_id"], "globalDayIndex": entry["global_day_index"],
+        "taskId": task.get("task_id") or task.get("id") or "", "taskType": task.get("task_type") or task.get("type") or "",
+        "taskTitle": task.get("title") or "", "taskDescription": task.get("description") or task.get("goal") or "",
+        "learningObjectives": task.get("learning_objectives") or task.get("learningObjectives") or [],
+        "knowledgePoints": task.get("knowledge_points") or task.get("knowledgePoints") or [],
+        "passingScore": 60, "questionCount": 5, "generationVersion": 2,
+    }
+    encoded = json.dumps(_semantic_value(snapshot), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest(), snapshot
+
+
+def _semantic_question_id(fingerprint: str, index: int, stem: str) -> str:
+    normalized = " ".join(str(stem).lower().split())
+    digest = hashlib.sha256(f"{fingerprint}|{index}|{normalized}".encode("utf-8")).hexdigest()
+    return f"q_{digest[:29]}"
+
+
+def _complete_task_quiz(quiz: QuizModel, db) -> bool:
+    questions = db.query(PracticeQuestionModel).filter(
+        PracticeQuestionModel.question_set_id == quiz.id,
+        PracticeQuestionModel.session_id == quiz.session_id,
+    ).all()
+    return len(questions) == 5 and all(q.stem and q.correct and q.explanation and isinstance(q.options, list) and len(q.options) == 4 for q in questions)
+
+
+def _safe_task_quiz(quiz: QuizModel, db) -> dict:
+    linked = db.query(PracticeQuestionModel).filter(
+        PracticeQuestionModel.question_set_id == quiz.id,
+        PracticeQuestionModel.session_id == quiz.session_id,
+    ).all()
+    metadata = quiz.questions if isinstance(quiz.questions, dict) else {}
+    snapshot = metadata.get("taskSemanticSnapshot") if isinstance(metadata.get("taskSemanticSnapshot"), dict) else {}
+    return {
+        "quizId": quiz.id, "taskId": quiz.section_id, "title": quiz.title,
+        "passingScore": 60, "version": 1,
+        "semanticFingerprint": metadata.get("semanticFingerprint", ""),
+        "taskSemanticSnapshot": snapshot,
+        **{key: snapshot.get(key) for key in ("sessionId", "subjectId", "pathId", "stageId", "dayId", "globalDayIndex")},
+        "questions": [{"questionId": q.question_id, "type": q.type, "stem": q.stem,
+                       "options": q.options or [], "difficulty": q.difficulty,
+                       "knowledgePoints": q.knowledge_points or []} for q in linked],
+    }
+
+
+def _require_task_quiz_scope(db, task_id: str, payload: dict, learner_id: str) -> tuple[LearningPathModel, dict, str]:
+    session_id, path_id, stage_id = (str(payload.get(key) or "") for key in ("sessionId", "pathId", "stageId"))
+    subject_id = str(payload.get("subjectId") or "")
+    if not all((session_id, path_id, stage_id, task_id)):
+        raise HTTPException(status_code=400, detail="sessionId, pathId, stageId and taskId are required")
+    session = require_owned_session(db, session_id, learner_id)
+    if subject_id and session.subject_id and subject_id != session.subject_id:
+        raise HTTPException(status_code=409, detail="subject scope does not match session")
+    path = db.query(LearningPathModel).filter(LearningPathModel.id == path_id, LearningPathModel.session_id == session_id).first()
+    if not path:
+        raise HTTPException(status_code=404, detail="learning path not found")
+    from app.routers.product import _apply_stage_progress, normalize_learning_path
+    normalized = normalize_learning_path({"id": path.id, "estimatedDays": path.estimated_days, "stages": path.stages})
+    entry = normalized["task_index"].get(task_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="learning path task not found")
+    if entry["stage_id"] != stage_id:
+        raise HTTPException(status_code=409, detail="task scope does not match path stage")
+    if payload.get("dayId") and str(payload["dayId"]) != entry["day_id"]:
+        raise HTTPException(status_code=409, detail="task scope does not match day")
+    if payload.get("globalDayIndex") is not None and int(payload["globalDayIndex"]) != entry["global_day_index"]:
+        raise HTTPException(status_code=409, detail="task scope does not match day")
+    stage = _apply_stage_progress(path.stages)[entry["_stage_index"]]
+    if stage["progressStatus"] == "locked":
+        raise HTTPException(status_code=403, detail="please complete the current stage first")
+    if str(entry["task"].get("task_type") or entry["task"].get("type") or "").lower() not in {"quiz", "do_quiz", "quiz_prac", "assessment", "test"}:
+        raise HTTPException(status_code=409, detail="task is not a quiz")
+    return path, entry, session.subject_id or subject_id
+
+
+@router.post("/learning-path/tasks/{task_id}/quiz/ensure")
+def ensure_task_quiz(task_id: str, payload: dict, auth: AuthContext = Depends(require_auth)) -> dict:
+    _task_quiz_ensure_lock.acquire()
+    db = SessionLocal()
+    try:
+        path, entry, subject_id = _require_task_quiz_scope(db, task_id, payload, auth.learner_id)
+        fingerprint, snapshot = _task_quiz_identity(path, entry, auth.learner_id, subject_id)
+        quiz_id = f"quiz_{fingerprint[:48]}"
+        quiz = db.get(QuizModel, quiz_id)
+        if quiz and not _complete_task_quiz(quiz, db):
+            if db.query(AttemptModel).filter(AttemptModel.quiz_id == quiz.id).first():
+                raise HTTPException(status_code=409, detail="semantic quiz is incomplete and has attempts")
+            db.query(PracticeQuestionModel).filter(PracticeQuestionModel.question_set_id == quiz.id).delete(synchronize_session=False)
+            db.delete(quiz)
+            db.flush()
+            quiz = None
+        if not quiz:
+            questions = _task_quiz_questions(entry["task"], task_id)
+            if len(questions) != 5:
+                raise HTTPException(status_code=500, detail="quiz generation did not produce five questions")
+            quiz = QuizModel(id=quiz_id, title=str(entry["task"].get("title") or "Task quiz"), session_id=path.session_id,
+                scope_type="section", scope_id=task_id, path_id=path.id, stage_id=entry["stage_id"], section_id=task_id,
+                question_count=5, questions={"semanticFingerprint": fingerprint, "generationVersion": 2, "taskSemanticSnapshot": snapshot, "passingScore": 60}, source="learning_path_task")
+            try:
+                db.add(quiz)
+                for index, item in enumerate(questions, start=1):
+                    db.add(PracticeQuestionModel(question_id=_semantic_question_id(fingerprint, index, item["stem"]), question_set_id=quiz_id,
+                        session_id=path.session_id, type=item["type"], stem=item["stem"], options=item["options"], correct=item["correct"],
+                        explanation=item["explanation"], knowledge_points=item["knowledge_points"], difficulty=item["difficulty"]))
+                db.flush()
+                if not _complete_task_quiz(quiz, db):
+                    raise RuntimeError("semantic quiz persistence is incomplete")
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                quiz = db.get(QuizModel, quiz_id)
+                if not quiz or not _complete_task_quiz(quiz, db):
+                    raise HTTPException(status_code=500, detail="quiz creation conflict; retry")
+            except Exception:
+                db.rollback()
+                raise
+        return {"status": "success", "data": {"status": "ready", "quiz": _safe_task_quiz(quiz, db)}}
+    finally:
+        db.close()
+        _task_quiz_ensure_lock.release()
+
+
+@router.post("/learning-path/tasks/{task_id}/quiz/submit")
+def submit_task_quiz(task_id: str, body: QuizSubmitRequest, auth: AuthContext = Depends(require_auth)) -> dict:
+    db = SessionLocal()
+    try:
+        _, entry, _ = _require_task_quiz_scope(db, task_id, body.model_dump(by_alias=True), auth.learner_id)
+        quiz = require_owned_quiz(db, body.quiz_id, auth.learner_id)
+        if quiz.path_id != body.path_id or quiz.stage_id != body.stage_id or quiz.section_id != task_id:
+            raise HTTPException(status_code=409, detail="quiz does not belong to task")
+        body.task_id = task_id
+        return submit_quiz(body.quiz_id, body, auth)
+    finally:
+        db.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -198,6 +389,10 @@ class QuizSubmitRequest(BaseModel):
     path_id: str = Field(default="", alias="pathId")
     stage_id: str = Field(default="", alias="stageId")
     task_id: str = Field(default="", alias="taskId")
+    quiz_id: str = Field(default="", alias="quizId")
+    subject_id: str = Field(default="", alias="subjectId")
+    day_id: str = Field(default="", alias="dayId")
+    global_day_index: int | None = Field(default=None, alias="globalDayIndex")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -220,7 +415,7 @@ def _quiz_dict(q) -> dict:
         "knowledgePointIds": q.knowledge_point_ids or [],
         "difficulty": q.difficulty,
         "questionCount": q.question_count,
-        "questions": q.questions or [],
+        "questions": [],
         "source": q.source,
         "archivePolicy": q.archive_policy,
         "createdAt": q.created_at.isoformat() if q.created_at else None,
@@ -374,6 +569,10 @@ def _trigger_post_submit_assessment(
     quiz_title: str = "",
     quiz_score: int | None = None,
     weak_points: list[dict] | None = None,
+    subject_id: str = "",
+    path_id: str = "",
+    task_id: str = "",
+    attempt_id: str = "",
 ) -> None:
     """Fire-and-forget: run diagnosis + recommendation update after quiz submission.
 
@@ -381,6 +580,9 @@ def _trigger_post_submit_assessment(
     """
     if not session_id:
         return
+    # assessment_processing is the persisted, attempt-idempotent runner.
+    # Do not also launch an untracked daemon assessment for the same submit.
+    return
 
     def _run() -> None:
         try:
@@ -391,6 +593,10 @@ def _trigger_post_submit_assessment(
                 quiz_title=quiz_title,
                 quiz_score=quiz_score,
                 weak_points=weak_points,
+                subject_id=subject_id,
+                path_id=path_id,
+                task_id=task_id,
+                attempt_id=attempt_id,
             )
         except Exception:
             logger.exception(
@@ -416,6 +622,9 @@ def _create_diagnosis_refresh_task(
 
     Returns the ``task_id``, or ``None`` if creation failed.
     """
+    # assessment_processing owns this attempt's diagnosis; a second workflow
+    # creates duplicate snapshots and planner side effects.
+    return None
     try:
         from app.services.workflow_tasks import workflow_task_manager
         payload: dict[str, Any] = {
@@ -1331,8 +1540,15 @@ def submit_quiz(
             section_id=quiz.section_id,
         )
         db.commit()  # persist fallback mappings + event
+        prior_scores = [row[0] for row in db.query(AttemptModel.total_score).filter(
+            AttemptModel.session_id == session_id, AttemptModel.path_id == (path_context or {}).get("path_id"),
+            AttemptModel.stage_id == (path_context or {}).get("stage_id"), AttemptModel.task_id == (path_context or {}).get("task_id"),
+            AttemptModel.total_score.isnot(None),
+        ).all()]
+        best_score = max(prior_scores or [avg_score])
+        attempt_passed, ever_passed = avg_score >= 60, best_score >= 60
         path_completion = {"pathTaskCompleted": False, "stageCompleted": False, "nextStageUnlocked": False, "pathProgress": None}
-        if path_context:
+        if path_context and ever_passed:
             from app.routers.product import complete_path_task
             path_completion = complete_path_task(
                 db, session_id=session_id, subject_id=subject_id, source="assessment_submission", **path_context,
@@ -1399,6 +1615,10 @@ def submit_quiz(
             quiz_title=quiz.title,
             quiz_score=avg_score,
             weak_points=weak_points,
+            subject_id=subject_id,
+            path_id=(path_context or {}).get("path_id", ""),
+            task_id=(path_context or {}).get("task_id", ""),
+            attempt_id=attempt.attempt_id,
         )
 
         response_attempt = _attempt_dict(get_attempt(db, attempt.attempt_id))
@@ -1412,6 +1632,15 @@ def submit_quiz(
                 "results": results,
                 "totalScore": avg_score,
                 "maxScore": 100,
+                "score": avg_score,
+                "passingScore": 60,
+                "passed": avg_score >= 60,
+                "attemptPassed": attempt_passed,
+                "everPassed": ever_passed,
+                "latestAttemptScore": avg_score,
+                "bestScore": best_score,
+                "correctCount": sum(1 for item in results if item["isCorrect"]),
+                "totalCount": len(linked),
                 "sectionStatusSuggestion": suggestion,
                 "weakPoints": weak_points,
                 "knowledgePointResults": kp_results,
@@ -2161,6 +2390,10 @@ def submit_exam_set(
             quiz_title=exam_set.title,
             quiz_score=avg_score,
             weak_points=weak_points,
+            subject_id=subject_id,
+            path_id=(path_context or {}).get("path_id", ""),
+            task_id=(path_context or {}).get("task_id", ""),
+            attempt_id=attempt.attempt_id,
         )
 
         response_attempt = _attempt_dict(get_attempt(db, attempt.attempt_id))
