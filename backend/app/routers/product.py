@@ -4760,7 +4760,8 @@ def _require_stage_access(session_id: str, stage_id: str) -> None:
 
 def _require_task_stage_access(
     session_id: str, stage_id: str, section_id: str, path_id: str = "", task_id: str = "",
-) -> None:
+    day_id: str = "", global_day_index: int | None = None,
+) -> dict[str, Any]:
     """Validate a task URL against the persisted path before serving its content."""
     db = SessionLocal()
     try:
@@ -4778,10 +4779,15 @@ def _require_task_stage_access(
             raise HTTPException(status_code=404, detail={"code": "task_not_found", "message": "learning path task not found"})
         if entry["stage_id"] != stage_id or section_id != requested_task_id:
             raise HTTPException(status_code=409, detail={"code": "invalid_task_scope", "message": "learning path task scope mismatch"})
+        if day_id and entry["day_id"] != day_id:
+            raise HTTPException(status_code=409, detail={"code": "invalid_task_scope", "message": "learning path day scope mismatch"})
+        if global_day_index is not None and entry["global_day_index"] != global_day_index:
+            raise HTTPException(status_code=409, detail={"code": "invalid_task_scope", "message": "learning path day scope mismatch"})
         stages = _apply_stage_progress(normalized["stages"])
         stage = next((item for item in stages if str(item.get("stage_id") or item.get("id") or "") == stage_id), None)
         if stage["progressStatus"] == "locked":
             raise HTTPException(status_code=403, detail="请先完成当前阶段")
+        return entry
     finally:
         db.close()
 
@@ -5931,14 +5937,18 @@ class ResourceScope:
 
 def resolve_resource_scope(
     auth: AuthContext, *, session_id: str, subject_id: str = "", path_id: str = "", stage_id: str = "",
-    task_id: str = "", section_id: str = "", resource_id: str = "",
+    task_id: str = "", section_id: str = "", resource_id: str = "", day_id: str = "",
+    global_day_index: int | None = None,
 ) -> ResourceScope:
     """Resolve owned resource scope before any resource read, write, or provider call."""
     if not isinstance(auth, AuthContext):  # direct unit callers are not HTTP entry points
         return ResourceScope("", session_id, subject_id, path_id, stage_id, task_id, section_id)
     base = resolve_analytics_scope(auth, session_id=session_id, subject_id=subject_id, path_id=path_id, stage_id=stage_id)
     if stage_id and (section_id or task_id):
-        _require_task_stage_access(base.session_id, stage_id, section_id or task_id, path_id, task_id)
+        _require_task_stage_access(
+            base.session_id, stage_id, section_id or task_id, path_id, task_id,
+            day_id, global_day_index,
+        )
     if resource_id:
         db = SessionLocal()
         try:
@@ -8799,6 +8809,8 @@ def get_generated_section_resources(
     pathId: str = "",
     stageId: str = "",
     taskId: str = "",
+    dayId: str = "",
+    globalDayIndex: int | None = None,
     auth: AuthContext = Depends(require_auth),
 ) -> dict[str, Any]:
     """Read only resources generated for the current section."""
@@ -8816,6 +8828,8 @@ def get_generated_section_resources(
         stage_id=stageId,
         task_id=taskId,
         section_id=section_id,
+        day_id=dayId,
+        global_day_index=globalDayIndex,
     )
     session_id, subject_id = scope.session_id, scope.subject_id
     from app.services.section_generated_resources import SectionGeneratedResourcesService

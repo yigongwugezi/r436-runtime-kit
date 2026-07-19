@@ -105,6 +105,17 @@ function legacyStageSection(stage: { id: string; title: string }, sectionId: str
   };
 }
 
+function taskDayScope(path: any, taskId: string): { dayId?: string; globalDayIndex?: number } {
+  for (const stage of path?.stages ?? []) {
+    for (const day of stage?.days ?? []) {
+      if ((day?.tasks ?? []).some((task: any) => (task.id || task.task_id) === taskId)) {
+        return { dayId: day.id || day.dayId, globalDayIndex: day.globalDayIndex };
+      }
+    }
+  }
+  return {};
+}
+
 export default function LecturePage() {
   const { chapterId, sectionId } = useParams<{ chapterId?: string; sectionId?: string }>();
   const nav = useNavigate();
@@ -311,6 +322,8 @@ export default function LecturePage() {
   const currentIdx = sections.findIndex((s: Section) => s.id === activeSectionId);
   const prevSection = currentIdx > 0 ? sections[currentIdx - 1] : null;
   const nextSection = currentIdx < sections.length - 1 ? sections[currentIdx + 1] : null;
+  const resourceTaskId = focusedTaskId || activeSectionId;
+  const resourceDayScope = useMemo(() => taskDayScope(path, resourceTaskId), [path, resourceTaskId]);
   const lectureWorkflowScope: WorkflowTaskScope = {
     workflowType: 'lecture_generation', sessionId, subjectId: workflowSubjectId,
     pathId: path?.id || '', stageId: chapterCtx?.stage.id || '', chapterId: chapterCtx?.chapter.id || '', sectionId: activeSectionId,
@@ -1342,9 +1355,12 @@ export default function LecturePage() {
                 pathId={path?.id || ''}
                 stageId={chapterCtx?.stage.id || ''}
                 chapterId={chapterCtx?.chapter.id || ''}
-                chapterTitle={chapterCtx?.chapter.title || ''}
-                section={currentSection}
-                lectureContent={effectiveLectureContent}
+              chapterTitle={chapterCtx?.chapter.title || ''}
+              section={currentSection}
+              taskId={resourceTaskId}
+              dayId={resourceDayScope.dayId}
+              globalDayIndex={resourceDayScope.globalDayIndex}
+              lectureContent={effectiveLectureContent}
                 sections={sections}
                 legacyMindmapId={chapterCtx?.chapter.mindmapId}
               />
@@ -1492,6 +1508,9 @@ export default function LecturePage() {
               pathId={path?.id || ''}
               stageId={chapterCtx?.stage.id || ''}
               chapterId={chapterCtx?.chapter.id || ''}
+              taskId={resourceTaskId}
+              dayId={resourceDayScope.dayId}
+              globalDayIndex={resourceDayScope.globalDayIndex}
               lectureContent={effectiveLectureContent}
             />
             </>
@@ -1521,8 +1540,8 @@ export default function LecturePage() {
 }
 
 // ── 资源卡片生成器（小结卡/概念对比/例题详解等）──
-function ResourceCardGenerator({ sessionId, section, pathId, stageId, chapterId, lectureContent }: {
-  sessionId: string; section: any; pathId: string; stageId: string; chapterId: string; lectureContent: string;
+function ResourceCardGenerator({ sessionId, section, pathId, stageId, chapterId, taskId, dayId, globalDayIndex, lectureContent }: {
+  sessionId: string; section: any; pathId: string; stageId: string; chapterId: string; taskId: string; dayId?: string; globalDayIndex?: number; lectureContent: string;
 }) {
   const subjectId = useSubjectStore.getState().activeSubject?.id;
   const [generated, setGenerated] = useState<any[]>([]);
@@ -1531,13 +1550,14 @@ function ResourceCardGenerator({ sessionId, section, pathId, stageId, chapterId,
   const [preview, setPreview] = useState<any>(null);
 
   useEffect(() => {
-    if (!sessionId || !section?.id) { setGenerated([]); return; }
+    if (!sessionId || !section?.id || !pathId || !stageId || !taskId) { setGenerated([]); return; }
     let active = true;
+    const controller = new AbortController();
     import('../api/sectionResources').then(({ getGeneratedSectionResources }) =>
-      getGeneratedSectionResources(section.id, sessionId, subjectId).then(items => active && setGenerated(items)).catch(() => active && setGenerated([]))
+      getGeneratedSectionResources(section.id, sessionId, subjectId, { pathId, stageId, taskId, dayId, globalDayIndex }, controller.signal).then(items => active && setGenerated(items)).catch(() => active && setGenerated([]))
     );
-    return () => { active = false; };
-  }, [sessionId, section?.id, subjectId]);
+    return () => { active = false; controller.abort(); };
+  }, [sessionId, section?.id, subjectId, pathId, stageId, taskId, dayId, globalDayIndex]);
 
   const generate = async (resourceType: string) => {
     if (!sessionId || !section) return;
