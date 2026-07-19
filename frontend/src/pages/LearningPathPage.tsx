@@ -268,12 +268,17 @@ export default function LearningPathPage() {
   const openTask = (task: any, stage: any) => {
     const dayId = task.dayId || task.day_id || '';
     const globalDayIndex = Number(task.globalDayIndex);
-    if (!dayId || !Number.isFinite(globalDayIndex)) return;
-    nav(learningTaskRoute(task.type || 'read_doc', {
+    // dayId / globalDayIndex are optional — legacy plans may not carry them.
+    // `learningTaskRoute` and the lecture page safely handle missing values.
+    const routeContext: any = {
       sessionId, subjectId: subject.subject_id, pathId: path?.id, stageId: stage.stageId || stage.id,
       taskId: task.id || task.task_id, sectionId: task.section_id || task.id || task.task_id, taskType: task.type,
-      dayId, globalDayIndex,
-    }));
+    };
+    if (dayId && Number.isFinite(globalDayIndex)) {
+      routeContext.dayId = dayId;
+      routeContext.globalDayIndex = globalDayIndex;
+    }
+    nav(learningTaskRoute(task.type || 'read_doc', routeContext));
   };
 
   return (

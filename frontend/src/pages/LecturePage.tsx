@@ -8,6 +8,7 @@ import { useLectureStore } from '../store/lectureStore';
 import { ChevronLeft, ChevronRight, Sparkles, MessageCircle, Send, Brain, BookOpen, ArrowLeft, ArrowRight, Target, Lightbulb, Layers, Clock, GraduationCap, Hash, CheckCircle2, Check, X, Loader2, HelpCircle, RefreshCw, FileText, FileDown, Lock } from 'lucide-react';
 import Markdown from '../utils/markdown';
 import MermaidDiagram from '../utils/mermaid';
+import MarkmapDiagram from '../utils/markmap';
 import { ensureScopedLearningPathQuiz, generateSectionQuiz, retryScopedLearningPathQuiz, submitLearningPathQuiz, submitQuizAttempt } from '../api/assessment';
 import { matchesLearningPathQuiz } from '../utils/learningPathQuiz';
 import type { Chapter, LearningStage, PathNode, Section, ContentStatus } from '../types/learningPath';
@@ -26,6 +27,8 @@ import { cancelWorkflow, consumeWorkflowEvents, ensureLecture, ensureVideoFallba
 import { createLectureEnsureGuard } from '../utils/lectureEnsureGuard';
 import { completeLearningPathTask, getVideoFallbackState, recordVideoFallbackLectureOpened, recordVideoTaskEvidence, setVideoDeliveryMode as persistVideoDeliveryMode } from '../api/learningPath';
 import { resolveTaskExecutionMode } from '../utils/taskExecutionMode';
+import { generateSectionMindmap, getSectionMindmap } from '../api/sectionResources';
+import type { ChapterMindmap } from '../types/sectionResources';
 import { requestVideoRecommendations, retryVideoRecommendations, videoRecommendationScope } from '../api/videoRecommendations';
 import { resolveCanonicalLearningTaskScope } from '../utils/learningTaskRoute';
 import {
@@ -408,6 +411,9 @@ export default function LecturePage() {
     : {};
   const completed = ['completed', 'mastered'].includes(resourceDayScope.status || '');
   const executionMode = resolveTaskExecutionMode(resourceDayScope.task || { type: focusedTaskType });
+  const [taskMindmap, setTaskMindmap] = useState<ChapterMindmap | null>(null);
+  const [taskMindmapStatus, setTaskMindmapStatus] = useState<'idle' | 'loading' | 'failed'>('idle');
+  const [taskMindmapRetry, setTaskMindmapRetry] = useState(0);
   useEffect(() => {
     if (workspaceScopeInvalid || executionMode !== 'quiz' || !canonicalTaskScope) return;
     const scope = { ...canonicalRequestScope!, taskType: canonicalTaskScope.task.type || canonicalTaskScope.task.task_type || focusedTaskType,
@@ -454,11 +460,39 @@ export default function LecturePage() {
   useEffect(() => {
     setTaskScopeRejected(false); clearQuiz();
     setVideoResources([]); setVideoStatus('idle'); setVideoLectureFallback(false); setVideoOpened(false); setVideoFallbackSelected(false); setVideoDeliveryMode('video'); setFallbackResourceId(''); setFallbackStateLoading(true); setFallbackEnsureError(false); setFallbackEnsureRetry(0); setVideoRetry(0);
+    setTaskMindmap(null); setTaskMindmapStatus('idle'); setTaskMindmapRetry(0);
     setLectureLoaded(false); setLectureMissing(false); setLectureEnsureUnavailable(false); setLectureEnsureRetry(0); setFocusedCompletionError('');
     quizSubmitIdempotencyKeyRef.current = ''; quizScopeRetryRef.current = ''; lastEnsureScope.current = ''; fallbackEnsureScope.current = ''; fallbackRecoveryRetry.current = ''; fallbackSelectionPending.current = false; videoRefreshRequested.current = false;
     setFallbackWorkflowId(''); setFallbackWorkflowChecked(false);
   }, [canonicalScopeKey, lectureSemanticKey, clearQuiz]);
   useEffect(() => { setVideoLectureFallback(false); setVideoOpened(false); setVideoFallbackSelected(false); setVideoDeliveryMode('video'); setFallbackResourceId(''); setFallbackStateLoading(true); setFallbackEnsureError(false); fallbackEnsureScope.current = ''; fallbackRecoveryRetry.current = ''; fallbackSelectionPending.current = false; setFallbackWorkflowId(''); setFallbackWorkflowChecked(false); }, [resourceTaskId]);
+  useEffect(() => {
+    if (workspaceScopeInvalid || executionMode !== 'mindmap' || !canonicalTaskScope || !activeSectionId) return;
+    let active = true;
+    const loadMindmap = async () => {
+      setTaskMindmap(null);
+      setTaskMindmapStatus('loading');
+      try {
+        const existing = taskMindmapRetry ? null : await getSectionMindmap(activeSectionId, canonicalTaskScope.sessionId);
+        const mindmap = existing || (await generateSectionMindmap(activeSectionId, {
+          ...canonicalRequestScope!,
+          sectionTitle: canonicalTaskScope.task.title || currentSection?.title || canonicalTaskScope.stage.title,
+          subjectId: canonicalTaskScope.subjectId,
+          knowledgePoints: canonicalTaskScope.task.knowledgePoints || canonicalTaskScope.task.knowledge_points || currentSection?.knowledgePoints || [],
+          lectureContent: canonicalTaskScope.task.description || canonicalTaskScope.task.goal || '',
+          regenerate: Boolean(taskMindmapRetry),
+        })).mindmap;
+        if (!active) return;
+        if (!mindmap?.mermaidDef) throw new Error('Mindmap response is empty');
+        setTaskMindmap(mindmap);
+        setTaskMindmapStatus('idle');
+      } catch {
+        if (active) setTaskMindmapStatus('failed');
+      }
+    };
+    void loadMindmap();
+    return () => { active = false; };
+  }, [executionMode, canonicalScopeKey, activeSectionId, taskMindmapRetry, workspaceScopeInvalid]);
   const deliveryMode = executionMode !== 'video' ? executionMode : fallbackStateLoading ? 'resolving' : videoDeliveryMode;
   const isVideoFallbackDelivery = deliveryMode === 'video_fallback_lecture';
   const videoScope = useMemo(() => canonicalRequestScope
@@ -992,7 +1026,7 @@ export default function LecturePage() {
   const completeFocusedTask = async (): Promise<boolean> => {
     const fallbackCompletion = executionMode === 'video' && videoLectureFallback;
     const videoReady = executionMode === 'video' && (videoOpened || (fallbackCompletion && videoFallbackSelected && !!effectiveLectureContent && !!fallbackResourceId));
-    const ready = executionMode === 'video' ? videoReady : focusedReadingTask && !!effectiveLectureContent;
+    const ready = executionMode === 'video' ? videoReady : executionMode === 'mindmap' ? !!taskMindmap?.mermaidDef : focusedReadingTask && !!effectiveLectureContent;
     if (!canonicalTaskScope || workspaceScopeInvalid || focusedCompleting || generating || resourceDayScope.globalDayIndex == null || (lectureWorkflow && isActiveWorkflowStatus(lectureWorkflow.status)) || !ready) return false;
     setFocusedCompletionError(''); setFocusedCompleting(true);
     try {
@@ -1003,6 +1037,8 @@ export default function LecturePage() {
           evidenceType: 'video_fallback_lecture_completed', deliveryMode: 'video_fallback_lecture' as const,
           resourceId: fallbackResourceId, originalTaskId: focusedTaskId,
           openedEvidenceType: 'video_fallback_lecture_opened', completedAt: new Date().toISOString(),
+        } : executionMode === 'mindmap' ? {
+          evidenceType: 'mindmap_viewed', resourceId: taskMindmap!.id,
         } : { evidenceType: 'lecture_loaded_explicit_completion' }),
       });
       const refreshed = await fetchPath(true, canonicalTaskScope.sessionId, canonicalTaskScope.pathId, canonicalTaskScope.subjectId);
@@ -1480,6 +1516,26 @@ export default function LecturePage() {
               <button onClick={selectVideoFallback} className="w-fit rounded-lg border border-primary-200 px-4 py-2 text-sm text-primary-700">切换为图文讲解</button>
               <button disabled={completed || focusedCompleting || !(videoOpened || videoLectureFallback && videoFallbackSelected && !!effectiveLectureContent)} onClick={completeFocusedTask} className="w-fit rounded-lg bg-primary-600 px-4 py-2 text-sm text-white disabled:cursor-not-allowed disabled:opacity-60">{completed ? '本任务已完成' : focusedCompleting ? '保存中…' : videoOpened || videoLectureFallback && videoFallbackSelected ? '完成视频学习' : '请先打开视频或切换图文讲解'}</button>
             </div>
+          ) : executionMode === 'mindmap' ? (
+            <div className="mx-auto flex h-full w-full max-w-4xl flex-col p-6">
+              {taskMindmapStatus === 'loading' ? (
+                <div className="flex h-full items-center justify-center gap-2 text-sm text-surface-500"><Loader2 size={18} className="animate-spin" />正在生成思维导图…</div>
+              ) : taskMindmapStatus === 'failed' ? (
+                <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
+                  <div className="rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">思维导图生成失败，请稍后重试。</div>
+                  <button onClick={() => setTaskMindmapRetry((value) => value + 1)} className="rounded-lg border border-primary-200 px-4 py-2 text-sm text-primary-700">重新生成思维导图</button>
+                </div>
+              ) : taskMindmap ? (
+                <>
+                  <div className="overflow-auto rounded-xl border border-surface-200 bg-white p-5"><MarkmapDiagram definition={taskMindmap.mermaidDef} /></div>
+                  <div className="mt-4 flex items-center justify-end gap-3">
+                    <button onClick={() => setTaskMindmapRetry((value) => value + 1)} disabled={focusedCompleting} className="rounded-lg border border-surface-200 px-4 py-2 text-sm text-surface-600 disabled:opacity-60">重新生成</button>
+                    <button onClick={completeFocusedTask} disabled={completed || focusedCompleting} className="rounded-lg bg-primary-600 px-5 py-2 text-sm font-medium text-white disabled:opacity-60">{completed ? '本任务已完成' : focusedCompleting ? '保存中…' : '确认学习完成'}</button>
+                  </div>
+                  {focusedCompletionError && <p className="mt-2 text-right text-sm text-red-600">{focusedCompletionError}</p>}
+                </>
+              ) : null}
+            </div>
           ) : isTextbookMode && activeSubject && currentSection && (currentSection.textbookPageStart || ((currentSection as any).source_section_ids?.length > 0)) ? (
             <TextbookViewer
               subjectId={activeSubject.id}
@@ -1750,7 +1806,6 @@ export default function LecturePage() {
               onGenerateMindmap={async (cardId: string, requirements?: string) => {
                 if (!activeSectionId || !sessionId || !currentSection) return;
                 try {
-                  const { generateSectionMindmap } = await import('../api/sectionResources');
                   const r = await generateSectionMindmap(activeSectionId, {
                     sessionId, pathId: path?.id || '', stageId: chapterCtx?.stage.id || '',
                     sectionTitle: currentSection.title,
