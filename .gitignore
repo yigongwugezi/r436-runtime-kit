@@ -53,3 +53,4 @@ playwright-report/
 test-results/
 screenshots/
 .reasonix/
+backend/asset/
