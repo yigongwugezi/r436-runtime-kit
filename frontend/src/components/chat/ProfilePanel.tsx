@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { disableProfileExtraction } from '../../api/learningPath';
 import { startWorkflow } from '../../api/workflows';
 import { useSubjectStore } from '../../store/subjectStore';
+import { isSpecificLearningGoal, isUsableProfileValue, profileCompleteness } from '../../utils/profileCompleteness';
 import { Sparkles, ChevronRight, CheckCircle2, Circle, AlertCircle } from 'lucide-react';
 
 const DIMS = [
@@ -42,14 +43,10 @@ function classifyEvidence(ev: string): string {
   return 'inference';
 }
 
-function isEmpty(v: string) {
-  return !v || v === '未提及' || v === '待补充' || v === '未知' || v === '未明确' || v === '';
-}
-
 function DimSection({ dimKey, label, fact, rich, onProbe }: {
   dimKey: string; label: string; fact: string; rich: any; onProbe: () => void;
 }) {
-  const filled = !isEmpty(fact);
+  const filled = dimKey === 'learning_goal' ? isSpecificLearningGoal(fact) : isUsableProfileValue(fact);
   const topics: any[] = rich?.topics || [];
   const gaps: any[] = rich?.gaps_found || [];
   const probes: any[] = rich?.probe_history || [];
@@ -163,9 +160,15 @@ export default function ProfilePanel({ sessionId }: { sessionId: string }) {
   const subjectId = useSubjectStore((s) => s.activeSubject?.id ?? s.activeClassSubject?.subject);
   const [facts, setFacts] = useState<Record<string, string>>({});
   const [richFacts, setRichFacts] = useState<Record<string, any>>({});
+  const [factsSessionId, setFactsSessionId] = useState('');
+  const [loading, setLoading] = useState(Boolean(sessionId));
   const [generating, setGenerating] = useState(false);
 
   useEffect(() => {
+    setFacts({});
+    setRichFacts({});
+    setFactsSessionId('');
+    setLoading(Boolean(sessionId));
     if (!sessionId) return;
     let cancelled = false;
     const poll = async () => {
@@ -175,21 +178,25 @@ export default function ProfilePanel({ sessionId }: { sessionId: string }) {
         if (!cancelled) {
           if (d.facts) setFacts(d.facts);
           if (d.rich_facts) setRichFacts(d.rich_facts);
+          setFactsSessionId(sessionId);
         }
       } catch { /* ignore */ }
+      finally { if (!cancelled) setLoading(false); }
     };
     poll();
     const iv = setInterval(poll, 3000);
     return () => { cancelled = true; clearInterval(iv); };
   }, [sessionId]);
 
-  const filledCount = DIMS.filter(d => !isEmpty(facts[d.key] || '')).length;
+  const currentFacts = factsSessionId === sessionId ? facts : {};
+  const currentRichFacts = factsSessionId === sessionId ? richFacts : {};
+  const filledCount = profileCompleteness(currentFacts, DIMS.map(d => d.key));
   const total = DIMS.length;
   const pct = Math.round((filledCount / total) * 100);
-  const ready = filledCount >= 6;
+  const pathGenerationReady = isUsableProfileValue(currentFacts.target_course);
 
   const handleGenerate = useCallback(async () => {
-    if (!ready || generating) return;
+    if (!pathGenerationReady || generating) return;
     setGenerating(true);
     try {
       await disableProfileExtraction(sessionId);
@@ -199,7 +206,9 @@ export default function ProfilePanel({ sessionId }: { sessionId: string }) {
         planMode: 'textbook',
         pathMode: 'textbook',
         draft: Object.fromEntries(
-          DIMS.filter(d => !isEmpty(facts[d.key] || '')).map(d => [d.key, facts[d.key]])
+          DIMS.filter(d => d.key === 'learning_goal'
+            ? isSpecificLearningGoal(currentFacts[d.key])
+            : isUsableProfileValue(currentFacts[d.key])).map(d => [d.key, currentFacts[d.key]])
         ),
       });
       const taskId = started?.task_id || '';
@@ -213,7 +222,7 @@ export default function ProfilePanel({ sessionId }: { sessionId: string }) {
       console.error('创建路径生成任务失败', e);
       setGenerating(false);
     }
-  }, [ready, generating, sessionId, facts, nav, subjectId]);
+  }, [pathGenerationReady, generating, sessionId, currentFacts, nav, subjectId]);
 
   return (
     <div className="flex flex-col h-full">
@@ -224,7 +233,7 @@ export default function ProfilePanel({ sessionId }: { sessionId: string }) {
             学情分析
           </h3>
           <span className="text-[12px] font-semibold text-neutral-700 tabular-nums">
-            {filledCount}<span className="text-neutral-300 font-normal">/{total}</span>
+            {loading ? '--' : filledCount}<span className="text-neutral-300 font-normal">/{total}</span>
           </span>
         </div>
         
@@ -239,18 +248,18 @@ export default function ProfilePanel({ sessionId }: { sessionId: string }) {
                 className="transition-all duration-1000 ease-out" />
             </svg>
             <span className="absolute inset-0 flex items-center justify-center text-sm font-bold text-neutral-800 tabular-nums">
-              {pct}
+              {loading ? '--' : pct}
             </span>
           </div>
           
           {/* 状态文字 */}
           <div className="flex-1 min-w-0">
             <p className="text-[13px] font-semibold text-neutral-800">
-              {ready ? '准备就绪' : pct >= 50 ? '收集中' : '开始了解'}
+              {pathGenerationReady ? '已具备基础生成条件' : pct >= 50 ? '收集中' : '开始了解'}
             </p>
             <p className="text-[11px] text-neutral-500 mt-1 leading-relaxed">
-              {ready 
-                ? '信息已完善，可以生成专属学习路径' 
+              {pathGenerationReady
+                ? filledCount === total ? '信息已完善，可以生成专属学习路径' : '继续补充信息可获得更精准的学习路径；缺失信息将采用默认安排'
                 : `继续对话，还需完善 ${total - filledCount} 项信息`
               }
             </p>
@@ -265,8 +274,8 @@ export default function ProfilePanel({ sessionId }: { sessionId: string }) {
             key={d.key}
             dimKey={d.key}
             label={d.label}
-            fact={facts[d.key] || ''}
-            rich={richFacts[d.key]}
+            fact={currentFacts[d.key] || ''}
+            rich={currentRichFacts[d.key]}
             onProbe={() => {}}
           />
         ))}
@@ -276,9 +285,9 @@ export default function ProfilePanel({ sessionId }: { sessionId: string }) {
       <div className="flex-shrink-0 pt-4 border-t border-neutral-100">
         <button
           onClick={handleGenerate}
-          disabled={!ready || generating}
+          disabled={!pathGenerationReady || generating || loading}
           className={`w-full h-12 rounded-xl text-[13px] font-semibold transition-all duration-300 flex items-center justify-center gap-2 ${
-            ready && !generating
+            pathGenerationReady && !generating && !loading
               ? 'bg-neutral-900 text-white hover:bg-neutral-800 shadow-lg shadow-neutral-200'
               : 'bg-neutral-100 text-neutral-400 cursor-not-allowed'
           }`}
@@ -288,7 +297,7 @@ export default function ProfilePanel({ sessionId }: { sessionId: string }) {
               <div className="w-4 h-4 border-2 border-neutral-400 border-t-transparent rounded-full animate-spin" />
               正在生成…
             </>
-          ) : ready ? (
+          ) : pathGenerationReady ? (
             <>
               <Sparkles size={15} />
               生成学习路径
