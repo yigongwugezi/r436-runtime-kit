@@ -240,7 +240,7 @@ export default function LearningPathPage() {
           <p className="text-surface-400 mb-8 leading-relaxed text-sm">
             先通过对话了解你的学习目标、基础和时间安排，AI 将为你量身定制专属学习计划。
           </p>
-          <button onClick={() => { useChatStore.getState().setChatMode('planning');
+          <button onClick={async () => { useChatStore.getState().setChatMode('planning');
             const subId = subject.subject_id;
             const subName = subject.subject_name;
             if (subId) {
@@ -253,6 +253,8 @@ export default function LearningPathPage() {
                 updatedAt: Date.now(),
               });
             }
+            // 确保 canonical session 已就绪，否则 ChatPage 的 send 和输入框会被禁用
+            await useChatStore.getState().resolveCanonicalSession();
             const sid = useChatStore.getState().currentSessionId; nav('/chat', { state: { chatMode: 'planning' } });
             if (sid) enableProfileExtraction(sid).catch(() => {}); }}
             className="inline-flex items-center gap-2 px-8 py-3 bg-primary-500 text-white rounded-[14px] text-sm font-medium hover:bg-primary-600 transition-all shadow-md">
