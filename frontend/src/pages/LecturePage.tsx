@@ -50,6 +50,11 @@ function detectContentType(md: string): ContentType {
   return 'lecture';
 }
 
+function lectureContent(response: any): string {
+  const value = response?.data?.lecture?.content ?? response?.lecture?.content ?? response?.data?.content ?? response?.content ?? response?.generated_content;
+  return typeof value === 'string' ? value.trim() : '';
+}
+
 const sectionStatusStyle: Record<ContentStatus, { dot: string; bar: string }> = {
   not_started:  { dot: 'bg-surface-300 ring-surface-100', bar: 'bg-surface-300' },
   in_progress:  { dot: 'bg-blue-400 ring-blue-100',      bar: 'bg-blue-400' },
@@ -358,7 +363,7 @@ export default function LecturePage() {
     if (store.lectureCache[key]) { setLectureLoaded(true); return; }
     setLectureLoaded(false);
     const params = new URLSearchParams({ sessionId });
-    if (focusedTask) {
+    if (focusedPathId && focusedStageId && focusedTaskId) {
       params.set('pathId', focusedPathId);
       params.set('stageId', focusedStageId);
       params.set('taskId', focusedTaskId);
@@ -371,8 +376,9 @@ export default function LecturePage() {
       })
       .then(d => {
         store.markLoaded(activeSectionId);
-        if (d?.data?.lecture?.content) {
-          store.setLecture(key, d.data.lecture.content);
+        const content = lectureContent(d);
+        if (content) {
+          store.setLecture(key, content);
           store.markGenerated(activeSectionId);
         }
       })
@@ -403,7 +409,7 @@ export default function LecturePage() {
           stageId: chapterCtx?.stage.id || '',
           pathId: focusedTask ? focusedPathId : path?.id || '',
           taskId: focusedTask ? focusedTaskId : activeSectionId,
-          subjectId: focusedSubjectId || undefined,
+          subjectId: focusedSubjectId || workflowSubjectId || undefined,
           courseId: path?.courseName || '',
           knowledgePoints: currentSection.knowledgePoints || [],
           requirements: requirements || '',
@@ -416,11 +422,12 @@ export default function LecturePage() {
       }), controller.signal);
       const task = await readWorkflow(started.task_id, sessionId);
       const data = task.result;
-      if (data?.data?.lecture?.content) {
+      const content = lectureContent(data);
+      if (content) {
         const key = `${sessionId}:${activeSectionId}`;
-        store.setLecture(key, data.data.lecture.content);
+        store.setLecture(key, content);
         store.markGenerated(activeSectionId);
-        generatePanelRef.current?.updateRecord(cid, { status: 'ready', content: data.data.lecture.content });
+        generatePanelRef.current?.updateRecord(cid, { status: 'ready', content });
         clearWorkflowTask(workflowScope);
       } else {
         generatePanelRef.current?.updateRecord(cid, { status: 'error' });

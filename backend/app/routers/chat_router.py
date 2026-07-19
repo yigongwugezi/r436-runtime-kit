@@ -216,7 +216,8 @@ async def _run_chat(message: str, session_id: str, search_enabled: bool = False,
     state_obj = conversation_store.get(session_id)
     # ── Log extracted facts for debugging profile capture ──
     facts_before = dict(state_obj.facts)
-    filled = {k: v for k, v in facts_before.items() if v and str(v).strip()}
+    from app.services.conversation_state import PROFILE_COMPLETENESS_FIELDS
+    filled = {k: facts_before[k] for k in PROFILE_COMPLETENESS_FIELDS if facts_before.get(k) and str(facts_before[k]).strip()}
     logger.info(
         "Profile facts after extract: session=%s filled=%d/%d facts=%s",
         session_id, len(filled), 7,
