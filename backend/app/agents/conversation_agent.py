@@ -636,18 +636,38 @@ action："""
         return msgs
 
     def _format_context(self, context):
-        """构建上下文摘要——标注已知/缺失，引导 LLM 追问缺口而非复述已知。"""
+        """构建上下文摘要——标注已知/缺失，引导 LLM 追问缺口而非复述已知。
+
+        v1.2: 按当前学科/课本过滤画像事实，防止跨学科串扰；
+        将教材信息注入上下文使对话感知课本。
+        """
         parts = []
 
-        # 已知信息
+        # ── 教材信息（规划模式优先注入，让智能对话感知课本结构）──
+        textbook_context = str(context.get("textbook_context") or "").strip()
+        if textbook_context:
+            parts.append(textbook_context)
+
+        # ── 已知信息 ──
         profile = context.get("profile", {})
         if profile:
             summary = self._summarize_profile(profile)
             if summary:
                 parts.append(f"已知：\n{summary}")
 
-        # 缺失维度——提示 LLM 优先追问这些
-        profile_facts = context.get("profile_facts", {})
+        # ── 缺失维度 ──
+        # 先对 profile_facts 做跨学科清洗，再用清洗后的副本判断缺失
+        profile_facts = dict(context.get("profile_facts") or {})
+        if isinstance(profile_facts, dict) and profile_facts:
+            course_name = str(context.get("course_name") or context.get("course_id") or "").strip()
+            target = str(profile_facts.get("target_course") or "").strip()
+            # 学科特定字段（通用字段如 background、preference、time_budget 保留）
+            SUBJECT_SPECIFIC = ("knowledge_base", "weak_points", "target_course", "learning_goal")
+            if course_name and target and target.lower() != course_name.lower():
+                # 上一个会话残留的学科特定事实——清除以防串扰
+                for k in SUBJECT_SPECIFIC:
+                    profile_facts.pop(k, None)
+
         if isinstance(profile_facts, dict):
             from app.services.conversation_state import PROFILE_FIELD_DEFS
             missing = [
@@ -882,6 +902,11 @@ action："""
 
         Without this gate, "帮我规划" would immediately trigger the planner even
         when the student has said nothing about their background, foundation, or goals.
+
+        v1.2: When a textbook is linked to the current subject, ``target_course`` is
+        already known — the textbook's own structure defines the course scope.  We
+        drop it from the gate dims so the user can trigger planning after covering
+        the remaining personal dimensions (background, knowledge_base, time, etc.).
         """
         from app.services.conversation_state import _SHALLOW_PATTERNS
 
@@ -891,8 +916,16 @@ action："""
         else:
             facts = getattr(profile_facts, "facts", {}) or {}
 
+        # When a textbook is present, the subject scope is already determined.
+        textbook_chapters = context.get("textbook_chapters")
+        has_book = bool(textbook_chapters and isinstance(textbook_chapters, list) and len(textbook_chapters) > 0)
+
+        required_dims = list(cls._PLAN_GATE_DIMS)
+        if has_book:
+            required_dims = [d for d in required_dims if d != "target_course"]
+
         deep_count = 0
-        for dim in cls._PLAN_GATE_DIMS:
+        for dim in required_dims:
             val = str(facts.get(dim, "")).strip()
             if not val or val in ("未提及", "待补充", "未知", "", "无"):
                 continue
@@ -900,7 +933,7 @@ action："""
             if len(val) >= 8 and not any(p in val for p in _SHALLOW_PATTERNS if len(val) < len(p) + 8):
                 deep_count += 1
 
-        return deep_count >= cls._PLAN_GATE_MIN_DEEP
+        return deep_count >= len(required_dims)
 
     def _rule_fallback(self, message, context):
         """Conservative intent classifier -- default to 'none' (casual chat).

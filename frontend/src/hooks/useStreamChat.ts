@@ -122,6 +122,12 @@ export function useStreamChat() {
           search_enabled: store.searchEnabled,
           deep_think_enabled: store.deepThinkEnabled,
           chat_mode: store.chatMode,
+          // v1.2: 规划模式下注入当前科目上下文
+          ...(store.chatMode === 'planning' ? (() => {
+            const sub = useSubjectStore.getState().activeSubject;
+            if (!sub?.id) return {};
+            return { subjectId: sub.id, subjectName: sub.name || '', ...(sub.textbookId ? { textbookId: sub.textbookId } : {}) };
+          })() : {}),
         }, controller.signal);
 
         const decoder = new TextDecoder();
@@ -347,6 +353,12 @@ export function useStreamChat() {
           search_enabled: store.searchEnabled,
           deep_think_enabled: store.deepThinkEnabled,
           chat_mode: store.chatMode,
+          // v1.2: 规划模式下注入当前科目上下文，使智能体可感知课本/学科信息
+          ...(store.chatMode === 'planning' ? (() => {
+            const sub = useSubjectStore.getState().activeSubject;
+            if (!sub?.id) return {};
+            return { subjectId: sub.id, subjectName: sub.name || '', ...(sub.textbookId ? { textbookId: sub.textbookId } : {}) };
+          })() : {}),
         }, controller.signal);
 
         const decoder = new TextDecoder();
