@@ -6,6 +6,7 @@ transaction boundaries.
 """
 
 from datetime import datetime, timedelta, timezone
+import hashlib
 import logging
 import re
 from typing import Any
@@ -18,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.db.models import (
     AnswerRecordModel,
     AttemptModel,
+    CurrentLearningPathModel,
     DailyTaskModel,
     DiagnosisEvidenceModel,
     DiagnosisSnapshotModel,
@@ -36,6 +38,10 @@ from app.db.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class CurrentPathUnresolvedError(RuntimeError):
+    """A legacy scope has no explicit current-path pointer."""
 
 
 def _utcnow() -> datetime:
@@ -534,6 +540,7 @@ def upsert_learning_path(
     path = LearningPathModel(
         id=path_data.get("id", f"path_{session_id}"),
         session_id=session_id,
+        subject_id=path_data.get("subject_id", ""),
         course_id=path_data.get("course_id", ""),
         course_name=path_data.get("course_name", ""),
         description=path_data.get("description"),
@@ -545,6 +552,7 @@ def upsert_learning_path(
     existing = db.get(LearningPathModel, path.id)
     if existing:
         existing.session_id = session_id
+        existing.subject_id = path.subject_id or existing.subject_id
         existing.course_id = path.course_id
         existing.course_name = path.course_name
         existing.description = path.description
@@ -568,13 +576,93 @@ def upsert_learning_path(
     return path
 
 
-def get_latest_learning_path(db: Session, session_id: str) -> LearningPathModel | None:
-    return (
-        db.query(LearningPathModel)
-        .filter(LearningPathModel.session_id == session_id)
-        .order_by(desc(LearningPathModel.updated_at))
-        .first()
-    )
+def get_latest_learning_path(db: Session, session_id: str, subject_id: str = "") -> LearningPathModel | None:
+    query = db.query(LearningPathModel).filter(LearningPathModel.session_id == session_id)
+    if subject_id:
+        query = query.filter(
+            (LearningPathModel.subject_id == subject_id)
+            | ((LearningPathModel.subject_id == "") & LearningPathModel.session.has(subject_id=subject_id))
+        )
+    paths = query.order_by(desc(LearningPathModel.updated_at)).limit(2).all()
+    # Without a canonical pointer, an ambiguous session must not silently
+    # replace one active path with whichever row happened to update last.
+    return paths[0] if len(paths) == 1 else None
+
+
+def persist_generated_learning_path(
+    db: Session, *, learner_id: str, session_id: str, subject_id: str,
+    workflow_id: str, path_data: dict[str, Any],
+) -> LearningPathModel:
+    """Persist a generated path and replace its current pointer atomically.
+
+    The caller owns the transaction; this function never commits independently.
+    """
+    if not learner_id or not session_id or not subject_id or not workflow_id:
+        raise ValueError("learner_id, session_id, subject_id and workflow_id are required")
+    stages = path_data.get("stages")
+    if not isinstance(stages, list) or not stages:
+        raise ValueError("generated learning path must contain stages")
+    session = db.get(SessionModel, session_id)
+    if session is None:
+        session = SessionModel(id=session_id, learner_id=learner_id, subject_id=subject_id)
+        db.add(session)
+        db.flush()
+    if session.learner_id and session.learner_id != learner_id:
+        raise ValueError("session is outside learner scope")
+    digest = hashlib.sha256(f"{learner_id}|{session_id}|{subject_id}|{workflow_id}|1".encode()).hexdigest()[:32]
+    path_id = f"path_{digest}"
+    path = db.get(LearningPathModel, path_id)
+    if path is None:
+        path = LearningPathModel(
+            id=path_id, session_id=session_id, subject_id=subject_id,
+            source_workflow_id=workflow_id, course_id=str(path_data.get("course_id") or ""),
+            course_name=str(path_data.get("course_name") or ""), description=path_data.get("description"),
+            stages=stages, overall_progress=int(path_data.get("overallProgress") or 0),
+            estimated_days=int(path_data.get("estimatedDays") or 14), current_version=1,
+        )
+        db.add(path)
+        db.flush()
+    pointer = db.query(CurrentLearningPathModel).filter_by(
+        learner_id=learner_id, session_id=session_id, subject_id=subject_id,
+    ).one_or_none()
+    if pointer is None:
+        pointer = CurrentLearningPathModel(
+            learner_id=learner_id, session_id=session_id, subject_id=subject_id,
+            path_id=path.id, path_version=path.current_version or 1, source_workflow_id=workflow_id,
+        )
+        db.add(pointer)
+    else:
+        pointer.path_id = path.id
+        pointer.path_version = path.current_version or 1
+        pointer.source_workflow_id = workflow_id
+    db.flush()
+    return path
+
+
+def resolve_current_learning_path(
+    db: Session, *, learner_id: str, session_id: str, subject_id: str, path_id: str = "",
+) -> LearningPathModel | None:
+    """Resolve only an explicitly selected path; legacy rows are never guessed."""
+    if path_id:
+        path = db.get(LearningPathModel, path_id)
+        if path is None or path.session_id != session_id or path.subject_id != subject_id:
+            return None
+        return path
+    pointer = db.query(CurrentLearningPathModel).filter_by(
+        learner_id=learner_id, session_id=session_id, subject_id=subject_id,
+    ).one_or_none()
+    if pointer:
+        path = db.get(LearningPathModel, pointer.path_id)
+        if path and path.session_id == session_id and path.subject_id == subject_id:
+            return path
+        raise CurrentPathUnresolvedError("current path pointer is invalid")
+    scoped = db.query(LearningPathModel).filter_by(session_id=session_id, subject_id=subject_id).all()
+    if len(scoped) == 1:
+        return scoped[0]
+    legacy_count = db.query(LearningPathModel).filter_by(session_id=session_id, subject_id="").count()
+    if len(scoped) > 1 or legacy_count:
+        raise CurrentPathUnresolvedError("CURRENT_PATH_UNRESOLVED")
+    return None
 
 
 # ── Resources ────────────────────────────────────────────────────────────
@@ -2308,34 +2396,39 @@ def get_or_create_fallback_mappings(
     Only creates new mappings if no rows exist for this question yet.
     Returns existing mappings if they already exist.
     """
-    existing = get_mappings_for_question(db, question_id)
-    if existing:
-        return existing
-
     if not kp_strings:
         return []
 
     weight = 1.0 / len(kp_strings)
     mappings: list[QuestionKnowledgePointMappingModel] = []
-    for kp_str in kp_strings:
+    for kp_str in dict.fromkeys(kp_strings):
         kp_str = kp_str.strip()
         if not kp_str:
             continue
-        m = create_question_kp_mapping(
-            db,
-            mapping_id=f"fb_{question_id}_{kp_str[:48]}"[:64],
-            question_id=question_id,
-            knowledge_point_key=kp_str,
-            knowledge_point_label=kp_str,
-            weight=weight,
-            confidence=0.5,
-            source="fallback",
-            subject_id=subject_id,
-            mapping_version=1,
+        query = db.query(QuestionKnowledgePointMappingModel).filter(
+            QuestionKnowledgePointMappingModel.question_id == question_id,
+            QuestionKnowledgePointMappingModel.knowledge_point_key == kp_str,
+            QuestionKnowledgePointMappingModel.subject_id.is_(None) if subject_id is None else QuestionKnowledgePointMappingModel.subject_id == subject_id,
         )
+        m = query.first()
+        if m:
+            mappings.append(m)
+            continue
+        # 3 + 48 hex = 51 chars; deterministic across retries and never loses a long-ID suffix.
+        mapping_id = "fb_" + hashlib.sha256(f"{subject_id or ''}\x1f{question_id}\x1f{kp_str}\x1f1".encode()).hexdigest()[:48]
+        try:
+            with db.begin_nested():
+                m = create_question_kp_mapping(
+                    db, mapping_id=mapping_id, question_id=question_id, knowledge_point_key=kp_str,
+                    knowledge_point_label=kp_str, weight=weight, confidence=0.5, source="fallback",
+                    subject_id=subject_id, mapping_version=1,
+                )
+                db.flush()
+        except IntegrityError:
+            m = query.first()
+            if not m:
+                raise
         mappings.append(m)
-    if mappings:
-        db.flush()
     return mappings
 
 

@@ -306,6 +306,7 @@ function DailyToolsPanel({ sessionId, activeSectionId, section, lecture, section
             chapterId=""
             chapterTitle={chapterTitle}
             section={section}
+            taskId={activeSectionId}
             lectureContent={lecture}
             sections={sections}
           />

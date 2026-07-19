@@ -403,6 +403,7 @@ function SprintToolsPanel({ sessionId, sectionId, section, lecture, sections, pa
           <SectionResourceWorkspace
             sessionId={sessionId} pathId={pathId} stageId="" chapterId=""
             chapterTitle={chapterTitle} section={section}
+            taskId={section.id}
             lectureContent={lecture} sections={sections}
           />
         )}

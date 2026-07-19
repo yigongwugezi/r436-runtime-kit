@@ -292,6 +292,8 @@ class LearningPathModel(Base):
     session_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("sessions.id", ondelete="CASCADE"), index=True
     )
+    subject_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    source_workflow_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None, index=True)
     course_id: Mapped[str] = mapped_column(String(64), default="")
     course_name: Mapped[str] = mapped_column(String(256), default="")
     description: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
@@ -308,6 +310,23 @@ class LearningPathModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     session: Mapped["SessionModel"] = relationship("SessionModel", back_populates="learning_paths")
+
+
+class CurrentLearningPathModel(Base):
+    """The explicit path selected for one learner/session/subject scope."""
+
+    __tablename__ = "current_learning_paths"
+    __table_args__ = (UniqueConstraint("learner_id", "session_id", "subject_id", name="uq_current_learning_path_scope"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    learner_id: Mapped[str] = mapped_column(String(64), index=True)
+    session_id: Mapped[str] = mapped_column(String(64), ForeignKey("sessions.id", ondelete="CASCADE"), index=True)
+    subject_id: Mapped[str] = mapped_column(String(64), index=True)
+    path_id: Mapped[str] = mapped_column(String(128), ForeignKey("learning_paths.id", ondelete="CASCADE"), unique=True)
+    path_version: Mapped[int] = mapped_column(Integer, default=1)
+    source_workflow_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 # ── Resource (Resource Library Snapshot) ──────────────────────────────────

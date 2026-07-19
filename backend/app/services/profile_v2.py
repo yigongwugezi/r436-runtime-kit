@@ -39,14 +39,14 @@ _DIMENSIONS = {
     ],
 }
 _STATE_LABELS = [("interest", "\u5f53\u524d\u5174\u8da3"), ("confidence", "\u5b66\u4e60\u4fe1\u5fc3"), ("engagement", "\u6295\u5165\u610f\u613f"), ("self_regulation", "\u81ea\u6211\u8c03\u8282"), ("pressure", "\u5f53\u524d\u538b\u529b")]
-_CONTEXT_KEYS = {"learning_goal", "deadline", "daily_minutes", "prior_experience", "background", "content_preferences", "resource_preferences"}
+_CONTEXT_KEYS = {"learning_goal", "deadline", "daily_minutes", "learning_history", "prior_experience", "background", "content_preferences", "resource_preferences"}
 _SELF_REPORT_KEYS = {key for key, _ in _STATE_LABELS}
 _MISSING = {"", "\u5f85\u8865\u5145", "\u672a\u8bc4\u4f30", "\u672a\u77e5", "\u6682\u65e0", "none", "null", "undefined"}
 _PREFERENCES = (("example_first", "\u5148\u770b\u4f8b\u9898"), ("practice_after_explanation", "\u8bb2\u89e3\u540e\u7ec3\u4e60"), ("definition_first", "\u5148\u8bb2\u5b9a\u4e49"), ("visual_explanation", "\u56fe\u89e3"), ("step_by_step", "\u5206\u6b65\u8bb2\u89e3"), ("concise_explanation", "\u7b80\u6d01\u8bb2\u89e3"))
 _CONTEXT_FACTS = {
     "target_course": "subject_name", "learning_goal": "learning_goal", "deadline": "deadline", "time_budget": "deadline",
     "daily_minutes": "daily_minutes", "background": "background", "knowledge_base": "prior_experience",
-    "prior_experience": "prior_experience", "content_preferences": "content_preferences", "preference": "content_preferences",
+    "learning_history": "learning_history", "prior_experience": "prior_experience", "content_preferences": "content_preferences", "preference": "content_preferences",
     "resource_preferences": "resource_preferences",
 }
 FACT_SCOPES = {"global", "subject", "course", "path", "session"}
@@ -243,13 +243,14 @@ def _context(facts: dict[str, Any], legacy: dict[str, dict[str, Any]], course: d
         "learning_goal": "" if _missing(facts.get("learning_goal")) else str(facts.get("learning_goal")).strip(),
         "deadline": _deadline(facts.get("deadline") or time_text), "daily_minutes": _minutes(facts.get("daily_minutes") or time_text),
         "prior_experience": _prior_experience(facts.get("prior_experience") or facts.get("knowledge_base"), category),
-        "background": "" if _missing(facts.get("background")) else str(facts.get("background")).strip(), "language": "zh-CN",
+        "background": "" if _missing(facts.get("background")) else str(facts.get("background")).strip(),
+        "learning_history": "" if _missing(facts.get("learning_history")) else str(facts.get("learning_history")).strip(), "language": "zh-CN",
         "content_preferences": _preferences(preference), "resource_preferences": resource_preferences,
     }
 
 
 def _completeness(context: dict[str, Any]) -> float:
-    values = (context.get("subject_name"), context.get("learning_goal"), context.get("daily_minutes") or context.get("deadline"), context.get("background"), context.get("prior_experience"), context.get("content_preferences"))
+    values = (context.get("learning_goal"), context.get("daily_minutes"), context.get("background"), context.get("learning_history"), context.get("prior_experience"), context.get("content_preferences"), context.get("resource_preferences"))
     return round(sum(not _missing(value) for value in values) / len(values), 2)
 
 

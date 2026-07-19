@@ -81,7 +81,7 @@ function groupTasksByDay(stages: any[]) {
 export default function LearningPathPage() {
   const nav = useNavigate();
   const location = useLocation();
-  const { path, loading, error, fetchPath, generatePath, applyPathFromWorkflow } = useLearningPath();
+  const { path, loading, error, clearError, fetchPath, generatePath } = useLearningPath();
   const { profileV2 } = useProfile();
   const subject = profileV2?.subject_context || {};
   const [existingDraft, setExistingDraft] = useState<any>(null);
@@ -105,7 +105,7 @@ export default function LearningPathPage() {
   const [recommendLoading, setRecommendLoading] = useState(false);
   const [recommendedResources, setRecommendedResources] = useState<any[]>([]);
   const stageRef = useRef<HTMLDivElement | null>(null);
-  const sessionId = useChatStore((s) => s.currentSessionId);
+  const sessionId = useChatStore((s) => s.dataSessionId);
   const isParent = getCurrentLearner()?.role === 'parent';
 
   const stages = path?.stages || [];
@@ -199,12 +199,9 @@ export default function LearningPathPage() {
           if (task.status === 'completed') {
             sessionStorage.removeItem('_pending_gen_task_id');
             sessionStorage.removeItem('_pending_gen_session_id');
-            const rawPath = task.result?.data?.path;
-            if (rawPath && rawPath.stages?.length) {
-              applyPathFromWorkflow(rawPath);
-            } else {
-              fetchPath(true, generatingSessionId || undefined);
-            }
+            const persisted = task.result?.data;
+            if (!persisted?.persisted || !persisted.pathId) throw new Error('路径未成功保存');
+            fetchPath(true, generatingSessionId || undefined, persisted.pathId);
             return;
           }
           if (task.status === 'failed' || task.status === 'cancelled' || task.status === 'expired') {
@@ -254,6 +251,7 @@ export default function LearningPathPage() {
   }, [middleTab, fetchRecommendations]);
 
   if (loading) return <PageLoading text="加载学习路径中…" />;
+  if (error === 'CURRENT_PATH_UNRESOLVED') return <div className="flex flex-col items-center py-20 text-center"><h3 className="text-lg font-bold text-surface-700 mb-2">当前学习路径尚未确定</h3><p className="text-sm text-surface-400 mb-6">请返回对话确认学习目标，或重新生成学习路径。</p><div className="flex gap-3"><button onClick={() => nav('/chat')} className="px-5 py-2.5 bg-surface-100 rounded-xl text-sm font-semibold">返回对话</button><button onClick={() => { setExistingDraft({}); clearError(); }} className="px-5 py-2.5 bg-accent-600 text-white rounded-xl text-sm font-semibold">重新生成学习路径</button></div></div>;
   if (error && stages.length === 0) return <PageError title="加载失败" description={error} onRetry={fetchPath} />;
 
   if (!path || stages.length === 0 || !hasProfile) {

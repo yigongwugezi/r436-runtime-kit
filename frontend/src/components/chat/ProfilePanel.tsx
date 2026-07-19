@@ -5,18 +5,12 @@ import { disableProfileExtraction } from '../../api/learningPath';
 import { startWorkflow } from '../../api/workflows';
 import { useSubjectStore } from '../../store/subjectStore';
 import { useChatStore } from '../../store/chatStore';
-import { isSpecificLearningGoal, isUsableProfileValue, profileCompleteness } from '../../utils/profileCompleteness';
+import { useProfile } from '../../hooks/useProfile';
+import { PROFILE_DISPLAY_DIMENSIONS, isSpecificLearningGoal, isUsableProfileValue, profileDisplayCompleteness } from '../../utils/profileCompleteness';
 import { Sparkles, ChevronRight, CheckCircle2, Circle, AlertCircle } from 'lucide-react';
 
-const DIMS = [
-  { key: 'background', label: '专业/年级' },
-  { key: 'target_course', label: '目标课程' },
-  { key: 'knowledge_base', label: '已有基础' },
-  { key: 'weak_points', label: '薄弱点' },
-  { key: 'learning_goal', label: '学习目标' },
-  { key: 'time_budget', label: '时间安排' },
-  { key: 'preference', label: '学习偏好' },
-];
+const DIMS = PROFILE_DISPLAY_DIMENSIONS;
+const RICH_FACT_KEYS: Record<string, string> = { daily_minutes: 'time_budget', prior_experience: 'knowledge_base', content_preferences: 'preference' };
 
 const LEVEL_LABEL: Record<string, string> = {
   none: '未掌握', beginner: '入门', intermediate: '中等', advanced: '精通',
@@ -160,6 +154,7 @@ export default function ProfilePanel({ sessionId }: { sessionId: string }) {
   const nav = useNavigate();
   const subjectId = useSubjectStore((s) => s.activeSubject?.id ?? s.activeClassSubject?.subject);
   const dataVersion = useChatStore((s) => s.dataVersion);
+  const { profileV2 } = useProfile();
   const [facts, setFacts] = useState<Record<string, string>>({});
   const [richFacts, setRichFacts] = useState<Record<string, any>>({});
   const [factsSessionId, setFactsSessionId] = useState('');
@@ -190,10 +185,9 @@ export default function ProfilePanel({ sessionId }: { sessionId: string }) {
   }, [sessionId, dataVersion]);
 
   const currentFacts = factsSessionId === sessionId ? facts : {};
+  const displayFacts = profileV2?.subject_context || {};
   const currentRichFacts = factsSessionId === sessionId ? richFacts : {};
-  const filledCount = profileCompleteness(currentFacts, DIMS.map(d => d.key));
-  const total = DIMS.length;
-  const pct = Math.round((filledCount / total) * 100);
+  const { filled: filledCount, total, percent: pct } = profileDisplayCompleteness(displayFacts);
   const pathGenerationReady = isUsableProfileValue(currentFacts.target_course);
 
   const handleGenerate = useCallback(async () => {
@@ -275,8 +269,8 @@ export default function ProfilePanel({ sessionId }: { sessionId: string }) {
             key={d.key}
             dimKey={d.key}
             label={d.label}
-            fact={currentFacts[d.key] || ''}
-            rich={currentRichFacts[d.key]}
+            fact={displayFacts[d.key] || ''}
+            rich={currentRichFacts[RICH_FACT_KEYS[d.key] || d.key]}
             onProbe={() => {}}
           />
         ))}

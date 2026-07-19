@@ -8,7 +8,7 @@ import { DEFAULT_QUICK_COMMANDS } from '../utils/constants';
 import { timeAgo, uid } from '../utils/format';
 import { runtimeStorageKeys, writeStorageItem } from '../utils/storageKeys';
 import type { ChatAttachment, ChatMessage, GenerationProgress, ProgressStep, QuickCommand } from '../types/chat';
-import { Send, Sparkles, Square, Copy, Check, AlertCircle, Bot, RefreshCw, XCircle, Loader2, BrainCircuit, ImagePlus, Trash2, MessageCircle, Globe, Target } from 'lucide-react';
+import { Send, Sparkles, Square, Copy, Check, AlertCircle, Bot, RefreshCw, XCircle, Loader2, BrainCircuit, ImagePlus, Trash2, MessageCircle, Globe, Target, ChevronRight } from 'lucide-react';
 import { getCurrentLearner } from '../store/authStore';
 import Markdown from '../utils/markdown';
 import MarkmapDiagram from '../utils/markmap';
@@ -458,6 +458,7 @@ function MultimodalResultView({ result }: { result: ChatMessage['multimodalResul
 }
 
 const MessageBubble = memo(function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onClarificationSelect?: (prompt: string) => void }) {
+  const nav = useNavigate();
   const isUser = msg.role === 'user'; const [copied, setCopied] = useState(false);
   const [thinkingExpanded, setThinkingExpanded] = useState(true);
   const hasThinking = !isUser && msg.reasoningContent && msg.reasoningContent.trim().length > 0;
@@ -518,6 +519,27 @@ const MessageBubble = memo(function MessageBubble({ msg, onClarificationSelect }
                   );
                 })()}
                 {msg.multimodalResult && <MultimodalResultView result={msg.multimodalResult} />}
+                {!isUser && !msg.streaming && msg.resourceCards && msg.resourceCards.length > 0 && (
+                  <div className="mt-3 space-y-2">
+                    <p className="text-xs font-medium text-surface-500 ml-1">📦 已生成资源</p>
+                    {msg.resourceCards.map((card: any, idx: number) => (
+                      <button
+                        key={card.id || idx}
+                        onClick={() => nav(`/resources/${card.id}`)}
+                        className="w-full flex items-center gap-3 p-3 rounded-xl border border-surface-200 bg-white hover:bg-surface-50 hover:border-primary-300 transition-all text-left shadow-sm"
+                      >
+                        <span className="text-lg flex-shrink-0">
+                          {card.type === 'mindmap' ? '🧠' : card.type === 'quiz' ? '✏️' : card.type === 'lecture' ? '📖' : card.type === 'reading' ? '📚' : card.type === 'practice' ? '🏋️' : card.type === 'video' || card.type === 'multimodal' ? '🎬' : card.type === 'ppt' ? '📊' : card.type === 'image' ? '🖼️' : '📄'}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium text-surface-800 truncate">{card.title}</p>
+                          {card.description && <p className="text-xs text-surface-400 truncate mt-0.5">{card.description}</p>}
+                        </div>
+                        <ChevronRight size={14} className="text-surface-300 flex-shrink-0" />
+                      </button>
+                    ))}
+                  </div>
+                )}
                 {msg.streaming && msg.content && (
                   <span className="inline-block w-1.5 h-4 bg-gray-400 animate-pulse rounded ml-0.5 align-text-bottom" />
                 )}
@@ -575,26 +597,18 @@ function AgentPipelineProgress({ progress, onRetry, onNavigate }: { progress: Ge
 
 const ModeToggleBar = memo(function ModeToggleBar() {
   const chatMode = useChatStore((s) => s.chatMode);
+  // 只有规划模式激活时才显示切换条，纯自由模式无需切换
+  if (chatMode !== 'planning') return null;
   return (
     <div className="flex-shrink-0 px-4 pt-2 pb-1 w-full min-w-0">
       <div className="max-w-[48rem] mx-auto flex items-center gap-1.5 rounded-xl bg-surface-100 p-1 w-fit">
         <button
           onClick={() => useChatStore.getState().setChatMode('free')}
-          className={`rounded-lg px-4 py-1.5 text-xs font-medium transition-colors ${
-            chatMode === 'free' ? 'bg-white text-surface-800 shadow-sm' : 'text-surface-500 hover:text-surface-700'
-          }`}
+          className="rounded-lg px-4 py-1.5 text-xs font-medium transition-colors text-surface-500 hover:text-surface-700"
         >自由学习</button>
-        <button
-          onClick={() => useChatStore.getState().setChatMode('invoke')}
-          className={`rounded-lg px-4 py-1.5 text-xs font-medium transition-colors ${
-            chatMode === 'invoke' ? 'bg-white text-surface-800 shadow-sm' : 'text-surface-500 hover:text-surface-700'
-          }`}
-        >调用模式</button>
-        {chatMode === 'planning' && (
-          <span className="rounded-lg px-4 py-1.5 text-xs font-medium bg-accent-100 text-accent-700 shadow-sm flex items-center gap-1.5">
-            <Target size={12} />规划模式
-          </span>
-        )}
+        <span className="rounded-lg px-4 py-1.5 text-xs font-medium bg-accent-100 text-accent-700 shadow-sm flex items-center gap-1.5">
+          <Target size={12} />规划模式
+        </span>
       </div>
     </div>
   );
@@ -625,6 +639,8 @@ export default function ChatPage() {
     agentProgress,
     lastDebugInfo,
     currentSessionId,
+    dataSessionId,
+    canonicalSession,
     setLoading,
     lastImageAttachment,
     imageAttachmentHistory,
@@ -635,10 +651,11 @@ export default function ChatPage() {
     chatMode,
   } = useChatStore() as any;
   const { send, sendSuggested, abort } = useStreamChat();
+  const chatReady = canonicalSession.status === 'resolved' && !!currentSessionId;
   const setSearchEnabled = (v: boolean) => useChatStore.getState().setSearchEnabled(v);
   const setDeepThinkEnabled = (v: boolean) => useChatStore.getState().setDeepThinkEnabled(v);
   // Closed-loop assessment notifications — poll every 30s, pause during streaming
-  useNotificationPoller(currentSessionId || '', !isStreaming);
+  useNotificationPoller(canonicalSession.status === 'resolved' ? dataSessionId : '', !isStreaming);
   const [messagesLoaded, setMessagesLoaded] = useState(false); const [menuOpen, setMenuOpen] = useState(false); const [historyOpen, setHistoryOpen] = useState(false);
   const [selectedImage, setSelectedImage] = useState<{ file: File; preview: string } | null>(null);
   const [imageContextDisabled, setImageContextDisabled] = useState(false);
@@ -686,7 +703,7 @@ export default function ChatPage() {
     el.addEventListener('scroll', h, { passive: true });
     return () => el.removeEventListener('scroll', h);
   });
-  useEffect(() => { if (useChatStore.getState().messages.length > 0) { setMessagesLoaded(true); setLoading(false); return; } setMessagesLoaded(false); let cancelled = false; (async () => { setLoading(true); try { const res = await getSessionMessages(currentSessionId); if (!cancelled && res.messages?.length) useChatStore.setState({ messages: res.messages }); } catch {} finally { if (!cancelled) { setMessagesLoaded(true); setLoading(false); } } })(); return () => { cancelled = true; }; }, [currentSessionId]);
+  useEffect(() => { if (canonicalSession.status !== 'resolved' || !currentSessionId) { setMessagesLoaded(false); setLoading(false); return; } if (useChatStore.getState().messages.length > 0) { setMessagesLoaded(true); setLoading(false); return; } setMessagesLoaded(false); let cancelled = false; (async () => { setLoading(true); try { const res = await getSessionMessages(currentSessionId); if (!cancelled && res.messages?.length) useChatStore.setState({ messages: res.messages }); } catch {} finally { if (!cancelled) { setMessagesLoaded(true); setLoading(false); } } })(); return () => { cancelled = true; }; }, [canonicalSession.status, currentSessionId]);
   useEffect(() => { if (initialMessage && messages.length === 0 && messagesLoaded) send(initialMessage); }, [initialMessage, messagesLoaded]);
   useEffect(() => { if (initialChatMode) useChatStore.getState().setChatMode(initialChatMode); }, [initialChatMode]);
 
@@ -760,7 +777,7 @@ export default function ChatPage() {
   };
   const handleSend = async () => {
     const text = inputValue.trim();
-    if ((!text && !selectedImage) || isStreaming) return;
+    if ((!text && !selectedImage) || isStreaming || !chatReady) return;
     const finalText = text || '识别这张图片';
 
     // ═══ 检测规划关键词：自由/调用模式自动切换到规划模式 ═══
@@ -1007,7 +1024,7 @@ export default function ChatPage() {
 <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => handleImageChange(e.target.files?.[0])} />
               <button
                 onClick={() => fileRef.current?.click()}
-                disabled={isStreaming}
+                disabled={isStreaming || !chatReady}
                 className="p-1.5 rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-200/60 disabled:opacity-50 transition-colors flex-shrink-0"
                 title="上传图片"
               >
@@ -1015,7 +1032,7 @@ export default function ChatPage() {
               </button>
               <VoiceInputButton
                 onResult={handleVoiceResult}
-                disabled={isStreaming}
+                disabled={isStreaming || !chatReady}
                 size="sm"
               />
               <textarea
@@ -1026,7 +1043,7 @@ export default function ChatPage() {
                 onKeyDown={handleKeyDown}
                 placeholder="输入消息..."
                 rows={1}
-                disabled={isStreaming}
+                disabled={isStreaming || !chatReady}
                 className="flex-1 resize-none bg-transparent text-sm text-gray-800 placeholder:text-gray-400 outline-none py-1 disabled:opacity-50"
                 style={{ minHeight: '24px', maxHeight: '160px' }}
               />
@@ -1037,7 +1054,7 @@ export default function ChatPage() {
               ) : (
                 <button
                   onClick={handleSend}
-                  disabled={!selectedImage && !inputValue.trim()}
+                disabled={!chatReady || (!selectedImage && !inputValue.trim())}
                   className={`p-1.5 rounded-full transition-all flex-shrink-0 ${
                     inputValue.trim() || selectedImage
                       ? 'bg-gray-800 text-white hover:bg-gray-700'
@@ -1048,6 +1065,7 @@ export default function ChatPage() {
                 </button>
               )}
             </div>
+            {!chatReady && <p className="mt-2 text-center text-xs text-surface-400">{canonicalSession.status === 'failed' ? '当前课程会话创建失败，请重试。' : '正在创建当前课程会话…'}</p>}
             {/* Mode toggles — bottom-left, separate from topics */}
             <div className="flex items-center gap-2 mt-2">
               <button

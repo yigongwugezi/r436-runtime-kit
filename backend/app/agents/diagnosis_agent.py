@@ -718,12 +718,13 @@ class DiagnosisAgent(BaseAgent):
 - 如果完全没有行为数据，降低 overall_confidence
 - 只输出 JSON，不要 Markdown 包裹
 """
+        kwargs = {"reasoning": True} if getattr(self.llm_client, "supports_reasoning", False) else {}
         return self.llm_client.chat(
             messages=[
                 {"role": "system", "content": "你是学习诊断专家。综合分析多源数据。只输出JSON。"},
                 {"role": "user", "content": prompt},
             ],
-            temperature=0.2, reasoning=True,
+            temperature=0.2, **kwargs,
             max_tokens=1500,
         )
 
@@ -733,12 +734,13 @@ class DiagnosisAgent(BaseAgent):
 
         try:
             def llm_fix(broken: str) -> str:
+                kwargs = {"reasoning": True} if getattr(self.llm_client, "supports_reasoning", False) else {}
                 return self.llm_client.chat(
                     messages=[
                         {"role": "system", "content": "你是 JSON 修复器。修复以下损坏的 JSON，只输出修复后的 JSON。"},
                         {"role": "user", "content": broken},
                     ],
-                    temperature=0, reasoning=True,
+                    temperature=0, **kwargs,
                     max_tokens=1000,
                 )
 

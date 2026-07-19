@@ -399,6 +399,10 @@ def run_post_quiz_assessment(
     quiz_title: str = "",
     quiz_score: int | None = None,
     weak_points: list[dict[str, Any]] | None = None,
+    subject_id: str = "",
+    path_id: str = "",
+    task_id: str = "",
+    attempt_id: str = "",
 ) -> dict[str, Any]:
     """Run the FULL closed-loop assessment after a quiz is submitted.
 
@@ -528,7 +532,7 @@ def run_post_quiz_assessment(
         mastery_changed = _detect_mastery_change(session_id, new_mastery)
         new_weak_points = new_diagnosis.get("weak_knowledge_points", [])
         has_actionable_weakness = bool(new_weak_points or weak_points)
-        should_adjust = mastery_changed or has_actionable_weakness
+        should_adjust = (quiz_score is not None and quiz_score < 60) and (mastery_changed or has_actionable_weakness)
         if should_adjust:
             try:
                 planner_agent = factory.get("planner_agent")
@@ -545,37 +549,25 @@ def run_post_quiz_assessment(
                     planner_result = planner_agent.run(planner_context)
                     adjusted_path = planner_result.get("learning_path", [])
                     if adjusted_path:
-                        apply_silently = planner_result.get("apply_silently", False)
-                        if apply_silently:
-                            # ── 仅节奏调整：静默写入，不弹窗 ──
-                            existing_result = dict(conversation_store.get(session_id).last_result or {})
-                            existing_result["learning_path"] = adjusted_path
-                            existing_result["stages"] = adjusted_path
-                            existing_result["version"] = int(time.time() * 1000)
-                            conversation_store.set_result(session_id, existing_result)
-                            path_adjusted = True
-                            logger.info(
-                                "PlannerAgent silently applied pacing adjustment for session=%s",
-                                session_id,
-                            )
-                        else:
-                            # ── 结构性调整：创建 pending_revision ──
-                            from app.services.day_planner import compute_diff
-                            existing_path = diagnosis_context.get("learning_path", [])
-                            diff = compute_diff(existing_path, adjusted_path)
-                            conversation_store.set_pending_revision(
-                                session_id,
-                                proposed_stages=adjusted_path,
-                                diff=diff,
-                                reason=f"基于小测「{quiz_title}」结果调整学习路径",
-                                trigger_source="assessment",
-                                trigger_id=str(quiz_title or "post_quiz"),
-                            )
-                            path_adjusted = True
-                            logger.info(
-                                "PlannerAgent created pending revision for session=%s, diff=%s",
-                                session_id, diff.get("summary", ""),
-                            )
+                        # Quiz results may only create a user-confirmed revision.
+                        from app.services.day_planner import compute_diff
+                        existing_path = diagnosis_context.get("learning_path", [])
+                        diff = compute_diff(existing_path, adjusted_path)
+                        conversation_store.set_pending_revision(
+                            session_id,
+                            proposed_stages=adjusted_path,
+                            diff=diff,
+                            reason=f"基于小测「{quiz_title}」结果调整学习路径",
+                            trigger_source="assessment",
+                            trigger_id=attempt_id or task_id or str(quiz_title or "post_quiz"),
+                            path_id=path_id,
+                            subject_id=subject_id,
+                        )
+                        path_adjusted = True
+                        logger.info(
+                            "PlannerAgent created pending revision for session=%s, diff=%s",
+                            session_id, diff.get("summary", ""),
+                        )
             except Exception:
                 logger.exception("PlannerAgent adjustment failed for session=%s", session_id)
 
@@ -1171,7 +1163,7 @@ def _persist_diagnosis_to_db(
         logger.exception("Failed to persist diagnosis snapshot for session=%s", session_id)
 
 
-def _build_diagnosis_context(session_id: str) -> dict[str, Any]:
+def _build_diagnosis_context(session_id: str, subject_id: str = "") -> dict[str, Any]:
     """Build the diagnostic context dict expected by DiagnosisAgent.run()."""
     from app.services.conversation_state import conversation_store
     from app.services.agent_service import (
@@ -1190,7 +1182,7 @@ def _build_diagnosis_context(session_id: str) -> dict[str, Any]:
         analytics = {}
 
     try:
-        stored_path = get_learning_path(session_id)
+        stored_path = get_learning_path(session_id, subject_id)
     except Exception:
         stored_path = None
 

@@ -45,8 +45,17 @@ export async function generateSectionResource(sectionId: string, payload: Record
   return data;
 }
 
-export async function getGeneratedSectionResources(sectionId: string, sessionId: string, subjectId?: string): Promise<GeneratedSectionResource[]> {
-  const { data } = await client.get(`/api/sections/${encodeURIComponent(sectionId)}/generated-resources`, { params: { sessionId, subjectId } });
+export interface GeneratedResourceScope {
+  pathId: string;
+  stageId: string;
+  taskId: string;
+  dayId?: string;
+  globalDayIndex?: number;
+}
+
+export async function getGeneratedSectionResources(sectionId: string, sessionId: string, subjectId?: string, scope?: GeneratedResourceScope, signal?: AbortSignal): Promise<GeneratedSectionResource[]> {
+  if (!scope?.pathId || !scope.stageId || !scope.taskId) return [];
+  const { data } = await client.get(`/api/sections/${encodeURIComponent(sectionId)}/generated-resources`, { params: { sessionId, subjectId, ...scope }, signal });
   return data.resources || [];
 }
 
