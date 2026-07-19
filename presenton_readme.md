@@ -250,7 +250,7 @@ Other optional variables exist in code (for example advanced Mem0 paths, LitePar
 - **OPENAI_API_KEY**: Required if **LLM** is **openai**.
 - **OPENAI_MODEL**: Required if **LLM** is **openai** (default: `gpt-4.1`).
 - **DEEPSEEK_API_KEY**: Required if **LLM** is **deepseek**.
-- **DEEPSEEK_MODEL**: Required if **LLM** is **deepseek** (default: `deepseek-chat`).
+- **DEEPSEEK_MODEL**: Required if **LLM** is **deepseek** (default: `deepseek-v4-pro`).
 - **DEEPSEEK_BASE_URL**: Optional if **LLM** is **deepseek** (default: `https://api.deepseek.com`).
 - **GOOGLE_API_KEY**: Required if **LLM** is **google**.
 - **GOOGLE_MODEL**: Required if **LLM** is **google** (default: `models/gemini-2.0-flash`).

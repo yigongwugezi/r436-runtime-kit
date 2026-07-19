@@ -81,12 +81,14 @@ class TeachingVideoAgent:
         output_dir: Path,
         idx: int = 0,
         cfg: Optional[RunConfig] = None,
+        user_requirements: str = "",
     ):
         self.learning_topic = knowledge_point
         self.idx = idx
         self.cfg = cfg or RunConfig()
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.user_requirements = user_requirements
 
         # State
         self.outline = None
@@ -120,7 +122,7 @@ class TeachingVideoAgent:
             logger.info("Loaded cached outline")
             return self.outline
 
-        prompt = get_prompt1_outline(knowledge_point=self.learning_topic)
+        prompt = get_prompt1_outline(knowledge_point=self.learning_topic, user_requirements=self.user_requirements)
 
         for attempt in range(self.cfg.max_regenerate_tries):
             response, usage = self.cfg.planner_api(
@@ -161,7 +163,7 @@ class TeachingVideoAgent:
             logger.info("Loaded cached storyboard")
         else:
             outline_json = json.dumps(self.outline, ensure_ascii=False, indent=2)
-            prompt = get_prompt2_storyboard(outline=outline_json, reference_image_path=None)
+            prompt = get_prompt2_storyboard(outline=outline_json, reference_image_path=None, user_requirements=self.user_requirements)
 
             for attempt in range(self.cfg.max_regenerate_tries):
                 response, usage = self.cfg.planner_api(
@@ -222,6 +224,7 @@ class TeachingVideoAgent:
                 regenerate_note=regenerate_note,
                 section=section,
                 base_class=base_class,
+                user_requirements=self.user_requirements,
             )
             # Add duration hint if narration duration is known
             if section.id in self.section_durations:
@@ -247,8 +250,19 @@ class TeachingVideoAgent:
         elif "```" in code:
             code = code.split("```")[1].strip()
 
-        # Replace base class definition
-        code = replace_base_class(code, base_class)
+        # Ensure base class is present — prepend if LLM followed instructions and omitted it,
+        # otherwise replace any stale copy it may have regurgitated.
+        import re
+        if re.search(r'^\s*class\s+TeachingScene\s*\(Scene\)\s*:', code, re.MULTILINE):
+            code = replace_base_class(code, base_class)
+        else:
+            # Insert base_class after imports, before first class definition
+            lines = code.splitlines(keepends=True)
+            insert_at = 0
+            for i, line in enumerate(lines):
+                if line.startswith("from ") or line.startswith("import "):
+                    insert_at = i + 1
+            code = "".join(lines[:insert_at]) + "\n" + base_class.strip() + "\n\n" + "".join(lines[insert_at:]).lstrip('\n')
 
         # Ensure imports
         if "from manim import" not in code:
@@ -257,7 +271,6 @@ class TeachingVideoAgent:
             code = code.replace("from manim import *", "from manim import *\nimport numpy as np")
 
         # Prevent SVGMobject/ImageMobject calls
-        import re
         code = re.sub(r'SVGMobject\s*\([^)]*\)', 'Circle()', code)
         code = re.sub(r'ImageMobject\s*\([^)]*\)', 'Square()', code)
 
@@ -270,12 +283,25 @@ class TeachingVideoAgent:
 
     @staticmethod
     def _fix_formulas(code: str) -> str:
-        """Fix common LLM formula issues: $$ delimiters, unbalanced braces."""
+        """Fix common LLM formula issues: $$ delimiters, unbalanced braces, Chinese in MathTex."""
         import re
+        # Remove stray $$ delimiters
         code = re.sub(r'MathTex\(r"\$([^"]+)\$"\)', r'MathTex(r"\1")', code)
         code = re.sub(r'(MathTex\([^)]*?)\$\$', r'\1', code)
         code = re.sub(r'\$\$([^)]*?\))', r'\1', code)
         code = re.sub(r'Text\("[^"]*\$\$[^"]*"\)', lambda m: m.group().replace('$$', ''), code)
+        # Fix MathTex containing Chinese characters — convert to Text()
+        def _fix_chinese_in_mathtex(m):
+            content = m.group(2)
+            if re.search(r'[\u4e00-\u9fff]', content):
+                return f'Text("{content}", font_size=24, color=WHITE)'
+            return m.group(0)
+        code = re.sub(r'(MathTex)\s*\(\s*r?"([^"]*)"(?:\s*,\s*[^)]*)?\)', _fix_chinese_in_mathtex, code)
+        # Fix Manim v0.19 API incompatibilities
+        code = re.sub(r'FunctionGraph\(', 'axes.plot(lambda x: ', code)
+        code = re.sub(r'\.set_row_colors\([^)]+\)', '', code)
+        code = re.sub(r'\.set_background_color\([^)]+\)', '', code)
+        code = re.sub(r'include_outer_lines=\w+', 'include_outer_lines=False', code)
         return code
 
     # ── Render & Debug ──────────────────────────────────────────────
@@ -319,18 +345,23 @@ class TeachingVideoAgent:
                 logger.warning(f"Render failed for {section_id}, attempt {fix_attempt+1}: {error_msg[:200]}")
 
                 # Ask LLM to fix
-                fix_prompt = f"""Fix this broken Manim script.
+                fix_prompt = f"""Fix this broken Manim Community v0.19 script. Output only corrected Python code.
+
+## Common Manim v0.19 bugs (fix these FIRST):
+1. MathTex(r"中文") → LaTeX compile error. Use Text("中文") for ANY Chinese text.
+2. MathTex has NO `.string` attribute. Don't use it.
+3. `self.wait()` needs numeric arg: self.wait(1) not self.wait()
+4. `DashedLine(start=..., end=...)` uses keyword args, not positional.
+5. Table().set_row_colors() may not exist in v0.19. Skip it or use add_highlighted_cell().
+6. No SVGMobject/ImageMobject.
 
 Error:
 {error_msg}
 
-Code:
+Current code:
 ```python
 {self.section_codes.get(section_id, '')}
-```
-
-Fix ALL bugs. Output only corrected Python code.
-Use MathTex() for formulas, Text() for Chinese. No SVGMobject/ImageMobject."""
+```"""
 
                 response, usage = self.cfg.coder_api(fix_prompt, max_tokens=6000)
                 self._track_tokens(usage)
@@ -353,6 +384,7 @@ Use MathTex() for formulas, Text() for Chinese. No SVGMobject/ImageMobject."""
                             import re as _re
                             fixed = _re.sub(r'SVGMobject\s*\([^)]*\)', 'Circle()', fixed)
                             fixed = _re.sub(r'ImageMobject\s*\([^)]*\)', 'Square()', fixed)
+                            fixed = self._fix_formulas(fixed)
 
                             code_file.write_text(fixed, encoding="utf-8")
                             self.section_codes[section_id] = fixed

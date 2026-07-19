@@ -1062,7 +1062,7 @@ def _optimize_prompt_with_deepseek(raw_prompt: str) -> str:
     """Use DeepSeek to expand a short prompt into a detailed image description."""
     ds_key = _user_deepseek_key()
     ds_url = _env("DEEPSEEK_BASE_URL", default="https://api.deepseek.com/v1")
-    ds_model = _env("DEEPSEEK_MODEL", default="deepseek-chat")
+    ds_model = _env("DEEPSEEK_MODEL", default="deepseek-v4-pro")
     if not ds_key:
         raise RuntimeError("主模型未配置为 DeepSeek，无法进行提示词优化")
     messages: list[dict[str, str]] = [{"role": "system", "content": _SEEDREAM_SYSTEM_PROMPT}]

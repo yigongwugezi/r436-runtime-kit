@@ -266,9 +266,10 @@ def _runner(workflow_type: str, payload: dict[str, Any], auth: AuthContext):
             section_title = str(payload.get("sectionTitle") or "").strip()
             course_name = str(payload.get("courseName") or section_title)
             kp_text = str(payload.get("knowledgePoints") or "")
+            requirements = str(payload.get("requirements") or "")
             result = product._generate_video_sync(
                 section_id, section_title, course_name, kp_text,
-                task.session_scope, progress, task.cancel_event
+                task.session_scope, requirements, progress, task.cancel_event
             )
             workflow_task_manager.check_cancelled(task)
             if result.get("status") == "error":

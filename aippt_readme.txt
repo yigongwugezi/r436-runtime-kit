@@ -184,7 +184,7 @@ src/
 
 | Provider | Models | Key Source |
 |----------|--------|------------|
-| **DeepSeek** | deepseek-chat, deepseek-reasoner | [platform.deepseek.com](https://platform.deepseek.com) |
+| **DeepSeek** | deepseek-v4-pro | [platform.deepseek.com](https://platform.deepseek.com) |
 | **OpenAI** | GPT-4o, GPT-5.2, o1, o1-mini | [platform.openai.com](https://platform.openai.com) |
 | **Claude** | Claude 3.5 Sonnet, Claude Opus 4.5 | [console.anthropic.com](https://console.anthropic.com) |
 | **Gemini** | Gemini 2.5 Pro/Flash | [aistudio.google.com](https://aistudio.google.com) |

@@ -297,6 +297,22 @@ function ResourceDetailView({
                     </div>
                   );
                 }
+                if (resource.mermaidDef) {
+                  const headingMatch = (resource.content || '').match(/^##\s+.+$/m);
+                  const heading = headingMatch ? headingMatch[0] : '';
+                  const restContent = (resource.content || '').replace(/```mermaid\n[\s\S]*?\n```/g, '').trim();
+                  return (
+                    <div>
+                      {heading && <Markdown content={heading} />}
+                      <div className={heading ? 'mt-4' : ''}>
+                        <div className="p-4 bg-white rounded-xl border border-surface-200">
+                          <MermaidDiagram definition={resource.mermaidDef} />
+                        </div>
+                      </div>
+                      {restContent && <Markdown content={restContent} />}
+                    </div>
+                  );
+                }
                 return <Markdown content={resource.content || '暂无内容'} />;
               })()
             ) : resource.type === 'ppt' ? (

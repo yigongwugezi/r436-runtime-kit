@@ -3826,7 +3826,7 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
         try:
             mm = generate_mindmap(topic)
             if mm and len(mm) > 50:
-                resource["content"] = f"## {topic} 知识结构\n\n{mm}"
+                resource["content"] = f"## {topic} 知识结构\n\n```mermaid\n{mm}\n```"
                 resource["mermaid_def"] = sanitize_mermaid(mm)
                 resource["content_format"] = "mermaid"
                 resource["resource_metadata"]["generation_source"] = "deeptutor"
@@ -8140,6 +8140,7 @@ def tutor_video(section_id: str, payload: dict[str, Any], auth: AuthContext = De
                 "knowledgePoints": kp_text,
                 "sessionId": session_id,
                 "subjectId": subject_id,
+                "requirements": requirements,
             }, auth)
             base = f"/api/workflows/{task.task_id}"
             return _product_response({
@@ -8206,7 +8207,8 @@ def normalize_resource_search_request(payload: dict[str, Any]) -> dict[str, Any]
     return request
 def _generate_video_sync(
     section_id: str, section_title: str, course_name: str, kp_text: str,
-    session_id: str, progress_callback: Callable | None = None,
+    session_id: str, requirements: str = "",
+    progress_callback: Callable | None = None,
     cancel_event: Event | None = None,
 ) -> dict[str, Any]:
     """Synchronous video generation with progress events (called by workflow runner)."""
@@ -8225,6 +8227,7 @@ def _generate_video_sync(
             "user_message": f"为「{course_name}——{section_title}」生成微课讲解视频",
             "subject_name": course_name, "topic": section_title,
             "knowledge_points": kp_text,
+            "requirements": requirements,
             "progress_callback": progress_callback,
             "cancel_event": cancel_event,
         })

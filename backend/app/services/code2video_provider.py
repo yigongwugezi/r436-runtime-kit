@@ -78,8 +78,9 @@ class Code2VideoProvider:
         topic = self._extract_topic(context)
         subject = str(context.get("subject_name") or topic)
         kp_text = str(context.get("knowledge_points") or "")
+        user_req = str(context.get("requirements") or "")
 
-        logger.info("Code2Video: topic=%s subject=%s", topic, subject)
+        logger.info("Code2Video: topic=%s subject=%s req=%s", topic, subject, user_req[:60] if user_req else "(none)")
 
         # ── Step 1: RAG retrieval (reuse existing) ──
         kb_context = self._rag_retrieve(topic)
@@ -119,6 +120,7 @@ class Code2VideoProvider:
                 output_dir=work_dir,
                 idx=0,
                 cfg=cfg,
+                user_requirements=user_req,
             )
 
             agent.generate_outline()
