@@ -60,6 +60,11 @@ function lectureContent(response: any): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function lectureId(response: any): string {
+  const value = response?.data?.lecture?.id ?? response?.lecture?.id ?? response?.data?.fallbackResource?.id ?? response?.fallbackResource?.id;
+  return typeof value === 'string' ? value : '';
+}
+
 const sectionStatusStyle: Record<ContentStatus, { dot: string; bar: string }> = {
   not_started:  { dot: 'bg-surface-300 ring-surface-100', bar: 'bg-surface-300' },
   in_progress:  { dot: 'bg-blue-400 ring-blue-100',      bar: 'bg-blue-400' },
@@ -387,6 +392,7 @@ export default function LecturePage() {
   const [videoOpened, setVideoOpened] = useState(false);
   const [videoFallbackSelected, setVideoFallbackSelected] = useState(false);
   const [videoDeliveryMode, setVideoDeliveryMode] = useState<'video' | 'video_fallback_lecture'>('video');
+  const [fallbackResourceId, setFallbackResourceId] = useState('');
   const [fallbackStateLoading, setFallbackStateLoading] = useState(true);
   const fallbackSelectionPending = useRef(false);
   const fallbackEnsureScope = useRef('');
@@ -400,12 +406,12 @@ export default function LecturePage() {
   const [focusedCompletionError, setFocusedCompletionError] = useState('');
   useEffect(() => {
     setTaskScopeRejected(false); clearQuiz();
-    setVideoResources([]); setVideoStatus('idle'); setVideoLectureFallback(false); setVideoOpened(false); setVideoFallbackSelected(false); setVideoDeliveryMode('video'); setFallbackStateLoading(true); setFallbackEnsureError(false); setFallbackEnsureRetry(0); setVideoRetry(0);
+    setVideoResources([]); setVideoStatus('idle'); setVideoLectureFallback(false); setVideoOpened(false); setVideoFallbackSelected(false); setVideoDeliveryMode('video'); setFallbackResourceId(''); setFallbackStateLoading(true); setFallbackEnsureError(false); setFallbackEnsureRetry(0); setVideoRetry(0);
     setLectureLoaded(false); setLectureMissing(false); setLectureEnsureUnavailable(false); setLectureEnsureRetry(0); setFocusedCompletionError('');
     quizSubmitIdempotencyKeyRef.current = ''; quizScopeRetryRef.current = ''; lastEnsureScope.current = ''; fallbackEnsureScope.current = ''; fallbackRecoveryRetry.current = ''; fallbackSelectionPending.current = false; videoRefreshRequested.current = false;
     setFallbackWorkflowId(''); setFallbackWorkflowChecked(false);
   }, [canonicalScopeKey, lectureSemanticKey, clearQuiz]);
-  useEffect(() => { setVideoLectureFallback(false); setVideoOpened(false); setVideoFallbackSelected(false); setVideoDeliveryMode('video'); setFallbackStateLoading(true); setFallbackEnsureError(false); fallbackEnsureScope.current = ''; fallbackRecoveryRetry.current = ''; fallbackSelectionPending.current = false; setFallbackWorkflowId(''); setFallbackWorkflowChecked(false); }, [resourceTaskId]);
+  useEffect(() => { setVideoLectureFallback(false); setVideoOpened(false); setVideoFallbackSelected(false); setVideoDeliveryMode('video'); setFallbackResourceId(''); setFallbackStateLoading(true); setFallbackEnsureError(false); fallbackEnsureScope.current = ''; fallbackRecoveryRetry.current = ''; fallbackSelectionPending.current = false; setFallbackWorkflowId(''); setFallbackWorkflowChecked(false); }, [resourceTaskId]);
   const deliveryMode = executionMode !== 'video' ? executionMode : fallbackStateLoading ? 'resolving' : videoDeliveryMode;
   const isVideoFallbackDelivery = deliveryMode === 'video_fallback_lecture';
   const videoScope = useMemo(() => canonicalRequestScope
@@ -520,7 +526,7 @@ export default function LecturePage() {
       setVideoDeliveryMode(mode); setVideoFallbackSelected(Boolean(state?.fallbackSelected ?? state?.selected)); setVideoLectureFallback(mode === 'video_fallback_lecture');
       if (mode !== 'video_fallback_lecture') { setFallbackWorkflowChecked(true); return; }
       const content = lectureContent(state.lecture);
-      if (content) { store.setLecture(cacheKey, content); clearWorkflowTask(fallbackWorkflowScope!); setLectureLoaded(true); void recordVideoFallbackLectureOpened(resourceTaskId, canonicalRequestScope); }
+      if (content) { setFallbackResourceId(lectureId(state.lecture)); store.setLecture(cacheKey, content); clearWorkflowTask(fallbackWorkflowScope!); setLectureLoaded(true); void recordVideoFallbackLectureOpened(resourceTaskId, canonicalRequestScope); }
       else setFallbackWorkflowId(readWorkflowTask(fallbackWorkflowScope!)?.taskId || '');
       setFallbackWorkflowChecked(true);
     }).catch(() => undefined).finally(() => { if (active) setFallbackStateLoading(false); });
@@ -541,7 +547,7 @@ export default function LecturePage() {
     ensureVideoFallbackLecture(resourceTaskId, { ...canonicalRequestScope, taskTitle: canonicalTaskScope?.task.title || currentSection?.title || '', taskDescription: canonicalTaskScope?.task.description || canonicalTaskScope?.task.goal || '', learningObjectives: canonicalTaskScope?.task.learningObjectives || canonicalTaskScope?.task.learning_objectives || [], knowledgePoints: canonicalTaskScope?.task.knowledgePoints || canonicalTaskScope?.task.knowledge_points || [], stageTitle: canonicalTaskScope?.stage.title || '', pathVersion: (path as any)?.currentVersion || (path as any)?.version || '' })
       .then((data) => {
         const content = lectureContent(data);
-        if (content) { store.setLecture(cacheKey, content); clearWorkflowTask(fallbackWorkflowScope); void recordVideoFallbackLectureOpened(resourceTaskId, canonicalRequestScope); return; }
+        if (content) { setFallbackResourceId(lectureId(data)); store.setLecture(cacheKey, content); clearWorkflowTask(fallbackWorkflowScope); void recordVideoFallbackLectureOpened(resourceTaskId, canonicalRequestScope); return; }
         if (data.status === 'running' && data.workflowId) { saveWorkflowTask({ ...fallbackWorkflowScope, taskId: data.workflowId, createdAt: Date.now() }); setFallbackWorkflowId(data.workflowId); return; }
         throw new Error(data.errorMessage || '图文讲解生成失败');
       })
@@ -557,7 +563,7 @@ export default function LecturePage() {
         const state = await getVideoFallbackState(resourceTaskId, canonicalRequestScope);
         const content = lectureContent(state?.lecture);
         if (content) {
-          store.setLecture(cacheKey, content); clearWorkflowTask(fallbackWorkflowScope); void recordVideoFallbackLectureOpened(resourceTaskId, canonicalRequestScope);
+          setFallbackResourceId(lectureId(state.lecture)); store.setLecture(cacheKey, content); clearWorkflowTask(fallbackWorkflowScope); void recordVideoFallbackLectureOpened(resourceTaskId, canonicalRequestScope);
           setFallbackWorkflowId(''); setFallbackEnsureError(false); setLectureLoaded(true); return;
         }
         if (attempt < 2) await new Promise((resolve) => { timer = setTimeout(resolve, 800); });
@@ -936,21 +942,32 @@ export default function LecturePage() {
       .finally(() => { fallbackSelectionPending.current = false; });
   };
 
-  const completeFocusedTask = async () => {
-    const videoReady = executionMode === 'video' && (videoOpened || (videoLectureFallback && videoFallbackSelected && !!effectiveLectureContent));
-    if (!canonicalTaskScope || workspaceScopeInvalid || focusedCompleting || generating || !resourceDayScope.globalDayIndex || (lectureWorkflow && isActiveWorkflowStatus(lectureWorkflow.status)) || !(focusedReadingTask ? !!effectiveLectureContent : videoReady)) return;
+  const completeFocusedTask = async (): Promise<boolean> => {
+    const fallbackCompletion = executionMode === 'video' && videoLectureFallback;
+    const videoReady = executionMode === 'video' && (videoOpened || (fallbackCompletion && videoFallbackSelected && !!effectiveLectureContent && !!fallbackResourceId));
+    const ready = executionMode === 'video' ? videoReady : focusedReadingTask && !!effectiveLectureContent;
+    if (!canonicalTaskScope || workspaceScopeInvalid || focusedCompleting || generating || resourceDayScope.globalDayIndex == null || (lectureWorkflow && isActiveWorkflowStatus(lectureWorkflow.status)) || !ready) return false;
     setFocusedCompletionError(''); setFocusedCompleting(true);
     try {
       await completeLearningPathTask(focusedTaskId, {
         ...canonicalRequestScope!,
         taskType: String(canonicalTaskScope.task.type || canonicalTaskScope.task.task_type || ''),
-        evidenceType: 'lecture_loaded_explicit_completion',
+        ...(fallbackCompletion ? {
+          evidenceType: 'video_fallback_lecture_completed', deliveryMode: 'video_fallback_lecture' as const,
+          resourceId: fallbackResourceId, originalTaskId: focusedTaskId,
+          openedEvidenceType: 'video_fallback_lecture_opened', completedAt: new Date().toISOString(),
+        } : { evidenceType: 'lecture_loaded_explicit_completion' }),
       });
-      await fetchPath(true);
+      const refreshed = await fetchPath(true, canonicalTaskScope.sessionId, canonicalTaskScope.pathId, canonicalTaskScope.subjectId);
+      const refreshedTask = refreshed && resolveCanonicalLearningTaskScope(refreshed, canonicalRequestScope!)?.task;
+      if (!refreshedTask || !['completed', 'mastered'].includes(String(refreshedTask.status || ''))) throw new Error('completion state was not confirmed');
       useChatStore.getState().bumpDataVersion();
+      nav(returnToPath);
+      return true;
     } catch (error: any) {
       if (error?.response?.status === 409) setTaskScopeRejected(true);
-      else setFocusedCompletionError(error?.response?.data?.detail || error?.message || '完成失败，请稍后重试。');
+      setFocusedCompletionError('完成状态保存失败，请重试。');
+      return false;
     } finally {
       setFocusedCompleting(false);
     }
@@ -1428,7 +1445,7 @@ export default function LecturePage() {
               {executionMode === 'video' && videoLectureFallback && <div className="mb-3 rounded-lg bg-blue-50 px-3 py-2 text-sm text-blue-700">当前使用图文讲解替代视频学习<button onClick={selectVideoMode} className="ml-2 font-medium underline">返回视频学习</button></div>}
               <SectionContentRouter
                 content={sectionContent}
-                onComplete={() => { if (executionMode !== 'video') void completeFocusedTask(); }}
+                onComplete={() => executionMode !== 'video' || videoLectureFallback ? completeFocusedTask() : false}
               />
               {/* ── 划词引用栏 ── */}
               {quotedText && quotePos && (

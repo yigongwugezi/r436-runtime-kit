@@ -76,9 +76,9 @@ export function useLearningPath() {
   const requestIdRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
 
-  const fetchPath = useCallback(async (force: boolean = false, overrideSessionId?: string, overridePathId?: string) => {
+  const fetchPath = useCallback(async (force: boolean = false, overrideSessionId?: string, overridePathId?: string, overrideSubjectId?: string) => {
     const effectiveSessionId = overrideSessionId || sessionId;
-    if (!canLoadCanonicalData(canonicalStatus, effectiveSessionId)) { setLoading(false); return; }
+    if (!canLoadCanonicalData(canonicalStatus, effectiveSessionId)) { setLoading(false); return null; }
     const requestId = ++requestIdRef.current;
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -87,10 +87,10 @@ export function useLearningPath() {
     if (force || !hasDataRef.current) { setLoading(true); setError(null); }
     try {
       const pathId = overridePathId || new URLSearchParams(location.search).get('pathId') || undefined;
-      const res = await learningPathApi.getLearningPath({ sessionId: effectiveSessionId, subjectId, pathId }, controller.signal);
+      const res = await learningPathApi.getLearningPath({ sessionId: effectiveSessionId, subjectId: overrideSubjectId || subjectId, pathId }, controller.signal);
       const p = normalizeLearningPathForClient(res?.path ?? null);
       const finalPath = p;
-      if (requestId !== requestIdRef.current) return;
+      if (requestId !== requestIdRef.current) return null;
       // Merge path: only update if pathVersion changed (structural change)
       // or if force (initial load / explicit refresh)
       if (finalPath) {
@@ -104,9 +104,11 @@ export function useLearningPath() {
       }
       hasDataRef.current = !!finalPath;
       if (!finalPath && !hasDataRef.current) setError('学习路径数据为空');
+      return finalPath;
     } catch (e) {
-      if (requestId !== requestIdRef.current) return;
+      if (requestId !== requestIdRef.current) return null;
       if (!hasDataRef.current) { setPath(null); setError(e instanceof Error ? e.message : '加载学习路径失败'); }
+      return null;
     } finally {
       if (requestId !== requestIdRef.current) return;
       if (force || !hasDataRef.current) setLoading(false);

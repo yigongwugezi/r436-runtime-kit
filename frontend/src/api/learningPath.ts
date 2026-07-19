@@ -29,7 +29,8 @@ export async function updateNodeProgress(
 
 export async function completeLearningPathTask(taskId: string, payload: {
   sessionId: string; subjectId: string; pathId: string; stageId: string; dayId?: string; globalDayIndex?: number;
-  taskType?: string; evidenceType?: string;
+  taskType?: string; evidenceType?: string; deliveryMode?: 'video_fallback_lecture'; resourceId?: string;
+  originalTaskId?: string; openedEvidenceType?: string; completedAt?: string;
 }): Promise<any> {
   const { data } = await client.post(`/api/learning-path/tasks/${encodeURIComponent(taskId)}/complete`, payload);
   return data.data;

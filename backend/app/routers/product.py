@@ -4946,6 +4946,7 @@ def complete_learning_path_task(task_id: str, payload: dict[str, Any], auth: Aut
             raise HTTPException(status_code=404, detail="learning path task not found")
         task = entry["task"]
         task_type = str(task.get("task_type") or task.get("type") or "").lower()
+        fallback_lecture = None
         if task_type in {"video", "watch_video"}:
             opened = _video_evidence_exists(db, session_id=scope.session_id, subject_id=scope.subject_id, path_id=path_id, stage_id=stage_id, task_id=task_id, event_type="video_opened")
             fallback = _video_evidence_exists(db, session_id=scope.session_id, subject_id=scope.subject_id, path_id=path_id, stage_id=stage_id, task_id=task_id, event_type="video_fallback_selected")
@@ -4955,6 +4956,31 @@ def complete_learning_path_task(task_id: str, payload: dict[str, Any], auth: Aut
                 ResourceModel.type == "lecture",
             ).order_by(ResourceModel.created_at.desc()).all()
             lecture = next((item for item in lecture if (item.resource_metadata or {}).get("deliveryMode") == "video_fallback_lecture"), None)
+            fallback_completion = str(payload.get("evidenceType") or "") == "video_fallback_lecture_completed"
+            if fallback and not opened and not fallback_completion:
+                raise HTTPException(status_code=422, detail="FALLBACK_COMPLETION_EVIDENCE_INVALID")
+            if fallback_completion:
+                scope_metadata = (lecture.resource_metadata or {}).get("canonicalScope") if lecture else None
+                expected_scope = {"sessionId": scope.session_id, "subjectId": scope.subject_id, "pathId": path_id,
+                    "stageId": stage_id, "dayId": entry["day_id"], "globalDayIndex": entry["global_day_index"], "taskId": task_id}
+                mode_event = next((event for event in db.query(LearningEventModel).filter(
+                    LearningEventModel.session_id == scope.session_id,
+                    LearningEventModel.event_type == "video_delivery_mode_selected",
+                ) if (event.metadata_ or {}).get("subjectId") == scope.subject_id and (event.metadata_ or {}).get("pathId") == path_id
+                    and (event.metadata_ or {}).get("stageId") == stage_id and (event.metadata_ or {}).get("taskId") == task_id), None)
+                if str(payload.get("deliveryMode") or "") != "video_fallback_lecture" or str(payload.get("originalTaskId") or "") != task_id:
+                    raise HTTPException(status_code=422, detail="FALLBACK_COMPLETION_EVIDENCE_INVALID")
+                if not fallback_opened or str(payload.get("openedEvidenceType") or "") != "video_fallback_lecture_opened":
+                    raise HTTPException(status_code=409, detail="FALLBACK_LECTURE_NOT_OPENED")
+                if not lecture or lecture.id != str(payload.get("resourceId") or "") or not str(lecture.content or "").strip() or _is_profile_json(lecture.content or ""):
+                    raise HTTPException(status_code=409, detail="FALLBACK_RESOURCE_NOT_FOUND")
+                if not isinstance(scope_metadata, dict) or any(scope_metadata.get(key) != value for key, value in expected_scope.items()):
+                    raise HTTPException(status_code=409, detail="TASK_SCOPE_MISMATCH")
+                if mode_event and (mode_event.metadata_ or {}).get("activeDeliveryMode") != "video_fallback_lecture":
+                    raise HTTPException(status_code=409, detail="FALLBACK_DELIVERY_MODE_NOT_ACTIVE")
+                if not mode_event and not fallback:
+                    raise HTTPException(status_code=409, detail="FALLBACK_DELIVERY_MODE_NOT_ACTIVE")
+                fallback_lecture = lecture
             if not opened and not (fallback and fallback_opened and lecture and str(lecture.content or "").strip() and not _is_profile_json(lecture.content or "")):
                 raise HTTPException(status_code=409, detail="open a video or complete the selected text fallback first")
             if fallback and not opened:
@@ -4998,6 +5024,17 @@ def complete_learning_path_task(task_id: str, payload: dict[str, Any], auth: Aut
             if event:
                 event.metadata_ = {**(event.metadata_ or {}), "lectureResourceId": lecture.id,
                     "evidenceType": str(payload.get("evidenceType") or "lecture_loaded_explicit_completion")}
+                flag_modified(event, "metadata_")
+        elif fallback_lecture:
+            event = db.query(LearningEventModel).filter(
+                LearningEventModel.session_id == scope.session_id,
+                LearningEventModel.event_type == "task_complete",
+                LearningEventModel.resource_id == f"{path.id}:{task_id}",
+            ).first()
+            if event:
+                event.metadata_ = {**(event.metadata_ or {}), "evidenceType": "video_fallback_lecture_completed",
+                    "deliveryMode": "video_fallback_lecture", "lectureResourceId": fallback_lecture.id,
+                    "openedEvidenceType": "video_fallback_lecture_opened"}
                 flag_modified(event, "metadata_")
         path.overall_progress = result["pathProgress"]["taskProgressPercent"]
         db.commit()

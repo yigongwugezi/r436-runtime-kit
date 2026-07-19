@@ -74,7 +74,7 @@ def fallback_main():
         db = factory(); db.add_all([SessionModel(id="fallback-s", learner_id="owner", subject_id="fallback-sub"), PersonalSubjectModel(id="fallback-sub", learner_id="owner", name="x")])
         upsert_learning_path(db, "fallback-s", {"id": "fallback-p", "subject_id": "fallback-sub", "stages": [{"id": "stage", "days": [{"id": "stage_d1", "globalDayIndex": 1, "tasks": [{"id": "video-fallback", "type": "video", "title": "Canonical Video Title", "goal": "Watch the canonical video"}]}]}]})
         db.add(CurrentLearningPathModel(learner_id="owner", session_id="fallback-s", subject_id="fallback-sub", path_id="fallback-p"))
-        db.add(ResourceModel(id="fallback-lecture", session_id="fallback-s", type="lecture", content="alternative text", related_section_id="video-fallback", task_id="video-fallback", resource_metadata={"deliveryMode": "video_fallback_lecture", "sourceTaskType": "video"})); db.commit(); db.close()
+        db.add(ResourceModel(id="fallback-lecture", session_id="fallback-s", type="lecture", content="alternative text", related_section_id="video-fallback", task_id="video-fallback", resource_metadata={"deliveryMode": "video_fallback_lecture", "sourceTaskType": "video", "canonicalScope": {"sessionId": "fallback-s", "subjectId": "fallback-sub", "pathId": "fallback-p", "stageId": "stage", "dayId": "stage_d1", "globalDayIndex": 1, "taskId": "video-fallback"}})); db.commit(); db.close()
         payload = {"sessionId": "fallback-s", "subjectId": "fallback-sub", "pathId": "fallback-p", "stageId": "stage", "dayId": "stage_d1", "globalDayIndex": 1}
         client = TestClient(app)
         assert client.get("/api/learning-path/tasks/video-fallback/video-fallback/state", params=payload).json()["activeDeliveryMode"] == "video"
@@ -107,12 +107,16 @@ def fallback_main():
         assert reused.status_code == 200 and reused.json()["status"] == "ready"
         assert client.post("/api/learning-path/tasks/video-fallback/delivery-mode", json={**payload, "mode": "video_fallback_lecture"}).json()["data"]["activeDeliveryMode"] == "video_fallback_lecture"
         assert client.get("/api/learning-path/tasks/video-fallback/video-fallback/state", params=payload).json()["lecture"]["id"] == generated_id
-        assert client.post("/api/learning-path/tasks/video-fallback/complete", json=payload).status_code == 409
+        completion_payload = {**payload, "evidenceType": "video_fallback_lecture_completed", "deliveryMode": "video_fallback_lecture", "resourceId": generated_id, "originalTaskId": "video-fallback", "openedEvidenceType": "video_fallback_lecture_opened"}
+        assert client.post("/api/learning-path/tasks/video-fallback/complete", json=completion_payload).status_code == 409
         assert client.post("/api/learning-path/tasks/video-fallback/video-fallback-lecture-opened", json=payload).status_code == 200
-        completed = client.post("/api/learning-path/tasks/video-fallback/complete", json=payload)
+        completed = client.post("/api/learning-path/tasks/video-fallback/complete", json=completion_payload)
         assert completed.status_code == 200 and completed.json()["data"]["taskId"] == "video-fallback"
+        assert client.post("/api/learning-path/tasks/video-fallback/complete", json=completion_payload).json()["data"]["pathTaskCompleted"] is False
         db = factory(); event = db.query(LearningEventModel).filter(LearningEventModel.event_type == "video_fallback_selected").one()
-        assert event.metadata_["lectureResourceId"] == generated_id and event.metadata_["lectureContentReady"] is True; db.close()
+        completion_event = db.query(LearningEventModel).filter(LearningEventModel.event_type == "task_complete").one()
+        assert event.metadata_["lectureResourceId"] == generated_id and event.metadata_["lectureContentReady"] is True
+        assert completion_event.metadata_["evidenceType"] == "video_fallback_lecture_completed" and completion_event.metadata_["lectureResourceId"] == generated_id; db.close()
     print("video fallback completion: PASS")
 
 
