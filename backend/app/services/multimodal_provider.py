@@ -745,28 +745,28 @@ class MindMapTool:
         data_mermaid = self._build_data_mindmap(topic, stages)
         data_markdown = self._build_data_markdown(topic, stages)
 
-        # ── 尝试 DeepTutor 用 graph LR 生成更丰富的层级图 ──
+        # ── 尝试 DeepTutor 生成更丰富的层级图 ──
         section_titles = []
         for s in stages:
             section_titles.append(s.get("title", ""))
             for c in s.get("children", []):
                 section_titles.append(str(c) if isinstance(c, str) else c.get("title", ""))
-        topic_list = "、".join(section_titles[:15]) if section_titles else topic
+        topic_list = "、".join(section_titles[:15] + [_text(context.get("lecture_content"))]).strip("、") or topic
 
         dt_prompt = (
-            f'用 Mermaid flowchart LR 为「{topic}」生成一张知识点层级结构图。\n'
-            f'铁律：第一行必须是 flowchart LR，禁止写成 TD/TB/RL。从左到右布局。\n'
+            f'用 Mermaid mindmap 为「{topic}」生成一张知识点层级结构图。\n'
+            f'铁律：第一行必须是 mindmap。\n'
             f'节点标签简洁中文，至少3层深度，每个分支展开到底层知识点。\n'
             f'涵盖内容：{topic_list}\n'
             f'参考格式：\n'
             f'```mermaid\n'
-            f'flowchart LR\n'
-            f'  A["{topic}"] --> B["核心概念一"]\n'
-            f'  A --> C["核心概念二"]\n'
-            f'  B --> D["子概念1"]\n'
-            f'  B --> E["子概念2"]\n'
-            f'  D --> F["具体知识点"]\n'
-            f'  C --> G["子概念3"]\n'
+            f'mindmap\n'
+            f'  root(({topic}))\n'
+            f'    核心概念一\n'
+            f'      子概念1\n'
+            f'      子概念2\n'
+            f'    核心概念二\n'
+            f'      子概念3\n'
             f'```\n'
             f'只输出```mermaid代码块。'
         )
