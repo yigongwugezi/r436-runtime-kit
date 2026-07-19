@@ -56,7 +56,7 @@ export default function LearningPathPage() {
   const [recommendLoading, setRecommendLoading] = useState(false);
   const [recommendedResources, setRecommendedResources] = useState<any[]>([]);
   const stageRef = useRef<HTMLDivElement | null>(null);
-  const sessionId = useChatStore((s) => s.currentSessionId);
+  const sessionId = useChatStore((s) => s.dataSessionId);
   const isParent = getCurrentLearner()?.role === 'parent';
 
   const displayPath = useMemo(() => normalizePathForDisplay(path), [path]);

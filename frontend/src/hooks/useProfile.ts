@@ -3,6 +3,7 @@ import { useProfileStore } from '../store/profileStore';
 import { useChatStore } from '../store/chatStore';
 import * as profileApi from '../api/profile';
 import type { StudentProfile } from '../types/profile';
+import { canLoadCanonicalData } from '../utils/canonicalSessionState';
 
 /** Read a profile from the current session's server-owned scope.
  *
@@ -12,6 +13,7 @@ import type { StudentProfile } from '../types/profile';
 export function useProfile() {
   const store = useProfileStore();
   const sessionId = useChatStore((state) => state.dataSessionId);
+  const canonicalStatus = useChatStore((state) => state.canonicalSession.status);
   const dataVersion = useChatStore((state) => state.dataVersion);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -23,7 +25,8 @@ export function useProfile() {
 
   const fetchProfile = useCallback(async () => {
     const currentSessionId = sessionId;
-    if (!currentSessionId) {
+    if (!canLoadCanonicalData(canonicalStatus, currentSessionId)) {
+      abortRef.current?.abort();
       setLoading(false);
       return;
     }
@@ -71,7 +74,7 @@ export function useProfile() {
         store.setLoading(currentSessionId, false);
       }
     }
-  }, [sessionId, store]);
+  }, [canonicalStatus, sessionId, store]);
 
   const buildProfile = useCallback(async (message: string): Promise<StudentProfile | null> => {
     if (!sessionId) return null;
@@ -94,14 +97,15 @@ export function useProfile() {
       lastReadKeyRef.current = readKey;
       void fetchProfile();
     }
-  }, [sessionId, fetchProfile]);
+  }, [canonicalStatus, sessionId, fetchProfile]);
 
   useEffect(() => {
-    if (sessionId && dataVersion > 0 && dataVersion !== lastVersionRef.current) {
+    if (canonicalStatus === 'resolved' && sessionId && dataVersion > 0 && dataVersion !== lastVersionRef.current) {
       lastVersionRef.current = dataVersion;
       void fetchProfile();
     }
-  }, [dataVersion, fetchProfile, sessionId]);
+  }, [canonicalStatus, dataVersion, fetchProfile, sessionId]);
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   const profile = sessionId ? store.profiles[sessionId] ?? null : null;
   const profileError = sessionId ? store.errorMap[sessionId] ?? null : null;

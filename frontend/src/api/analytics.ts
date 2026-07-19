@@ -7,7 +7,7 @@ import type { AnalyticsSummary } from '../types/analytics';
 export async function getAnalytics(params: {
   sessionId?: string;
   subjectId?: string;
-}): Promise<AnalyticsSummary> {
-  const { data } = await client.get('/api/learning-analytics', { params });
+}, signal?: AbortSignal): Promise<AnalyticsSummary> {
+  const { data } = await client.get('/api/learning-analytics', { params, signal });
   return data;
 }

@@ -625,6 +625,8 @@ export default function ChatPage() {
     agentProgress,
     lastDebugInfo,
     currentSessionId,
+    dataSessionId,
+    canonicalSession,
     setLoading,
     lastImageAttachment,
     imageAttachmentHistory,
@@ -638,7 +640,7 @@ export default function ChatPage() {
   const setSearchEnabled = (v: boolean) => useChatStore.getState().setSearchEnabled(v);
   const setDeepThinkEnabled = (v: boolean) => useChatStore.getState().setDeepThinkEnabled(v);
   // Closed-loop assessment notifications — poll every 30s, pause during streaming
-  useNotificationPoller(currentSessionId || '', !isStreaming);
+  useNotificationPoller(canonicalSession.status === 'resolved' ? dataSessionId : '', !isStreaming);
   const [messagesLoaded, setMessagesLoaded] = useState(false); const [menuOpen, setMenuOpen] = useState(false); const [historyOpen, setHistoryOpen] = useState(false);
   const [selectedImage, setSelectedImage] = useState<{ file: File; preview: string } | null>(null);
   const [imageContextDisabled, setImageContextDisabled] = useState(false);
@@ -686,7 +688,7 @@ export default function ChatPage() {
     el.addEventListener('scroll', h, { passive: true });
     return () => el.removeEventListener('scroll', h);
   });
-  useEffect(() => { if (useChatStore.getState().messages.length > 0) { setMessagesLoaded(true); setLoading(false); return; } setMessagesLoaded(false); let cancelled = false; (async () => { setLoading(true); try { const res = await getSessionMessages(currentSessionId); if (!cancelled && res.messages?.length) useChatStore.setState({ messages: res.messages }); } catch {} finally { if (!cancelled) { setMessagesLoaded(true); setLoading(false); } } })(); return () => { cancelled = true; }; }, [currentSessionId]);
+  useEffect(() => { if (canonicalSession.status !== 'resolved' || !currentSessionId) { setMessagesLoaded(false); setLoading(false); return; } if (useChatStore.getState().messages.length > 0) { setMessagesLoaded(true); setLoading(false); return; } setMessagesLoaded(false); let cancelled = false; (async () => { setLoading(true); try { const res = await getSessionMessages(currentSessionId); if (!cancelled && res.messages?.length) useChatStore.setState({ messages: res.messages }); } catch {} finally { if (!cancelled) { setMessagesLoaded(true); setLoading(false); } } })(); return () => { cancelled = true; }; }, [canonicalSession.status, currentSessionId]);
   useEffect(() => { if (initialMessage && messages.length === 0 && messagesLoaded) send(initialMessage); }, [initialMessage, messagesLoaded]);
   useEffect(() => { if (initialChatMode) useChatStore.getState().setChatMode(initialChatMode); }, [initialChatMode]);
 

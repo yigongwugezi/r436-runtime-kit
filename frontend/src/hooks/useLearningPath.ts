@@ -6,6 +6,7 @@ import type { LearningPath, PathNodeStatus, ContentStatus, Chapter, Section, Kno
 import { contentStatusToProgress, legacyStatusToContent } from '../types/learningPath';
 import { consumeWorkflowEvents, readWorkflow, startWorkflow, type WorkflowState } from '../api/workflows';
 import { normalizeLearningPathForClient } from '../utils/learningPathViewModel';
+import { canLoadCanonicalData } from '../utils/canonicalSessionState';
 
 function computeOverallProgress(path: LearningPath): number {
   // 优先从章节层级计算
@@ -59,6 +60,7 @@ function mapPathHierarchy(
 export function useLearningPath() {
   const subjectId = useSubjectStore((s) => s.activeSubject?.id ?? s.activeClassSubject?.subject);
   const sessionId = useChatStore((state) => state.dataSessionId);
+  const canonicalStatus = useChatStore((state) => state.canonicalSession.status);
   const dataVersion = useChatStore((state) => state.dataVersion);
   const [path, setPath] = useState<LearningPath | null>(null);
   const [loading, setLoading] = useState(true);
@@ -69,15 +71,19 @@ export function useLearningPath() {
   const hasDataRef = useRef(false);
   const initialLoadRef = useRef(true);
   const requestIdRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
   const fetchPath = useCallback(async (force: boolean = false, overrideSessionId?: string) => {
     const effectiveSessionId = overrideSessionId || sessionId;
-    if (!effectiveSessionId) { setLoading(false); return; }
+    if (!canLoadCanonicalData(canonicalStatus, effectiveSessionId)) { setLoading(false); return; }
     const requestId = ++requestIdRef.current;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     if (force) { hasDataRef.current = false; pathVersionRef.current = -1; }
     if (force || !hasDataRef.current) { setLoading(true); setError(null); }
     try {
-      const res = await learningPathApi.getLearningPath({ sessionId: effectiveSessionId, subjectId });
+      const res = await learningPathApi.getLearningPath({ sessionId: effectiveSessionId, subjectId }, controller.signal);
       const p = normalizeLearningPathForClient(res?.path ?? null);
       const finalPath = p;
       if (requestId !== requestIdRef.current) return;
@@ -102,7 +108,7 @@ export function useLearningPath() {
       if (force || !hasDataRef.current) setLoading(false);
       initialLoadRef.current = false;
     }
-  }, [sessionId, subjectId]);
+  }, [canonicalStatus, sessionId, subjectId]);
 
   const generatePath = useCallback(async (params: { subjectId?: string; targetTopics?: string[]; planMode?: string; pathMode?: string; totalDays?: number; weekends?: boolean; dynamicAdjust?: boolean; reviewEnabled?: boolean; userMessage?: string }) => {
     setLoading(true); setError(null);
@@ -205,12 +211,14 @@ export function useLearningPath() {
 
   useEffect(() => {
     requestIdRef.current += 1;
+    abortRef.current?.abort();
     hasDataRef.current = false;
     pathVersionRef.current = -1;
     setPath(null);
     setError(null);
     fetchPath(true);
-  }, [sessionId, subjectId, fetchPath]);
+  }, [canonicalStatus, sessionId, subjectId, fetchPath]);
+  useEffect(() => () => abortRef.current?.abort(), []);
   useEffect(() => { if (dataVersion <= 0 || dataVersion === lastVersionRef.current) return; lastVersionRef.current = dataVersion; fetchPath(true); }, [dataVersion, fetchPath]);
 
   /** 从 workflow 完成结果直接设置路径，不依赖 API 二次查询 */

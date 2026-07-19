@@ -3,9 +3,10 @@ import type { ChatMessage, ChatSession, QuickCommand, GenerationProgress, ChatAt
 import { getCurrentLearner, getStableLearnerId } from './authStore';
 import { useSubjectStore } from './subjectStore';
 import { readStorageItem, readStorageJson, writeStorageItem, writeStorageJson, runtimeStorageKeys } from '../utils/storageKeys';
-import { getSubjectSession } from '../api/subjects';
+import { getCanonicalSubjectSession, getSubjectSession } from '../api/subjects';
 import { createChatSession, getSessions, getSessionMessages } from '../api/chat';
 import { createLogger } from '../utils/logger';
+import { canonicalRequestKey } from '../utils/canonicalSessionState';
 
 const log = createLogger('ChatStore');
 
@@ -72,6 +73,14 @@ interface ChatStore {
   currentSessionId: string;
   /** 科目级数据查询用的稳定 sessionId，新建对话时不改变 */
   dataSessionId: string;
+  canonicalSession: {
+    status: 'unresolved' | 'resolving' | 'resolved' | 'failed';
+    subjectId: string;
+    sessionId: string;
+    pathId: string | null;
+    source: string;
+    resolvedAt: string | null;
+  };
   sessions: ChatSession[];
   messages: ChatMessage[];
   quickCommands: QuickCommand[];
@@ -118,9 +127,14 @@ interface ChatStore {
   removeSession: (id: string) => void;
   renameSession: (id: string, title: string) => void;
   bumpDataVersion: () => void;
+  resolveCanonicalSession: () => Promise<void>;
   /** 重新加载当前科目的会话 ID 和列表（科目切换后调用） */
   reloadSession: () => Promise<void>;
 }
+
+let canonicalRequest: { key: string; promise: Promise<void> } | null = null;
+let canonicalAbort: AbortController | null = null;
+let canonicalGeneration = 0;
 
 export const useChatStore = create<ChatStore>((set, get) => ({
   currentSessionId: loadSessionId(),
@@ -145,7 +159,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   searchEnabled: false,
   deepThinkEnabled: false,
   chatMode: 'free',
-  dataSessionId: loadSessionId(),
+  dataSessionId: '',
+  canonicalSession: { status: 'unresolved', subjectId: '', sessionId: '', pathId: null, source: '', resolvedAt: null },
 
   setCurrentSession: (id) => {
     log.debug(`切换会话: ${id.slice(0, 20)}...`);
@@ -169,7 +184,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
     persistSessionId(id);
     writeStorageItem(runtimeStorageKeys.pendingGeneration, '');
-    set({ currentSessionId: id, dataSessionId: id, messages: cachedMessages, isStreaming: false, progressPipelineSteps: [], agentProgress: null, lastDebugInfo: null, lastImageAttachment: null, imageAttachmentHistory: [], selectedImageAttachmentId: null });
+    set({ currentSessionId: id, messages: cachedMessages, isStreaming: false, progressPipelineSteps: [], agentProgress: null, lastDebugInfo: null, lastImageAttachment: null, imageAttachmentHistory: [], selectedImageAttachmentId: null });
   },
 
   addMessage: (msg) =>
@@ -295,7 +310,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     persistSessionId(id);
     persistSessions(sessions);
     writeStorageItem(runtimeStorageKeys.pendingGeneration, '');
-    set({ currentSessionId: id, dataSessionId: id, sessions, messages: [], isStreaming: false, progressPipelineSteps: [], agentProgress: null, lastDebugInfo: null, lastImageAttachment: null, imageAttachmentHistory: [], selectedImageAttachmentId: null });
+    set({ currentSessionId: id, sessions, messages: [], isStreaming: false, progressPipelineSteps: [], agentProgress: null, lastDebugInfo: null, lastImageAttachment: null, imageAttachmentHistory: [], selectedImageAttachmentId: null });
     void createChatSession({ sessionId: id, learnerId: getStableLearnerId() }).catch((error) => log.warn('Failed to create chat session', error));
   },
   removeLastMessage: () =>
@@ -333,12 +348,54 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   bumpDataVersion: () =>
     set((s) => ({ dataVersion: s.dataVersion + 1 })),
 
+  resolveCanonicalSession: () => {
+    const learner = getCurrentLearner();
+    const subjectStore = useSubjectStore.getState();
+    const subjectId = subjectStore.activeSubject?.id ?? subjectStore.activeClassSubject?.subject;
+    const key = canonicalRequestKey(learner?.id, subjectId);
+    if (!learner || !subjectId) {
+      canonicalAbort?.abort();
+      canonicalRequest = null;
+      canonicalGeneration += 1;
+      set({ dataSessionId: '', currentSessionId: '', sessions: [], messages: [], canonicalSession: { status: 'unresolved', subjectId: subjectId || '', sessionId: '', pathId: null, source: '', resolvedAt: null } });
+      return Promise.resolve();
+    }
+    if (canonicalRequest?.key === key) return canonicalRequest.promise;
+    if (get().canonicalSession.status === 'resolved' && get().canonicalSession.subjectId === subjectId) return Promise.resolve();
+
+    canonicalAbort?.abort();
+    const controller = new AbortController();
+    canonicalAbort = controller;
+    const generation = ++canonicalGeneration;
+    set({ dataSessionId: '', currentSessionId: '', sessions: [], messages: [], canonicalSession: { status: 'resolving', subjectId, sessionId: '', pathId: null, source: '', resolvedAt: null } });
+    const promise = getCanonicalSubjectSession(subjectId, controller.signal)
+      .then((resolved) => {
+        if (generation !== canonicalGeneration || controller.signal.aborted) return;
+        if (!resolved) {
+          set({ canonicalSession: { status: 'failed', subjectId, sessionId: '', pathId: null, source: '', resolvedAt: null } });
+          return;
+        }
+        set((state) => ({ currentSessionId: resolved.sessionId, dataSessionId: resolved.sessionId, dataVersion: state.dataVersion + 1, canonicalSession: { status: 'resolved', ...resolved } }));
+      })
+      .catch((error) => {
+        if (generation !== canonicalGeneration || controller.signal.aborted) return;
+        log.warn('Failed to resolve canonical learning session', error);
+        set({ canonicalSession: { status: 'failed', subjectId, sessionId: '', pathId: null, source: '', resolvedAt: null } });
+      })
+      .finally(() => {
+        if (canonicalRequest?.key === key) canonicalRequest = null;
+      });
+    canonicalRequest = { key, promise };
+    return promise;
+  },
+
   /** 科目切换后重新加载该科目下的会话 ID 和会话列表。
    *  家长账户：从后端解析孩子的 session，确保数据查询使用正确的 scope。 */
   reloadSession: async () => {
+    return get().resolveCanonicalSession();
     const learner = getCurrentLearner();
     const store = useSubjectStore.getState();
-    const subjectId = store.activeSubject?.id ?? store.activeClassSubject?.subject;
+    const subjectId = store.activeSubject?.id ?? store.activeClassSubject?.subject ?? '';
 
     // Parent: resolve child's session from backend (localStorage has parent's
     // own session which points to empty data).
@@ -358,10 +415,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
                 updatedAt: s.updated_at ? new Date(s.updated_at).getTime() : Date.now(),
               }));
             }
-            const msgRes = await getSessionMessages(childSessionId);
+            const msgRes = await getSessionMessages(childSessionId!);
             if (msgRes?.messages?.length) parentMessages = msgRes.messages;
           } catch { /* best-effort hydration */ }
-          set({ currentSessionId: childSessionId, dataSessionId: childSessionId, sessions: parentSessions, messages: parentMessages });
+          set({ currentSessionId: childSessionId!, dataSessionId: childSessionId!, sessions: parentSessions, messages: parentMessages });
           return;
         }
       } catch (err) {
@@ -384,7 +441,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     if (subjectId) {
       try {
         const resolvedId = await getSubjectSession(subjectId);
-        if (resolvedId) dataId = resolvedId;
+        dataId = resolvedId || dataId;
       } catch { /* fall back to localStorage id */ }
     }
 
@@ -410,7 +467,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           try {
             const msgRes = await getSessionMessages(dataId);
             if (msgRes?.messages?.length) {
-              effectiveMessages = msgRes.messages;
+              effectiveMessages = msgRes.messages || [];
               // Cache messages in the hydrated session
               const activeIdx = effectiveSessions.findIndex((s: ChatSession) => s.id === dataId);
               if (activeIdx >= 0) {
@@ -456,7 +513,7 @@ useSubjectStore.subscribe((state) => {
 // React to auth changes — reload sessions on login/logout
 import { useAuthStore } from './authStore';
 useAuthStore.subscribe((state, prev) => {
-  if (state.isAuthenticated !== prev.isAuthenticated) {
+  if (!state.isAuthenticated && state.isAuthenticated !== prev.isAuthenticated) {
     useChatStore.getState().reloadSession();
   }
 });

@@ -4,6 +4,7 @@ import { getAnalytics } from '../api/analytics';
 import type { AnalyticsSummary } from '../types/analytics';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
+import { canLoadCanonicalData } from '../utils/canonicalSessionState';
 
 /**
  * 学习分析数据 Hook
@@ -19,6 +20,7 @@ export function useLearningAnalytics() {
   const location = useLocation();
   const subjectId = useSubjectStore((s) => s.activeSubject?.id ?? s.activeClassSubject?.subject);
   const sessionId = useChatStore((state) => state.dataSessionId);
+  const canonicalStatus = useChatStore((state) => state.canonicalSession.status);
   const dataVersion = useChatStore((state) => state.dataVersion);
   const [analytics, setAnalytics] = useState<AnalyticsSummary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -26,26 +28,32 @@ export function useLearningAnalytics() {
   const lastSubjectRef = useRef<string | undefined>(undefined);
   const lastVersionRef = useRef<number>(0);
   const lastKeyRef = useRef<string | undefined>(undefined);
+  const abortRef = useRef<AbortController | null>(null);
 
   const fetchAnalytics = useCallback(async () => {
-    if (!subjectId || !sessionId) { setLoading(false); return; }
+    if (!subjectId || !canLoadCanonicalData(canonicalStatus, sessionId)) { setLoading(false); return; }
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setLoading(true);
     setError(null);
     setAnalytics(null);  // 切换科目时立即清空旧数据
     try {
-      const data = await getAnalytics({ sessionId, subjectId });
+      const data = await getAnalytics({ sessionId, subjectId }, controller.signal);
+      if (controller.signal.aborted || useChatStore.getState().dataSessionId !== sessionId) return;
       setAnalytics(data);
     } catch (e) {
+      if (controller.signal.aborted) return;
       setError(e instanceof Error ? e.message : '加载分析数据失败');
     } finally {
       setLoading(false);
     }
-  }, [subjectId, sessionId]);
+  }, [canonicalStatus, subjectId, sessionId]);
 
   // 每次进入页面时刷新 + 科目切换
   useEffect(() => {
     const key = subjectId ? `${sessionId}:${subjectId}` : 'none';
-    if (subjectId) {
+    if (canonicalStatus === 'resolved' && subjectId) {
       if (lastKeyRef.current !== key) {
         lastKeyRef.current = key;
         fetchAnalytics();
@@ -56,22 +64,23 @@ export function useLearningAnalytics() {
       setAnalytics(null);
     }
     const onVisible = () => {
-      if (document.visibilityState === 'visible' && subjectId) {
+      if (document.visibilityState === 'visible' && canonicalStatus === 'resolved' && subjectId) {
         fetchAnalytics();
       }
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [subjectId, location.key, fetchAnalytics]);
+  }, [canonicalStatus, subjectId, location.key, fetchAnalytics]);
 
   // 对话完成后自动刷新
   useEffect(() => {
-    if (dataVersion > 0 && dataVersion !== lastVersionRef.current) {
+    if (canonicalStatus === 'resolved' && dataVersion > 0 && dataVersion !== lastVersionRef.current) {
       lastVersionRef.current = dataVersion;
       fetchAnalytics();
     }
-  }, [dataVersion, fetchAnalytics]);
+  }, [canonicalStatus, dataVersion, fetchAnalytics]);
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   return { analytics, loading, error, refetch: fetchAnalytics };
 }

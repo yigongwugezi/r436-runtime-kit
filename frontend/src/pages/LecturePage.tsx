@@ -108,11 +108,11 @@ function legacyStageSection(stage: { id: string; title: string }, sectionId: str
 export default function LecturePage() {
   const { chapterId, sectionId } = useParams<{ chapterId?: string; sectionId?: string }>();
   const nav = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { path, updateKnowledgePoint, fetchPath } = useLearningPath();
   const storedSessionId = useChatStore((s) => s.dataSessionId);
   const routeSessionId = searchParams.get('sessionId') || '';
-  const sessionId = routeSessionId || storedSessionId;
+  const sessionId = storedSessionId;
   const focusedTaskId = searchParams.get('taskId') || sectionId || '';
   const focusedStageId = searchParams.get('stageId') || '';
   const focusedPathId = searchParams.get('pathId') || '';
@@ -120,15 +120,23 @@ export default function LecturePage() {
   const focusedTaskType = searchParams.get('taskType') || 'read_doc';
   // Task URLs keep their scope for refresh/recovery.  The focused layout is
   // legacy-only; normal learning-path navigation always uses the full workspace.
-  const focusedTask = searchParams.get('legacy') === '1' && Boolean(routeSessionId && focusedPathId && focusedStageId && focusedTaskId);
+  const focusedTask = searchParams.get('legacy') === '1' && Boolean(sessionId && focusedPathId && focusedStageId && focusedTaskId);
   const focusedReadingTask = ['reading', 'document', 'lecture', 'read_doc'].includes(focusedTaskType);
   const returnPathMode = ['textbook', 'daily', 'project', 'focus'].includes(searchParams.get('pathMode') || '')
     ? searchParams.get('pathMode')
     : '';
   const returnViewStage = searchParams.get('viewStage');
   const analyticsReturn = searchParams.get('returnTo') === '/analytics';
+
+  useEffect(() => {
+    if (!sessionId || !routeSessionId || routeSessionId === sessionId) return;
+    const corrected = new URLSearchParams(searchParams);
+    corrected.set('sessionId', sessionId);
+    setSearchParams(corrected, { replace: true });
+  }, [routeSessionId, searchParams, sessionId, setSearchParams]);
+
   const returnToPath = focusedTask
-    ? analyticsReturn ? '/analytics' : `/path?sessionId=${encodeURIComponent(routeSessionId)}&subjectId=${encodeURIComponent(focusedSubjectId)}&pathId=${encodeURIComponent(focusedPathId)}&stage=${encodeURIComponent(focusedStageId)}&task=${encodeURIComponent(focusedTaskId)}`
+    ? analyticsReturn ? '/analytics' : `/path?sessionId=${encodeURIComponent(sessionId)}&subjectId=${encodeURIComponent(focusedSubjectId)}&pathId=${encodeURIComponent(focusedPathId)}&stage=${encodeURIComponent(focusedStageId)}&task=${encodeURIComponent(focusedTaskId)}`
     : returnPathMode
     ? `/path?mode=${encodeURIComponent(returnPathMode)}${returnViewStage ? `&viewStage=${encodeURIComponent(returnViewStage)}` : ''}`
     : '/path';

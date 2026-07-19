@@ -2,8 +2,8 @@ import client from './client';
 import type { LearningPath } from '../types/learningPath';
 
 /** 获取学习路径 */
-export async function getLearningPath(params: { sessionId: string; subjectId?: string }): Promise<{ path: LearningPath }> {
-  const { data } = await client.get('/api/learning-path', { params });
+export async function getLearningPath(params: { sessionId: string; subjectId?: string }, signal?: AbortSignal): Promise<{ path: LearningPath }> {
+  const { data } = await client.get('/api/learning-path', { params, signal });
   return data;
 }
 
