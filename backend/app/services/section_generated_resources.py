@@ -201,11 +201,6 @@ class SectionGeneratedResourcesService:
             "personalization": meta.get("personalization", {}),
             "createdAt": int(resource.created_at.timestamp() * 1000) if resource.created_at else 0,
         }
-        # v1.2: 教材页码透传（供前端 PDF 浏览器使用）
-        if meta.get("textbookPageStart"):
-            item["textbookPageStart"] = meta["textbookPageStart"]
-        if meta.get("textbookPageEnd"):
-            item["textbookPageEnd"] = meta["textbookPageEnd"]
         return item
 
     @staticmethod

@@ -213,8 +213,8 @@ class PlannerAgent(BaseAgent):
     def _build_textbook_context_prompt(textbook_chapters: list[dict]) -> str:
         """Build a textbook structure summary for LLM prompt injection.
 
-        Includes section_id and page ranges for each section so the LLM
-        can output explicit textbook_section_ids in its response.
+        Shows only chapter/section titles and section IDs — the planner is
+        NOT allowed to know page numbers, only section assignments.
         """
         lines = [
             "【教材参考 — 你必须按照以下结构规划学习路径】",
@@ -222,30 +222,25 @@ class PlannerAgent(BaseAgent):
             "你正在为一位使用指定教材的学生规划学习路径。以下是该教材的完整章节目录。",
             "你的任务是：",
             "1. 整体上严格遵循教材的章节顺序，不得跳过核心教学内容",
-            "2. 可以将多个简短的教材小节合并为一个学习小节（在 textbook_section_ids 中列出所有合并的ID）",
+            "2. 可以将多个简短的教材小节合并为一个学习小节（在 source_section_ids 中列出所有合并的ID）",
             "3. 可以根据学生基础调整节奏（章间插入复习日、调整小节顺序等），但不能遗漏教材的核心知识点",
-            "4. 每个学习小节的输出中必须包含 textbook_section_ids 字段（字符串数组），填入对应的教材小节ID",
-            "5. 如果某个学习小节没有对应的教材小节（如复习日），textbook_section_ids 填 []",
+            "4. 每个学习小节的输出中必须包含 source_section_ids 字段（字符串数组），填入对应的教材小节ID。",
+            "5. 如果某个学习小节没有对应的教材小节（如复习日），source_section_ids 填 []。",
             "",
         ]
         for ch in textbook_chapters:
             ch_title = ch.get("title", "")
-            ch_start = ch.get("start_page", 0)
-            ch_end = ch.get("end_page", 0)
-            page_info = f"（第{ch_start}-{ch_end}页）" if ch_start > 0 else ""
-            lines.append(f"## {ch_title} {page_info}")
+            sec_count = len(ch.get("sections", []) or [])
+            lines.append(f"## {ch_title}（{sec_count}个小节）")
             for sec in ch.get("sections", []):
                 sec_id = sec.get("section_id", "")
                 sec_title = sec.get("title", "")
-                sec_start = sec.get("start_page", 0)
-                sec_end = sec.get("end_page", 0)
                 if sec_title:
-                    lines.append(
-                        f"  - [{sec_id}] {sec_title}（第{sec_start}-{sec_end}页）"
-                    )
+                    lines.append(f"  - [{sec_id}] {sec_title}")
             lines.append("")
         lines.append(
-            "以上方括号中的ID（如 sec_01_01）就是你要填入 textbook_section_ids 的值。"
+            "以上方括号中的ID（如 sec_01_01）就是你要填入 source_section_ids 的值。"
+            "注意：你只负责分配章节 ID，不应输出、不应知晓任何页码信息。"
         )
         return "\n".join(lines)
 
@@ -253,10 +248,13 @@ class PlannerAgent(BaseAgent):
     def _resolve_textbook_pages(
         llm_chapters: list[dict], textbook_chapters: list[dict]
     ) -> list[dict]:
-        """Resolve LLM-assigned section IDs to actual page ranges.
+        """Strip residual textbook page-number fields from LLM output.
 
-        Handles both old (stages→chapters→sections with textbook_section_ids)
-        and new (stages→tasks with source_section_ids) output formats.
+        All page-number fields (textbookPageStart/End/SectionId) are
+        unconditionally removed from every task/section — the planner
+        agent is NOT permitted to write page numbers.  Pages are resolved
+        at display time from the textbook TOC via
+        _enrich_textbook_pages_for_response.
         """
         # Build ID → section data lookup
         tb_section_by_id: dict[str, dict] = {}
@@ -266,58 +264,28 @@ class PlannerAgent(BaseAgent):
                 if sec_id:
                     tb_section_by_id[sec_id] = sec
 
-        def _resolve_ids(section_ids: list[str]) -> tuple[int, int, str]:
-            """Given a list of textbook section IDs, return (start_page, end_page, primary_id)."""
-            pages: list[tuple[int, int]] = []
-            primary_id = ""
-            for sid in section_ids:
-                tb_sec = tb_section_by_id.get(sid)
-                if tb_sec:
-                    pages.append((
-                        tb_sec.get("start_page", 1),
-                        tb_sec.get("end_page", 1),
-                    ))
-                    if not primary_id:
-                        primary_id = sid
-            if pages:
-                return (min(p[0] for p in pages), max(p[1] for p in pages), primary_id)
-            return (0, 0, "")
+        # v1.2: 此函数仅负责清理可能残留的 LLM 编造页码字段。
+        # 不设置、不验证 source_section_ids——展示层从教材 TOC 按 section_id
+        # 动态解析页码；无效 ID 在展示时自然无页码，不影响任务显示。
+        _tb_clean = ("textbookPageStart", "textbookPageEnd", "textbookSectionId")
 
         for stage in llm_chapters:
             # ── New format: stages→tasks (direct) ──
             for task in stage.get("tasks", []):
-                sec_ids = task.get("source_section_ids") or task.get("textbook_section_ids") or []
-                if not sec_ids:
-                    continue
-                sp, ep, pid = _resolve_ids(sec_ids)
-                if sp > 0:
-                    task["textbookPageStart"] = sp
-                    task["textbookPageEnd"] = ep
-                    task["textbookSectionId"] = pid
+                for _k in _tb_clean:
+                    task.pop(_k, None)
 
             # ── New format: stages→days→tasks (after _rewrite_stage_ids) ──
             for day in stage.get("days", []):
                 for task in day.get("tasks", []):
-                    sec_ids = task.get("source_section_ids") or task.get("textbook_section_ids") or []
-                    if not sec_ids:
-                        continue
-                    sp, ep, pid = _resolve_ids(sec_ids)
-                    if sp > 0:
-                        task["textbookPageStart"] = sp
-                        task["textbookPageEnd"] = ep
-                        task["textbookSectionId"] = pid
+                    for _k in _tb_clean:
+                        task.pop(_k, None)
 
             # ── Old format: stages→chapters→sections ──
             for ch in stage.get("chapters", []):
                 for sec in ch.get("sections", []):
-                    sec_ids = sec.get("textbook_section_ids") or sec.get("source_section_ids") or []
-                    if not sec_ids:
-                        continue
-                    sp, ep, pid = _resolve_ids(sec_ids)
-                    if sp > 0:
-                        sec["textbookPageStart"] = sp
-                        sec["textbookPageEnd"] = ep
-                        sec["textbookSectionId"] = pid
+                    for _k in _tb_clean:
+                        sec.pop(_k, None)
 
         return llm_chapters
 
@@ -443,8 +411,7 @@ class PlannerAgent(BaseAgent):
             if textbook_ctx:
                 parts.append(chr(10) * 2 + "【教材参考】" + chr(10) + textbook_ctx)
                 parts.append("")
-                parts.append("教材参考如上。read_doc 类型任务应当在 source_section_ids 字段中填入对应的教材小节ID（取自教材参考中的 section_id）。可以将多个短小的教材小节合并为一个 read_doc 任务。")
-                parts.append("不是所有任务都需要教材小节——quiz_prac、review、hands_on 等任务可以不填。source_section_ids 为可选字段。")
+                parts.append("教材参考如上。*** 重要 ***：每个 read_doc 类型任务**必须**包含 source_section_ids 字段，填入对应的教材小节 section_id（取自教材参考）。允许多个小节合并到一个任务中。其他类型（quiz_prac、review 等）不需要此字段。")
             # ────────────────────────────────────────────────────────
             parts.append("请按 stages->tasks 层级输出，每个 stage 直接包含 tasks。")
             parts.append("任务类型必须多样化，从以下选取（每阶段至少3种）：read_doc(阅读讲义)|watch_video(视频)|quiz_prac(练习)|mind_map(导图)|hands_on(实操)|review(复习)")
@@ -824,11 +791,10 @@ class PlannerAgent(BaseAgent):
                         "source": t.get("source", "generated"),
                         "_adjustment": t.get("_adjustment", ""),
                         "_adjustment_reason": t.get("_adjustment_reason", ""),
-                        # ── Textbook fields ──
+                        # ── Textbook fields: only preserve section IDs — page
+                        #    numbers are resolved later by _resolve_textbook_pages
+                        #    (the sole authority), never trust LLM output.
                         "source_section_ids": t.get("source_section_ids") or t.get("textbook_section_ids", []),
-                        "textbookPageStart": t.get("textbookPageStart"),
-                        "textbookPageEnd": t.get("textbookPageEnd"),
-                        "textbookSectionId": t.get("textbookSectionId"),
                     })
                 day_list.append({"day": day_num, "tasks": task_list})
             # 确保多样性
@@ -1790,9 +1756,9 @@ class PlannerAgent(BaseAgent):
                 # v1.2: 保留原任务中的教材字段（source_section_ids / textbookPageStart / etc.）
                 _tb_fields = {}
                 _src = section if isinstance(section, dict) else {}
-                for _f in ("source_section_ids", "textbookPageStart", "textbookPageEnd", "textbookSectionId"):
-                    if _src.get(_f):
-                        _tb_fields[_f] = _src[_f]
+                # v1.2: 仅保留 source_section_ids——页码由展示层按 TOC 动态解析
+                if _src.get("source_section_ids"):
+                    _tb_fields["source_section_ids"] = _src["source_section_ids"]
                 _a = {"task_id": f"{stage.get('stage_id', stage_index)}_d{day}_a", "day": day, "title": f"{section.get('title', '')}：{label}", "type": primary, "goal": section.get("goal", "") or section.get("title", ""), "estimated_minutes": first_minutes, "status": "not_started", **_tb_fields}
                 _b = {"task_id": f"{stage.get('stage_id', stage_index)}_d{day}_b", "day": day, "title": f"{section.get('title', '')}：巩固与回顾", "type": "review" if primary != "review" else "practice", "goal": "巩固当天知识点并记录疑问", "estimated_minutes": daily_minutes - first_minutes, "status": "not_started"}
                 if primary in ("read_doc",) and _tb_fields:

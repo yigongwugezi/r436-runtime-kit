@@ -39,7 +39,7 @@ from app.agents.diagnosis_agent import DiagnosisAgent
 from app.agents.multimodal_agent import MultimodalAgent
 from app.config import settings
 from app.db.engine import SessionLocal
-from app.db.models import AnswerRecordModel, DailyTaskModel, LearnerModel, LearningEventModel, LearningPathModel, PersonalSubjectModel, PlanningDraftModel, PracticeQuestionModel, ResourceModel, SessionModel
+from app.db.models import AnswerRecordModel, DailyTaskModel, LearnerModel, LearningEventModel, LearningPathModel, PersonalSubjectModel, PlanningDraftModel, PracticeQuestionModel, ResourceModel, SessionModel, TextbookModel
 from app.db.repository import (
     get_bookmarked_ids,
     get_daily_tasks as repo_get_daily_tasks,
@@ -3156,7 +3156,13 @@ def get_resources(
     orphaned_ids = [
         rid for rid, item in db_map.items()
         if rid not in memory_map
-        and (not item.get("title") or item.get("title") in ("", "学习资源"))
+        and (
+            not item.get("title")
+            or str(item.get("title", "")).startswith("学习《")
+            or item.get("title") in ("", "学习资源")
+            or not str(item.get("content", "") or "").strip()
+            or str(item.get("content", "") or "").strip() in ("[]", "{}")
+        )
     ]
     if orphaned_ids:
         try:
@@ -4668,6 +4674,134 @@ def _apply_node_progress(stages: list[dict[str, Any]], session_id: str = "") -> 
 # ═══════════════════════════════════════════════════════════════════════
 
 
+def _enrich_textbook_pages_for_response(stages: list[dict], session_id: str, subject_id: str) -> None:
+    """For every task with source_section_ids, resolve page ranges from the
+    textbook TOC and add ``textbookPageStart`` / ``textbookPageEnd`` to the
+    response dict — computed on-the-fly, never persisted to the DB task."""
+    if not subject_id or not stages:
+        return
+    try:
+        db = SessionLocal()
+        try:
+            subject = db.get(PersonalSubjectModel, subject_id)
+            if not subject or not subject.textbook_id:
+                return
+            textbook = db.get(TextbookModel, subject.textbook_id)
+            if not textbook or textbook.status != "ready":
+                return
+            tb_chapters = list(textbook.chapters_json) if isinstance(textbook.chapters_json, list) else []
+        finally:
+            db.close()
+    except Exception:
+        return
+
+    tb_by_id: dict[str, dict] = {}
+    for ch in tb_chapters:
+        for sec in ch.get("sections", []) or []:
+            sid = sec.get("section_id", "")
+            if sid:
+                tb_by_id[sid] = sec
+
+    # 教材总页数（用于判断 1-1 是否为 Pydantic default 残留）：
+    _total_pages = max(
+        int(sec.get("end_page", 1) or 1)
+        for ch in tb_chapters
+        for sec in (ch.get("sections", []) or [])
+    ) if tb_chapters else 1
+
+    def _resolve(sec_ids: list) -> tuple[int, int] | None:
+        pages = []
+        for sid in sec_ids:
+            s = tb_by_id.get(str(sid))
+            if s:
+                pages.append((int(s.get("start_page", 1) or 1), int(s.get("end_page", 1) or 1)))
+        if pages:
+            rng = (min(p[0] for p in pages), max(p[1] for p in pages))
+            # 防御: 1-1 页码范围 + 教材实际多页 → 大概率是默认值残留，跳过
+            if rng[0] == 1 and rng[1] == 1 and _total_pages > 2:
+                return None
+            return rng
+        return None
+
+    for stage in stages:
+        for task in stage.get("tasks", []) or []:
+            if not isinstance(task, dict):
+                continue
+            sec_ids = task.get("source_section_ids") or task.get("textbook_section_ids") or []
+            if not sec_ids:
+                continue
+            rng = _resolve(sec_ids)
+            if rng:
+                task["textbookPageStart"] = rng[0]
+                task["textbookPageEnd"] = rng[1]
+        for day in stage.get("days", []) or []:
+            if not isinstance(day, dict):
+                continue
+            for task in day.get("tasks", []) or []:
+                if not isinstance(task, dict):
+                    continue
+                sec_ids = task.get("source_section_ids") or task.get("textbook_section_ids") or []
+                if not sec_ids:
+                    continue
+                rng = _resolve(sec_ids)
+                if rng:
+                    task["textbookPageStart"] = rng[0]
+                    task["textbookPageEnd"] = rng[1]
+
+    # ── v1.3 补救: 对缺少 source_section_ids 的 read_doc 任务按标题匹配 TOC ──
+    if tb_by_id:
+        _toc_sections: list[dict] = []
+        for ch in tb_chapters:
+            for sec in ch.get("sections", []) or []:
+                if sec.get("section_id"):
+                    _toc_sections.append(sec)
+
+        def _match_task_title(task_title: str) -> list[str] | None:
+            from difflib import SequenceMatcher
+            tt = str(task_title or "").strip().lower()
+            if not tt or len(tt) < 2:
+                return None
+            # 去掉常见标签后缀（如"：阅读讲义""：巩固练习"），但保留标题本体。
+            # 之前取 split("：")[0] 会把 "阅读：语法形式与意义" 变成 "阅读" → 错误。
+            # 正确做法：取**长度最大的段**（标题本体通常最长，标签词短）。
+            for _sep in ("：", ":"):
+                if _sep in tt:
+                    parts = [p.strip() for p in tt.split(_sep)]
+                    tt = max(parts, key=len) if parts else tt
+            best_ratio = 0.0
+            best_ids: list[str] = []
+            for sec in _toc_sections:
+                sec_title = str(sec.get("title", "") or "").strip().lower()
+                if not sec_title:
+                    continue
+                ratio = SequenceMatcher(None, tt, sec_title).ratio()
+                if ratio > best_ratio and ratio >= 0.35:
+                    best_ratio = ratio
+                    best_ids = [sec["section_id"]]
+            return best_ids if best_ids else None
+
+        for stage in stages:
+            # 同时覆盖展平后的 tasks 与嵌套的 days→tasks
+            _all_t = list(stage.get("tasks", []) or [])
+            for day in stage.get("days", []) or []:
+                if isinstance(day, dict):
+                    _all_t.extend(day.get("tasks", []) or [])
+            for task in _all_t:
+                if not isinstance(task, dict):
+                    continue
+                if task.get("type") != "read_doc":
+                    continue
+                if task.get("source_section_ids") or task.get("textbook_section_ids") or task.get("textbookPageStart"):
+                    continue
+                matched = _match_task_title(task.get("title", ""))
+                if matched:
+                    task["source_section_ids"] = matched
+                    rng = _resolve(matched)
+                    if rng:
+                        task["textbookPageStart"] = rng[0]
+                        task["textbookPageEnd"] = rng[1]
+
+
 @router.get("/learning-path")
 def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
     try:
@@ -4725,6 +4859,9 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
                 stages = []
             if not stages:
                 return _product_response({"path": _empty_learning_path(session_id)}, session_id=session_id, subject_id=subjectId, source="none")
+            # v1.2: 展示时按 source_section_ids + 教材 TOC 动态解析页码范围
+            # （不持久化——仅写入本次 API 响应）
+            _enrich_textbook_pages_for_response(stages, session_id, subject_id)
             return _product_response(
                 {"path": _build_path(stages, {
                     "id": db_path.get("id", f"path_{session_id}"),
@@ -4749,6 +4886,8 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
             path["day_plan"] = state.last_result.get("day_plan")
             path["diagnosis"] = state.last_result.get("diagnosis", {})
             path["stages"] = _apply_node_progress(path["stages"], session_id)
+            # v1.3: conversation_store 路径也注入教材页码范围
+            _enrich_textbook_pages_for_response(path["stages"], session_id, subjectId)
             all_nodes = [n for s in path["stages"] for n in s.get("nodes", [])]
             mastered = sum(1 for n in all_nodes if n.get("status") == "mastered")
             path["overallProgress"] = round(mastered / len(all_nodes) * 100) if all_nodes else 0
@@ -7392,9 +7531,13 @@ def _try_textbook_lecture(
         if not task:
             return None
 
-        page_start = int(task.get("textbookPageStart") or 0)
-        page_end = int(task.get("textbookPageEnd") or 0)
-        if not page_start or not page_end:
+        # v1.2: 不信任 task 上可能过时的 textbookPageStart/End，改为从
+        # source_section_ids 对照教材 TOC **重新解析**页码范围（唯一权威来源）。
+        sec_ids = task.get("source_section_ids") or task.get("textbook_section_ids") or []
+        if not sec_ids:
+            # v1.3: 无教材章节映射时返回 None，让调用方走 LLM 讲义生成兜底。
+            # 之前返回 {textbookStatus:"no_mapping"} 被 _generate_section_lecture
+            # 当作有效结果直接返回 → LLM 生成完全被阻断 → 任务无任何内容。
             return None
 
         # 2) Resolve session → subject → textbook
@@ -7408,47 +7551,52 @@ def _try_textbook_lecture(
         if not textbook or textbook.status != "ready":
             return None
 
-        # 3) Extract textbook pages as markdown
+        # 3) Resolve page range from textbook TOC (authoritative)
+        tb_chapters = list(textbook.chapters_json) if isinstance(textbook.chapters_json, list) else []
+        tb_section_by_id: dict[str, dict] = {}
+        for ch in tb_chapters:
+            for sec in ch.get("sections", []) or []:
+                sid = sec.get("section_id", "")
+                if sid:
+                    tb_section_by_id[sid] = sec
+        pages: list[tuple[int, int]] = []
+        for sid in sec_ids:
+            tb_sec = tb_section_by_id.get(sid)
+            if tb_sec:
+                pages.append((
+                    int(tb_sec.get("start_page", 1) or 1),
+                    int(tb_sec.get("end_page", 1) or 1),
+                ))
+        if not pages:
+            return None  # sec_ids 在教材中全部查不到，无有效映射
+        page_start = min(p[0] for p in pages)
+        page_end = max(p[1] for p in pages)
+
+        # 3b) Lightweight validation: page range against PDF
         storage_root = settings.project_root / "backend" / settings.textbook_storage_path.lstrip("./")
         pdf_path = storage_root / textbook.id / f"{textbook.id}.pdf"
         if not pdf_path.exists():
             logger.warning("Textbook PDF not found: %s", pdf_path)
             return None
-
-        # 3b) Lightweight validation: ensure page range is within the PDF
         from app.services.textbook_processor import get_pdf_page_count
         total_pages = get_pdf_page_count(str(pdf_path))
         if page_start > total_pages:
             return None
         page_end = min(page_end, total_pages)
 
-        # 4) Write textbook page numbers back to the task in the learning path
-        #    so the frontend can detect them and show the PDF viewer (not text).
-        if task:
-            task["textbookPageStart"] = page_start
-            task["textbookPageEnd"] = page_end
-            task["textbookSectionId"] = str(task.get("source_section_ids", [])[0] if task.get("source_section_ids") else "")
-            # Also update the path_model stages in DB
-            path_model.stages = list(path_model.stages)
-            db.add(path_model)
-            db.commit()
-
-        # 5) Persist a lightweight marker ResourceModel — no extracted text,
-        #    the PDF viewer renders pages directly.  Page numbers are stored in
-        #    resource_metadata so `generated-resources` can return them.
+        # 4) Persist a lightweight marker ResourceModel — no extracted text.
+        #    Page numbers are NOT stored (not in task, not in metadata) —
+        #    they are resolved on-the-fly from the textbook TOC at display time.
         db2 = SessionLocal()
         try:
             upsert_resource(db2, session_id, {
                 "type": "lecture", "format": "textbook",
                 "title": section_title,
-                "content": "",  # 空内容：教材由前端 PDF 浏览器直接渲染
+                "content": "",
                 "related_section_id": section_id,
                 "related_stage_id": stage_id,
                 "task_id": task_id,
-                "resource_metadata": {
-                    "textbookPageStart": page_start,
-                    "textbookPageEnd": page_end,
-                },
+                "tags": ["section_generated", "textbook"],
             })
             db2.commit()
         finally:
@@ -7503,13 +7651,20 @@ def _generate_section_lecture(section_id: str, payload: dict[str, Any], workflow
             ResourceModel.related_section_id == section_id,
             ResourceModel.type == "lecture",
         ).order_by(ResourceModel.updated_at.desc()).first()
+        # v1.2: 教材标记资源（format="textbook", content=""）不做早期返回——
+        # 删除后走 _try_textbook_lecture 重新从 source_section_ids 解析页码，
+        # 防止旧规划遗留的过时页码（如 1~6）继续生效。
         if existing and existing.content and not _is_profile_json(existing.content):
-            return _product_response({"lecture": {
-                "id": existing.id, "title": existing.title or "", "content": existing.content,
-                "sectionId": section_id, "chapterId": existing.related_chapter_id or "",
-                "stageId": existing.related_stage_id or stage_id,
-                "createdAt": int(existing.created_at.timestamp() * 1000) if existing.created_at else 0,
-            }}, session_id=session_id, source="db")
+            if (existing.format or "").lower() == "textbook":
+                db.delete(existing)
+                db.commit()
+            else:
+                return _product_response({"lecture": {
+                    "id": existing.id, "title": existing.title or "", "content": existing.content,
+                    "sectionId": section_id, "chapterId": existing.related_chapter_id or "",
+                    "stageId": existing.related_stage_id or stage_id,
+                    "createdAt": int(existing.created_at.timestamp() * 1000) if existing.created_at else 0,
+                }}, session_id=session_id, source="db")
     finally:
         db.close()
 
@@ -7688,6 +7843,76 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
         "createdAt": int(time.time() * 1000),
     }
     return _product_response({"lecture": lecture_data}, session_id=session_id, source="agent")
+
+
+@router.get("/sections/{section_id}/textbook-pages")
+def get_textbook_pages(section_id: str, sessionId: str = "", taskId: str = "", pathId: str = "", stageId: str = "",
+                       auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
+    """Resolve textbook page range for a task from source_section_ids.
+
+    Lightweight — only looks up the TOC; does not generate content or touch
+    ResourceModel.  Returns {pageStart, pageEnd} or 404 if no textbook
+    section mapping exists.
+    """
+    from app.db.models import LearningPathModel, PersonalSubjectModel, SessionModel, TextbookModel
+
+    session_id = _require_session_id(sessionId)
+    if not taskId:
+        raise HTTPException(status_code=400, detail="taskId required")
+    db = SessionLocal()
+    try:
+        path_model = db.query(LearningPathModel).filter(
+            LearningPathModel.session_id == session_id,
+        ).order_by(LearningPathModel.created_at.desc()).first()
+        if not path_model or not isinstance(path_model.stages, list):
+            raise HTTPException(status_code=404, detail="learning path not found")
+        task = None
+        for stage in path_model.stages:
+            if not isinstance(stage, dict):
+                continue
+            for day in (stage.get("days") or []):
+                for t in (day.get("tasks") or []):
+                    if isinstance(t, dict) and str(t.get("task_id", "")) == taskId:
+                        task = t
+                        break
+                if task: break
+            if not task:
+                for t in (stage.get("tasks") or []):
+                    if isinstance(t, dict) and str(t.get("task_id", "")) == taskId:
+                        task = t
+                        break
+            if task: break
+        if not task:
+            raise HTTPException(status_code=404, detail="task not found in learning path")
+        sec_ids = task.get("source_section_ids") or task.get("textbook_section_ids") or []
+        if not sec_ids:
+            raise HTTPException(status_code=404, detail="task has no textbook section mapping")
+        session = db.get(SessionModel, session_id)
+        if not session or not session.subject_id:
+            raise HTTPException(status_code=404, detail="no subject linked to session")
+        subject = db.get(PersonalSubjectModel, session.subject_id)
+        if not subject or not subject.textbook_id:
+            raise HTTPException(status_code=404, detail="no textbook linked to subject")
+        textbook = db.get(TextbookModel, subject.textbook_id)
+        if not textbook or textbook.status != "ready":
+            raise HTTPException(status_code=404, detail="textbook not ready")
+        tb_chapters = list(textbook.chapters_json) if isinstance(textbook.chapters_json, list) else []
+        tb_section_by_id = {}
+        for ch in tb_chapters:
+            for sec in (ch.get("sections") or []):
+                sid = sec.get("section_id", "")
+                if sid:
+                    tb_section_by_id[sid] = sec
+        pages = []
+        for sid in sec_ids:
+            tb_sec = tb_section_by_id.get(sid)
+            if tb_sec:
+                pages.append((int(tb_sec.get("start_page", 1)), int(tb_sec.get("end_page", 1))))
+        if not pages:
+            raise HTTPException(status_code=404, detail="section IDs not found in textbook TOC")
+        return {"pageStart": min(p[0] for p in pages), "pageEnd": max(p[1] for p in pages)}
+    finally:
+        db.close()
 
 
 @router.post("/sections/{section_id}/lecture/ensure")
