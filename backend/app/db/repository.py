@@ -6,6 +6,7 @@ transaction boundaries.
 """
 
 from datetime import datetime, timedelta, timezone
+import hashlib
 import logging
 import re
 from typing import Any
@@ -2308,34 +2309,39 @@ def get_or_create_fallback_mappings(
     Only creates new mappings if no rows exist for this question yet.
     Returns existing mappings if they already exist.
     """
-    existing = get_mappings_for_question(db, question_id)
-    if existing:
-        return existing
-
     if not kp_strings:
         return []
 
     weight = 1.0 / len(kp_strings)
     mappings: list[QuestionKnowledgePointMappingModel] = []
-    for kp_str in kp_strings:
+    for kp_str in dict.fromkeys(kp_strings):
         kp_str = kp_str.strip()
         if not kp_str:
             continue
-        m = create_question_kp_mapping(
-            db,
-            mapping_id=f"fb_{question_id}_{kp_str[:48]}"[:64],
-            question_id=question_id,
-            knowledge_point_key=kp_str,
-            knowledge_point_label=kp_str,
-            weight=weight,
-            confidence=0.5,
-            source="fallback",
-            subject_id=subject_id,
-            mapping_version=1,
+        query = db.query(QuestionKnowledgePointMappingModel).filter(
+            QuestionKnowledgePointMappingModel.question_id == question_id,
+            QuestionKnowledgePointMappingModel.knowledge_point_key == kp_str,
+            QuestionKnowledgePointMappingModel.subject_id.is_(None) if subject_id is None else QuestionKnowledgePointMappingModel.subject_id == subject_id,
         )
+        m = query.first()
+        if m:
+            mappings.append(m)
+            continue
+        # 3 + 48 hex = 51 chars; deterministic across retries and never loses a long-ID suffix.
+        mapping_id = "fb_" + hashlib.sha256(f"{subject_id or ''}\x1f{question_id}\x1f{kp_str}\x1f1".encode()).hexdigest()[:48]
+        try:
+            with db.begin_nested():
+                m = create_question_kp_mapping(
+                    db, mapping_id=mapping_id, question_id=question_id, knowledge_point_key=kp_str,
+                    knowledge_point_label=kp_str, weight=weight, confidence=0.5, source="fallback",
+                    subject_id=subject_id, mapping_version=1,
+                )
+                db.flush()
+        except IntegrityError:
+            m = query.first()
+            if not m:
+                raise
         mappings.append(m)
-    if mappings:
-        db.flush()
     return mappings
 
 

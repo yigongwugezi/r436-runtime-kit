@@ -17,6 +17,7 @@ import os
 import tempfile
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ["EDUAGENT_SKIP_ENV_FILE"] = "1"
 _handle, _db_path = tempfile.mkstemp(prefix="edu-kp-mappings-", suffix=".db")
@@ -44,6 +45,7 @@ from app.db.repository import (
     get_or_create_fallback_mappings,
 )
 from app.main import app
+from app.routers import assessment
 from app.services.knowledge_point_service import (
     UNMAPPED_KEY,
     KnowledgePointResult,
@@ -109,14 +111,16 @@ def _seed_quiz_with_questions(
 
 
 def _submit(quiz_id: str, answers: list[dict], idem_key: str = "") -> tuple[int, dict]:
-    client = TestClient(app)
     body = {
         "sessionId": _SESSION,
         "idempotencyKey": idem_key or f"kp-test-{uuid.uuid4().hex[:8]}",
         "answers": answers,
     }
-    resp = client.post(f"/api/quizzes/{quiz_id}/submit", json=body, headers=_headers)
-    return resp.status_code, resp.json()
+    # This suite tests persistence; diagnosis is an unrelated daemon thread that
+    # keeps SQLite open on Windows.
+    with patch.object(assessment, "_trigger_post_submit_assessment"), TestClient(app) as client:
+        resp = client.post(f"/api/quizzes/{quiz_id}/submit", json=body, headers=_headers)
+        return resp.status_code, resp.json()
 
 
 # ── Test 1: Single-KP question ────────────────────────────────────────────
@@ -388,6 +392,23 @@ def test_fallback_mapping_source_and_confidence():
         db.close()
 
 
+def test_long_question_ids_do_not_collide_or_duplicate():
+    _setup()
+    db = SessionLocal()
+    try:
+        prefix = "path_session_1784446310007_7d7aa03f-d55e-4aea-ae16-ff11c4c255_" + "x" * 80
+        first = get_or_create_fallback_mappings(db, prefix + "q1", "math", ["same-kp"])
+        second = get_or_create_fallback_mappings(db, prefix + "q2", "math", ["same-kp"])
+        db.commit()
+        assert first[0].mapping_id != second[0].mapping_id
+        assert len(first[0].mapping_id) == 51
+        again = get_or_create_fallback_mappings(db, prefix + "q1", "math", ["same-kp"])
+        assert again[0].mapping_id == first[0].mapping_id
+        assert db.query(QuestionKnowledgePointMappingModel).filter(QuestionKnowledgePointMappingModel.question_id == prefix + "q1").count() == 1
+    finally:
+        db.close()
+
+
 # ── Test 7: Unmapped question → excluded from precise diagnosis ───────────
 
 
@@ -533,6 +554,7 @@ def main():
         test_mapping_confidence_propagates,
         test_old_question_creates_fallback,
         test_fallback_mapping_source_and_confidence,
+        test_long_question_ids_do_not_collide_or_duplicate,
         test_unmapped_question,
         test_all_kps_have_results_not_just_first,
         test_empty_kp_list_is_unmapped,
