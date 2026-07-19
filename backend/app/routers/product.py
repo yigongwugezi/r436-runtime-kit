@@ -3522,6 +3522,7 @@ def recommend_resources_for_learning(payload: dict[str, Any]) -> dict[str, Any]:
         profile=profile,
         weak_points=weak_kps,
         course_name=course_name,
+        resource_types=payload.get("resourceTypes") if isinstance(payload.get("resourceTypes"), list) else None,
         refresh=bool(payload.get("refresh", False)),
         cache_scope="|".join((session_id, subject_id, path_id, stage_id, task_id)),
     )
