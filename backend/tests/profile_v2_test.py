@@ -65,19 +65,24 @@ def main() -> None:
     assert weekly_context["content_preferences"] == ["example_first", "practice_after_explanation"]
     assert {item["label"] for item in weekly["knowledge_mastery"] if item["status"] == "weak"} == {"\u94fe\u8868", "\u6811"}
     assert by_key(weekly["general_states"])["interest"]["self_report"] is None
-    assert weekly["profile_completeness"] == 0.67
+    assert weekly["profile_completeness"] == 0.43
 
     existing = {"profile_version": 2, "subject_context": {"daily_minutes": 50, "deadline": "\u5f85\u8865\u5145", "background": {"value": ""}}, "profile_completeness": 0.86}
     merged = build_profile_v2(facts=weekly_facts, course={"course_name": "\u6570\u636e\u7ed3\u6784"}, existing=existing)
     assert merged["subject_context"]["daily_minutes"] == 60 and merged["subject_context"]["deadline"] == "\u4e00\u5468"
-    assert merged["profile_completeness"] == 0.67
+    assert merged["profile_completeness"] == 0.43
 
     corrupted = build_profile_v2(
         facts={"target_course": "\u6570\u636e\u7ed3\u6784", "learning_goal": "\u590d\u4e60", "daily_minutes": "60", "deadline": "\u4e00\u5468", "background": "\u5927\u4e8c\u5b66\u751f", "knowledge_base": "\u6bcf\u5929\uff1a\u8fd8\u53ef\u4ee5\uff1b\u8bed\u8a00\u57fa\u7840\uff1a\u8fd8\u53ef\u4ee5", "content_preferences": "example_first,practice_after_explanation"},
         course={"course_name": "\u6570\u636e\u7ed3\u6784"},
     )
     assert corrupted["subject_context"]["prior_experience"] == []
-    assert corrupted["profile_completeness"] == 0.83
+    assert corrupted["profile_completeness"] == 0.57
+
+    displayed = build_profile_v2(facts={"target_course": "数据结构", "learning_goal": "复习", "daily_minutes": "60", "background": "大二", "knowledge_base": "C 语言", "content_preferences": "先看例题"}, course={"course_name": "数据结构"})
+    assert displayed["profile_completeness"] < 1
+    complete_displayed = update_context(displayed, {"learning_history": "学过 C 语言", "resource_preferences": ["视频"]})
+    assert complete_displayed["profile_completeness"] == 1
 
     extracted_state = ConversationState(session_id="profile_v2_extraction")
     state_text = "我是大二学生，想在一周内复习数据结构，每天可以学习一小时。我的C语言基础还可以，但链表和树比较薄弱。我喜欢先看例题，再完成练习。"
