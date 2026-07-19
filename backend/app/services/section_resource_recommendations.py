@@ -973,6 +973,10 @@ class SectionResourceRecommendationService:
             status = "completed"
         elif diagnostics["raw_count"] == 0 and warnings:
             status = "search_unavailable"
+        elif diagnostics["raw_count"] > 0 and diagnostics["url_valid_count"] == 0:
+            status = "invalid_urls"
+        elif diagnostics["raw_count"] == 0 and not warnings:
+            status = "empty_response"
         elif any(entry["match_level"] in {"course_level", "expanded_research"} for entry in diagnostics["queries"]):
             status = "expanded_no_results"
             warnings.append("已扩大搜索范围，仍未找到高相关公开资源。")

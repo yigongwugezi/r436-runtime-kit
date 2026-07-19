@@ -20,8 +20,17 @@ def main():
     service = SectionResourceRecommendationService(client=Client())
     result = service.recommend(session_id="learner", section_id="task-a", section_title="时间复杂度与线性表", course_name="数据结构", resource_types=["video"])
     assert [item["title"] for item in result["resources"]] == ["Big O Time Complexity"]
+    assert result["status"] == "completed"
     context = normalize_search_context(course_name="数据结构", section_title="时间复杂度")
     assert service._cache_key(context, ["video"], "zh-CN", "a|task-a") != service._cache_key(context, ["video"], "zh-CN", "a|task-b")
+    class EmptyClient:
+        def search(self, query, max_results=5):
+            return SearchResponse(query=query, source="test", results=[])
+    class InvalidUrlClient:
+        def search(self, query, max_results=5):
+            return SearchResponse(query=query, source="test", results=[Item("Big O", "not-a-url", "Big O time complexity")])
+    assert SectionResourceRecommendationService(client=EmptyClient()).recommend(session_id="learner", section_id="empty", section_title="时间复杂度", resource_types=["video"])["status"] == "empty_response"
+    assert SectionResourceRecommendationService(client=InvalidUrlClient()).recommend(session_id="learner", section_id="invalid", section_title="时间复杂度", resource_types=["video"])["status"] == "invalid_urls"
     print("search relevance scope: PASS")
 
 if __name__ == "__main__":
