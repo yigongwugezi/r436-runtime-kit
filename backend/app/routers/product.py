@@ -7479,6 +7479,33 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
     return _product_response({"lecture": lecture_data}, session_id=session_id, source="agent")
 
 
+@router.post("/sections/{section_id}/lecture/ensure")
+def ensure_section_lecture(section_id: str, payload: dict[str, Any], auth: AuthContext = Depends(get_auth)) -> dict[str, Any]:
+    """Atomically return the persisted lecture or the single active generator."""
+    session_id = _payload_session_id(payload)
+    _require_session_learner(session_id, auth)
+    task_id = str(payload.get("taskId") or section_id).strip()
+    stage_id = str(payload.get("stageId") or "").strip()
+    path_id = str(payload.get("pathId") or "").strip()
+    if not stage_id or not path_id or not task_id:
+        raise HTTPException(status_code=400, detail="pathId, stageId and taskId are required")
+    _require_task_stage_access(session_id, stage_id, section_id, path_id, task_id)
+    db = SessionLocal()
+    try:
+        lecture = db.query(ResourceModel).filter(
+            ResourceModel.session_id == session_id,
+            ResourceModel.related_section_id == section_id,
+            ResourceModel.type == "lecture",
+        ).order_by(ResourceModel.created_at.desc()).first()
+        if lecture and str(lecture.content or "").strip():
+            return {"status": "ready", "workflowId": None, "lecture": {"id": lecture.id, "content": lecture.content}, "errorCode": None, "errorMessage": None}
+    finally:
+        db.close()
+    from app.routers.workflows import _start
+    task, _ = _start("lecture_generation", {**payload, "sessionId": session_id, "sectionId": section_id, "taskId": task_id}, auth)
+    return {"status": "running", "workflowId": task.task_id, "lecture": None, "errorCode": None, "errorMessage": None}
+
+
 @router.post("/sections/{section_id}/lecture/generate")
 def generate_section_lecture(section_id: str, payload: dict[str, Any], auth: AuthContext = Depends(get_auth)) -> dict[str, Any]:
     _require_session_learner(_payload_session_id(payload), auth)
