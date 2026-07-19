@@ -6,7 +6,8 @@ const api = readFileSync(new URL('../src/api/learningPath.ts', import.meta.url),
 const lecture = readFileSync(new URL('../src/pages/LecturePage.tsx', import.meta.url), 'utf8');
 const path = readFileSync(new URL('../src/pages/LearningPathPage.tsx', import.meta.url), 'utf8');
 
-assert.match(route, /\['legacy', '1'\]/);
+assert.doesNotMatch(route, /\['legacy', '1'\]/);
+assert.match(route, /legacy\?: string/);
 assert.match(api, /\/api\/learning-path\/tasks\/\$\{encodeURIComponent\(taskId\)\}\/complete/);
 assert.match(lecture, /completeLearningPathTask\(focusedTaskId/);
 assert.match(lecture, /resourceDayScope\.status === 'completed'/);
