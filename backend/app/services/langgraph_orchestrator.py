@@ -439,13 +439,17 @@ def _all_dims_deep(facts: dict[str, str]) -> bool:
     return True
 
 
-def _build_chat_persona(facts: dict[str, str]) -> str:
+def _build_chat_persona(facts: dict[str, str], textbook_title: str = "") -> str:
     """Build persona instructions that override DeepTutor's default tutor persona.
 
     The persona guides DeepTutor through profile-building with per-dimension
     probing strategies — each dimension has its own indirect method, not just
     direct questioning.  Deep understanding of each dimension is the
     prerequisite for true personalisation.
+
+    When *textbook_title* is non-empty, the student already has a defined
+    subject scope: the persona skips ``target_course`` probing and adds a
+    leading instruction to focus the conversation on that textbook.
     """
     from app.services.conversation_state import _SHALLOW_PATTERNS
 
@@ -545,6 +549,10 @@ def _build_chat_persona(facts: dict[str, str]) -> str:
     # ═══════════════════════════════════════════════════════════════════
     priority_order = ["target_course", "background", "knowledge_base", "weak_points", "learning_goal", "time_budget", "preference"]
 
+    # v1.2: 教材已确定 → 无需追问 target_course
+    if textbook_title:
+        priority_order = [d for d in priority_order if d != "target_course"]
+
     # Dimensions that need work this turn
     need_probing = list(shallow_keys)  # shallow → need deepening
     for k in priority_order:
@@ -609,6 +617,15 @@ def _build_chat_persona(facts: dict[str, str]) -> str:
     # Assemble the final persona
     # ═══════════════════════════════════════════════════════════════════
     parts = []
+
+    # ── v1.2: 教材已确定 — 直接引导 LLM 围绕教材对话 ──
+    if textbook_title:
+        parts.append(
+            f"📖 学生已关联教材《{textbook_title}》。该教材的结构、章节和教学范围已确定，"
+            f"你不需要问 target_course（想学什么科目/课程）——直接围绕这本教材展开对话。"
+            f"在了解学生背景、基础、目标等维度时，自然地引用教材中的章节或主题。"
+        )
+        parts.append("")
 
     # Hard stop: if all dimensions are deep enough, force proposal NOW.
     # This goes FIRST so the model can't miss it while in "teaching mode".
@@ -778,7 +795,20 @@ async def _run_chat_only(state: dict, factory: AgentFactory) -> dict:
         _s7 = _cs7.get(state.get("session_id", ""))
         if _s7 and (_s7.path_planning_info_mode or _s7.profile_extraction_enabled):
             profile_context = _build_profile_context(profile_facts)
-            persona_context = _build_chat_persona(profile_facts)
+            # v1.2: 教材上下文注入（_run_chat_only 是规划模式对话的实际回复路径）
+            textbook_ctx = str(state.get("textbook_context") or "").strip()
+            textbook_title = ""
+            if textbook_ctx:
+                import re as _re
+                _m = _re.search(r"课本[：:]\s*(.+)$", textbook_ctx, _re.MULTILINE)
+                textbook_title = _m.group(1).strip() if _m else ""
+                if profile_context:
+                    profile_context = profile_context + "\n\n【教材信息】\n" + textbook_ctx
+                else:
+                    profile_context = "【教材信息】\n" + textbook_ctx
+            persona_context = _build_chat_persona(profile_facts, textbook_title=textbook_title)
+            if textbook_ctx and persona_context:
+                persona_context = persona_context + "\n\n【教材参考】\n" + textbook_ctx
     except Exception:
         pass
     user_msg = state.get("user_message", "")
@@ -910,7 +940,23 @@ async def _conversation_node(state: dict) -> dict:
             pass
         if _need_probe:
             profile_context = _build_profile_context(profile_facts)
-            persona_context = _build_chat_persona(profile_facts)
+            # v1.2: 教材信息注入 persona 和 profile 上下文
+            textbook_ctx = str(state.get("textbook_context") or "").strip()
+            textbook_title = ""
+            if textbook_ctx:
+                # 从 textbook_context 字符串中提取教材标题（第一行格式为"当前科目关联的课本：XXX"）
+                import re as _re
+                _m = _re.search(r"课本[：:]\s*(.+)$", textbook_ctx, _re.MULTILINE)
+                textbook_title = _m.group(1).strip() if _m else ""
+                # 注入到 profile_context（作为 memory_context 的一部分）
+                if profile_context:
+                    profile_context = profile_context + "\n\n【教材信息】\n" + textbook_ctx
+                else:
+                    profile_context = "【教材信息】\n" + textbook_ctx
+            persona_context = _build_chat_persona(profile_facts, textbook_title=textbook_title)
+            # 将教材摘要追加到 persona 末尾
+            if textbook_ctx and persona_context:
+                persona_context = persona_context + "\n\n【教材参考】\n" + textbook_ctx
 
         dt_reply, reply_source = await _chat_provider_reply(
             msg, state.get("messages", []) or [], profile_context, persona_context,

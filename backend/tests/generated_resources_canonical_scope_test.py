@@ -47,7 +47,7 @@ def main() -> None:
             PersonalSubjectModel(id="ps_afeab69a4002", learner_id="owner", name="Course"),
             PersonalSubjectModel(id="other-subject", learner_id="other", name="Other"),
             SessionModel(id=SESSION, learner_id="owner", subject_id="ps_afeab69a4002"),
-            LearningPathModel(id=PATH, session_id=SESSION, estimated_days=1, stages=[{
+            LearningPathModel(id=PATH, session_id=SESSION, subject_id="ps_afeab69a4002", estimated_days=1, stages=[{
                 "id": STAGE, "stage_id": STAGE, "days": [{
                     "id": DAY, "dayId": DAY, "day": 1, "globalDayIndex": 1,
                     "tasks": [{"id": TASK, "task_id": TASK}, {"id": "t-empty", "task_id": "t-empty"}],
