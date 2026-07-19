@@ -134,7 +134,7 @@ class WorkflowTaskManager:
         operation = cls._value(source.get("operation") or source.get("mode"))
         if not operation:
             operation = "preview" if source.get("preview") is True else "apply" if source.get("preview") is False else "regenerate" if source.get("regenerate") else "default"
-        input_fingerprint = hashlib.sha256(
+        input_fingerprint = "" if workflow_type == "lecture_generation" else hashlib.sha256(
             json.dumps(cls._normalized(source), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
         return {
@@ -148,6 +148,7 @@ class WorkflowTaskManager:
             "stage": cls._value(source.get("stageId") or source.get("stage_id")),
             "chapter": cls._value(source.get("chapterId") or source.get("chapter_id")),
             "section": cls._value(source.get("sectionId") or source.get("section_id")),
+            "task": cls._value(source.get("taskId") or source.get("task_id")),
             "resource": cls._value(source.get("resourceId") or source.get("resource_id")),
             "resource_type": cls._value(source.get("resourceType") or source.get("resource_type") or source.get("type")),
             "input_fingerprint": input_fingerprint,

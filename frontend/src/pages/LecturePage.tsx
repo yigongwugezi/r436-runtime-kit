@@ -111,7 +111,9 @@ export default function LecturePage() {
   const focusedStageId = searchParams.get('stageId') || '';
   const focusedPathId = searchParams.get('pathId') || '';
   const focusedSubjectId = searchParams.get('subjectId') || '';
+  const focusedTaskType = searchParams.get('taskType') || 'read_doc';
   const focusedTask = Boolean(routeSessionId && focusedPathId && focusedStageId && focusedTaskId);
+  const focusedReadingTask = ['reading', 'document', 'lecture', 'read_doc'].includes(focusedTaskType);
   const returnPathMode = ['textbook', 'daily', 'project', 'focus'].includes(searchParams.get('pathMode') || '')
     ? searchParams.get('pathMode')
     : '';
@@ -674,7 +676,7 @@ export default function LecturePage() {
   }, [focusedTask, currentSection, sessionId, lectureLoaded, lecture, generating, focusedStageId, activeSectionId, handleGenerate]);
 
   const completeFocusedTask = async () => {
-    if (!focusedTaskId || focusedCompleting) return;
+    if (!focusedTaskId || !focusedReadingTask || focusedCompleting || !effectiveLectureContent || generating || (lectureWorkflow && isActiveWorkflowStatus(lectureWorkflow.status))) return;
     setFocusedCompleting(true);
     try {
       await updateKnowledgePoint(focusedTaskId, { status: 'mastered', mastery: 100 });
@@ -721,7 +723,7 @@ export default function LecturePage() {
                   : effectiveLectureContent ? <Markdown content={effectiveLectureContent} />
                   : <div className="rounded-xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">讲义暂不可用。<button onClick={() => { focusedGenerationRef.current = ''; void handleGenerate(); }} className="ml-2 font-medium underline">重新加载</button></div>}
                 <div className="mt-8 border-t border-surface-100 pt-4">
-                  <button disabled={completed || focusedCompleting} onClick={completeFocusedTask} className="flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"><Check size={15} />{completed ? '任务已完成' : focusedCompleting ? '保存中…' : '标记完成'}</button>
+                  <button disabled={completed || !focusedReadingTask || focusedCompleting || !effectiveLectureContent || generating || !!(lectureWorkflow && isActiveWorkflowStatus(lectureWorkflow.status))} onClick={completeFocusedTask} className="flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"><Check size={15} />{completed ? '任务已完成' : focusedCompleting ? '保存中…' : focusedReadingTask ? '标记完成' : '请先完成练习'}</button>
                 </div>
               </article>
               <aside className="flex min-h-0 flex-col overflow-hidden rounded-2xl bg-white shadow-soft">

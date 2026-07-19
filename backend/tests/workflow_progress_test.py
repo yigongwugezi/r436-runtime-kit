@@ -87,6 +87,9 @@ def main() -> None:
     assert manager.canonical_task_key("generated_resource", "learner-d", "session-d", "subject-d", payload) != manager.canonical_task_key("generated_resource", "learner-d", "session-d", "subject-d", {**payload, "mode": "regenerate"})
     assert manager.canonical_task_key("generated_resource", "learner-d", "session-d", "subject-d", payload) != manager.canonical_task_key("generated_resource", "learner-d", "session-d", "subject-d", {**payload, "resourceType": "worked_example"})
     assert manager.canonical_task_key("generated_resource", "learner-d", "session-d", "subject-d", payload) != manager.canonical_task_key("generated_resource", "learner-d", "session-d", "subject-d", {**payload, "chapterId": "chapter-e"})
+    lecture_payload = {**payload, "taskId": "task-d"}
+    assert manager.canonical_task_key("lecture_generation", "learner-d", "session-d", "subject-d", lecture_payload) == manager.canonical_task_key("lecture_generation", "learner-d", "session-d", "subject-d", {**lecture_payload, "requirements": "changed", "sectionTitle": "changed"})
+    assert manager.canonical_task_key("lecture_generation", "learner-d", "session-d", "subject-d", lecture_payload) != manager.canonical_task_key("lecture_generation", "learner-d", "session-d", "subject-d", {**lecture_payload, "taskId": "task-e"})
 
     dedupe = WorkflowTaskManager()
     gate = threading.Event()
