@@ -8,7 +8,7 @@ import { useLectureStore } from '../store/lectureStore';
 import { ChevronLeft, ChevronRight, Sparkles, MessageCircle, Send, Brain, BookOpen, ArrowLeft, ArrowRight, Target, Lightbulb, Layers, Clock, GraduationCap, Hash, CheckCircle2, Check, X, Loader2, HelpCircle, RefreshCw, FileText, FileDown, Lock } from 'lucide-react';
 import Markdown from '../utils/markdown';
 import MermaidDiagram from '../utils/mermaid';
-import { ensureLearningPathQuiz, generateSectionQuiz, submitLearningPathQuiz, submitQuizAttempt } from '../api/assessment';
+import { ensureScopedLearningPathQuiz, generateSectionQuiz, retryScopedLearningPathQuiz, submitLearningPathQuiz, submitQuizAttempt } from '../api/assessment';
 import type { Chapter, LearningStage, PathNode, Section, ContentStatus } from '../types/learningPath';
 import type { LinkedQuestion, QuizResult, WeakPoint } from '../types/assessment';
 import SectionResourceWorkspace from '../components/learning/SectionResourceWorkspace';
@@ -290,7 +290,9 @@ export default function LecturePage() {
   // ── Textbook content for resource generation ──
   const [textbookLectureContent, setTextbookLectureContent] = useState('');
 
-  const [quizState, setQuizState] = useState<'idle' | 'generating' | 'answering' | 'submitted'>('idle');
+  const [quizState, setQuizState] = useState<'idle' | 'generating' | 'answering' | 'submitted' | 'failed'>('idle');
+  const [quizError, setQuizError] = useState('');
+  const [quizRetry, setQuizRetry] = useState(0);
   const [quizSuggestion, setQuizSuggestion] = useState('');
   const [quizPathCompletion, setQuizPathCompletion] = useState<{ task?: boolean; unlocked?: boolean }>({});
   const [quizWeakPoints, setQuizWeakPoints] = useState<WeakPoint[]>([]);
@@ -332,15 +334,19 @@ export default function LecturePage() {
   const executionMode = resolveTaskExecutionMode(resourceDayScope.task || { type: focusedTaskType });
   useEffect(() => {
     if (executionMode !== 'quiz' || !sessionId || !focusedPathId || !focusedStageId || !focusedTaskId || !resourceDayScope.globalDayIndex) return;
-    setQuizState('generating');
-    ensureLearningPathQuiz(focusedTaskId, { sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId, stageId: focusedStageId, taskId: focusedTaskId, dayId: resourceDayScope.dayId, globalDayIndex: resourceDayScope.globalDayIndex })
-      .then((response: any) => {
-        const quiz = response?.data?.quiz;
-        if (!quiz) throw new Error('quiz unavailable');
+    const scope = { sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId, stageId: focusedStageId, taskId: focusedTaskId, dayId: resourceDayScope.dayId, globalDayIndex: resourceDayScope.globalDayIndex };
+    let active = true;
+    setQuizError(''); setQuizState('generating');
+    ensureScopedLearningPathQuiz(focusedTaskId, scope)
+      .then((quiz) => {
+        if (!quiz.questions.length) throw new Error('题目生成结果为空，请重新生成');
+        if (!active) return;
         setQuizId(quiz.quizId); setQuizQuestions(quiz.questions); setQuizAnswers({}); setQuizResults([]); setQuizTotalScore(null); setQuizState('answering');
       })
-      .catch(() => setQuizState('idle'));
-  }, [executionMode, sessionId, focusedPathId, focusedStageId, focusedTaskId, focusedSubjectId, workflowSubjectId, resourceDayScope.dayId, resourceDayScope.globalDayIndex]);
+      .catch((error: any) => { if (active) { setQuizError(error?.response?.data?.detail || error?.message || '题目加载失败'); setQuizState('failed'); } });
+    return () => { active = false; };
+  }, [executionMode, sessionId, focusedPathId, focusedStageId, focusedTaskId, focusedSubjectId, workflowSubjectId, resourceDayScope.dayId, resourceDayScope.globalDayIndex, quizRetry]);
+  const retryLearningPathQuiz = () => { retryScopedLearningPathQuiz({ sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId, stageId: focusedStageId, taskId: focusedTaskId, dayId: resourceDayScope.dayId, globalDayIndex: resourceDayScope.globalDayIndex }); setQuizRetry((value) => value + 1); };
   const [videoResources, setVideoResources] = useState<any[]>([]);
   const [videoStatus, setVideoStatus] = useState<'idle' | 'loading' | 'failed' | 'empty' | 'search_unavailable' | 'no_high_relevance' | 'expanded_no_results' | 'invalid_urls' | 'empty_response' | 'persisted' | 'new_search' | 'stale'>('idle');
   const [videoLectureFallback, setVideoLectureFallback] = useState(false);
@@ -1111,6 +1117,8 @@ export default function LecturePage() {
                 </div>
               )}
 
+              {quizState === 'failed' && <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{quizError}<button onClick={retryLearningPathQuiz} className="ml-2 underline">重新生成</button></div>}
+
               {(quizState === 'answering' || quizState === 'submitted') && quizQuestions.map((q, idx) => {
                 const result = quizResults.find(r => r.questionId === q.questionId);
                 const answer = quizAnswers[q.questionId] || '';
@@ -1208,7 +1216,7 @@ export default function LecturePage() {
               {quizState === 'answering' && (
                 <div className="flex items-center justify-between pt-2">
                   <span className="text-xs text-surface-400">
-                    {allAnswered ? '已完成所有题目' : `已答 ${Object.keys(quizAnswers).filter(k => quizAnswers[k]?.trim()).length} / ${quizQuestions.length} 题`}
+                    {allAnswered ? `已完成全部 ${quizQuestions.length} 题` : `共 ${quizQuestions.length} 题，已答 ${Object.keys(quizAnswers).filter(k => quizAnswers[k]?.trim()).length} / ${quizQuestions.length} 题`}
                   </span>
                   <button onClick={handleQuizSubmit} disabled={!allAnswered}
                     className="px-6 py-2.5 bg-accent-500 text-white rounded-xl text-sm font-medium hover:bg-accent-600 disabled:opacity-40 transition-colors shadow-sm"
