@@ -4886,6 +4886,11 @@ def record_video_fallback_selected(task_id: str, payload: dict[str, Any], auth: 
     return _record_video_evidence(task_id, payload, auth, event_type="video_fallback_selected")
 
 
+@router.post("/learning-path/tasks/{task_id}/video-fallback-lecture-opened")
+def record_video_fallback_lecture_opened(task_id: str, payload: dict[str, Any], auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
+    return _record_video_evidence(task_id, payload, auth, event_type="video_fallback_lecture_opened")
+
+
 @router.post("/learning-path/tasks/{task_id}/complete")
 def complete_learning_path_task(task_id: str, payload: dict[str, Any], auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
     """Persist one explicit, ready reading-task completion without inflating mastery."""
@@ -4915,11 +4920,13 @@ def complete_learning_path_task(task_id: str, payload: dict[str, Any], auth: Aut
         if task_type in {"video", "watch_video"}:
             opened = _video_evidence_exists(db, session_id=scope.session_id, subject_id=scope.subject_id, path_id=path_id, stage_id=stage_id, task_id=task_id, event_type="video_opened")
             fallback = _video_evidence_exists(db, session_id=scope.session_id, subject_id=scope.subject_id, path_id=path_id, stage_id=stage_id, task_id=task_id, event_type="video_fallback_selected")
+            fallback_opened = _video_evidence_exists(db, session_id=scope.session_id, subject_id=scope.subject_id, path_id=path_id, stage_id=stage_id, task_id=task_id, event_type="video_fallback_lecture_opened")
             lecture = db.query(ResourceModel).filter(
                 ResourceModel.session_id == scope.session_id, ResourceModel.related_section_id == task_id,
                 ResourceModel.type == "lecture",
-            ).order_by(ResourceModel.created_at.desc()).first()
-            if not opened and not (fallback and lecture and str(lecture.content or "").strip() and not _is_profile_json(lecture.content or "")):
+            ).order_by(ResourceModel.created_at.desc()).all()
+            lecture = next((item for item in lecture if (item.resource_metadata or {}).get("deliveryMode") == "video_fallback_lecture"), None)
+            if not opened and not (fallback and fallback_opened and lecture and str(lecture.content or "").strip() and not _is_profile_json(lecture.content or "")):
                 raise HTTPException(status_code=409, detail="open a video or complete the selected text fallback first")
             if fallback and not opened:
                 fallback_event = next((event for event in db.query(LearningEventModel).filter(
@@ -8023,6 +8030,7 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
             "resource_metadata": {
                 "semanticFingerprint": fingerprint,
                 "canonicalScope": {key: payload.get(key) for key in ("sessionId", "subjectId", "pathId", "stageId", "dayId", "globalDayIndex", "taskId", "taskType")},
+                **({"sourceTaskType": "video", "deliveryMode": "video_fallback_lecture", "originalTaskId": payload.get("originalTaskId") or payload.get("taskId")} if payload.get("deliveryMode") == "video_fallback_lecture" else {}),
             },
         }
         _attach_personalization_metadata(resource_dict, session_id, subject_id)
@@ -8047,7 +8055,7 @@ def _lecture_semantic_fingerprint(payload: dict[str, Any], learner_id: str) -> s
     fields = (
         "sessionId", "subjectId", "pathId", "stageId", "dayId", "globalDayIndex",
         "taskId", "taskType", "taskTitle", "taskDescription", "learningObjectives",
-        "knowledgePoints", "stageTitle", "pathVersion",
+        "knowledgePoints", "stageTitle", "pathVersion", "deliveryMode", "originalTaskId", "fallbackVersion",
     )
     identity = {key: payload.get(key) for key in fields}
     identity["learnerId"] = learner_id
@@ -8092,6 +8100,67 @@ def ensure_section_lecture(section_id: str, payload: dict[str, Any], auth: AuthC
     from app.routers.workflows import _start
     task, _ = _start("lecture_generation", {**payload, "semanticFingerprint": fingerprint}, auth)
     return {"status": "running", "workflowId": task.task_id, "lecture": None, "errorCode": None, "errorMessage": None}
+
+
+def _video_fallback_payload(task_id: str, payload: dict[str, Any], auth: AuthContext) -> tuple[dict[str, Any], ResourceScope]:
+    session_id, subject_id = _payload_session_id(payload), _payload_subject_id(payload)
+    path_id, stage_id, day_id = (str(payload.get(key) or "").strip() for key in ("pathId", "stageId", "dayId"))
+    try:
+        global_day_index = int(payload.get("globalDayIndex"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail={"code": "TASK_SCOPE_MISMATCH", "message": "complete canonical task scope is required"})
+    scope = resolve_resource_scope(auth, session_id=session_id, subject_id=subject_id, path_id=path_id, stage_id=stage_id,
+        task_id=task_id, section_id=task_id, day_id=day_id, global_day_index=global_day_index)
+    db = SessionLocal()
+    try:
+        path = db.query(LearningPathModel).filter(LearningPathModel.id == path_id, LearningPathModel.session_id == scope.session_id).first()
+        normalized = _normalize_persisted_learning_path(path) if path else None
+        entry = normalized and normalized["task_index"].get(task_id)
+        if not entry:
+            raise HTTPException(status_code=404, detail={"code": "CANONICAL_TASK_NOT_FOUND", "message": "learning path task not found"})
+        if entry["stage_id"] != stage_id or entry["day_id"] != day_id or entry["global_day_index"] != global_day_index:
+            raise HTTPException(status_code=409, detail={"code": "TASK_SCOPE_MISMATCH", "message": "learning path task scope mismatch"})
+        task_type = str(entry["task"].get("task_type") or entry["task"].get("type") or "").lower()
+        if task_type not in {"video", "watch_video"}:
+            raise HTTPException(status_code=409, detail={"code": "TASK_TYPE_NOT_VIDEO", "message": "video task required"})
+        if not _video_evidence_exists(db, session_id=scope.session_id, subject_id=scope.subject_id, path_id=path_id, stage_id=stage_id, task_id=task_id, event_type="video_fallback_selected"):
+            raise HTTPException(status_code=409, detail={"code": "FALLBACK_NOT_SELECTED", "message": "select text fallback before generating a lecture"})
+        task = entry["task"]
+        return ({**payload, "sessionId": scope.session_id, "subjectId": scope.subject_id, "pathId": path_id, "stageId": stage_id,
+            "dayId": day_id, "globalDayIndex": global_day_index, "taskId": task_id, "sectionId": task_id, "taskType": task_type,
+            "originalTaskId": task_id, "deliveryMode": "video_fallback_lecture", "fallbackVersion": 1,
+            "taskTitle": task.get("title") or payload.get("taskTitle") or "", "taskDescription": task.get("description") or task.get("goal") or payload.get("taskDescription") or "",
+            "learningObjectives": task.get("learningObjectives") or task.get("learning_objectives") or payload.get("learningObjectives") or [],
+            "knowledgePoints": task.get("knowledgePoints") or task.get("knowledge_points") or payload.get("knowledgePoints") or []}, scope)
+    finally:
+        db.close()
+
+
+@router.post("/learning-path/tasks/{task_id}/video-fallback/lecture/ensure")
+def ensure_video_fallback_lecture(task_id: str, payload: dict[str, Any], auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
+    payload, scope = _video_fallback_payload(task_id, payload, auth)
+    fingerprint = _lecture_semantic_fingerprint(payload, auth.learner_id)
+    db = SessionLocal()
+    try:
+        lecture = next((item for item in db.query(ResourceModel).filter(ResourceModel.session_id == scope.session_id, ResourceModel.task_id == task_id, ResourceModel.type == "lecture").order_by(ResourceModel.created_at.desc()) if (item.resource_metadata or {}).get("semanticFingerprint") == fingerprint), None)
+        if lecture and str(lecture.content or "").strip():
+            return {"status": "ready", "workflowId": None, "lecture": {"id": lecture.id, "content": lecture.content}, "errorCode": None, "errorMessage": None}
+    finally:
+        db.close()
+    from app.routers.workflows import _start
+    task, _ = _start("lecture_generation", {**payload, "operation": "video_fallback_lecture", "semanticFingerprint": fingerprint}, auth)
+    return {"status": "running", "workflowId": task.task_id, "lecture": None, "errorCode": None, "errorMessage": None}
+
+
+@router.get("/learning-path/tasks/{task_id}/video-fallback/state")
+def video_fallback_state(task_id: str, sessionId: str, subjectId: str, pathId: str, stageId: str, dayId: str, globalDayIndex: int, auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
+    payload, scope = _video_fallback_payload(task_id, {"sessionId": sessionId, "subjectId": subjectId, "pathId": pathId, "stageId": stageId, "dayId": dayId, "globalDayIndex": globalDayIndex}, auth)
+    db = SessionLocal()
+    try:
+        lecture = next((item for item in db.query(ResourceModel).filter(ResourceModel.session_id == scope.session_id, ResourceModel.task_id == task_id, ResourceModel.type == "lecture").order_by(ResourceModel.created_at.desc()) if (item.resource_metadata or {}).get("deliveryMode") == "video_fallback_lecture"), None)
+        return {"selected": True, "lecture": {"id": lecture.id, "content": lecture.content} if lecture and lecture.content else None}
+    finally:
+        db.close()
 
 
 @router.post("/sections/{section_id}/lecture/generate")

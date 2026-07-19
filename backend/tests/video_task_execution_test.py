@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app.db.models import Base, LearningEventModel, LearningPathModel, PersonalSubjectModel, ResourceModel, SessionModel
+from app.db.models import Base, CurrentLearningPathModel, LearningEventModel, LearningPathModel, PersonalSubjectModel, ResourceModel, SessionModel
 from app.db.repository import upsert_learning_path
 from app.middleware.auth import AuthContext
 from app.routers import product
@@ -27,7 +27,8 @@ def main():
         tasks.extend({"id": f"later-{i}", "type": "read_doc"} for i in range(32))
         days = [{"id": "stage_d1", "globalDayIndex": 1, "tasks": [tasks[0]]}, {"id": "stage_d2", "globalDayIndex": 2, "tasks": [tasks[1]]}, {"id": "stage_d3", "globalDayIndex": 3, "tasks": [tasks[2]]}]
         days.extend({"id": f"stage_d{i + 4}", "globalDayIndex": i + 4, "tasks": [tasks[i + 3]]} for i in range(32))
-        upsert_learning_path(db, "s", {"id": "p", "estimatedDays": 35, "stages": [{"id": "stage", "days": days}]})
+        upsert_learning_path(db, "s", {"id": "p", "subject_id": "sub", "estimatedDays": 35, "stages": [{"id": "stage", "days": days}]})
+        db.add(CurrentLearningPathModel(learner_id="owner", session_id="s", subject_id="sub", path_id="p"))
         db.add(ResourceModel(id="read-lecture", session_id="s", type="lecture", content="ready", related_section_id="read"))
         db.commit(); db.close()
         client = TestClient(app)
@@ -65,11 +66,17 @@ def fallback_main():
     app.dependency_overrides[product.require_auth] = lambda: AuthContext(learner_id="owner")
     with patch.object(product, "SessionLocal", factory):
         db = factory(); db.add_all([SessionModel(id="fallback-s", learner_id="owner", subject_id="fallback-sub"), PersonalSubjectModel(id="fallback-sub", learner_id="owner", name="x")])
-        upsert_learning_path(db, "fallback-s", {"id": "fallback-p", "stages": [{"id": "stage", "days": [{"id": "stage_d1", "globalDayIndex": 1, "tasks": [{"id": "video-fallback", "type": "video"}]}]}]})
-        db.add(ResourceModel(id="fallback-lecture", session_id="fallback-s", type="lecture", content="alternative text", related_section_id="video-fallback")); db.commit(); db.close()
+        upsert_learning_path(db, "fallback-s", {"id": "fallback-p", "subject_id": "fallback-sub", "stages": [{"id": "stage", "days": [{"id": "stage_d1", "globalDayIndex": 1, "tasks": [{"id": "video-fallback", "type": "video"}]}]}]})
+        db.add(CurrentLearningPathModel(learner_id="owner", session_id="fallback-s", subject_id="fallback-sub", path_id="fallback-p"))
+        db.add(ResourceModel(id="fallback-lecture", session_id="fallback-s", type="lecture", content="alternative text", related_section_id="video-fallback", task_id="video-fallback", resource_metadata={"deliveryMode": "video_fallback_lecture", "sourceTaskType": "video"})); db.commit(); db.close()
         payload = {"sessionId": "fallback-s", "subjectId": "fallback-sub", "pathId": "fallback-p", "stageId": "stage", "dayId": "stage_d1", "globalDayIndex": 1}
         client = TestClient(app)
+        assert client.post("/api/learning-path/tasks/video-fallback/video-fallback/lecture/ensure", json=payload).status_code == 409
         assert client.post("/api/learning-path/tasks/video-fallback/video-fallback-selected", json=payload).status_code == 200
+        assert client.post("/api/sections/video-fallback/lecture/ensure", json={**payload, "taskId": "video-fallback", "taskType": "video"}).status_code == 409
+        assert client.post("/api/learning-path/tasks/video-fallback/video-fallback/lecture/ensure", json=payload).status_code == 200
+        assert client.post("/api/learning-path/tasks/video-fallback/complete", json=payload).status_code == 409
+        assert client.post("/api/learning-path/tasks/video-fallback/video-fallback-lecture-opened", json=payload).status_code == 200
         completed = client.post("/api/learning-path/tasks/video-fallback/complete", json=payload)
         assert completed.status_code == 200 and completed.json()["data"]["taskId"] == "video-fallback"
         db = factory(); event = db.query(LearningEventModel).filter(LearningEventModel.event_type == "video_fallback_selected").one()
@@ -84,7 +91,7 @@ def recommendations_main():
     app.dependency_overrides[product.require_auth] = lambda: AuthContext(learner_id="owner")
     with patch.object(product, "SessionLocal", factory):
         db = factory(); db.add_all([SessionModel(id="video-s", learner_id="owner", subject_id="video-sub"), PersonalSubjectModel(id="video-sub", learner_id="owner", name="x")])
-        upsert_learning_path(db, "video-s", {"id": "video-p", "stages": [{"id": "stage", "days": [{"id": "stage_d2", "globalDayIndex": 2, "tasks": [{"id": "watch", "type": "watch_video", "title": "Big O"}]}]}]}); db.close()
+        upsert_learning_path(db, "video-s", {"id": "video-p", "subject_id": "video-sub", "stages": [{"id": "stage", "days": [{"id": "stage_d2", "globalDayIndex": 2, "tasks": [{"id": "watch", "type": "watch_video", "title": "Big O"}]}]}]}); db.add(CurrentLearningPathModel(learner_id="owner", session_id="video-s", subject_id="video-sub", path_id="video-p")); db.commit(); db.close()
         payload = {"sessionId": "video-s", "subjectId": "video-sub", "pathId": "video-p", "stageId": "stage", "dayId": "stage_d2", "globalDayIndex": 2, "taskId": "watch", "resourceTypes": ["video"]}
         good = {"resources": [{"resource_type": "video", "title": "Big O", "url": "https://www.bilibili.com/video/BV1abc"}], "status": "completed", "warnings": []}
         with patch("app.services.section_resource_recommendations.SectionResourceRecommendationService.recommend", return_value=good) as search:

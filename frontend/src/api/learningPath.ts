@@ -42,6 +42,16 @@ export async function recordVideoTaskEvidence(taskId: string, payload: {
   return data.data;
 }
 
+export async function getVideoFallbackState(taskId: string, payload: { sessionId: string; subjectId: string; pathId: string; stageId: string; dayId: string; globalDayIndex: number }): Promise<any> {
+  const { data } = await client.get(`/api/learning-path/tasks/${encodeURIComponent(taskId)}/video-fallback/state`, { params: payload });
+  return data;
+}
+
+export async function recordVideoFallbackLectureOpened(taskId: string, payload: { sessionId: string; subjectId: string; pathId: string; stageId: string; dayId?: string; globalDayIndex?: number }): Promise<any> {
+  const { data } = await client.post(`/api/learning-path/tasks/${encodeURIComponent(taskId)}/video-fallback-lecture-opened`, payload);
+  return data.data;
+}
+
 /** 验证课程名称 */
 export async function validateCourse(courseName: string): Promise<{ valid: boolean; normalizedCourseName: string; reason: string | null }> {
   const { data } = await client.get('/api/learning-path/validate-course', { params: { courseName } });
