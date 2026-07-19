@@ -6528,6 +6528,11 @@ def resolve_analytics_scope(
             raise HTTPException(status_code=404, detail="resource not found")
 
         # ── Session ownership ─────────────────────────────────────
+        # v1.3: Transparently upgrade anonymous/empty sessions to the
+        # authenticated user so old sessions are accessible after login.
+        from app.db.repository import try_upgrade_anonymous_session
+        try_upgrade_anonymous_session(db, session_id, auth.learner_id)
+        db.refresh(session)
         session_owner = str(session.learner_id or "").strip()
         is_anonymous = _is_anonymous_learner(session_owner)
         if session_owner and not is_anonymous and session_owner != auth.learner_id:
@@ -6565,7 +6570,24 @@ def resolve_analytics_scope(
                 LearningPathModel.id == path_id, LearningPathModel.session_id == session_id,
             ).first()
             if path is None:
-                raise HTTPException(status_code=403, detail="access denied")
+                # v1.3: 新生成的路径可能只在 conversation_store 中（尚未被持久化）。
+                # 尝试从 memory fallback 恢复后再查一次，避免误报 403 阻断访问。
+                _state = conversation_store.get(session_id)
+                if _state and _state.last_result:
+                    _mem_stages = _state.last_result.get("learning_path") or _state.last_result.get("stages") or []
+                    if isinstance(_mem_stages, list) and _mem_stages:
+                        _mem_id = _state.last_result.get("path_id") or _state.last_result.get("id") or path_id
+                        if str(_mem_id) == str(path_id):
+                            from app.db.repository import upsert_learning_path as _repo_upsert_path
+                            _repo_upsert_path(db, session_id, {
+                                "id": path_id,
+                                "stages": _mem_stages,
+                                "estimatedDays": _state.last_result.get("estimatedDays") or _state.last_result.get("estimated_days", 14),
+                                "courseName": _state.last_result.get("course_name") or _state.last_result.get("courseName", ""),
+                            })
+                            path = db.get(LearningPathModel, path_id)
+            if path is None:
+                raise HTTPException(status_code=404, detail="learning path not found")
             if not session.subject_id:
                 raise HTTPException(status_code=400, detail="path scope requires a subject-bound session")
         if stage_id:
