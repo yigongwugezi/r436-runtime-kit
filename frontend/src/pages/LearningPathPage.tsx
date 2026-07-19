@@ -10,6 +10,7 @@ import RevisionProposalCard from '../components/learning/RevisionProposalCard';
 import { PageLoading, PageError } from '../components/common/PageState';
 import { getCurrentLearner } from '../store/authStore';
 import { learningTaskRoute } from '../utils/learningTaskRoute';
+import { groupTasksByDay, normalizePathForDisplay, restoreSelectedDay } from '../utils/learningPathDisplay';
 import {
   ArrowRight, BookOpen, Check, CircleDot, Clock3,
   FileText, FlaskConical, Lightbulb, PenLine, Plus, Sparkles, Target, Zap,
@@ -27,32 +28,6 @@ const KIND_CFG: Record<string, { label: string; icon: React.ReactNode }> = {
   review:     { label: '复盘', icon: <Sparkles className="h-3.5 w-3.5" /> },
 };
 function kindMeta(k: string) { return KIND_CFG[k] || KIND_CFG.read_doc; }
-
-/* ── 将任务按天分组 ── */
-function groupTasksByDay(stages: any[]) {
-  const result: { stageId: string; stageTitle: string; days: { dayIndex: number; tasks: any[]; stageIdx: number }[]; stageIdx: number }[] = [];
-  stages.forEach((stage: any, si: number) => {
-    const tasks: any[] = stage.tasks || [];
-    const days: { dayIndex: number; tasks: any[]; stageIdx: number }[] = [];
-    const dayMap = new Map<number, any[]>();
-    tasks.forEach((t: any) => {
-      const d = Number(t.day ?? t.day_index ?? t.dayIndex) || 0;
-      if (!dayMap.has(d)) dayMap.set(d, []);
-      dayMap.get(d)!.push(t);
-    });
-    if (dayMap.size > 1 || (dayMap.size === 1 && dayMap.get(0)!.length > 0)) {
-      Array.from(dayMap.entries()).sort((a, b) => a[0] - b[0]).forEach(([d, ts]) => {
-        days.push({ dayIndex: d || days.length + 1, tasks: ts, stageIdx: si });
-      });
-    } else if (tasks.length > 0) {
-      for (let i = 0; i < tasks.length; i += 3) {
-        days.push({ dayIndex: Math.floor(i / 3) + 1, tasks: tasks.slice(i, i + 3), stageIdx: si });
-      }
-    }
-    result.push({ stageId: stage.id, stageTitle: stage.title, days, stageIdx: si });
-  });
-  return result;
-}
 
 export default function LearningPathPage() {
   const nav = useNavigate();
@@ -84,22 +59,23 @@ export default function LearningPathPage() {
   const sessionId = useChatStore((s) => s.currentSessionId);
   const isParent = getCurrentLearner()?.role === 'parent';
 
-  const stages = path?.stages || [];
-  const allNodes = stages.flatMap(s => s.nodes || []);
+  const displayPath = useMemo(() => normalizePathForDisplay(path), [path]);
+  const stages = displayPath.stages;
+  const allNodes = stages.flatMap(s => Array.isArray(s.nodes) ? s.nodes : []);
   const totalNodes = allNodes.length;
   const masteredNodes = allNodes.filter(n => n.status === 'mastered' || n.status === 'completed').length;
   const progress = path?.overallProgress ?? (totalNodes > 0 ? Math.round((masteredNodes / totalNodes) * 100) : 0);
   const estimatedDays = path?.estimatedDays ?? 14;
   const dailyMinutes = path?.dailyMinutes ?? 60;
   const hasProfile = stages.length > 0 && stages.some(s =>
-    (s.tasks || []).length > 0 || (s.nodes || []).length > 0 || (s.chapters || []).length > 0 || (s.sections || []).length > 0
+    s.tasks.length > 0 || (Array.isArray(s.nodes) && s.nodes.length > 0) || (Array.isArray(s.chapters) && s.chapters.length > 0) || (Array.isArray(s.sections) && s.sections.length > 0)
   );
 
-  const allTasks = stages.flatMap(s => (s.tasks || []).map(t => ({ ...t, stageTitle: s.title, stageId: s.id })));
+  const allTasks = stages.flatMap(s => s.tasks.map(t => ({ ...t, stageTitle: s.title, stageId: s.id })));
   const totalTasks = allTasks.length;
   const doneTasks = allTasks.filter(t => t.status === 'completed' || t.status === 'mastered').length;
   const nextTask = allTasks.find(t => t.status !== 'completed' && t.status !== 'mastered');
-  const hasInj = stages.some(s => (s.tasks || []).some((t: any) =>
+  const hasInj = stages.some(s => s.tasks.some((t: any) =>
     t.source === 'remedial' || t._adjustment === 'remedial' || t._adjustment === 'strengthened'
   ));
   const circumference = 100.53;
@@ -108,7 +84,7 @@ export default function LearningPathPage() {
 
   const { currentStageIdx, currentTaskIdx } = useMemo(() => {
     for (let si = 0; si < stages.length; si++) {
-      const tasks = stages[si].tasks || [];
+      const tasks = stages[si].tasks;
       for (let ti = 0; ti < tasks.length; ti++) {
         if (tasks[ti].status !== 'completed' && tasks[ti].status !== 'mastered')
           return { currentStageIdx: si, currentTaskIdx: ti };
@@ -117,8 +93,8 @@ export default function LearningPathPage() {
     return { currentStageIdx: stages.length, currentTaskIdx: -1 };
   }, [stages]);
 
-  const firstIncompleteIdx = stages.findIndex(s => (s.tasks || []).some(t => t.status !== 'completed' && t.status !== 'mastered'));
-  const completedStages = stages.filter(s => (s.tasks || []).length > 0 && (s.tasks || []).every((t: any) => t.status === 'completed' || t.status === 'mastered')).length;
+  const firstIncompleteIdx = stages.findIndex(s => s.tasks.some(t => t.status !== 'completed' && t.status !== 'mastered'));
+  const completedStages = stages.filter(s => s.tasks.length > 0 && s.tasks.every((t: any) => t.status === 'completed' || t.status === 'mastered')).length;
 
   const activeDayTasks = useMemo(() => {
     if (!activeDayKey) return [];
@@ -151,16 +127,12 @@ export default function LearningPathPage() {
   }, [sessionId]);
 
   useEffect(() => {
-    if (expandedStageId || dayGroups.length === 0) return;
-    const firstIncomplete = dayGroups.find(g => g.days.some(d => d.tasks.some(t => t.status !== 'completed' && t.status !== 'mastered')));
-    const target = firstIncomplete || dayGroups[0];
-    setExpandedStageId(target.stageId);
-    if (target.days.length > 0) {
-      setActiveDayKey(`${target.stageId}_day${target.days[0].dayIndex}`);
-    }
-  }, [dayGroups.length]);
+    const restored = restoreSelectedDay(dayGroups, activeDayKey);
+    setExpandedStageId(restored.expandedStageId);
+    setActiveDayKey(restored.activeDayKey);
+  }, [dayGroups]);
 
-  useEffect(() => { if (path && path.stages?.length && hasProfile) { setPathGenerating(false); setGeneratingStatus(''); } }, [path, hasProfile]);
+  useEffect(() => { if (path && stages.length && hasProfile) { setPathGenerating(false); setGeneratingStatus(''); } }, [path, stages.length, hasProfile]);
 
   useEffect(() => {
     if (!generatingTaskId) return;
@@ -177,7 +149,7 @@ export default function LearningPathPage() {
             sessionStorage.removeItem('_pending_gen_task_id');
             sessionStorage.removeItem('_pending_gen_session_id');
             const rawPath = task.result?.data?.path;
-            if (rawPath && rawPath.stages?.length) {
+            if (rawPath && Array.isArray(rawPath.stages) && rawPath.stages.length) {
               applyPathFromWorkflow(rawPath);
             } else {
               fetchPath(true, generatingSessionId || undefined);
@@ -203,6 +175,8 @@ export default function LearningPathPage() {
 
   const toggleStage = (stageId: string) => {
     setExpandedStageId(prev => prev === stageId ? null : stageId);
+    const firstDay = dayGroups.find((group) => group.stageId === stageId)?.days[0];
+    if (firstDay) setActiveDayKey(`${stageId}_day${firstDay.dayIndex}`);
   };
 
   const selectDay = (stageId: string, dayIndex: number) => {
@@ -232,6 +206,7 @@ export default function LearningPathPage() {
 
   if (loading) return <PageLoading text="加载学习路径中…" />;
   if (error && stages.length === 0) return <PageError title="加载失败" description={error} onRetry={fetchPath} />;
+  if (path && stages.length === 0 && !draftLoading && !pathGenerating) return <PageError title={displayPath.formatInvalid ? "路径数据格式异常，请刷新重试" : "路径暂无阶段"} description={displayPath.formatInvalid ? "学习路径返回了非数组字段。" : "当前学习路径尚未包含可展示的阶段。"} onRetry={fetchPath} />;
 
   if (!path || stages.length === 0 || !hasProfile) {
     if (existingDraft && !draftLoading)
@@ -290,6 +265,8 @@ export default function LearningPathPage() {
             <p className="mt-4 text-sm leading-7 text-surface-400">{path?.description || 'AI 根据你的学习表现持续优化这条路径'}</p>
           </section>
         </header>
+
+        {displayPath.formatInvalid && <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">路径数据格式异常，请刷新重试。</div>}
 
         {path?.id && sessionId && subject.subject_id && <RevisionProposalCard sessionId={sessionId} subjectId={subject.subject_id} pathId={path.id} />}
 
@@ -576,7 +553,7 @@ export default function LearningPathPage() {
             })()}
             {!activeDayStage && (
               <div className="flex items-center justify-center h-full text-sm text-surface-400">
-                请从左侧选择一个天查看任务
+                {expandedStageId ? '当前阶段暂无日期' : '请从左侧选择一个日期查看任务'}
               </div>
             )}
           </section>
