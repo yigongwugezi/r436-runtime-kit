@@ -7,7 +7,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.db.models import LearningPathModel, SessionModel
+from app.db.models import LearningPathModel, PersonalSubjectModel, SessionModel
+from app.db.repository import get_or_create_session
 
 
 def _timestamp(value: datetime | None) -> float:
@@ -66,3 +67,23 @@ def resolve_canonical_learning_session(
         "source": "subject_chat_session",
         "resolved_at": datetime.utcnow().isoformat(),
     }
+
+
+def ensure_canonical_learning_session(
+    db: Session, learner_id: str, subject_id: str,
+) -> tuple[dict[str, Any], bool]:
+    """Create the one initial chat session for an owned subject, if needed."""
+    subject = db.get(PersonalSubjectModel, subject_id)
+    if subject is None or subject.learner_id != learner_id:
+        raise PermissionError("subject is outside learner scope")
+    resolved = resolve_canonical_learning_session(db, learner_id, subject_id)
+    if resolved:
+        return resolved, False
+    session_id = f"session_{subject_id}"
+    get_or_create_session(
+        db, session_id, learner_id=learner_id, subject_id=subject_id, require_learner=True,
+    )
+    resolved = resolve_canonical_learning_session(db, learner_id, subject_id)
+    if resolved is None:
+        raise RuntimeError("canonical session creation failed")
+    return resolved, True

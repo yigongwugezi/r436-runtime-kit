@@ -3,7 +3,7 @@ import type { ChatMessage, ChatSession, QuickCommand, GenerationProgress, ChatAt
 import { getCurrentLearner, getStableLearnerId } from './authStore';
 import { useSubjectStore } from './subjectStore';
 import { readStorageItem, readStorageJson, writeStorageItem, writeStorageJson, runtimeStorageKeys } from '../utils/storageKeys';
-import { getCanonicalSubjectSession, getSubjectSession } from '../api/subjects';
+import { ensureCanonicalSubjectSession, getCanonicalSubjectSession, getSubjectSession } from '../api/subjects';
 import { createChatSession, getSessions, getSessionMessages } from '../api/chat';
 import { createLogger } from '../utils/logger';
 import { canonicalRequestKey } from '../utils/canonicalSessionState';
@@ -372,8 +372,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       .then((resolved) => {
         if (generation !== canonicalGeneration || controller.signal.aborted) return;
         if (!resolved) {
-          set({ canonicalSession: { status: 'failed', subjectId, sessionId: '', pathId: null, source: '', resolvedAt: null } });
-          return;
+          return ensureCanonicalSubjectSession(subjectId).then((ensured) => {
+            if (generation !== canonicalGeneration || controller.signal.aborted) return;
+            set((state) => ({ currentSessionId: ensured.sessionId, dataSessionId: ensured.sessionId, dataVersion: state.dataVersion + 1, canonicalSession: { status: 'resolved', ...ensured } }));
+          });
         }
         set((state) => ({ currentSessionId: resolved.sessionId, dataSessionId: resolved.sessionId, dataVersion: state.dataVersion + 1, canonicalSession: { status: 'resolved', ...resolved } }));
       })

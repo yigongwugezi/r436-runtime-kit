@@ -222,7 +222,10 @@ export async function streamRequest(
   if (!response.ok || !response.body) {
     log.error(`STREAM 失败 ${path} → ${response.status}`);
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-    throw new Error(`Stream error: ${response.status}`);
+    const body = await response.json().catch(() => null);
+    const detail = body?.detail;
+    const message = typeof detail === 'object' ? detail.code : detail;
+    throw new Error(`Stream error: ${response.status}${message ? ` ${message}` : ''}`);
   }
 
   log.debug(`STREAM 已连接 ${path}`);

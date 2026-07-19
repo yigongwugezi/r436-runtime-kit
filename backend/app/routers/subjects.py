@@ -21,7 +21,7 @@ from app.db.models import (
     SessionModel,
 )
 from app.middleware.auth import AuthContext, reject_parent, require_auth
-from app.services.canonical_learning_session import resolve_canonical_learning_session
+from app.services.canonical_learning_session import ensure_canonical_learning_session, resolve_canonical_learning_session
 from app.services.subject_identity import canonical_subject_name, get_or_create_personal_subject
 
 logger = logging.getLogger(__name__)
@@ -128,7 +128,8 @@ def create_subject(
     db = SessionLocal()
     try:
         ps, _created = get_or_create_personal_subject(db, auth.learner_id, name, body.description)
-        return {"status": "success", "data": {"subject": _subject_dict(ps)}}
+        session, session_created = ensure_canonical_learning_session(db, auth.learner_id, ps.id)
+        return {"status": "success", "data": {"subject": _subject_dict(ps), "session": {**session, "created": session_created, "learner_id": auth.learner_id}}}
     finally:
         db.close()
 
@@ -244,6 +245,20 @@ def get_subject_session(
                 "resolved_at": None,
             },
         }
+    finally:
+        db.close()
+
+
+@router.post("/subjects/{subject_id}/session/ensure")
+def ensure_subject_session(subject_id: str, auth: AuthContext = Depends(reject_parent)) -> dict:
+    """Idempotently create the canonical chat session for an owned subject."""
+    db = SessionLocal()
+    try:
+        try:
+            resolved, created = ensure_canonical_learning_session(db, auth.learner_id, subject_id)
+        except PermissionError as exc:
+            raise HTTPException(status_code=404, detail="subject not found") from exc
+        return {"status": "success", "data": {**resolved, "created": created, "learner_id": auth.learner_id}}
     finally:
         db.close()
 

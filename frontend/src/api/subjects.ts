@@ -52,6 +52,12 @@ export async function getCanonicalSubjectSession(subjectId: string, signal?: Abo
   };
 }
 
+export async function ensureCanonicalSubjectSession(subjectId: string): Promise<CanonicalSubjectSession> {
+  const res = await client.post(`/api/subjects/${subjectId}/session/ensure`);
+  const data = res.data;
+  return { sessionId: data.session_id, subjectId: data.subject_id, pathId: data.path_id || null, source: data.source || '', resolvedAt: data.resolved_at || null };
+}
+
 /** Compatibility for chat-only callers that only need the ID. */
 export async function getSubjectSession(subjectId: string): Promise<string | null> {
   return (await getCanonicalSubjectSession(subjectId))?.sessionId ?? null;
