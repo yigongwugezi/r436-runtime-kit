@@ -4562,6 +4562,13 @@ def _require_task_stage_access(
             for section in chapter.get("sections", [])
             if isinstance(section, dict)
         )
+        # Legacy persisted paths may have title-only stage tasks while the
+        # frontend already uses the deterministic day/task id.  Accept that
+        # canonical compatibility id here instead of treating it as absent.
+        stage_index = next((i for i, candidate in enumerate(stages) if candidate is stage), 0)
+        for index, item in enumerate(_stage_items(stage)):
+            day = int(item.get("day") or item.get("day_index") or item.get("dayIndex") or 1) if isinstance(item, dict) else 1
+            item_ids.add(f"{path.id}_s{stage_index}_d{day}_t{index}")
         if section_id not in item_ids or (task_id and task_id not in item_ids):
             raise HTTPException(status_code=404, detail="learning path task not found")
         if stage["progressStatus"] == "locked":
