@@ -221,7 +221,7 @@ export default function LearningPathPage() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId, stageId: activeDayStage.stageId }),
       }).then(res => res.json());
-      setRecommendedResources(r?.recommendations?.resources || r?.resources || []);
+      setRecommendedResources(r?.data?.recommendations?.resources || r?.resources || []);
     } catch { setRecommendedResources([]); }
     finally { setRecommendLoading(false); }
   }, [sessionId, activeDayStage]);

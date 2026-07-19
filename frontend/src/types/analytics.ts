@@ -200,6 +200,13 @@ export interface AnalyticsSummary {
   studyCalendar?: StudyCalendarDay[];
   goalTracking?: GoalTracking;
   todayCard?: TodayCard;
+  feedbackStats?: {
+    count: number;
+    averageRating: number | null;
+    source: string;
+    quality_status: string;
+    evidence: string;
+  };
   pathProgress?: {
     pathId: string; subjectId: string; sessionId: string;
     totalStageCount: number; completedStageCount: number;

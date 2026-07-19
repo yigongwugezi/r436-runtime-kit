@@ -87,6 +87,7 @@ class QuestionAgent(BaseAgent):
         # ── DeepTutor deep_solve: 为每道题生成逐步解析 ──
         all_questions = self._generate_solutions(all_questions)
         return {"questions": all_questions, "question_set_id": self._make_set_id(context),
+                "set_description": context.get("_set_description", ""),
                 "agent_step": self.agent_step()}
 
     def _generate_solutions(self, questions: list[dict]) -> list[dict]:
@@ -136,6 +137,11 @@ class QuestionAgent(BaseAgent):
     # ── 知识点提取 ──
 
     def _extract_knowledge_points(self, context: dict, diagnosis: dict) -> list[dict]:
+        # 0. 优先使用练习中心明确指定的知识点
+        explicit = context.get("knowledge_points", [])
+        if explicit:
+            return [{"name": kp, "reason": "练习中心指定", "priority": "high"} for kp in explicit]
+
         points = []
         # 1. 优先从学习路径阶段获取
         stages = context.get("learning_path", []) or []
@@ -221,7 +227,8 @@ class QuestionAgent(BaseAgent):
 ## 输出格式
 每道题包含：question_id, type, stem, difficulty, knowledge_points, tags
 对应题型的专属字段。
-只输出JSON：{{"questions": [...]}}"""
+额外输出一个 set_description（不超过40字，简要描述本题集覆盖的知识范围）。
+只输出JSON：{{"set_description": "一句话描述", "questions": [...]}}"""
 
         # ── 审核反馈注入 prompt ──
         feedback = context.get("_review_feedback", "")
@@ -239,6 +246,9 @@ class QuestionAgent(BaseAgent):
             )
             logger.info(f"QuestionAgent LLM raw response (first 300 chars): {raw[:300]}")
             parsed = parse_safe(raw)
+            set_desc = str(parsed.get("set_description", "")) if isinstance(parsed, dict) else ""
+            if set_desc:
+                context["_set_description"] = set_desc
             questions = parsed.get("questions") if isinstance(parsed, dict) else None
             if not isinstance(questions, list) or len(questions) == 0:
                 logger.warning("QuestionAgent: parsed questions is empty or not a list")

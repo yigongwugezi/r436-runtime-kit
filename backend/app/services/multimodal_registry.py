@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.multimodal_provider import (
-    ManimVideoProvider,
     MindMapTool,
     QwenImageProvider,
     QwenVisionProvider,
@@ -47,6 +46,7 @@ class ToolRegistry:
             "concept_card_generation_qwen": "QwenImageProvider",
             "teaching_diagram_generation_qwen": "QwenImageProvider",
             "video_generation": "Code2VideoProvider",
+            "manim_generation": "Code2VideoProvider",
             "micro_lesson_video": "Code2VideoProvider",
             "video_script_generation": "Code2VideoProvider",
             # ── 备用 / 直连 ──
@@ -54,8 +54,6 @@ class ToolRegistry:
             "image_to_mindmap_spark": "SparkVisionProvider",
             "image_generation_spark": "SparkImageProvider",
             "video_generation_wan": "WanVideoProvider",
-            "video_generation_manim": "ManimVideoProvider",
-            "video_generation_code2video": "Code2VideoProvider",
         }
 
     def register_tool(self, name: str, tool: Any) -> None:
@@ -109,7 +107,6 @@ def default_registry() -> ToolRegistry:
     registry.register_tool("SeedreamImageProvider", SeedreamImageProvider())
     registry.register_tool("QwenImageProvider", QwenImageProvider())
     registry.register_tool("WanVideoProvider", WanVideoProvider())
-    registry.register_tool("ManimVideoProvider", ManimVideoProvider())
     registry.register_tool("Code2VideoProvider", Code2VideoProvider())
     registry.register_tool("SparkImageProvider", SparkImageProvider())
     registry.register_tool("SparkVisionProvider", SparkVisionProvider())

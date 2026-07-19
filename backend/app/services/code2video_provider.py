@@ -137,7 +137,7 @@ class Code2VideoProvider:
                 )
                 if narration_text and len(narration_text) > 5:
                     agent.section_narrations[section.id] = narration_text
-                    audio_path = self._tts_chattts(narration_text, f"{job_id}_{section.id}") or self._tts_narration(narration_text, f"{job_id}_{section.id}")
+                    audio_path = self._tts_narration(narration_text, f"{job_id}_{section.id}") or self._tts_chattts(narration_text, f"{job_id}_{section.id}")
                     if audio_path:
                         dur = self._get_audio_duration(audio_path)
                         agent.section_durations[section.id] = dur

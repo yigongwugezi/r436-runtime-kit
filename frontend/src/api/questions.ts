@@ -57,7 +57,7 @@ export interface HistoryRecord {
 // ── API Functions ──────────────────────────────────────────────────
 
 /** Generate questions via AI for a session. */
-export async function generateQuestions(body: { sessionId: string; message: string }) {
+export async function generateQuestions(body: { sessionId: string; message: string; knowledgePoints?: string[] }) {
   const { data } = await client.post('/api/questions/generate', body);
   return data as {
     status: string;

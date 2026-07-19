@@ -3841,14 +3841,23 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
     elif resource_type == "quiz":
         _emit("正在生成练习题库…")
         try:
-            quiz_content = generate_quiz(topic, count=5)
+            quiz_result = generate_quiz(topic, count=5)
+            if isinstance(quiz_result, dict):
+                quiz_content = str(quiz_result.get("content") or "")
+                quiz_questions = quiz_result.get("questions") or []
+            else:
+                # Backward compat: old string-only return
+                quiz_content = str(quiz_result or "")
+                quiz_questions = []
             if quiz_content and len(quiz_content) > 50:
                 resource["content"] = f"## {topic} 自测题\n\n{quiz_content}"
                 resource["resource_metadata"]["generation_source"] = "deeptutor"
+            if quiz_questions:
+                resource["questions"] = quiz_questions
         except Exception:
             pass
         if not resource["content"] or resource["content"] == f"## {topic} 自测题\n\n完成每题后查看解析。":
-            resource["content"] = f"## {topic} 自测题\n\n完成每题后查看解析。"
+            resource["content"] = f"## {topic} 自测题\n\n> ⚠️ AI 生成超时，以下为基础模板题目。\n\n完成每题后查看解析。\n\n> 💡 点击「重试」按钮可重新生成更贴合主题的题目。"
             resource["questions"] = [
                 {"id": "q1", "type": "choice", "stem": f"学习 {topic} 时，第一步应优先确认什么？", "options": ["核心定义和边界", "跳过定义直接记结论", "只记术语", "忽略示例"], "answer": "A", "explanation": "先明确概念边界，后续步骤才有可靠依据。", "knowledgePoint": topic, "difficulty": request["difficulty"]},
                 {"id": "q2", "type": "choice", "stem": f"下列哪种做法最适合检验对 {topic} 的理解？", "options": ["复述并完成一个小例子", "只浏览标题", "只看答案", "跳过练习"], "answer": "A", "explanation": "复述和小例子能同时检查概念与应用。", "knowledgePoint": topic, "difficulty": request["difficulty"]},
@@ -3864,7 +3873,7 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
         except Exception:
             pass
         if not resource["content"]:
-            resource["content"] = f"# {topic} 拓展阅读\n\n先阅读定义与背景，再将关键术语整理为自己的笔记，最后用一个例子验证理解。"
+            resource["content"] = f"# {topic} 拓展阅读\n\n> ⚠️ 内容生成超时，以下为基本学习指引。\n\n## 核心概念\n{topic} 是相关领域的重要知识点，建议从以下方面入手：\n\n1. **定义与背景**：理解 {topic} 的基本定义和产生的背景\n2. **关键术语**：整理与该主题相关的核心术语及其含义\n3. **应用实例**：找一个具体的例子来验证和加深理解\n\n## 建议学习步骤\n- 先阅读相关教材或文档中的定义部分\n- 将关键术语整理成自己的笔记\n- 通过一个实际例子来检验理解程度\n\n> 💡 点击「重试」按钮可以重新生成更详细的内容。"
 
     elif resource_type == "practice":
         _emit("正在生成实操案例…")

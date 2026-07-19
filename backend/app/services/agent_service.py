@@ -40,6 +40,7 @@ def run_agents(
     progress_callback: Callable | None = None,
     agents_filter: list[str] | None = None,
     max_tasks: int = 0,
+    **extra_context: Any,
 ) -> dict[str, Any]:
     """Run the multi-agent pipeline, persist results, and return them.
 
@@ -110,6 +111,7 @@ def run_agents(
         agents_filter=agents_filter,
         progress_callback=progress_callback,
         max_tasks=max_tasks,
+        **extra_context,
     ))
 
     # Attach course metadata
