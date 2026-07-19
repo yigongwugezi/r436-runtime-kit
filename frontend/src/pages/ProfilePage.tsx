@@ -38,7 +38,7 @@ export default function ProfilePage() {
   const nav = useNavigate();
   const chat = useChatPanel();
   const sessionId = useChatStore((state) => state.dataSessionId);
-  const { profileV2, loading, error, fetchProfile } = useProfile();
+  const { profileV2, loading, empty, error, fetchProfile } = useProfile();
   const subjectId = String(profileV2?.subject_context?.subject_id || '');
   const [context, setContext] = useState({});
   const [inlineKey, setInlineKey] = useState<string | null>(null);
@@ -102,7 +102,7 @@ export default function ProfilePage() {
   if (loading && !profileV2) return <PageLoading text="加载学习画像…" />;
   if (error && !profileV2 && !sessionId) return <PageLoading text="等待会话就绪…" />;
   if (error && !profileV2) return <PageError title="画像加载失败" description={error} onRetry={fetchProfile} />;
-  if (!profileV2) return <div className="rounded-2xl bg-white p-10 text-center shadow-sm"><Brain className="mx-auto mb-3 text-surface-300" size={42} /><h2 className="text-xl font-bold">尚未构建学习画像</h2><p className="mt-2 text-sm text-surface-500">在对话中告诉 AI 你的课程、目标和时间安排。</p><button onClick={() => chat.setOpen(true)} className="mt-5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white">开始对话</button></div>;
+  if (!profileV2) return <div className="rounded-2xl bg-white p-10 text-center shadow-sm"><Brain className="mx-auto mb-3 text-surface-300" size={42} /><h2 className="text-xl font-bold">{empty ? '画像信息暂不完整' : '尚未构建学习画像'}</h2><p className="mt-2 text-sm text-surface-500">在对话中告诉 AI 你的课程、目标和时间安排。</p><button onClick={() => chat.setOpen(true)} className="mt-5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white">开始对话</button></div>;
 
   const subject = profileV2.subject_context || {};
   const interestState = profileV2.general_states?.find((item) => item.key === 'interest');
