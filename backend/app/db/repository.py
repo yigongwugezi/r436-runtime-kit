@@ -768,13 +768,14 @@ def upsert_resource(
     return res
 
 
-def get_resources(db: Session, session_id: str) -> list[ResourceModel]:
-    return (
-        db.query(ResourceModel)
-        .filter(ResourceModel.session_id == session_id)
-        .order_by(desc(ResourceModel.created_at))
-        .all()
-    )
+def get_resources(db: Session, session_id: str, subject_id: str | None = None) -> list[ResourceModel]:
+    q = db.query(ResourceModel).filter(ResourceModel.session_id == session_id)
+    if subject_id:
+        # Include resources with no subject_id (legacy) OR matching subject_id
+        q = q.filter(
+            (ResourceModel.subject_id == subject_id) | (ResourceModel.subject_id.is_(None))
+        )
+    return q.order_by(desc(ResourceModel.created_at)).all()
 
 
 def get_resource(db: Session, resource_id: str, session_id: str) -> ResourceModel | None:

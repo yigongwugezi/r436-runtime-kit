@@ -3333,7 +3333,7 @@ def get_resources(
         }
 
     # Merge DB resources with in-memory resources
-    db_resources = ag_get_resources(session_id)
+    db_resources = ag_get_resources(session_id, subject_id=subjectId)
     db_map: dict[str, dict[str, Any]] = {}
     if db_resources:
         bookmarks = _get_bookmarks(session_id)
@@ -3694,7 +3694,7 @@ def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "", aut
     scope = resolve_resource_scope(auth, session_id=sessionId, subject_id=subjectId, resource_id=resource_id)
     session_id = scope.session_id
 
-    db_resources = ag_get_resources(session_id)
+    db_resources = ag_get_resources(session_id, subject_id=subjectId)
     db_match = next((r for r in db_resources if r["id"] == resource_id), None)
     if db_match:
         bookmarks = _get_bookmarks(session_id)
@@ -3964,7 +3964,7 @@ def batch_export_resources(payload: dict[str, Any], auth: AuthContext = Depends(
         for resource_id in resource_ids:
             resolve_resource_scope(auth, session_id=session_id, subject_id=scope.subject_id, resource_id=str(resource_id))
 
-    db_resources = ag_get_resources(session_id)
+    db_resources = ag_get_resources(session_id, subject_id=subjectId)
     db_map: dict[str, dict[str, Any]] = {r["id"]: r for r in db_resources}
 
     state = conversation_store.get(session_id)
@@ -5428,7 +5428,7 @@ def get_learning_path(sessionId: str = "", subjectId: str = "", pathId: str = ""
             stage_resource_stats: dict[str, dict[str, int]] = {}
             stage_ids = [s.get("id", "") for s in stages]
             try:
-                db_res = ag_get_resources(session_id)
+                db_res = ag_get_resources(session_id, subject_id=subject_id)
                 for r in db_res:
                     sid = r.get("related_stage_id", "") or r.get("relatedStageId", "")
                     if not sid:
@@ -5514,6 +5514,12 @@ def get_learning_path(sessionId: str = "", subjectId: str = "", pathId: str = ""
             )
 
         state = conversation_store.get(session_id)
+        # Only use conversation_store path if it belongs to the requested subject
+        if state.last_result and subject_id:
+            last_path = _to_learning_path(state.last_result)
+            path_subject = (last_path.get("courseId") or "") if isinstance(last_path, dict) else ""
+            if path_subject and path_subject != subject_id:
+                state.last_result = None  # don't leak cross-subject
         if state.last_result:
             path = _to_learning_path(state.last_result)
             if not path.get("stages"):
@@ -5622,12 +5628,13 @@ def _generate_learning_path(payload: dict[str, Any], auth: AuthContext, workflow
                 for k in ["knowledge_base", "weak_points", "target_course", "learning_goal"]:
                     state.facts.pop(k, None)
     message = user_message or conversation_store.profile_prompt(state, latest_message="请生成学习路径")
-    result = _run_agents(
-        message,
+    result = ag_run_agents(
         session_id=session_id,
-        agents_filter=["profile_agent", "planner_agent"],
+        user_message=message,
         progress_callback=progress_callback,
+        agents_filter=["profile_agent", "planner_agent"],
         max_tasks=2,
+        is_workflow=True,
     )
     result["session_id"] = session_id
     path = _to_learning_path(result)
@@ -7056,7 +7063,7 @@ def learning_timeline(
         cutoff = time.time() - range * 86400
         raw_events = [e for e in raw_events if e.created_at and e.created_at.timestamp() >= cutoff]
 
-    db_resources = ag_get_resources(session_id)
+    db_resources = ag_get_resources(session_id, subject_id=subjectId)
     resource_titles: dict[str, str] = {}
     resource_types: dict[str, str] = {}
     resource_stages: dict[str, str] = {}
