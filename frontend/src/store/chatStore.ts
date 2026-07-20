@@ -3,18 +3,19 @@ import type { ChatMessage, ChatSession, QuickCommand, GenerationProgress, ChatAt
 import { getCurrentLearner, getStableLearnerId } from './authStore';
 import { useSubjectStore } from './subjectStore';
 import { readStorageItem, readStorageJson, writeStorageItem, writeStorageJson, runtimeStorageKeys } from '../utils/storageKeys';
-import { ensureCanonicalSubjectSession, getCanonicalSubjectSession, getSubjectSession } from '../api/subjects';
-import { createChatSession, getSessions, getSessionMessages } from '../api/chat';
+import { ensureCanonicalSubjectSession, getCanonicalSubjectSession } from '../api/subjects';
+import type { CanonicalSubjectSession } from '../api/subjects';
+import { createChatSession, deleteSession as archiveChatSession, getSessions } from '../api/chat';
 import { createLogger } from '../utils/logger';
-import { canonicalRequestKey } from '../utils/canonicalSessionState';
+import { canonicalRequestKey, hydrateChatSessions, resolveActiveSubjectContext } from '../utils/canonicalSessionState';
 
 const log = createLogger('ChatStore');
 
 /** 基于 learnerId + subjectId 生成 storage key，实现科目隔离 */
 export const suffix = () => {
-  const subject = useSubjectStore.getState().activeSubject;
+  const { activeSubject, activeClassSubject } = useSubjectStore.getState();
   const learnerId = getStableLearnerId();
-  const subjectId = subject?.id || 'default';
+  const { subjectId = 'default' } = resolveActiveSubjectContext(activeSubject, activeClassSubject);
   return `${learnerId}_${subjectId}`;
 };
 
@@ -124,7 +125,7 @@ interface ChatStore {
   clearMessages: () => void;
   newSession: () => void;
   removeLastMessage: () => void;
-  removeSession: (id: string) => void;
+  removeSession: (id: string) => Promise<void>;
   renameSession: (id: string, title: string) => void;
   bumpDataVersion: () => void;
   resolveCanonicalSession: () => Promise<void>;
@@ -311,7 +312,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     persistSessions(sessions);
     writeStorageItem(runtimeStorageKeys.pendingGeneration, '');
     set({ currentSessionId: id, sessions, messages: [], isStreaming: false, progressPipelineSteps: [], agentProgress: null, lastDebugInfo: null, lastImageAttachment: null, imageAttachmentHistory: [], selectedImageAttachmentId: null });
-    void createChatSession({ sessionId: id, learnerId: getStableLearnerId() }).catch((error) => log.warn('Failed to create chat session', error));
+    const { activeSubject, activeClassSubject } = useSubjectStore.getState();
+    const { subjectId } = resolveActiveSubjectContext(activeSubject, activeClassSubject);
+    void createChatSession({ sessionId: id, learnerId: getStableLearnerId(), ...(subjectId ? { subjectId } : {}) }).catch((error) => log.warn('Failed to create chat session', error));
   },
   removeLastMessage: () =>
     set((s) => {
@@ -321,18 +324,35 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       return { messages: msgs };
     }),
 
-  removeSession: (id) =>
-    set((s) => {
+  removeSession: async (id) => {
+    try {
+      await archiveChatSession(id);
       const sessions = loadSessions().filter((ses) => ses.id !== id);
       persistSessions(sessions);
-      // 如果删除的是当前会话，创建新会话
-      if (s.currentSessionId === id) {
-        const newId = createSessionId();
-        persistSessionId(newId);
-        return { sessions, currentSessionId: newId, messages: [], lastImageAttachment: null, imageAttachmentHistory: [], selectedImageAttachmentId: null };
+      if (get().currentSessionId !== id) {
+        set({ sessions });
+        return;
       }
-      return { sessions };
-    }),
+      const { activeSubject, activeClassSubject } = useSubjectStore.getState();
+      const { subjectId } = resolveActiveSubjectContext(activeSubject, activeClassSubject);
+      const newId = createSessionId();
+      await createChatSession({ sessionId: newId, learnerId: getStableLearnerId(), ...(subjectId ? { subjectId } : {}) });
+      persistSessionId(newId);
+      persistSessions([{ id: newId, title: '新对话', messages: [], createdAt: Date.now(), updatedAt: Date.now() }, ...sessions]);
+      set((state) => ({
+        sessions: loadSessions(), currentSessionId: newId,
+        dataSessionId: state.dataSessionId === id ? newId : state.dataSessionId,
+        messages: [], lastImageAttachment: null, imageAttachmentHistory: [], selectedImageAttachmentId: null,
+        canonicalSession: state.canonicalSession.sessionId === id
+          ? { ...state.canonicalSession, sessionId: newId, pathId: null, source: 'subject_chat_session', resolvedAt: new Date().toISOString() }
+          : state.canonicalSession,
+      }));
+    } catch (error) {
+      log.warn('Failed to archive chat session', error);
+      const detail = (error as any)?.response?.data?.detail;
+      alert(typeof detail === 'string' ? detail : '删除对话失败，请稍后重试。');
+    }
+  },
 
   renameSession: (id, title) =>
     set((s) => {
@@ -351,7 +371,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   resolveCanonicalSession: () => {
     const learner = getCurrentLearner();
     const subjectStore = useSubjectStore.getState();
-    const subjectId = subjectStore.activeSubject?.id ?? subjectStore.activeClassSubject?.subject;
+    const { subjectId } = resolveActiveSubjectContext(subjectStore.activeSubject, subjectStore.activeClassSubject);
     const key = canonicalRequestKey(learner?.id, subjectId);
     if (!learner || !subjectId) {
       canonicalAbort?.abort();
@@ -367,17 +387,35 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     const controller = new AbortController();
     canonicalAbort = controller;
     const generation = ++canonicalGeneration;
-    set({ dataSessionId: '', currentSessionId: '', sessions: [], messages: [], canonicalSession: { status: 'resolving', subjectId, sessionId: '', pathId: null, source: '', resolvedAt: null } });
+    set({ dataSessionId: '', currentSessionId: '', sessions: loadSessions(), messages: [], canonicalSession: { status: 'resolving', subjectId, sessionId: '', pathId: null, source: '', resolvedAt: null } });
+    const applyResolved = (resolved: CanonicalSubjectSession) => {
+      if (generation !== canonicalGeneration || controller.signal.aborted) return;
+      const cachedSessions = loadSessions();
+      persistSessionId(resolved.sessionId);
+      set((state) => ({
+        currentSessionId: resolved.sessionId,
+        dataSessionId: resolved.sessionId,
+        sessions: cachedSessions,
+        messages: cachedSessions.find((session) => session.id === resolved.sessionId)?.messages || [],
+        dataVersion: state.dataVersion + 1,
+        canonicalSession: { status: 'resolved', ...resolved },
+      }));
+      void getSessions(subjectId).then((response) => {
+        if (generation !== canonicalGeneration || controller.signal.aborted) return;
+        const sessions = hydrateChatSessions(response.sessions, cachedSessions) as ChatSession[];
+        persistSessions(sessions);
+        set({ sessions });
+      }).catch((error) => log.warn('Failed to hydrate chat sessions', error));
+    };
     const promise = getCanonicalSubjectSession(subjectId, controller.signal)
       .then((resolved) => {
         if (generation !== canonicalGeneration || controller.signal.aborted) return;
         if (!resolved) {
           return ensureCanonicalSubjectSession(subjectId).then((ensured) => {
-            if (generation !== canonicalGeneration || controller.signal.aborted) return;
-            set((state) => ({ currentSessionId: ensured.sessionId, dataSessionId: ensured.sessionId, dataVersion: state.dataVersion + 1, canonicalSession: { status: 'resolved', ...ensured } }));
+            applyResolved(ensured);
           });
         }
-        set((state) => ({ currentSessionId: resolved.sessionId, dataSessionId: resolved.sessionId, dataVersion: state.dataVersion + 1, canonicalSession: { status: 'resolved', ...resolved } }));
+        applyResolved(resolved);
       })
       .catch((error) => {
         if (generation !== canonicalGeneration || controller.signal.aborted) return;
@@ -393,108 +431,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   /** 科目切换后重新加载该科目下的会话 ID 和会话列表。
    *  家长账户：从后端解析孩子的 session，确保数据查询使用正确的 scope。 */
-  reloadSession: async () => {
-    return get().resolveCanonicalSession();
-    const learner = getCurrentLearner();
-    const store = useSubjectStore.getState();
-    const subjectId = store.activeSubject?.id ?? store.activeClassSubject?.subject ?? '';
-
-    // Parent: resolve child's session from backend (localStorage has parent's
-    // own session which points to empty data).
-    if (learner?.role === 'parent' && subjectId) {
-      try {
-        const childSessionId = await getSubjectSession(subjectId);
-        if (childSessionId) {
-          // Hydrate sessions and messages from backend for the child
-          let parentSessions: ChatSession[] = [];
-          let parentMessages: ChatMessage[] = [];
-          try {
-            const backendRes = await getSessions(subjectId);
-            if (backendRes?.sessions?.length) {
-              parentSessions = backendRes.sessions.map((s: any) => ({
-                id: s.id, title: s.title || '未命名会话', messages: s.messages || [],
-                createdAt: s.created_at ? new Date(s.created_at).getTime() : Date.now(),
-                updatedAt: s.updated_at ? new Date(s.updated_at).getTime() : Date.now(),
-              }));
-            }
-            const msgRes = await getSessionMessages(childSessionId!);
-            if (msgRes?.messages?.length) parentMessages = msgRes.messages;
-          } catch { /* best-effort hydration */ }
-          set({ currentSessionId: childSessionId!, dataSessionId: childSessionId!, sessions: parentSessions, messages: parentMessages });
-          return;
-        }
-      } catch (err) {
-        log.warn('Failed to resolve child session for parent', err);
-      }
-      // Child has no session yet — clear state so UI shows empty/未创建
-      set({ currentSessionId: '', dataSessionId: '', sessions: [], messages: [] });
-      return;
-    }
-
-    // Student/teacher: currentSessionId from localStorage (chat continuity),
-    // dataSessionId from backend (so analytics/profile/path queries find the
-    // correct session even when logging in from a different browser).
-    const id = loadSessionId();
-    const sessions = loadSessions();
-    const cachedSession = sessions.find(s => s.id === id);
-    const cachedMessages = cachedSession?.messages || [];
-
-    let dataId = id;
-    if (subjectId) {
-      try {
-        const resolvedId = await getSubjectSession(subjectId);
-        dataId = resolvedId || dataId;
-      } catch { /* fall back to localStorage id */ }
-    }
-
-    // ── Hydrate sessions & messages from backend ──
-    // On a new browser (empty localStorage), fetch chat history from the
-    // server so the user sees their existing sessions and messages.
-    let effectiveSessions = sessions;
-    let effectiveMessages = cachedMessages;
-    if (sessions.length === 0 && subjectId) {
-      try {
-        const backendRes = await getSessions(subjectId);
-        if (backendRes?.sessions?.length) {
-          effectiveSessions = backendRes.sessions.map((s: any) => ({
-            id: s.id,
-            title: s.title || '未命名会话',
-            messages: s.messages || [],
-            createdAt: s.created_at ? new Date(s.created_at).getTime() : Date.now(),
-            updatedAt: s.updated_at ? new Date(s.updated_at).getTime() : Date.now(),
-          }));
-          persistSessions(effectiveSessions);
-          log.info(`Hydrated ${effectiveSessions.length} sessions from backend`);
-          // Also load messages for the active data session
-          try {
-            const msgRes = await getSessionMessages(dataId);
-            if (msgRes?.messages?.length) {
-              effectiveMessages = msgRes.messages || [];
-              // Cache messages in the hydrated session
-              const activeIdx = effectiveSessions.findIndex((s: ChatSession) => s.id === dataId);
-              if (activeIdx >= 0) {
-                effectiveSessions[activeIdx] = { ...effectiveSessions[activeIdx], messages: effectiveMessages };
-              }
-              persistSessions(effectiveSessions);
-              log.info(`Hydrated ${effectiveMessages.length} messages for session ${dataId}`);
-            }
-          } catch { /* messages fetch best-effort */ }
-        }
-      } catch (err) {
-        log.warn('Failed to hydrate sessions from backend', err);
-      }
-    }
-
-    // When the server resolves a different session than localStorage
-    // (e.g. logging in from a new browser), adopt the server-resolved
-    // session for both chat and data queries so the user sees all their
-    // existing learning data.
-    const effectiveId = dataId !== id ? dataId : id;
-    if (dataId !== id) {
-      persistSessionId(effectiveId);
-    }
-    set({ currentSessionId: effectiveId, dataSessionId: effectiveId, sessions: effectiveSessions, messages: effectiveMessages, lastImageAttachment: null, imageAttachmentHistory: [], selectedImageAttachmentId: null });
-  },
+  reloadSession: () => get().resolveCanonicalSession(),
 }));
 
 // ================================================================

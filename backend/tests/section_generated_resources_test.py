@@ -53,6 +53,13 @@ def _assert_generate_route_is_callable() -> None:
     assert result["data"]["resource"]["id"] == "generated"
 
 
+def _assert_empty_workflow_section_is_rejected() -> None:
+    from app.routers import product
+
+    result = product._generate_section_resource("", {"sessionId": "session_1", "sectionTitle": "Recursion", "resourceType": "summary_card"})
+    assert result["status"] == "error" and result["message"] == "sectionId required"
+
+
 class ProfileJsonClient:
     def __init__(self) -> None:
         self.prompts: list[str] = []
@@ -64,6 +71,7 @@ class ProfileJsonClient:
 
 def main() -> None:
     _assert_generate_route_is_callable()
+    _assert_empty_workflow_section_is_rejected()
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine)()

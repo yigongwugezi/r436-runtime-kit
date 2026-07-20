@@ -51,10 +51,12 @@ const qualityBadge: Record<string, string> = { passed: 'bg-success-50 text-succe
 const TYPES = ['', 'lecture', 'mindmap', 'quiz', 'reading', 'case_study', 'video', 'ppt', 'textbook', 'article', 'course', 'document', 'paper'];
 const SORTS = [{ v: 'default', l: '推荐' }, { v: 'newest', l: '最新' }, { v: 'easiest', l: '最简单' }, { v: 'hardest', l: '最困难' }];
 const resourceLabel = (resource: Resource) => RESOURCE_TYPE_LABELS[resource.taskId || ''] || RESOURCE_TYPE_LABELS[resource.type] || resource.type;
+const generatedAt = (value: number) => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '未知';
 const resourceIcon = (resource: Resource) => icons[resource.taskId || ''] || icons[resource.type];
 const generatedResourceTypes = new Set(['summary_card', 'concept_comparison', 'worked_example', 'mistake_checklist', 'review_notes', 'knowledge_map', 'process_flow', 'concept_diagram', 'execution_trace', 'code_trace']);
 const visibleTags = (tags: string[] = []) => tags.filter((tag) => !generatedResourceTypes.has(tag) && !['section_generated', 'p4_multimodal', 'textbook'].includes(tag) && !tag.startsWith('path_session_'));
 const isSafeExternalUrl = (value?: string) => {
+  if (value?.startsWith('/api/')) return true;
   try { return ['http:', 'https:'].includes(new URL(value || '').protocol); } catch { return false; }
 };
 
@@ -209,7 +211,7 @@ function ResourceDetailView({
                <span className="px-2.5 py-1 rounded-lg text-xs text-surface-500 bg-surface-50">{resourceLabel(resource)}</span>
                {resource.qualityStatus && <span className={`px-2.5 py-1 rounded-lg text-xs ${qualityBadge[resource.qualityStatus] || 'bg-surface-50 text-surface-500'}`}>{qualityLabel[resource.qualityStatus] || resource.qualityStatus}</span>}
               <span className="text-xs text-surface-400">· {formatDuration(resource.estimatedMinutes)}</span>
-              <span className="text-xs text-surface-400">· {timeAgo(resource.createdAt)}</span>
+              <span className="text-xs text-surface-400">· 生成时间：{generatedAt(resource.createdAt)}（{timeAgo(resource.createdAt)}）</span>
               <SourceBadge source={resource.source || 'system_inferred'} size="sm" />
               <span className="text-xs text-surface-400">v{resource.generationVersion || 1}</span>
               {resource.studyStatus === 'completed' && <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-success-50 text-success-600">✅ 已完成</span>}
@@ -276,10 +278,10 @@ function ResourceDetailView({
       {resource.content && (
         <div className="bg-white rounded-2xl shadow-soft p-6">
           <div className="prose-custom">
-            {(resource.type === 'video' && (/\.(mp4|webm)(\?|$)/i.test(resource.content) || resource.content.startsWith('/api/multimodal/file/'))) ? (
+            {(resource.type === 'video' && isSafeExternalUrl(resource.content)) ? (
               <a href={resource.content} target="_blank" rel="noopener"
                 className="inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-red-50 border border-red-200 text-red-700 font-medium hover:bg-red-100 transition-colors">
-                <Play size={18} /> 点击播放视频
+                <Play size={18} /> 打开视频资源
               </a>
             ) : resource.type === 'mindmap' ? (
               (() => {
@@ -317,7 +319,7 @@ function ResourceDetailView({
               })()
             ) : resource.type === 'ppt' ? (
               <div className="space-y-4">
-                {resource.content && (
+                {isSafeExternalUrl(resource.content) && (
                   <a href={resource.content} target="_blank" rel="noopener"
                     className="inline-flex items-center gap-2 px-4 py-3 rounded-xl bg-orange-50 border border-orange-200 text-orange-700 font-medium hover:bg-orange-100 transition-colors">
                     <Download size={18} /> 下载 PPT 文件
@@ -342,7 +344,7 @@ function ResourceDetailView({
                   </div>
                 )}
               </div>
-            ) : resource.type === 'case_study' && resource.taskId === 'code_trace' ? <>{resource.mermaidDef && <div className="mb-4 p-4 bg-white rounded-xl border border-surface-200"><MermaidDiagram definition={resource.mermaidDef} /></div>}<Markdown content={resource.content || '暂无内容'} /></> : resource.type === 'quiz' && resource.questions?.length > 0 ? <QuizAnswerer questions={resource.questions} resourceId={resource.id} /> : resource.type === 'image' ? (
+            ) : resource.type === 'case_study' && resource.taskId === 'code_trace' ? <>{resource.mermaidDef && <div className="mb-4 p-4 bg-white rounded-xl border border-surface-200"><MermaidDiagram definition={resource.mermaidDef} /></div>}<Markdown content={resource.content || '暂无内容'} /></> : resource.type === 'quiz' && resource.questions?.length > 0 ? <QuizAnswerer questions={resource.questions} resourceId={resource.id} /> : resource.type === 'image' && isSafeExternalUrl(resource.content) ? (
               <div className="flex justify-center">
                 <img src={resource.content} alt={resource.title} className="max-w-full h-auto rounded-xl shadow-soft" style={{ maxHeight: '70vh' }} />
               </div>
@@ -585,7 +587,7 @@ function ResourceListView({
                     <div key={r.id} onClick={() => selectionMode ? (setSelectedIds(prev => { const n = new Set(prev); n.has(r.id) ? n.delete(r.id) : n.add(r.id); return n; })) : nav(`/resources/${r.id}`)} className={`relative bg-white rounded-2xl shadow-soft hover:shadow-elevated transition-all duration-300 overflow-hidden cursor-pointer ${selectionMode && selectedIds.has(r.id) ? 'ring-2 ring-primary-400 shadow-elevated' : selectionMode ? 'hover:ring-2 hover:ring-surface-300' : 'group'}`}>
                       {selectionMode && <div className="absolute top-3 left-3 z-20">{selectedIds.has(r.id) ? <CheckCircle2 className="w-5 h-5 text-primary-600 drop-shadow-sm" /> : <div className="w-5 h-5 rounded-full border-2 border-surface-300 bg-white/80" />}</div>}
                       <div className="relative h-32 bg-gradient-to-br from-surface-100 to-surface-200 flex items-center justify-center"><div className={`w-16 h-16 rounded-2xl ${c.bg} flex items-center justify-center`}>{resourceIcon(r)}</div><div className={`absolute top-3 left-3 px-2.5 py-1 rounded-lg ${c.bg} ${c.text} flex items-center gap-1.5 text-xs font-medium`}>{resourceLabel(r)}</div>{r.studyStatus === 'completed' && <CheckCircle2 size={18} className="absolute top-3 right-3 text-success-500" />}<button onClick={async (e) => { e.preventDefault(); e.stopPropagation(); if (!confirm(`删除「${r.title}」？`)) return; try { const { deleteResource } = await import('../api/resources'); await deleteResource(r.id, sessionId); onRefetch(); } catch { alert('删除失败'); } }} title="删除" className="absolute top-3 right-12 p-1.5 rounded-lg bg-white/80 text-surface-400 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100"><Trash2 size={14} /></button></div>
-                      <div className="p-5"><h4 className="font-semibold text-surface-800 line-clamp-2 group-hover:text-primary-600 transition-colors mb-2">{r.title}</h4><p className="text-sm text-surface-500 line-clamp-2 mb-3">{r.description}</p>{r.relatedChapter && <p className="text-xs text-surface-400 mb-2 truncate">📖 {r.relatedChapter}</p>}<div className="flex items-center justify-between text-xs text-surface-400"><div className="flex items-center gap-2"><Clock size={12} />{formatDuration(r.estimatedMinutes)}</div>{(r.type === 'video' || (r.type === 'ppt' && r.format !== 'text')) && r.content ? (
+                      <div className="p-5"><h4 className="font-semibold text-surface-800 line-clamp-2 group-hover:text-primary-600 transition-colors mb-2">{r.title}</h4><p className="text-sm text-surface-500 line-clamp-2 mb-3">{r.description}</p>{r.relatedChapter && <p className="text-xs text-surface-400 mb-2 truncate">📖 {r.relatedChapter}</p>}<p className="text-xs text-surface-400 mb-2">生成时间：{generatedAt(r.createdAt)}</p><div className="flex items-center justify-between text-xs text-surface-400"><div className="flex items-center gap-2"><Clock size={12} />{formatDuration(r.estimatedMinutes)}</div>{(r.type === 'video' || (r.type === 'ppt' && r.format !== 'text')) && isSafeExternalUrl(r.content) ? (
   r.type === 'video' ? (
     <a href={r.content} target="_blank" rel="noopener" onClick={e => e.stopPropagation()} className="px-3 py-1.5 rounded-lg bg-red-50 text-red-600 font-medium hover:bg-red-100 transition-colors">▶ 播放</a>
   ) : (
@@ -601,8 +603,8 @@ function ResourceListView({
                     <div key={r.id} onClick={() => selectionMode ? (setSelectedIds(prev => { const n = new Set(prev); n.has(r.id) ? n.delete(r.id) : n.add(r.id); return n; })) : nav(`/resources/${r.id}`)} className={`bg-white rounded-xl p-4 shadow-soft hover:shadow-elevated transition-all cursor-pointer flex items-center gap-4 ${selectionMode && selectedIds.has(r.id) ? 'ring-2 ring-primary-400 shadow-elevated' : selectionMode ? 'hover:ring-2 hover:ring-surface-300' : 'group'}`}>
                       {selectionMode && <div className="flex-shrink-0">{selectedIds.has(r.id) ? <CheckCircle2 className="w-5 h-5 text-primary-600" /> : <div className="w-5 h-5 rounded-full border-2 border-surface-300" />}</div>}
                       <div className={`w-12 h-12 rounded-xl ${c.bg} flex items-center justify-center flex-shrink-0`}>{resourceIcon(r)}</div>
-                       <div className="flex-1 min-w-0"><div className="flex items-center gap-2 mb-1"><h4 className="font-semibold text-surface-800 group-hover:text-primary-600 transition-colors truncate">{r.title}</h4><span className={`flex-shrink-0 px-2 py-0.5 rounded text-xs ${diffBadge[r.difficulty]}`}>{diffLabel[r.difficulty]}</span>{r.qualityStatus && <span className={`flex-shrink-0 px-2 py-0.5 rounded text-xs ${qualityBadge[r.qualityStatus] || 'bg-surface-100 text-surface-500'}`}>{qualityLabel[r.qualityStatus] || r.qualityStatus}</span>}</div><p className="text-sm text-surface-500 truncate">{r.description}</p><div className="flex items-center gap-3 mt-1.5 text-xs text-surface-400"><span className="flex items-center gap-1"><Clock size={12} />{formatDuration(r.estimatedMinutes)}</span>{r.relatedChapter && <span className="truncate">📖 {r.relatedChapter}</span>}<SourceBadge source={r.source || 'system_inferred'} size="xs" /></div></div>
-                      <div className="flex items-center gap-2">{(r.type === 'video' || r.type === 'ppt') && r.content ? <a href={r.content} target="_blank" rel="noopener" onClick={e => e.stopPropagation()} className="px-3 py-1.5 rounded-lg bg-red-50 text-red-600 text-xs font-medium hover:bg-red-100 transition-colors">{r.type === 'video' ? '▶ 播放' : '📥 下载'}</a> : null}{r.studyStatus === 'completed' && <CheckCircle2 size={18} className="text-success-500" />}{r.bookmarked && <BookmarkCheck size={18} className="text-primary-500" />}<button onClick={async (e) => { e.preventDefault(); e.stopPropagation(); if (!confirm(`删除「${r.title}」？`)) return; try { const { deleteResource } = await import('../api/resources'); await deleteResource(r.id, sessionId); onRefetch(); } catch { alert('删除失败'); } }} title="删除" className="p-1.5 rounded-lg text-surface-300 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100"><Trash2 size={14} /></button><ChevronRight size={18} className="text-surface-300 group-hover:text-primary-500 transition-colors" /></div>
+                       <div className="flex-1 min-w-0"><div className="flex items-center gap-2 mb-1"><h4 className="font-semibold text-surface-800 group-hover:text-primary-600 transition-colors truncate">{r.title}</h4><span className={`flex-shrink-0 px-2 py-0.5 rounded text-xs ${diffBadge[r.difficulty]}`}>{diffLabel[r.difficulty]}</span>{r.qualityStatus && <span className={`flex-shrink-0 px-2 py-0.5 rounded text-xs ${qualityBadge[r.qualityStatus] || 'bg-surface-100 text-surface-500'}`}>{qualityLabel[r.qualityStatus] || r.qualityStatus}</span>}</div><p className="text-sm text-surface-500 truncate">{r.description}</p><div className="flex items-center gap-3 mt-1.5 text-xs text-surface-400"><span className="flex items-center gap-1"><Clock size={12} />{formatDuration(r.estimatedMinutes)}</span><span>生成时间：{generatedAt(r.createdAt)}</span>{r.relatedChapter && <span className="truncate">📖 {r.relatedChapter}</span>}<SourceBadge source={r.source || 'system_inferred'} size="xs" /></div></div>
+                      <div className="flex items-center gap-2">{(r.type === 'video' || r.type === 'ppt') && isSafeExternalUrl(r.content) ? <a href={r.content} target="_blank" rel="noopener" onClick={e => e.stopPropagation()} className="px-3 py-1.5 rounded-lg bg-red-50 text-red-600 text-xs font-medium hover:bg-red-100 transition-colors">{r.type === 'video' ? '▶ 播放' : '📥 下载'}</a> : null}{r.studyStatus === 'completed' && <CheckCircle2 size={18} className="text-success-500" />}{r.bookmarked && <BookmarkCheck size={18} className="text-primary-500" />}<button onClick={async (e) => { e.preventDefault(); e.stopPropagation(); if (!confirm(`删除「${r.title}」？`)) return; try { const { deleteResource } = await import('../api/resources'); await deleteResource(r.id, sessionId); onRefetch(); } catch { alert('删除失败'); } }} title="删除" className="p-1.5 rounded-lg text-surface-300 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100"><Trash2 size={14} /></button><ChevronRight size={18} className="text-surface-300 group-hover:text-primary-500 transition-colors" /></div>
                     </div>
                   ); })}
                 </div>

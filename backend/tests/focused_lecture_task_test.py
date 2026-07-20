@@ -72,7 +72,9 @@ def main() -> None:
         })
         assert tutor.status_code == 200 and tutor.json()["data"]["reply"]
         assert any("课程 数据结构；阶段 s1；任务 t1" in prompt for prompt in fake.prompts)
+        app.dependency_overrides[product.get_auth] = lambda: AuthContext(learner_id="learner-a")
         completed = client.patch("/api/learning-path/nodes/t1", json={"sessionId": "lecture-session", "status": "mastered", "mastery": 100})
+        app.dependency_overrides.clear()
         assert completed.status_code == 200
         db = factory()
         try:

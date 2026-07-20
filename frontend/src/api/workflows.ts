@@ -37,6 +37,13 @@ export async function startWorkflow(workflowType: string, payload: Record<string
 
 const pendingLectureEnsures = new Map<string, Promise<any>>();
 
+export async function readSectionLecture(sectionId: string, payload: Record<string, unknown>) {
+  const { data } = await client.get(`/api/sections/${encodeURIComponent(sectionId)}/lecture`, {
+    params: { sessionId: payload.sessionId, pathId: payload.pathId, stageId: payload.stageId, taskId: payload.taskId },
+  });
+  return data;
+}
+
 export function ensureLecture(sectionId: string, payload: Record<string, unknown>) {
   const key = [payload.sessionId, payload.subjectId, payload.pathId, payload.stageId, payload.taskId].join('|');
   const pending = pendingLectureEnsures.get(key);

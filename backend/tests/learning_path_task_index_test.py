@@ -41,7 +41,7 @@ def main() -> None:
     finally:
         db.close()
 
-    with patch.object(workflows, "_start", return_value=(SimpleNamespace(task_id="ensure-test"), False)):
+    with patch.object(workflows, "_start", return_value=(SimpleNamespace(task_id="ensure-test"), False)) as start:
         with TestClient(app) as client:
             path_response = client.get("/api/learning-path", params={"sessionId": SESSION_ID, "subjectId": SUBJECT_ID})
             assert path_response.status_code == 200, path_response.text
@@ -53,6 +53,10 @@ def main() -> None:
             })
             assert response.status_code == 200, response.text
             assert response.json()["status"] in {"ready", "running"}
+            started_payload = start.call_args.args[1]
+            assert started_payload["sectionId"] == TASK_ID
+            assert started_payload["sectionTitle"] == "persisted daily task"
+            assert started_payload["task_type"] == "read_doc"
             scoped_wrong = client.post(f"/api/sections/{TASK_ID}/lecture/ensure", json={
                 "sessionId": SESSION_ID, "subjectId": SUBJECT_ID, "pathId": PATH_ID,
                 "stageId": "wrong-stage", "dayId": f"{STAGE_ID}_d1", "globalDayIndex": 1, "taskId": TASK_ID, "taskType": "read_doc",

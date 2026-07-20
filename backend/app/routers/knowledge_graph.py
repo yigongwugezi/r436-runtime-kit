@@ -15,7 +15,9 @@ from fastapi import APIRouter, Depends
 
 from app.routers.product import (
     _apply_node_progress,
+    _ensure_session_linked as _product_ensure_session_linked,
     _resolve_session_id,
+    _require_session_learner,
     _normalize_content_status,
     _product_response,
     _safe_mermaid_label,
@@ -25,7 +27,7 @@ from app.services.agent_service import (
     get_resources as ag_get_resources,
 )
 from app.db.repository import CurrentPathUnresolvedError
-from app.middleware.auth import AuthContext, get_auth
+from app.middleware.auth import AuthContext, require_auth
 
 logger = logging.getLogger("app.knowledge_graph")
 
@@ -44,12 +46,13 @@ def get_knowledge_graph(
     sessionId: str = "",
     subjectId: str = "",
     chapter: str = "",
-    auth: AuthContext = Depends(get_auth),
+    auth: AuthContext = Depends(require_auth),
 ) -> dict[str, Any]:
     """Return the full knowledge graph (nodes + edges) for a session."""
     session_id = _resolve_session_id(sessionId, subjectId)
     subject_id = str(subjectId).strip()
-    _ensure_session_linked(session_id, subject_id=subject_id)
+    _require_session_learner(session_id, auth)
+    _ensure_session_linked(session_id, subject_id=subject_id, learner_id=auth.learner_id)
 
 
     # 1. Get learning path
@@ -201,10 +204,12 @@ def get_knowledge_graph(
 @router.get("/nodes/{node_id}")
 def get_node_detail(
     node_id: str, sessionId: str = "", subjectId: str = "",
-    auth: AuthContext = Depends(get_auth),
+    auth: AuthContext = Depends(require_auth),
 ) -> dict[str, Any]:
     """Return detailed info for a single knowledge node."""
     session_id = _resolve_session_id(sessionId, subjectId)
+    _require_session_learner(session_id, auth)
+    _ensure_session_linked(session_id, subject_id=str(subjectId).strip(), learner_id=auth.learner_id)
 
     # Find node in learning path
     path = _current_path_or_none(session_id, str(subjectId).strip())
@@ -634,12 +639,8 @@ def _empty_graph(session_id: str, subjectId: str) -> dict[str, Any]:
     )
 
 
-def _ensure_session_linked(session_id: str, subject_id: str = "") -> None:
-    try:
-        from app.routers.product import _ensure_session_linked as _esl
-        _esl(session_id, subject_id=subject_id)
-    except Exception:
-        pass
+def _ensure_session_linked(session_id: str, subject_id: str = "", learner_id: str = "") -> None:
+    _product_ensure_session_linked(session_id, subject_id=subject_id, learner_id=learner_id)
 
 
 def _raw_stages_to_nodes(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:

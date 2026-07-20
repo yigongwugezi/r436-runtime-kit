@@ -2,15 +2,18 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useChatStore } from '../store/chatStore';
+import { useSubjectStore } from '../store/subjectStore';
 import { getSessions, getSessionMessages } from '../api/chat';
 import { PageLoading, PageEmpty } from '../components/common/PageState';
 import { MessageCircle, Clock, ChevronRight, Trash2, ArrowLeft } from 'lucide-react';
 import { timeAgo } from '../utils/format';
 import Markdown from '../utils/markdown';
+import { hydrateChatSessions, resolveActiveSubjectContext } from '../utils/canonicalSessionState';
 
 export default function ConversationHistoryPage() {
   const nav = useNavigate();
   const { sessions, setCurrentSession, removeSession, setSessions } = useChatStore() as any;
+  const subjectId = useSubjectStore((state) => resolveActiveSubjectContext(state.activeSubject, state.activeClassSubject).subjectId);
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [msgs, setMsgs] = useState<any[]>([]);
@@ -20,12 +23,12 @@ export default function ConversationHistoryPage() {
     (async () => {
       setLoading(true);
       try {
-        const res = await getSessions();
-        if (res?.sessions) setSessions(res.sessions);
+        const res = await getSessions(subjectId);
+        if (res?.sessions) setSessions(hydrateChatSessions(res.sessions, useChatStore.getState().sessions));
       } catch { /* ignore */ }
       finally { setLoading(false); }
     })();
-  }, []);
+  }, [subjectId, setSessions]);
 
   const handleSelect = async (id: string) => {
     setSelectedId(id);
@@ -101,7 +104,7 @@ export default function ConversationHistoryPage() {
                 <h3 className="font-semibold text-surface-700">{sessions.find((s: any) => s.id === selectedId)?.title || '对话详情'}</h3>
                 <div className="flex items-center gap-2">
                   <button onClick={() => handleEnter(selectedId)} className="px-3 py-1.5 bg-primary-600 text-white rounded-lg text-xs font-medium hover:bg-primary-700">进入对话</button>
-                  <button onClick={() => { removeSession(selectedId); setSelectedId(null); setMsgs([]); }} className="px-3 py-1.5 bg-error-50 text-error-600 rounded-lg text-xs font-medium hover:bg-error-100"><Trash2 size={14} /></button>
+                  <button onClick={async () => { await removeSession(selectedId); if (!useChatStore.getState().sessions.some((session: any) => session.id === selectedId)) { setSelectedId(null); setMsgs([]); } }} className="px-3 py-1.5 bg-error-50 text-error-600 rounded-lg text-xs font-medium hover:bg-error-100"><Trash2 size={14} /></button>
                 </div>
               </div>
               <div className="flex-1 overflow-y-auto space-y-3 pr-1">

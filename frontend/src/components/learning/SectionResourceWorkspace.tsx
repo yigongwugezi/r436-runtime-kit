@@ -279,7 +279,7 @@ export default function SectionResourceWorkspace(props: Props) {
     setNotice('');
     try {
       const started = await startWorkflow(feedback ? 'generated_resource_regeneration' : 'generated_resource', {
-        sessionId, resourceType, pathId, stageId, chapterId, sectionTitle: section.title,
+        sessionId, resourceType, pathId, stageId, chapterId, sectionId: section.id, sectionTitle: section.title,
         subjectId, knowledgePoints: section.knowledgePoints, lectureContent, feedback,
         regenerate: generated.some((item) => item.resourceType === resourceType),
       });

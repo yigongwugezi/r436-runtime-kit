@@ -97,7 +97,7 @@ export async function getSessionMessages(sessionId: string): Promise<{ messages:
   return data;
 }
 
-/** 删除会话 */
+/** 归档普通聊天会话；承载正式学习路径的会话由后端拒绝。 */
 export async function deleteSession(sessionId: string): Promise<void> {
   await client.delete(`/api/chat/sessions/${sessionId}`, { params: { learnerId: getStableLearnerId() } });
 }

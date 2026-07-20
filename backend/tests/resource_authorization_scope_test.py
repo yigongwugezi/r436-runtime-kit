@@ -42,12 +42,24 @@ def main():
         a, b = headers("a"), headers("b")
         assert client.get("/api/resources?sessionId=math-s&subjectId=math").status_code == 401
         assert client.get("/api/resources/math-r?sessionId=math-s&subjectId=math").status_code == 401
+        assert client.get("/api/knowledge-graph?sessionId=math-s&subjectId=math").status_code == 401
+        assert client.patch("/api/learning-path/nodes/task-1", json={"sessionId": "math-s", "pathId": "math-p", "status": "completed"}).status_code == 401
+        assert client.post("/api/resources/import-from-kb", json={"sessionId": "math-s", "subjectId": "math"}).status_code == 401
+        assert client.post("/api/sections/task-1/generate-all", json={"sessionId": "math-s", "subjectId": "math", "sectionTitle": "Task"}).status_code == 401
+        assert client.post("/api/sections/task-1/resources/generate", json={"sessionId": "math-s", "subjectId": "math", "resourceType": "summary_card"}).status_code == 401
         assert client.get("/api/resources?sessionId=math-s&subjectId=math", headers=a).status_code == 200
         assert client.get("/api/resources/math-r?sessionId=math-s&subjectId=math", headers=a).status_code == 200
+        assert client.get("/api/knowledge-graph?sessionId=math-s&subjectId=math", headers=a).status_code == 200
+        assert client.get("/api/knowledge-graph?sessionId=math-s&subjectId=math", headers=b).status_code == 403
         assert client.get("/api/resources?sessionId=other-s&subjectId=other", headers=a).status_code == 403
         assert client.get("/api/resources/math-r?sessionId=math-s&subjectId=math", headers=b).status_code == 403
         assert client.get("/api/resources?sessionId=multi-s", headers=a).status_code == 400
         assert client.post("/api/resources/generate", json={"sessionId": "math-s", "subjectId": "math", "pathId": "bad", "topic": "x", "resourceType": "lecture"}, headers=a).status_code == 403
+        db = SessionLocal()
+        try:
+            assert db.get(LearningPathModel, "bad") is None
+        finally:
+            db.close()
     print("resource authorization scope: PASS")
 
 

@@ -36,6 +36,6 @@ test('workspace callers require the canonical scope', () => {
   assert.match(lecture, /if \(workspaceScopeInvalid\) return;/);
   assert.match(lecture, /if \(workspaceScopeInvalid\) \{/);
   assert.doesNotMatch(lecture, /taskDayScope\(path, resourceTaskId\)/);
-  assert.match(lecture, /onComplete=\{\(\) => \{ if \(executionMode !== 'video'\) void completeFocusedTask\(\); \}\}/);
+  assert.match(lecture, /onComplete=\{\(\) => executionMode !== 'video' \|\| videoLectureFallback \? completeFocusedTask\(\) : false\}/);
   assert.doesNotMatch(lecture, /event: 'section_complete'/);
 });

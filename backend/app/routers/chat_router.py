@@ -219,11 +219,11 @@ def _inject_textbook_context(state: dict[str, Any], session_id: str) -> None:
                 state["textbook_chapters"] = chapters
 
             # Inject subject identity for cross-subject filtering downstream
+            title = str(textbook.title or subj.name or "").strip()
             state["course_name"] = str(subj.name or textbook.title or "").strip() or title
             state["course_id"] = str(subj.id or "").strip()
 
             # Build a compact structural summary for LLM context
-            title = str(textbook.title or subj.name or "").strip()
             if not title:
                 return
             lines = [
@@ -248,7 +248,7 @@ def _inject_textbook_context(state: dict[str, Any], session_id: str) -> None:
         finally:
             db.close()
     except Exception:
-        pass
+        logger.warning("Could not inject textbook context for session=%s", session_id, exc_info=True)
 
 
 async def _run_chat(message: str, session_id: str, search_enabled: bool = False, deep_think_enabled: bool = False, chat_mode: str = "free", intent: str = "", ai_config: dict | None = None) -> tuple[str, str, dict[str, Any]]:

@@ -22,6 +22,19 @@ export async function getResources(filter?: ResourceFilter & { sessionId: string
   return data;
 }
 
+export async function recommendResourcesForLearning(params: {
+  sessionId: string;
+  subjectId?: string;
+  pathId?: string;
+  stageId: string;
+  dayId?: string;
+  globalDayIndex?: number;
+  taskId?: string;
+}): Promise<any[]> {
+  const { data } = await client.post('/api/resources/recommendations/for-learning', params);
+  return data?.recommendations?.resources || data?.resources || [];
+}
+
 export async function getResourceById(
   id: string,
   params: { sessionId: string; subjectId?: string },

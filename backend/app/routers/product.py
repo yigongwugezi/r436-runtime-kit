@@ -58,7 +58,6 @@ from app.db.repository import (
     toggle_bookmark,
     upsert_learning_path,
     update_task_completion as repo_update_task_completion,
-    delete_session as repo_delete_session,
     CurrentPathUnresolvedError,
     persist_generated_learning_path,
     resolve_current_learning_path,
@@ -72,7 +71,7 @@ from app.services.agent_service import (
 )
 from app.services.intent_router import get_agent_ids, should_run_agents, chat_only_intents
 from app.schemas.feedback import FeedbackSignal
-from app.utils.errors import InvalidEventTypeError, MissingSessionIdError, NotFoundError
+from app.utils.errors import AIConfigMissingError, InvalidEventTypeError, MissingSessionIdError, NotFoundError
 from app.utils.profile_facts import apply_state_facts_to_result, profile_item
 from app.utils.profile_normalizer import PROFILE_DIMENSION_LABELS, normalize_profile_dimensions
 from app.services.profile_v2 import (
@@ -798,7 +797,7 @@ def _upgrade_path_days(path: dict[str, Any]) -> bool:
     if total_days <= 0 or not stages:
         return False
     existing_days = [day for stage in stages if isinstance(stage, dict) for day in stage.get("days", []) if isinstance(day, dict)]
-    if len(existing_days) == total_days and all(day.get("globalDayIndex") for day in existing_days):
+    if existing_days and all(day.get("globalDayIndex") for day in existing_days):
         return False
 
     path_id = str(path.get("id") or path.get("path_id") or "")
@@ -893,18 +892,26 @@ def normalize_learning_path(raw_path: dict[str, Any]) -> dict[str, Any]:
 
         for day_number, source_day_index, tasks in task_groups:
             global_day_index += 1
+            source_day = days[source_day_index - 1] if days and 0 < source_day_index <= len(days) else {}
+            first_task = next((item for item in tasks if isinstance(item, dict)), {})
+            source_day_id = str(source_day.get("id") or source_day.get("dayId") or first_task.get("day_id") or first_task.get("dayId") or f"{stage_id}_d{day_number}")
+            try:
+                entry_global_day_index = int(source_day.get("globalDayIndex") or first_task.get("globalDayIndex") or global_day_index)
+            except (TypeError, ValueError):
+                entry_global_day_index = global_day_index
+            global_day_index = max(global_day_index, entry_global_day_index)
             for task_index_in_day, task in enumerate(tasks):
                 if not isinstance(task, dict):
                     continue
-                task_id = str(task.get("task_id") or task.get("id") or task.get("section_id") or f"{path_id}_s{stage_index}_d{day_number}_t{task_index_in_day}")
+                task_id = str(task.get("task_id") or task.get("id") or task.get("section_id") or f"{stage_id}_d{day_number}_t{task_index_in_day}")
                 task["task_id"] = task_id
                 task.setdefault("id", task_id)
                 task.setdefault("day", day_number)
                 task_index[task_id] = {
                     "path_id": path_id,
                     "stage_id": stage_id,
-                    "day_id": str(task.get("day_id") or task.get("dayId") or f"{stage_id}_d{day_number}"),
-                    "global_day_index": global_day_index,
+                    "day_id": str(task.get("day_id") or task.get("dayId") or source_day_id),
+                    "global_day_index": entry_global_day_index,
                     "stage_day_index": day_number,
                     "task": task,
                     "_stage_index": stage_index,
@@ -2268,6 +2275,7 @@ def list_sessions(subjectId: str = "", learnerId: str = "", auth: AuthContext = 
                 .join(PersonalSubjectModel, SessionModel.subject_id == PersonalSubjectModel.id)
                 .filter(
                     SessionModel.learner_id.is_(None),
+                    SessionModel.status == "active",
                     PersonalSubjectModel.id == resolved_subject_id,
                     PersonalSubjectModel.learner_id == resolved_learner_id,
                 )
@@ -2378,7 +2386,7 @@ def reset_session(session_id: str) -> dict[str, Any]:
 
 @router.delete("/chat/sessions/{session_id}")
 def delete_chat_session(session_id: str, learnerId: str = "", auth: AuthContext = Depends(get_auth)) -> dict[str, Any]:
-    """Delete a chat session and its associated data."""
+    """Archive a chat-only session without deleting learning data."""
     try:
         db = SessionLocal()
         session = db.get(SessionModel, session_id)
@@ -2390,14 +2398,19 @@ def delete_chat_session(session_id: str, learnerId: str = "", auth: AuthContext 
                 db.commit()
             else:
                 raise HTTPException(status_code=403, detail="session belongs to another learner")
-        ok = repo_delete_session(db, session_id)
-        if not ok:
+        if session is None:
             return _product_response(
                 None, message="会话不存在", source="db",
                 session_id=session_id, status="error",
             )
+        formal_paths = db.query(LearningPathModel).filter(LearningPathModel.session_id == session_id).all()
+        if any(isinstance(path.stages, list) and path.stages for path in formal_paths):
+            raise HTTPException(status_code=409, detail="当前会话承载正式学习路径，不能作为普通对话删除")
+        session.status = "archived"
+        db.commit()
+        conversation_store.reset(session_id)
         return _product_response(
-            {"ok": True}, session_id=session_id, source="db",
+            {"ok": True, "archived": True}, session_id=session_id, source="db",
         )
     finally:
         db.close()
@@ -3222,6 +3235,8 @@ def get_resources(
                 _resource_id_set.add(f"_{rid}")
 
     def _matches(item: dict[str, Any]) -> bool:
+        if str(item.get("id") or "").startswith("video-recommendations-"):
+            return False
         if _resource_id_set:
             item_id = item.get("id", "")
             if item_id in _resource_id_set:
@@ -3339,7 +3354,7 @@ def get_resources(
         bookmarks = _get_bookmarks(session_id)
         for r in db_resources:
             r["bookmarked"] = r["id"] in bookmarks
-            r["createdAt"] = int(datetime.fromisoformat(r["created_at"]).timestamp() * 1000) if r.get("created_at") else int(time.time() * 1000)
+            r["createdAt"] = _datetime_to_ms(r.get("created_at"))
             db_map[r["id"]] = _normalize(r)
 
     state = conversation_store.get(session_id)
@@ -3353,30 +3368,6 @@ def get_resources(
             rid = normalized.get("id", "")
             if rid:
                 memory_map[rid] = normalized
-
-    orphaned_ids = [
-        rid for rid, item in db_map.items()
-        if rid not in memory_map
-        and (
-            not item.get("title")
-            or str(item.get("title", "")).startswith("学习《")
-            or item.get("title") in ("", "学习资源")
-            or not str(item.get("content", "") or "").strip()
-            or str(item.get("content", "") or "").strip() in ("[]", "{}")
-        )
-    ]
-    if orphaned_ids:
-        try:
-            from app.db.repository import delete_resource as repo_delete_resource
-            db = SessionLocal()
-            for oid in orphaned_ids:
-                repo_delete_resource(db, session_id, oid)
-            db.close()
-        except Exception:
-            logger.warning("Failed to clean up orphaned resources in get_resources")
-
-        for oid in orphaned_ids:
-            db_map.pop(oid, None)
 
     all_ids = set(db_map.keys()) | set(memory_map.keys())
     for rid in all_ids:
@@ -3527,6 +3518,16 @@ def recommend_resources_for_learning(payload: dict[str, Any], auth: AuthContext 
             normalized = _normalize_persisted_learning_path(persisted) if persisted else None
             entry = normalized and normalized["task_index"].get(task_id)
             if entry and entry["stage_id"] == stage_id:
+                day_id = str(payload.get("dayId") or "")
+                global_day_index = payload.get("globalDayIndex")
+                try:
+                    global_day_index = int(global_day_index) if global_day_index is not None else None
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=400, detail={"code": "invalid_task_scope", "message": "globalDayIndex must be an integer"})
+                if day_id and entry["day_id"] != day_id:
+                    raise HTTPException(status_code=409, detail={"code": "invalid_task_scope", "message": "learning path day scope mismatch"})
+                if global_day_index is not None and entry["global_day_index"] != global_day_index:
+                    raise HTTPException(status_code=409, detail={"code": "invalid_task_scope", "message": "learning path day scope mismatch"})
                 target_stage = normalized["stages"][entry["_stage_index"]]
                 target_stage = {**target_stage, "_active_task": entry["task"]}
             if subject_id:
@@ -3689,9 +3690,16 @@ def save_online_search_result(payload: dict[str, Any], auth: AuthContext = Depen
 
 
 @router.get("/resources/{resource_id}")
-def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "", auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
+def get_resource(
+    resource_id: str, sessionId: str = "", subjectId: str = "", pathId: str = "",
+    stageId: str = "", taskId: str = "", sectionId: str = "",
+    auth: AuthContext = Depends(require_auth),
+) -> dict[str, Any]:
     """Get a single resource by ID — tries DB first, then in-memory fallback."""
-    scope = resolve_resource_scope(auth, session_id=sessionId, subject_id=subjectId, resource_id=resource_id)
+    scope = resolve_resource_scope(
+        auth, session_id=sessionId, subject_id=subjectId, path_id=pathId, stage_id=stageId,
+        task_id=taskId, section_id=sectionId, resource_id=resource_id,
+    )
     session_id = scope.session_id
 
     db_resources = ag_get_resources(session_id, subject_id=subjectId)
@@ -3721,7 +3729,7 @@ def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "", aut
                 "codeBlocks": db_match.get("code_blocks"),
                 "questions": db_match.get("questions"),
                 "pptOutline": db_match.get("ppt_outline"),
-                "createdAt": int(datetime.fromisoformat(db_match["created_at"]).timestamp() * 1000) if db_match.get("created_at") else int(time.time() * 1000),
+                "createdAt": _datetime_to_ms(db_match.get("created_at")),
                 "bookmarked": db_match["id"] in bookmarks,
                 "studyStatus": db_match.get("study_status", "new"),
                 "source": _source_label(db_match.get("source", "")),
@@ -4441,11 +4449,14 @@ def generate_resource(payload: dict[str, Any], auth: AuthContext = Depends(rejec
 
 
 @router.post("/resources/import-from-kb")
-def import_resources_from_kb(payload: dict[str, Any]) -> dict[str, Any]:
+def import_resources_from_kb(payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     """Import knowledge base chapters directly as resources."""
     session_id = _payload_session_id(payload)
     course_id = str(payload.get("courseId", "")).strip()
     subject_id = str(payload.get("subjectId", "")).strip()
+    _require_session_learner(session_id, auth)
+    if subject_id:
+        _require_matching_subject(session_id, subject_id)
     _ensure_session_linked(session_id, subject_id=subject_id)
 
     if course_id:
@@ -4725,16 +4736,20 @@ def _is_complete(item: dict[str, Any]) -> bool:
     return item.get("status") in {"completed", "mastered"} or int(item.get("mastery") or 0) >= 100
 
 
+def _is_required(item: dict[str, Any]) -> bool:
+    return item.get("required", True) is not False and not item.get("optional", False)
+
+
 def _apply_stage_progress(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Derive the only stage-access state from persisted path JSON."""
     current_seen = False
     current_day_seen = False
     for stage in stages:
         items = _stage_items(stage)
-        required = [item for item in items if not item.get("optional", False)]
+        required = [item for item in items if _is_required(item)]
         done = sum(_is_complete(item) for item in required)
         if not required:
-            status = "current" if not current_seen else "locked"
+            status = "locked" if current_seen else "completed" if items else "current"
         elif done == len(required):
             status = "completed"
         elif not current_seen:
@@ -4751,9 +4766,12 @@ def _apply_stage_progress(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for day in stage.get("days", []) if isinstance(stage.get("days"), list) else []:
             if not isinstance(day, dict):
                 continue
-            day_required = [item for item in day.get("tasks", []) if isinstance(item, dict) and not item.get("optional", False)]
+            day_items = [item for item in day.get("tasks", []) if isinstance(item, dict)]
+            day_required = [item for item in day_items if _is_required(item)]
             day_done = sum(_is_complete(item) for item in day_required)
-            if day_required and day_done == len(day_required):
+            if not day_required:
+                day_status = "locked" if current_day_seen else "completed" if day_items else "current"
+            elif day_done == len(day_required):
                 day_status = "completed"
             elif not current_day_seen:
                 day_status = "current"
@@ -5099,7 +5117,7 @@ def complete_learning_path_task(task_id: str, payload: dict[str, Any], auth: Aut
 
 def _path_progress(path: LearningPathModel, *, session_id: str, subject_id: str) -> dict[str, Any]:
     stages = _apply_stage_progress(deepcopy(path.stages or [])) if isinstance(path.stages, list) else []
-    required_items = [(stage, item) for stage in stages for item in _stage_items(stage) if not item.get("optional", False)]
+    required_items = [(stage, item) for stage in stages for item in _stage_items(stage) if _is_required(item)]
     current = next((stage for stage in stages if stage.get("progressStatus") == "current"), None)
     next_item = next((item for stage, item in required_items if stage is current and not _is_complete(item)), None)
     next_task = None
@@ -5155,7 +5173,7 @@ def _require_task_stage_access(
     session_id: str, stage_id: str, section_id: str, path_id: str = "", task_id: str = "",
     day_id: str = "", global_day_index: int | None = None, subject_id: str = "", learner_id: str = "",
 ) -> dict[str, Any]:
-    """Validate a task URL against the persisted path before serving its content."""
+    """Validate a task or stage URL against the persisted path before serving its content."""
     db = SessionLocal()
     try:
         session = db.get(SessionModel, session_id)
@@ -5165,18 +5183,27 @@ def _require_task_stage_access(
             raise HTTPException(status_code=403, detail={"code": "invalid_task_scope", "message": "learning path subject scope mismatch"})
         try:
             path = resolve_current_learning_path(
-                db, learner_id=resolved_learner_id, session_id=session_id, subject_id=resolved_subject_id,
+                db, learner_id=resolved_learner_id, session_id=session_id,
+                subject_id=resolved_subject_id, path_id=path_id,
             )
         except CurrentPathUnresolvedError as exc:
             raise HTTPException(status_code=409, detail={"code": "CURRENT_PATH_UNRESOLVED", "message": str(exc)}) from exc
         if not path or not isinstance(path.stages, list):
             raise HTTPException(status_code=404, detail={"code": "path_not_found", "message": "learning path not found"})
-        if path.id != path_id:
+        if path_id and path.id != path_id:
             raise HTTPException(status_code=404, detail={"code": "path_not_found", "message": "learning path not found"})
         normalized = _normalize_persisted_learning_path(path)
         if normalized["upgraded"]:
             db.commit()
         requested_task_id = task_id or section_id
+        stages = _apply_stage_progress(normalized["stages"])
+        stage = next((item for item in stages if str(item.get("stage_id") or item.get("id") or "") == stage_id), None)
+        if stage and stage.get("progressStatus") == "locked":
+            raise HTTPException(status_code=403, detail="请先完成当前阶段")
+        if not requested_task_id:
+            if not stage:
+                raise HTTPException(status_code=404, detail={"code": "stage_not_found", "message": "learning path stage not found"})
+            return {}
         entry = normalized["task_index"].get(requested_task_id)
         if not entry:
             raise HTTPException(status_code=404, detail={"code": "task_not_found", "message": "learning path task not found"})
@@ -5188,10 +5215,6 @@ def _require_task_stage_access(
             raise HTTPException(status_code=409, detail={"code": "invalid_task_scope", "message": "learning path day scope mismatch"})
         if global_day_index is not None and entry["global_day_index"] != global_day_index:
             raise HTTPException(status_code=409, detail={"code": "invalid_task_scope", "message": "learning path day scope mismatch"})
-        stages = _apply_stage_progress(normalized["stages"])
-        stage = next((item for item in stages if str(item.get("stage_id") or item.get("id") or "") == stage_id), None)
-        if stage and stage.get("progressStatus") == "locked":
-            raise HTTPException(status_code=403, detail="请先完成当前阶段")
         return entry
     finally:
         db.close()
@@ -5199,7 +5222,7 @@ def _require_task_stage_access(
 
 def _require_session_learner(session_id: str, auth: AuthContext) -> None:
     """Authenticated users may only use their own learning session."""
-    if not auth.is_authenticated:
+    if not isinstance(auth, AuthContext) or not auth.is_authenticated:
         return
     db = SessionLocal()
     try:
@@ -5793,9 +5816,10 @@ def download_learning_path(
 
 
 @router.patch("/learning-path/nodes/{node_id}")
-def update_node_progress(node_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def update_node_progress(node_id: str, payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     session_id = _payload_session_id(payload)
     path_id = str(payload.get("pathId") or payload.get("path_id") or "").strip()
+    _require_session_learner(session_id, auth)
     status = str(payload.get("status", "available"))
     mastery = int(payload.get("mastery", 0))
     db = SessionLocal()
@@ -6534,8 +6558,11 @@ def resolve_resource_scope(
                 raise HTTPException(status_code=403, detail="access denied")
             if stage_id and row.related_stage_id and row.related_stage_id != stage_id:
                 raise HTTPException(status_code=403, detail="access denied")
-            if row.related_stage_id:
-                _require_task_stage_access(base.session_id, row.related_stage_id, row.related_section_id or row.task_id, path_id, row.task_id)
+            if row.related_stage_id and (path_id or stage_id or task_id or section_id):
+                _require_task_stage_access(
+                    base.session_id, row.related_stage_id, row.related_section_id or row.task_id,
+                    path_id or row.path_id or "", row.task_id,
+                )
         finally:
             db.close()
     return ResourceScope(base.learner_id, base.session_id, base.subject_id, path_id, stage_id, task_id, section_id)
@@ -6556,11 +6583,8 @@ def resolve_analytics_scope(
 ) -> AnalyticsScope:
     """Resolve one owned analytics scope before any query or provider call.
 
-    Authorisation is intentionally lenient for anonymous sessions (created
-    before the user logged in) and subject drift (the frontend may pass a
-    different subjectId as the user navigates courses).  Strict checks only
-    apply when the session has an explicit, authenticated owner different
-    from the caller.
+    Legacy anonymous sessions may be claimed after their subject scope is
+    validated. Bound sessions never accept subject drift.
     """
     session_id = _require_session_id(session_id)
     subject_id, path_id, stage_id = (str(value or "").strip() for value in (subject_id, path_id, stage_id))
@@ -6570,12 +6594,6 @@ def resolve_analytics_scope(
         if session is None:
             raise HTTPException(status_code=404, detail="resource not found")
 
-        # ── Session ownership ─────────────────────────────────────
-        # v1.3: Transparently upgrade anonymous/empty sessions to the
-        # authenticated user so old sessions are accessible after login.
-        from app.db.repository import try_upgrade_anonymous_session
-        try_upgrade_anonymous_session(db, session_id, auth.learner_id)
-        db.refresh(session)
         session_owner = str(session.learner_id or "").strip()
         is_anonymous = _is_anonymous_learner(session_owner)
         if session_owner and not is_anonymous and session_owner != auth.learner_id:
@@ -6595,18 +6613,17 @@ def resolve_analytics_scope(
         # owned by a different authenticated user.  Anonymous subjects and
         # subjects without a learner_id pass through.
         subject = db.get(PersonalSubjectModel, subject_id)
-        if subject is not None and getattr(subject, "learner_id", None) and not _is_anonymous_learner(str(subject.learner_id or "")):
+        if subject is None:
+            raise HTTPException(status_code=403, detail="access denied")
+        if getattr(subject, "learner_id", None) and not _is_anonymous_learner(str(subject.learner_id or "")):
             if subject.learner_id != auth.learner_id:
                 raise HTTPException(status_code=403, detail="access denied")
-        # Subject mismatch: accept the request parameter as a transient override
-        # rather than blocking — the analytics will still be correctly scoped to
-        # the session's data; the frontend may legitimately query with a
-        # different subjectId as the user navigates.
         if session.subject_id and session.subject_id != subject_id:
-            logger.debug(
-                "analytics subject drift: session=%s session.subject=%s request.subject=%s",
-                session_id, session.subject_id, subject_id,
-            )
+            raise HTTPException(status_code=403, detail="access denied")
+
+        from app.db.repository import try_upgrade_anonymous_session
+        try_upgrade_anonymous_session(db, session_id, auth.learner_id)
+        db.refresh(session)
         path = None
         if path_id:
             path = db.query(LearningPathModel).filter(
@@ -6619,8 +6636,8 @@ def resolve_analytics_scope(
                 if _state and _state.last_result:
                     _mem_stages = _state.last_result.get("learning_path") or _state.last_result.get("stages") or []
                     if isinstance(_mem_stages, list) and _mem_stages:
-                        _mem_id = _state.last_result.get("path_id") or _state.last_result.get("id") or path_id
-                        if str(_mem_id) == str(path_id):
+                        _mem_id = _state.last_result.get("path_id") or _state.last_result.get("id")
+                        if _mem_id and str(_mem_id) == str(path_id):
                             from app.db.repository import upsert_learning_path as _repo_upsert_path
                             _repo_upsert_path(db, session_id, {
                                 "id": path_id,
@@ -6630,7 +6647,7 @@ def resolve_analytics_scope(
                             })
                             path = db.get(LearningPathModel, path_id)
             if path is None:
-                raise HTTPException(status_code=404, detail="learning path not found")
+                raise HTTPException(status_code=403, detail="access denied")
             if not session.subject_id:
                 raise HTTPException(status_code=400, detail="path scope requires a subject-bound session")
         if stage_id:
@@ -7607,7 +7624,7 @@ def _fallback_section_lecture(section_title: str, section_goal: str, knowledge_p
 - 区分相似概念之间的差异，避免混淆。
 
 ## 小结
-本节围绕{topic}建立了基础认识。AI 生成的内容未通过质量校验，以上为兜底内容。建议重新生成以获得更完整的学习材料。"""
+本节围绕{topic}建立了基础认识。当前为可离线使用的基础版讲义；模型服务恢复后可重新生成更完整的学习材料。"""
 
 
 @router.get("/sections/{section_id}/lecture")
@@ -8326,7 +8343,7 @@ def _generate_section_lecture(section_id: str, payload: dict[str, Any], workflow
     resource_type = str(payload.get("type", "lecture")).strip()
     requirements = str(payload.get("requirements", "")).strip()
     course_name = str(payload.get("courseId", "")).strip()
-    task_type = str(payload.get("task_type", "")).strip()
+    task_type = str(payload.get("task_type") or payload.get("taskType") or "").strip()
     fingerprint = str(payload.get("semanticFingerprint") or "")
 
     if not section_title:
@@ -8454,19 +8471,27 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
     # ── 用户定制需求 ──
     req_context = f"\n\n## 学生特殊要求（必须严格遵循，优先级最高）\n{requirements}" if requirements else ""
 
-    client = _llm_client()
     if workflow_task is not None:
         from app.services.workflow_tasks import workflow_task_manager
         workflow_task_manager.check_cancelled(workflow_task)
         workflow_task_manager.emit(workflow_task, "stage_started", "content_generation", "running", label="生成文档正文")
+    fallback_reason = ""
     try:
+        client = _llm_client()
         raw = client.chat(
             messages=[{"role": "user", "content": prompt + kb_context + req_context}],
             temperature=0.3, max_tokens=settings.lecture_max_tokens,
         )
+    except AIConfigMissingError:
+        raise
     except Exception as e:
-        logger.warning("Lecture generation failed for section %s: %s", section_id, e)
-        return _product_response(None, session_id=session_id, status="error", message=f"生成失败: {e}", source="agent")
+        logger.warning("Lecture provider failed for section %s; using deterministic fallback: %s", section_id, e)
+        fallback_reason = "模型服务暂时无法连接，已生成可离线学习的基础版讲义"
+        raw = _fallback_section_lecture(
+            section_title,
+            section_goal,
+            knowledge_points if isinstance(knowledge_points, list) else [],
+        )
 
     # 后处理：切开场白
     if raw.startswith("好的") or raw.startswith("作为"):
@@ -8484,6 +8509,7 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
     raw = _clean_markdown(raw)
     if not _is_valid_section_lecture(raw, section_title, knowledge_points if isinstance(knowledge_points, list) else [], task_type):
         logger.warning("Rejected invalid lecture output for section %s; using deterministic fallback", section_id)
+        fallback_reason = "模型输出未通过内容校验，已使用本地模板重建"
         raw = _fallback_section_lecture(
             section_title,
             section_goal,
@@ -8512,6 +8538,7 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
             "difficulty": "medium",
             "estimated_minutes": 30,
             "source": "agent_generated",
+            "quality_status": "fallback" if fallback_reason else "passed",
             "related_stage_id": stage_id,
             "related_chapter_id": chapter_id,
             "related_section_id": section_id,
@@ -8520,6 +8547,7 @@ Markdown格式，代码用```包裹并标注语言。{lecture_ctx}"""
             "resource_metadata": {
                 "semanticFingerprint": fingerprint,
                 "canonicalScope": {key: payload.get(key) for key in ("sessionId", "subjectId", "pathId", "stageId", "dayId", "globalDayIndex", "taskId", "taskType")},
+                **({"generation_mode": "fallback", "used_fallback": True, "fallback_reason": fallback_reason} if fallback_reason else {"generation_mode": "provider", "used_fallback": False}),
                 **({"sourceTaskType": "video", "deliveryMode": "video_fallback_lecture", "originalTaskId": payload.get("originalTaskId") or payload.get("taskId")} if payload.get("deliveryMode") == "video_fallback_lecture" else {}),
             },
         }
@@ -8643,6 +8671,9 @@ def ensure_section_lecture(section_id: str, payload: dict[str, Any], auth: AuthC
         **payload, "sessionId": session_id, "subjectId": subject_id, "pathId": path_id,
         "stageId": stage_id, "dayId": entry["day_id"], "globalDayIndex": entry["global_day_index"],
         "taskId": task_id, "sectionId": section_id, "taskType": task_type,
+        "task_type": task_type,
+        "sectionTitle": str(payload.get("sectionTitle") or payload.get("taskTitle") or entry["task"].get("title") or "").strip(),
+        "sectionGoal": str(payload.get("sectionGoal") or payload.get("taskDescription") or entry["task"].get("description") or entry["task"].get("goal") or "").strip(),
     }
     fingerprint = _lecture_semantic_fingerprint(payload, auth.learner_id)
     db = SessionLocal()
@@ -8933,10 +8964,13 @@ def _public_tutor_video(result: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.post("/sections/{section_id}/generate-all")
-def generate_all_section_resources(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def generate_all_section_resources(section_id: str, payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
     """Multi-agent pipeline: profile → knowledge → resource for a section."""
     session_id = _payload_session_id(payload)
     subject_id = _payload_subject_id(payload)
+    _require_session_learner(session_id, auth)
+    if subject_id:
+        _require_matching_subject(session_id, subject_id)
     section_title = str(payload.get("sectionTitle", "")).strip()
     section_goal = str(payload.get("sectionGoal", "")).strip()
     chapter_id = str(payload.get("chapterId", "")).strip()
@@ -9642,6 +9676,9 @@ def _section_path_context(session_id: str, section_id: str) -> dict[str, Any]:
 
 def _generate_section_resource(section_id: str, payload: dict[str, Any], workflow_task: Any = None) -> dict[str, Any]:
     """Generate one small section resource and archive it in the existing library."""
+    section_id = str(section_id or "").strip()
+    if not section_id:
+        return _product_response(None, session_id=str(payload.get("sessionId") or ""), status="error", message="sectionId required", source="agent")
     from app.services.section_generated_resources import SectionGeneratedResourcesService
 
     session_id = _payload_session_id(payload)
@@ -9695,7 +9732,12 @@ def _generate_section_resource(section_id: str, payload: dict[str, Any], workflo
 
 
 @router.post("/sections/{section_id}/resources/generate")
-def generate_section_resource(section_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def generate_section_resource(section_id: str, payload: dict[str, Any], auth: AuthContext = Depends(reject_parent)) -> dict[str, Any]:
+    resolve_resource_scope(
+        auth, session_id=_payload_session_id(payload), subject_id=_payload_subject_id(payload),
+        path_id=str(payload.get("pathId") or ""), stage_id=str(payload.get("stageId") or ""),
+        task_id=str(payload.get("taskId") or ""), section_id=section_id,
+    )
     return _generate_section_resource(section_id, payload)
 
 

@@ -3,7 +3,8 @@ import { ensureScopedLearningPathQuiz, learningPathQuizScope, normalizeLearningP
 
 const scope = { sessionId: 's', subjectId: 'sub', pathId: 'p', stageId: 'stage', dayId: 'd3', globalDayIndex: 3, taskId: 'quiz' };
 assert.equal(learningPathQuizScope(scope), 's|sub|p|stage|d3|3|quiz|[null,null,null,null,null,null]|quiz');
-assert.deepEqual(normalizeLearningPathQuiz({ data: { quiz: { quizId: 'q', question_count: 1, questions: [{ question_id: 'q1', stem: '题目' }] } } }), { quizId: 'q', questionCount: 1, questions: [{ question_id: 'q1', questionId: 'q1', stem: '题目' }] });
+const normalized = normalizeLearningPathQuiz({ data: { quiz: { quizId: 'q', question_count: 1, questions: [{ question_id: 'q1', stem: '题目' }] } } });
+assert.deepEqual([normalized.quizId, normalized.questionCount, normalized.questions], ['q', 1, [{ question_id: 'q1', questionId: 'q1', stem: '题目' }]]);
 assert.equal(normalizeLearningPathQuiz({ quiz: { quiz_id: 'q2', questions: [{ id: 'q2-1' }] } }).questions[0].questionId, 'q2-1');
 assert.equal(normalizeLearningPathQuiz({ data: { questions: [] } }).questions.length, 0);
 

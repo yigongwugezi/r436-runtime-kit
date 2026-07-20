@@ -7,8 +7,8 @@ const videos = readFileSync(new URL('../src/api/videoRecommendations.ts', import
 assert.match(resolver, /\['video', 'watch_video'\].*return 'video'/);
 assert.match(resolver, /\['quiz', 'do_quiz', 'quiz_prac', 'assessment', 'test'\].*return 'quiz'/);
 assert.match(page, /ensureScopedLearningPathQuiz\(focusedTaskId/);
-assert.match(page, /executionMode === 'quiz'\) return;/);
-assert.match(page, /if \(executionMode === 'video' && !videoLectureFallback\) return;/);
+assert.match(page, /executionMode !== 'quiz'/);
+assert.match(page, /if \(executionMode === 'video'\) return;/);
 assert.match(videos, /resourceTypes: \['video'\]/);
 assert.match(page, /暂未找到与当前任务高度相关的视频资源/);
 assert.match(page, /setVideoLectureFallback\(true\)/);

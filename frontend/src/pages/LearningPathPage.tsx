@@ -10,8 +10,9 @@ import PlanningWizard from '../components/learning/PlanningWizard';
 import RevisionProposalCard from '../components/learning/RevisionProposalCard';
 import { PageLoading, PageError } from '../components/common/PageState';
 import { getCurrentLearner } from '../store/authStore';
+import { recommendResourcesForLearning } from '../api/resources';
 import { learningTaskRoute } from '../utils/learningTaskRoute';
-import { groupTasksByDay, normalizePathForDisplay, restoreSelectedDay } from '../utils/learningPathDisplay';
+import { groupTasksByDay, isTaskLocked, normalizePathForDisplay, restoreSelectedDay } from '../utils/learningPathDisplay';
 import {
   ArrowRight, BookOpen, Check, CircleDot, Clock3,
   FileText, FlaskConical, Lightbulb, PenLine, Plus, Sparkles, Target, Zap,
@@ -69,17 +70,21 @@ export default function LearningPathPage() {
   const allNodes = stages.flatMap(s => Array.isArray(s.nodes) ? s.nodes : []);
   const totalNodes = allNodes.length;
   const masteredNodes = allNodes.filter(n => n.status === 'mastered' || n.status === 'completed').length;
-  const progress = path?.overallProgress ?? (totalNodes > 0 ? Math.round((masteredNodes / totalNodes) * 100) : 0);
   const estimatedDays = path?.estimatedDays ?? 14;
   const dailyMinutes = path?.dailyMinutes ?? 60;
   const hasProfile = stages.length > 0 && stages.some(s =>
     s.tasks.length > 0 || (Array.isArray(s.nodes) && s.nodes.length > 0) || (Array.isArray(s.chapters) && s.chapters.length > 0) || (Array.isArray(s.sections) && s.sections.length > 0)
   );
 
-  const allTasks = stages.flatMap(s => s.tasks.map(t => ({ ...t, stageTitle: s.title, stageId: s.id })));
-  const totalTasks = allTasks.length;
-  const doneTasks = allTasks.filter(t => t.status === 'completed' || t.status === 'mastered').length;
-  const nextTask = allTasks.find(t => t.status !== 'completed' && t.status !== 'mastered');
+  const allTasks = stages.flatMap(s => s.tasks.map(t => ({ ...t, stageTitle: s.title, stageId: s.id, stageProgressStatus: s.progressStatus })));
+  const requiredTasks = allTasks.filter(t => t.required !== false && !t.optional);
+  const totalTasks = requiredTasks.length;
+  const doneTasks = requiredTasks.filter(t => t.status === 'completed' || t.status === 'mastered').length;
+  const progress = totalTasks > 0
+    ? Math.round((doneTasks / totalTasks) * 100)
+    : path?.overallProgress ?? (totalNodes > 0 ? Math.round((masteredNodes / totalNodes) * 100) : 0);
+  const nextTask = requiredTasks.find(t => t.stageProgressStatus === 'current' && t.status !== 'completed' && t.status !== 'mastered')
+    || allTasks.find(t => t.stageProgressStatus !== 'locked' && t.status !== 'completed' && t.status !== 'mastered');
   const hasInj = stages.some(s => s.tasks.some((t: any) =>
     t.source === 'remedial' || t._adjustment === 'remedial' || t._adjustment === 'strengthened'
   ));
@@ -87,19 +92,8 @@ export default function LearningPathPage() {
 
   const dayGroups = useMemo(() => groupTasksByDay(stages), [stages]);
 
-  const { currentStageIdx, currentTaskIdx } = useMemo(() => {
-    for (let si = 0; si < stages.length; si++) {
-      const tasks = stages[si].tasks;
-      for (let ti = 0; ti < tasks.length; ti++) {
-        if (tasks[ti].status !== 'completed' && tasks[ti].status !== 'mastered')
-          return { currentStageIdx: si, currentTaskIdx: ti };
-      }
-    }
-    return { currentStageIdx: stages.length, currentTaskIdx: -1 };
-  }, [stages]);
-
-  const firstIncompleteIdx = stages.findIndex(s => s.tasks.some(t => t.status !== 'completed' && t.status !== 'mastered'));
-  const completedStages = stages.filter(s => s.tasks.length > 0 && s.tasks.every((t: any) => t.status === 'completed' || t.status === 'mastered')).length;
+  const completedStages = stages.filter(s => s.progressStatus === 'completed'
+    || (!s.progressStatus && s.tasks.length > 0 && s.tasks.every((t: any) => t.status === 'completed' || t.status === 'mastered'))).length;
 
   const activeDayTasks = useMemo(() => {
     if (!activeDayKey) return [];
@@ -116,7 +110,13 @@ export default function LearningPathPage() {
     for (const g of dayGroups) {
       for (const d of g.days) {
         if (`${g.stageId}_day${d.dayIndex}` === activeDayKey) {
-          return { stageId: g.stageId, stageTitle: g.stageTitle, stageIdx: g.stageIdx, dayIndex: d.dayIndex, globalDayIndex: d.globalDayIndex };
+          return {
+            stageId: g.stageId, stageTitle: g.stageTitle, stageIdx: g.stageIdx,
+            dayId: d.dayId, dayIndex: d.dayIndex, globalDayIndex: d.globalDayIndex,
+            progressStatus: d.progressStatus,
+            completedTaskCount: d.completedTaskCount,
+            requiredTaskCount: d.requiredTaskCount,
+          };
         }
       }
     }
@@ -133,7 +133,8 @@ export default function LearningPathPage() {
 
   useEffect(() => {
     const requestedDay = Number(searchParams.get('day'));
-    const requested = dayGroups.flatMap((group) => group.days.map((day) => ({ group, day }))).find(({ day }) => day.globalDayIndex === requestedDay);
+    const requested = dayGroups.flatMap((group) => group.days.map((day) => ({ group, day })))
+      .find(({ day }) => day.globalDayIndex === requestedDay && day.progressStatus !== 'locked');
     if (requested) {
       setExpandedStageId(requested.group.stageId);
       setActiveDayKey(`${requested.group.stageId}_day${requested.day.dayIndex}`);
@@ -211,14 +212,18 @@ export default function LearningPathPage() {
     if (!sessionId || !activeDayStage) return;
     setRecommendLoading(true);
     try {
-      const r = await fetch('/api/resources/recommendations/for-learning', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId, subjectId: subject.subject_id, pathId: path?.id, stageId: activeDayStage.stageId, taskId: activeDayTasks.find((task: any) => task.status !== 'completed' && task.status !== 'mastered')?.id || activeDayTasks[0]?.id }),
-      }).then(res => res.json());
-      setRecommendedResources(r?.data?.recommendations?.resources || r?.resources || []);
+      const { stageId, dayId, globalDayIndex } = activeDayStage;
+      const resources = await recommendResourcesForLearning({
+        sessionId,
+        subjectId: subject.subject_id,
+        pathId: path?.id,
+        stageId, dayId, globalDayIndex,
+        taskId: activeDayTasks.find((task: any) => task.status !== 'completed' && task.status !== 'mastered')?.id || activeDayTasks[0]?.id,
+      });
+      setRecommendedResources(resources);
     } catch { setRecommendedResources([]); }
     finally { setRecommendLoading(false); }
-  }, [sessionId, activeDayStage]);
+  }, [sessionId, subject.subject_id, path?.id, activeDayStage, activeDayTasks]);
 
   useEffect(() => {
     if (middleTab === 'recommendations') fetchRecommendations();
@@ -329,7 +334,7 @@ export default function LearningPathPage() {
                 <strong className="mt-2 block text-xl leading-tight tracking-[-0.03em] text-success-500">{doneTasks}/{totalTasks || totalNodes} 项</strong>
               </div>
               <div className="lg:border-r lg:border-surface-200 lg:px-6">
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-surface-400">预计剩余</p>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-surface-400">计划周期</p>
                 <strong className="mt-2 block text-xl leading-tight tracking-[-0.03em] text-surface-800">{estimatedDays} 天</strong>
               </div>
               <div className="lg:pl-6">
@@ -344,10 +349,10 @@ export default function LearningPathPage() {
                 <p className="text-xs font-semibold text-surface-800">{progress}%</p>
               </div>
               <div className="flex gap-2">
-                {stages.map((_, i) => (
+                {stages.map((stage, i) => (
                   <span key={i}
                     className={`h-2.5 flex-1 rounded-full transition-all duration-500 ${
-                      i / Math.max(stages.length - 1, 1) < progress / 100
+                      stage.progressStatus === 'completed'
                         ? 'bg-gradient-to-r from-primary-500 to-accent-500'
                         : 'bg-surface-200'
                     }`} />
@@ -370,9 +375,10 @@ export default function LearningPathPage() {
                 {dayGroups.map((group: any) => {
                   const stage = stages[group.stageIdx];
                   const tasks = stage?.tasks || [];
-                  const tDone = tasks.filter((t: any) => t.status === 'completed' || t.status === 'mastered').length;
-                  const tTotal = tasks.length;
-                  const allDone = tTotal > 0 && tasks.every((t: any) => t.status === 'completed' || t.status === 'mastered');
+                  const tDone = stage?.completedTaskCount ?? tasks.filter((t: any) => t.status === 'completed' || t.status === 'mastered').length;
+                  const tTotal = stage?.requiredTaskCount ?? tasks.filter((t: any) => t.required !== false && !t.optional).length;
+                  const allDone = stage?.progressStatus === 'completed'
+                    || (!stage?.progressStatus && tTotal > 0 && tDone === tTotal);
                   const locked = stage?.progressStatus === 'locked';
                   const isExpanded = expandedStageId === group.stageId;
                   return (
@@ -403,11 +409,12 @@ export default function LearningPathPage() {
                         <div className="ml-4 mt-1 space-y-1 border-l-2 border-surface-100 pl-3 py-1">
                           {group.days.map((day: any) => {
                             const dayTasks = day.tasks;
-                            const dDone = dayTasks.filter((t: any) => t.status === 'completed' || t.status === 'mastered').length;
-                            const dTotal = dayTasks.length;
+                            const dDone = day.completedTaskCount ?? dayTasks.filter((t: any) => t.status === 'completed' || t.status === 'mastered').length;
+                            const dTotal = day.requiredTaskCount ?? dayTasks.filter((t: any) => t.required !== false && !t.optional).length;
                             const isActiveDay = activeDayKey === `${group.stageId}_day${day.dayIndex}`;
                             const dayLocked = day.progressStatus === 'locked';
-                            const dayAllDone = dTotal > 0 && dayTasks.every((t: any) => t.status === 'completed' || t.status === 'mastered');
+                            const dayAllDone = day.progressStatus === 'completed'
+                              || (!day.progressStatus && dTotal > 0 && dDone === dTotal);
                             return (
                               <button key={`${group.stageId}_day${day.dayIndex}`}
                                 onClick={() => !dayLocked && selectDay(group.stageId, day.dayIndex, day.globalDayIndex)}
@@ -446,10 +453,12 @@ export default function LearningPathPage() {
             {activeDayStage && (() => {
               const stageInfo = activeDayStage;
               const tasks = activeDayTasks;
-              const tTotal = tasks.length;
-              const tDone = tasks.filter((t: any) => t.status === 'completed' || t.status === 'mastered').length;
+              const stage = stages[stageInfo.stageIdx];
+              const tTotal = stageInfo.requiredTaskCount ?? tasks.filter((t: any) => t.required !== false && !t.optional).length;
+              const tDone = stageInfo.completedTaskCount ?? tasks.filter((t: any) => t.status === 'completed' || t.status === 'mastered').length;
               const pct = tTotal > 0 ? Math.round((tDone / tTotal) * 100) : 0;
-              const allDone = tTotal > 0 && tasks.every((t: any) => t.status === 'completed' || t.status === 'mastered');
+              const allDone = stageInfo.progressStatus === 'completed'
+                || (!stageInfo.progressStatus && tTotal > 0 && tDone === tTotal);
               const dashOffset = circumference - (circumference * pct) / 100;
               return (
                 <article className="flex flex-col xl:h-full xl:min-h-0 overflow-hidden rounded-[20px] border bg-white/80 backdrop-blur-sm shadow-sm"
@@ -498,9 +507,7 @@ export default function LearningPathPage() {
                           const inj = task.source === 'remedial' || task._adjustment === 'remedial' || task._adjustment === 'strengthened';
                           const kind = task.type || 'read_doc';
                           const meta = kindMeta(kind);
-                          const isLocked = stageInfo.stageIdx > currentStageIdx || 
-                            (stageInfo.stageIdx === currentStageIdx && 
-                             allTasks.findIndex(t => (t.task_id || t.id) === (task.task_id || task.id)) > currentTaskIdx);
+                          const isLocked = isTaskLocked(stage, stageInfo, tasks, ti);
                           return (
                             <article key={task.task_id || ti}
                               className={`rounded-2xl border p-4 transition-all duration-300 ${

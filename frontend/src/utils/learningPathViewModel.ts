@@ -94,12 +94,6 @@ function itemFrom(raw: any, stageId?: string, chapterId?: string): PathViewItem 
   const id = idOf(raw, 'id', 'section_id', 'node_id', 'item_id');
   const title = text(raw?.title) || text(raw?.topic) || text(raw?.name) || '未命名学习项';
   const sectionId = id;
-  // Normalize stages: flatten days→tasks for new format
-  const _stages = (raw?.stages || []).map((s: any) => {
-    if (s.days?.length) s.tasks = (s.days as any[]).flatMap((d: any) => d.tasks || []);
-    return s;
-  });
-  const _raw = { ...raw, stages: _stages };
   return {
     id,
     title,
@@ -117,12 +111,6 @@ function itemFrom(raw: any, stageId?: string, chapterId?: string): PathViewItem 
 function chapterFrom(raw: any, stageId?: string): PathViewChapter {
   const id = idOf(raw, 'id', 'chapter_id');
   const items = array(raw?.sections).map((section) => itemFrom(section, stageId, id));
-  // Normalize stages: flatten days→tasks for new format
-  const _stages = (raw?.stages || []).map((s: any) => {
-    if (s.days?.length) s.tasks = (s.days as any[]).flatMap((d: any) => d.tasks || []);
-    return s;
-  });
-  const _raw = { ...raw, stages: _stages };
   return {
     id,
     title: text(raw?.title) || '未命名章节',
@@ -171,13 +159,6 @@ function stageFrom(raw: any, index: number, rootNodes: any[]): PathViewStage {
   const stageMinutes = positiveNumber(raw?.estimatedMinutes) ?? positiveNumber(raw?.estimated_minutes) ?? positiveNumber(raw?.duration_minutes);
   const estimatedMinutes = stageMinutes ?? (itemMinutes.length === items.length && items.length > 0 ? itemMinutes.reduce((sum, value) => sum + value, 0) : undefined);
   const availability = id || items.some((item) => item.target.kind !== 'unavailable') ? 'available' : 'unavailable';
-
-  // Normalize stages: flatten days→tasks for new format
-  const _stages = (raw?.stages || []).map((s: any) => {
-    if (s.days?.length) s.tasks = (s.days as any[]).flatMap((d: any) => d.tasks || []);
-    return s;
-  });
-  const _raw = { ...raw, stages: _stages };
   return {
     id,
     ordinal: positiveNumber(raw?.order) ?? positiveNumber(raw?.ordinal) ?? index + 1,
@@ -213,13 +194,6 @@ export function adaptLearningPath(raw: any, requestedMode?: string | null): Lear
   const progress = itemCount && completedCount !== null ? Math.round((completedCount / itemCount) * 100) : rawProgress !== undefined && itemCount !== null ? rawProgress : null;
   const knownDurations = stages.map((stage) => stage.estimatedMinutes).filter((value): value is number => value !== undefined);
   const durationSource = knownDurations.length === 0 ? 'missing' : knownDurations.length === stages.length ? 'complete' : 'partial';
-
-  // Normalize stages: flatten days→tasks for new format
-  const _stages = (raw?.stages || []).map((s: any) => {
-    if (s.days?.length) s.tasks = (s.days as any[]).flatMap((d: any) => d.tasks || []);
-    return s;
-  });
-  const _raw = { ...raw, stages: _stages };
   return {
     pathId: idOf(raw, 'id', 'path_id'),
     mode: modeFrom(raw, requestedMode),
@@ -266,10 +240,12 @@ export function normalizeLearningPathForClient(raw: any): any {
     topic: text(node?.topic) || text(node?.title) || text(node?.name),
   });
   // Normalize stages: flatten days→tasks for new format
-  const _stages = (raw?.stages || []).map((s: any) => {
-    if (s.days?.length) s.tasks = (s.days as any[]).flatMap((d: any) => d.tasks || []);
-    return s;
-  });
+  const _stages = array(raw?.stages).map((stage: any) => ({
+    ...stage,
+    tasks: array(stage?.days).length > 0
+      ? array(stage.days).flatMap((day: any) => array(day?.tasks))
+      : array(stage?.tasks),
+  }));
   const _raw = { ...raw, stages: _stages };
   return {
     ...raw,

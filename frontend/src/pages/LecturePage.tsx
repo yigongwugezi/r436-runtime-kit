@@ -23,7 +23,7 @@ import GeneratePanel, { type GeneratePanelHandle } from '../components/learning/
 import DailyTaskPage from './DailyTaskPage';
 import FocusSprintPage from './FocusSprintPage';
 import WorkflowProgress from '../components/common/WorkflowProgress';
-import { cancelWorkflow, consumeWorkflowEvents, ensureLecture, ensureVideoFallbackLecture, readWorkflow, type WorkflowState } from '../api/workflows';
+import { cancelWorkflow, consumeWorkflowEvents, ensureLecture, ensureVideoFallbackLecture, readSectionLecture, readWorkflow, type WorkflowState } from '../api/workflows';
 import { createLectureEnsureGuard } from '../utils/lectureEnsureGuard';
 import { completeLearningPathTask, getVideoFallbackState, recordVideoFallbackLectureOpened, recordVideoTaskEvidence, setVideoDeliveryMode as persistVideoDeliveryMode } from '../api/learningPath';
 import { resolveTaskExecutionMode } from '../utils/taskExecutionMode';
@@ -576,15 +576,14 @@ export default function LecturePage() {
     if (store.lectureCache[key]) { setLectureLoaded(true); return; }
     if (unavailableEnsureGuard.current.blocks(ensureScope)) { setLectureMissing(true); setLectureEnsureUnavailable(true); setLectureLoaded(true); return; }
     setLectureLoaded(false);
-    ensureLecture(activeSectionId, { ...(canonicalRequestScope || { sessionId, subjectId: focusedSubjectId || workflowSubjectId, pathId: focusedPathId || path?.id, stageId: focusedStageId || chapterCtx?.stage.id, taskId: resourceTaskId, dayId: resourceDayScope.dayId, globalDayIndex: resourceDayScope.globalDayIndex }), taskType: canonicalTaskScope?.task.type || canonicalTaskScope?.task.task_type || focusedTaskType, taskTitle: canonicalTaskScope?.task.title || currentSection?.title || '', taskDescription: canonicalTaskScope?.task.description || canonicalTaskScope?.task.goal || '', learningObjectives: canonicalTaskScope?.task.learningObjectives || canonicalTaskScope?.task.learning_objectives || [], knowledgePoints: currentSection?.knowledgePoints || canonicalTaskScope?.task.knowledgePoints || canonicalTaskScope?.task.knowledge_points || [], stageTitle: canonicalTaskScope?.stage.title || '', pathVersion: (path as any)?.currentVersion || (path as any)?.version || '' })
+    readSectionLecture(activeSectionId, canonicalRequestScope || { sessionId, pathId: focusedPathId || path?.id, stageId: focusedStageId || chapterCtx?.stage.id, taskId: resourceTaskId })
       .then(d => {
         store.markLoaded(activeSectionId);
-        if (d?.status === 'running') setLectureMissing(true);
         const content = lectureContent(d);
         if (content) {
           store.setLecture(key, content);
           store.markGenerated(activeSectionId);
-        }
+        } else setLectureMissing(true);
       })
       .catch((error) => {
         const status = error?.response?.status;

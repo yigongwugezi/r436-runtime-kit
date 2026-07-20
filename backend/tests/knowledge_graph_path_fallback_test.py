@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.routers import knowledge_graph
 from app.routers.knowledge_graph import _path_kps
+from app.middleware.auth import AuthContext
 
 
 def main() -> None:
@@ -41,11 +42,14 @@ def main() -> None:
     ]}
     with patch.object(knowledge_graph, "_resolve_session_id", return_value="session"), \
          patch.object(knowledge_graph, "_ensure_session_linked"), \
+         patch.object(knowledge_graph, "_require_session_learner"), \
          patch.object(knowledge_graph, "ag_get_learning_path", return_value=raw_path), \
          patch.object(knowledge_graph, "ag_get_resources", return_value=[]), \
          patch.object(knowledge_graph, "_resolve_course_context", return_value=("", "")), \
          patch.object(knowledge_graph, "_generate_kps_via_llm", side_effect=AssertionError("LLM must not run")):
-        graph = knowledge_graph.get_knowledge_graph(sessionId="session", subjectId="subject")
+        graph = knowledge_graph.get_knowledge_graph(
+            sessionId="session", subjectId="subject", auth=AuthContext(learner_id="learner")
+        )
     assert [node["id"] for node in graph["data"]["nodes"]] == ["stage-1", "task-1", "task-2", "stage-2", "task-3"]
     print("knowledge graph path fallback: PASS")
 

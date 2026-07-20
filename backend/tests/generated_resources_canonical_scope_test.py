@@ -57,6 +57,16 @@ def main() -> None:
                 id="generated-t0", session_id=SESSION, type="summary_card", title="Summary", content="content",
                 tags=["section_generated"], related_stage_id=STAGE, related_section_id=TASK, task_id=TASK,
             ),
+            ResourceModel(
+                id="legacy-resource", session_id=SESSION, type="lecture", title="Legacy", content="content",
+                related_stage_id=STAGE, related_section_id="legacy-task", task_id="legacy-task",
+            ),
+            ResourceModel(
+                id="learning-title-resource", session_id=SESSION, type="lecture", title="学习《复杂度》核心内容", content="content",
+            ),
+            ResourceModel(
+                id="video-recommendations-cache", session_id=SESSION, type="video", title="Video recommendations", content="[]",
+            ),
         ])
         db.commit()
     finally:
@@ -73,6 +83,15 @@ def main() -> None:
         assert client.get(f"/api/sections/{TASK}/generated-resources?sessionId={SESSION}&subjectId=ps_afeab69a4002", headers=owner).status_code == 400
         detail = client.get("/api/resources/generated-t0", params={"sessionId": SESSION, "subjectId": "ps_afeab69a4002"}, headers=owner)
         assert detail.status_code == 200 and detail.json()["data"]["resource"]["id"] == "generated-t0"
+        assert client.get("/api/resources/legacy-resource", params={"sessionId": SESSION, "subjectId": "ps_afeab69a4002"}, headers=owner).status_code == 200
+        listed = client.get("/api/resources", params={"sessionId": SESSION, "subjectId": "ps_afeab69a4002"}, headers=owner)
+        listed_ids = {item["id"] for item in listed.json()["data"]["resources"]}
+        assert "learning-title-resource" in listed_ids and "video-recommendations-cache" not in listed_ids
+        db = SessionLocal()
+        try:
+            assert db.get(ResourceModel, "learning-title-resource") is not None
+        finally:
+            db.close()
     print("generated resources canonical scope: PASS")
 
 

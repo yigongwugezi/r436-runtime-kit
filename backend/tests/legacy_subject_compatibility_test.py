@@ -109,7 +109,7 @@ def main() -> None:
         except HTTPException as exc:
             assert exc.status_code == 403
 
-        path_response = product.get_learning_path(sessionId="legacy-session", subjectId=legacy_subject_id)
+        path_response = product.get_learning_path(sessionId="legacy-session", subjectId=legacy_subject_id, pathId="legacy-path")
         assert path_response["data"]["path"]["id"] == "legacy-path"
         resources = product.get_resources(sessionId="legacy-session", subjectId=legacy_subject_id)["data"]["resources"]
         assert [item["id"] for item in resources] == ["legacy-resource"]

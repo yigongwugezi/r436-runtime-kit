@@ -60,6 +60,7 @@ def main() -> None:
             assert client.get("/api/learning-analytics?sessionId=math-session&subjectId=math").status_code == 401
             assert client.post("/api/learning-assessment/generate?sessionId=math-session&subjectId=math").status_code == 401
             assert client.get("/api/learning-analytics?sessionId=math-session&subjectId=math", headers=owner).status_code == 200
+            assert client.get("/api/learning-analytics?sessionId=math-session&subjectId=physics", headers=owner).status_code == 403
             assert client.get("/api/learning-analytics?sessionId=other-session&subjectId=other", headers=owner).status_code == 403
             assert client.post("/api/learning-assessment/generate?sessionId=other-session&subjectId=other", headers=owner).status_code == 403
             assert calls["provider"] == 0

@@ -16,6 +16,7 @@ from app.db.repository import (
     resolve_current_learning_path,
 )
 from app.routers import knowledge_graph
+from app.middleware.auth import AuthContext
 
 
 def main() -> None:
@@ -40,6 +41,7 @@ def main() -> None:
         assert resolve_current_learning_path(db, learner_id="learner", session_id="session", subject_id="subject").id == first.id
         assert resolve_current_learning_path(db, learner_id="learner", session_id="session", subject_id="subject", path_id=first.id).id == first.id
         assert resolve_current_learning_path(db, learner_id="learner", session_id="session", subject_id="other", path_id=first.id) is None
+        assert resolve_current_learning_path(db, learner_id="other-learner", session_id="session", subject_id="subject", path_id=first.id) is None
 
         db.add(LearningPathModel(id="legacy", session_id="session", subject_id="", stages=[]))
         db.add(SessionModel(id="legacy-session", learner_id="learner", subject_id="legacy-subject"))
@@ -53,8 +55,11 @@ def main() -> None:
 
         with patch.object(knowledge_graph, "ag_get_learning_path", side_effect=CurrentPathUnresolvedError()), \
              patch.object(knowledge_graph, "_resolve_session_id", return_value="legacy-session"), \
-             patch.object(knowledge_graph, "_ensure_session_linked"):
-            graph = knowledge_graph.get_knowledge_graph(sessionId="legacy-session", subjectId="legacy-subject")
+             patch.object(knowledge_graph, "_ensure_session_linked"), \
+             patch.object(knowledge_graph, "_require_session_learner"):
+            graph = knowledge_graph.get_knowledge_graph(
+                sessionId="legacy-session", subjectId="legacy-subject", auth=AuthContext(learner_id="learner")
+            )
             assert graph["data"]["nodes"] == []
     finally:
         db.close()

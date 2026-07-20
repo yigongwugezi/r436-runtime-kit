@@ -132,7 +132,7 @@ def recommendations_main():
         good = {"resources": [{"resource_type": "video", "title": "Big O", "url": "https://www.bilibili.com/video/BV1abc"}], "status": "completed", "warnings": []}
         with patch("app.services.section_resource_recommendations.SectionResourceRecommendationService.recommend", return_value=good) as search:
             first = TestClient(app).post("/api/resources/recommendations/for-learning", json=payload)
-            assert first.status_code == 200 and first.json()["data"]["recommendations"]["presentationStatus"] == "new_search"
+            assert first.status_code == 200 and first.json()["data"]["recommendations"]["presentationStatus"] == "new_search", first.text
             assert search.call_count == 1
         with patch("app.services.section_resource_recommendations.SectionResourceRecommendationService.recommend", return_value={"resources": [], "status": "search_unavailable", "warnings": ["timeout"]}):
             stale = TestClient(app).post("/api/resources/recommendations/for-learning", json={**payload, "refresh": True})

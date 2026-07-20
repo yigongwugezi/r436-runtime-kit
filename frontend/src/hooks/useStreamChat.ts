@@ -8,6 +8,7 @@ import type { ChatAttachment, ChatMessage } from '../types/chat';
 import { uid } from '../utils/format';
 import { createLogger } from '../utils/logger';
 import { runtimeStorageKeys, writeStorageJson, writeStorageItem } from '../utils/storageKeys';
+import { resolveActiveSubjectContext } from '../utils/canonicalSessionState';
 
 const log = createLogger('StreamChat');
 
@@ -64,6 +65,8 @@ export function useStreamChat() {
       const text = content.trim() || '识别这张图片';
       const store = useChatStore.getState();
       if (store.canonicalSession.status !== 'resolved' || !store.currentSessionId) return;
+      const subjectStore = useSubjectStore.getState();
+      const subjectContext = resolveActiveSubjectContext(subjectStore.activeSubject, subjectStore.activeClassSubject);
       const ignoreImageContext = options.ignoreImageContext === true;
       const selectedImageAttachment = store.imageAttachmentHistory.find(
         (item) => imageAttachmentKey(item) === store.selectedImageAttachmentId,
@@ -123,12 +126,7 @@ export function useStreamChat() {
           search_enabled: store.searchEnabled,
           deep_think_enabled: store.deepThinkEnabled,
           chat_mode: store.chatMode,
-          // v1.2: 规划模式下注入当前科目上下文
-          ...(store.chatMode === 'planning' ? (() => {
-            const sub = useSubjectStore.getState().activeSubject;
-            if (!sub?.id) return {};
-            return { subjectId: sub.id, subjectName: sub.name || '', ...(sub.textbookId ? { textbookId: sub.textbookId } : {}) };
-          })() : {}),
+          ...subjectContext,
         }, controller.signal);
 
         const decoder = new TextDecoder();
@@ -259,6 +257,7 @@ export function useStreamChat() {
             search_enabled: store.searchEnabled,
             deep_think_enabled: store.deepThinkEnabled,
             chat_mode: store.chatMode,
+            ...subjectContext,
           });
           log.info('非流式回退成功');
           setDebugInfoFromPayload(fallback as unknown as Record<string, unknown>);
@@ -324,6 +323,8 @@ export function useStreamChat() {
       if (isStreaming || !text.trim()) return;
       const store = useChatStore.getState();
       if (store.canonicalSession.status !== 'resolved' || !store.currentSessionId) return;
+      const subjectStore = useSubjectStore.getState();
+      const subjectContext = resolveActiveSubjectContext(subjectStore.activeSubject, subjectStore.activeClassSubject);
 
       // 只创建空的 assistant 消息用于流式输出
       const aiMsg: ChatMessage = {
@@ -359,12 +360,7 @@ export function useStreamChat() {
           search_enabled: store.searchEnabled,
           deep_think_enabled: store.deepThinkEnabled,
           chat_mode: store.chatMode,
-          // v1.2: 规划模式下注入当前科目上下文，使智能体可感知课本/学科信息
-          ...(store.chatMode === 'planning' ? (() => {
-            const sub = useSubjectStore.getState().activeSubject;
-            if (!sub?.id) return {};
-            return { subjectId: sub.id, subjectName: sub.name || '', ...(sub.textbookId ? { textbookId: sub.textbookId } : {}) };
-          })() : {}),
+          ...subjectContext,
         }, controller.signal);
 
         const decoder = new TextDecoder();
@@ -458,6 +454,7 @@ export function useStreamChat() {
             search_enabled: store.searchEnabled,
             deep_think_enabled: store.deepThinkEnabled,
             chat_mode: store.chatMode,
+            ...subjectContext,
           });
           writeStorageItem(runtimeStorageKeys.pendingGeneration, '');
           updateLastAssistant((m) => ({

@@ -22,6 +22,10 @@ assert.equal(normalizedLegacy.stages[0].chapters[0].id, 'chapter-route');
 assert.equal(normalizedLegacy.stages[0].chapters[0].sections[0].id, 'section-route');
 assert.deepEqual(normalizedLegacy.stages[0].nodes, [], 'normalization must not invent compatibility nodes');
 
+const dailyRaw = { stages: [{ id: 'daily-stage', days: [{ tasks: [{ id: 'daily-task' }] }] }] };
+normalizeLearningPathForClient(dailyRaw);
+assert.equal(dailyRaw.stages[0].tasks, undefined, 'normalization must not mutate the API response');
+
 const hierarchyWithLegacyNodes = adaptLearningPath({ stages: [{ id: 'stage-hybrid', chapters: [{ id: 'chapter-hybrid', sections: [{ id: 'section-hybrid', title: '唯一小节' }] }], nodes: [{ id: 'legacy-kp', topic: '不应重复计数' }] }] });
 assert.equal(hierarchyWithLegacyNodes.itemCount, 1, 'chapter hierarchy must take precedence over compatibility nodes');
 

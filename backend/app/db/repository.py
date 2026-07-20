@@ -642,19 +642,16 @@ def persist_generated_learning_path(
 def resolve_current_learning_path(
     db: Session, *, learner_id: str, session_id: str, subject_id: str, path_id: str = "",
 ) -> LearningPathModel | None:
-    """Resolve only an explicitly selected path; legacy rows are never guessed.
-
-    v1.3: Legacy paths with ``subject_id=""`` are accepted as a last resort
-    when no scoped path exists — users with old learning paths must still be
-    able to access their tasks.
-    """
+    """Resolve a scope-safe current path; unscoped legacy rows are never guessed."""
     if path_id:
         path = db.get(LearningPathModel, path_id)
         if path is None or path.session_id != session_id:
             return None
-        # Explicit path_id is authoritative — accept the path even when
-        # subject_id mismatches (e.g. legacy path with "", user navigated
-        # with a different subject, or frontend cache carries stale subject).
+        session = db.get(SessionModel, session_id)
+        if session is None or (session.learner_id and learner_id and session.learner_id != learner_id):
+            return None
+        if path.subject_id and path.subject_id != subject_id:
+            return None
         return path
     pointer = db.query(CurrentLearningPathModel).filter_by(
         learner_id=learner_id, session_id=session_id, subject_id=subject_id,
@@ -669,10 +666,10 @@ def resolve_current_learning_path(
         return scoped[0]
     if len(scoped) > 1:
         raise CurrentPathUnresolvedError("CURRENT_PATH_UNRESOLVED")
-    # v1.3: Fall back to the single legacy (subject_id="") path for this session
+    # An unscoped legacy path must be selected explicitly; never guess it.
     legacy = db.query(LearningPathModel).filter_by(session_id=session_id, subject_id="").all()
-    if len(legacy) == 1:
-        return legacy[0]
+    if legacy:
+        raise CurrentPathUnresolvedError("CURRENT_PATH_UNRESOLVED")
     return None
 
 

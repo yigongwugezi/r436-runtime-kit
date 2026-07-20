@@ -18,7 +18,10 @@ def main() -> None:
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)
     stages = [
-        {"stage_id": "s1", "tasks": [{"task_id": "t1", "status": "not_started"}]},
+        {"stage_id": "s1", "tasks": [
+            {"task_id": "t1", "status": "not_started"},
+            {"task_id": "optional-map", "required": False, "status": "not_started"},
+        ]},
         {"stage_id": "s2", "tasks": [{"task_id": "t2", "status": "not_started"}]},
         {"stage_id": "empty", "tasks": []},
     ]
@@ -38,6 +41,8 @@ def main() -> None:
             db.close()
         refreshed = product._apply_stage_progress(saved.stages)
         assert [s["progressStatus"] for s in refreshed[:2]] == ["completed", "current"]
+        assert refreshed[0]["requiredTaskCount"] == 1
+        assert product._apply_stage_progress([{"tasks": [{"required": False}]}])[0]["progressStatus"] == "completed"
         product._require_stage_access("session-a", "s1")
         product._require_stage_access("session-a", "s2")
         try:

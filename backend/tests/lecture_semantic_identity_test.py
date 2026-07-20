@@ -18,9 +18,9 @@ from app.middleware.auth import AuthContext
 from app.routers import product, workflows
 
 
-class FakeLLM:
+class FailingLLM:
     def chat(self, *_args, **_kwargs) -> str:
-        return "# New lecture\n\nCurrent task content.\n\n## Summary\n\nReady."
+        raise RuntimeError("provider connection failed")
 
 
 def main() -> None:
@@ -41,7 +41,7 @@ def main() -> None:
     db = factory()
     try:
         db.add(SessionModel(id=session_id, learner_id="learner-a", subject_id=subject_id))
-        upsert_learning_path(db, session_id, {"id": path_id, "subject_id": subject_id, "stages": [{"stage_id": stage_id, "days": [{"id": "day-1", "day": 1, "globalDayIndex": 1, "tasks": [{"task_id": task_id, "title": "Old outline", "type": "read_doc", "dayId": "day-1"}]}]}]})
+        upsert_learning_path(db, session_id, {"id": path_id, "subject_id": subject_id, "stages": [{"stage_id": stage_id, "days": [{"id": f"{stage_id}_d1", "day": 1, "globalDayIndex": 1, "tasks": [{"task_id": task_id, "title": "Old outline", "type": "read_doc", "dayId": f"{stage_id}_d1"}]}]}]})
         db.flush()
         db.add(CurrentLearningPathModel(learner_id="learner-a", session_id=session_id, subject_id=subject_id, path_id=path_id, path_version=1))
         fingerprint = product._lecture_semantic_fingerprint(base, auth.learner_id)
@@ -55,7 +55,7 @@ def main() -> None:
 
     with patch.object(workflows, "_start", return_value=(SimpleNamespace(task_id="new-lecture-workflow"), False)), \
          patch.object(product, "SessionLocal", factory), \
-         patch.object(product, "_llm_client", return_value=FakeLLM()), \
+         patch.object(product, "_llm_client", return_value=FailingLLM()), \
          patch.object(product, "_inject_spark_images", side_effect=lambda text, _title: text), \
         TestClient(app) as client:
         first = client.post(f"/api/sections/{task_id}/lecture/ensure", json=base)
@@ -72,7 +72,9 @@ def main() -> None:
         db = factory()
         try:
             generated_resources = db.query(ResourceModel).filter(ResourceModel.task_id == task_id).all()
-            assert any((item.resource_metadata or {}).get("semanticFingerprint") == revised_fingerprint for item in generated_resources), [(item.id, item.task_id, item.resource_metadata) for item in generated_resources]
+            fallback = next(item for item in generated_resources if (item.resource_metadata or {}).get("semanticFingerprint") == revised_fingerprint)
+            assert fallback.resource_metadata["used_fallback"] is True
+            assert fallback.resource_metadata["generation_mode"] == "fallback"
         finally:
             db.close()
         ready = client.post(f"/api/sections/{task_id}/lecture/ensure", json=revised)

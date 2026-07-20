@@ -28,6 +28,7 @@ def resolve_canonical_learning_session(
         db.query(SessionModel)
         .filter(
             SessionModel.subject_id == subject_id,
+            SessionModel.status == "active",
             (SessionModel.learner_id == learner_id) | SessionModel.learner_id.is_(None),
         )
         .all()
