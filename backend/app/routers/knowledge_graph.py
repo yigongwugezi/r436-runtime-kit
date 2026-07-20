@@ -2,8 +2,8 @@
 
 Knowledge points come from:
 1. KnowledgePointModel table (admin-curated DAG)
-2. LLM generation (web search + RAG + LLM synthesis, cached to DB)
-No fallback to task titles or stage names — those are not knowledge points.
+2. The persisted learning-path structure
+3. LLM generation when neither source contains usable structure
 """
 from __future__ import annotations
 
@@ -126,16 +126,16 @@ def get_knowledge_graph(
             if not kp_id or kp_id in seen_kps:
                 continue
             seen_kps.add(kp_id)
-            chapter = kp.get("chapter", "")
-            if chapter and chapter not in seen_chapters:
-                seen_chapters.add(chapter)
-                chapter_names.append(chapter)
+            kp_chapter = kp.get("chapter", "")
+            if kp_chapter and kp_chapter not in seen_chapters:
+                seen_chapters.add(kp_chapter)
+                chapter_names.append(kp_chapter)
             all_nodes.append({
                 "id": kp_id,
                 "label": kp["name"],
                 "type": kp.get("type", "concept"),
-                "category": chapter,
-                "chapter": chapter,
+                "category": kp_chapter,
+                "chapter": kp_chapter,
                 "mastery": int(kp.get("_mastery", 0)),
                 "status": str(kp.get("_status", "not_started")),
                 "difficulty": kp.get("difficulty", "medium"),
@@ -295,7 +295,7 @@ def get_node_detail(
 # ── Core: load KPs from DB, or generate via LLM ────────────────────────
 
 def _load_or_generate_kps(session_id: str, subject_id: str, stages: list) -> list[dict[str, Any]]:
-    """Load knowledge points from DB (keyed by subject+course), or generate via LLM."""
+    """Load knowledge points from DB/path, or generate via LLM as a last resort."""
     kp_rows: list[dict[str, Any]] = []
 
     # Resolve subject
@@ -346,7 +346,12 @@ def _load_or_generate_kps(session_id: str, subject_id: str, stages: list) -> lis
         except Exception:
             logger.warning("Failed to load KnowledgePointModel", exc_info=True)
 
-    # 2. Generate via LLM
+    # 2. A GET must remain useful when the configured LLM is unavailable.
+    path_rows = _path_kps(stages)
+    if path_rows:
+        return path_rows
+
+    # 3. Generate via LLM only when the persisted path has no usable structure.
     if course_name:
         generated = _generate_kps_via_llm(course_name, course_desc, stages)
         if generated:
@@ -354,6 +359,58 @@ def _load_or_generate_kps(session_id: str, subject_id: str, stages: list) -> lis
             return generated
 
     return []
+
+
+def _path_kps(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build a stable graph from canonical stage/task IDs without external calls."""
+    rows: list[dict[str, Any]] = []
+    previous_stage_id = ""
+    for stage_index, stage in enumerate(stages):
+        if not isinstance(stage, dict):
+            continue
+        stage_id = str(stage.get("id") or stage.get("stage_id") or f"stage_{stage_index}")
+        stage_title = str(stage.get("title") or f"阶段 {stage_index + 1}").strip()
+        tasks = [task for task in stage.get("tasks", []) if isinstance(task, dict)]
+        stage_status = {
+            "completed": "mastered", "current": "in_progress", "locked": "blocked",
+        }.get(str(stage.get("progressStatus") or ""), "not_started")
+        completed = sum(_normalize_content_status(task.get("status", "")) == "mastered" for task in tasks)
+        rows.append({
+            "id": stage_id, "name": stage_title, "type": "concept",
+            "description": str(stage.get("objective") or stage.get("description") or ""),
+            "prerequisites": [previous_stage_id] if previous_stage_id else [],
+            "related": [], "part_of": "", "difficulty": "medium", "importance": 8,
+            "chapter": stage_title,
+            "_mastery": round(completed / len(tasks) * 100) if tasks else 0,
+            "_status": stage_status,
+        })
+
+        previous_task_id = ""
+        for task_index, task in enumerate(tasks):
+            task_id = str(task.get("task_id") or task.get("id") or f"{stage_id}_task_{task_index}")
+            title = str(task.get("title") or stage_title).strip()
+            for separator in ("：", ":"):
+                if separator in title:
+                    title = title.split(separator, 1)[1].strip() or title
+                    break
+            task_type = str(task.get("type") or "").lower()
+            kp_type = "memory" if "review" in task_type else (
+                "procedure" if any(token in task_type for token in ("quiz", "practice", "hands", "code")) else "concept"
+            )
+            status = _normalize_content_status(task.get("status", ""))
+            rows.append({
+                "id": task_id, "name": title, "type": kp_type,
+                "description": str(task.get("goal") or ""),
+                "prerequisites": [previous_task_id] if previous_task_id else [],
+                "related": [], "part_of": stage_id,
+                "difficulty": str(task.get("difficulty") or "medium"), "importance": 5,
+                "chapter": stage_title,
+                "_mastery": 100 if status == "mastered" else int(task.get("mastery") or 0),
+                "_status": status,
+            })
+            previous_task_id = task_id
+        previous_stage_id = stage_id
+    return rows
 
 
 # ── Course context ──────────────────────────────────────────────────────

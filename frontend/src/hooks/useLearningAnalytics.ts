@@ -25,28 +25,29 @@ export function useLearningAnalytics() {
   const [analytics, setAnalytics] = useState<AnalyticsSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const lastSubjectRef = useRef<string | undefined>(undefined);
   const lastVersionRef = useRef<number>(0);
   const lastKeyRef = useRef<string | undefined>(undefined);
   const abortRef = useRef<AbortController | null>(null);
 
   const fetchAnalytics = useCallback(async () => {
-    if (!subjectId || !canLoadCanonicalData(canonicalStatus, sessionId)) { setLoading(false); return; }
+    if (!subjectId || !canLoadCanonicalData(canonicalStatus, sessionId)) return;
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     setLoading(true);
     setError(null);
-    setAnalytics(null);  // 切换科目时立即清空旧数据
     try {
       const data = await getAnalytics({ sessionId, subjectId }, controller.signal);
       if (controller.signal.aborted || useChatStore.getState().dataSessionId !== sessionId) return;
       setAnalytics(data);
     } catch (e) {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || abortRef.current !== controller) return;
       setError(e instanceof Error ? e.message : '加载分析数据失败');
     } finally {
-      setLoading(false);
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        setLoading(false);
+      }
     }
   }, [canonicalStatus, subjectId, sessionId]);
 
@@ -56,11 +57,12 @@ export function useLearningAnalytics() {
     if (canonicalStatus === 'resolved' && subjectId) {
       if (lastKeyRef.current !== key || !analytics) {
         lastKeyRef.current = key;
+        setAnalytics(null);
         fetchAnalytics();
       }
     } else {
-      setLoading(false);
-      setError(null);
+      setLoading(canonicalStatus === 'resolving' || canonicalStatus === 'unresolved');
+      setError(canonicalStatus === 'failed' ? '学习会话加载失败，请重试' : null);
       setAnalytics(null);
     }
     const onVisible = () => {

@@ -1,5 +1,5 @@
 /** Knowledge Graph Page — full-page interactive force-directed graph of knowledge points. */
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Network, Loader2, AlertCircle, LayoutGrid, ArrowLeftRight, Circle } from 'lucide-react';
 import { KGGraph, KGNodeCard, KGDetailPanel, KGSearch, KGFilter } from '../components/kg';
@@ -10,6 +10,7 @@ import { useSubjectStore } from '../store/subjectStore';
 import { getKnowledgeGraph, getNodeDetail } from '../api/knowledgeGraph';
 import type { KnowledgeGraphData, KGNode, KGNodeDetail } from '../types/knowledgeGraph';
 import { adaptKnowledgeGraph } from '../utils/knowledgeGraphAdapter';
+import { canLoadCanonicalData } from '../utils/canonicalSessionState';
 
 const LAYOUT_OPTIONS: Array<{ value: LayoutType; label: string; icon: React.ReactNode }> = [
   { value: 'force', label: '力导向', icon: <Network size={14} /> },
@@ -20,9 +21,14 @@ const LAYOUT_OPTIONS: Array<{ value: LayoutType; label: string; icon: React.Reac
 export default function KnowledgeGraphPage() {
   const nav = useNavigate();
   const [searchParams] = useSearchParams();
-  const sessionId = useChatStore((s) => s.currentSessionId);
+  const sessionId = useChatStore((s) => s.dataSessionId);
+  const canonicalStatus = useChatStore((s) => s.canonicalSession.status);
+  const resolveCanonicalSession = useChatStore((s) => s.resolveCanonicalSession);
   const activeSubject = useSubjectStore((s) => s.activeSubject);
+  const activeClassSubject = useSubjectStore((s) => s.activeClassSubject);
+  const subjectId = activeSubject?.id ?? activeClassSubject?.subject;
   const initialNodeId = searchParams.get('nodeId');
+  const graphAbortRef = useRef<AbortController | null>(null);
 
   // ── Data ──
   const [graphData, setGraphData] = useState<KnowledgeGraphData | null>(null);
@@ -46,25 +52,34 @@ export default function KnowledgeGraphPage() {
 
   // ── Fetch graph data ──
   const fetchGraph = useCallback(async (chapter?: string) => {
-    if (!sessionId) return;
+    if (!subjectId || !canLoadCanonicalData(canonicalStatus, sessionId)) return;
+    graphAbortRef.current?.abort();
+    const controller = new AbortController();
+    graphAbortRef.current = controller;
     setLoading(true);
     setError(null);
     try {
-      const params: { sessionId: string; subjectId?: string; chapter?: string } = { sessionId };
-      if (activeSubject) params.subjectId = activeSubject.id;
+      const params: { sessionId: string; subjectId?: string; chapter?: string } = { sessionId, subjectId };
       if (chapter) params.chapter = chapter;
-      const data = await getKnowledgeGraph(params);
+      const data = await getKnowledgeGraph(params, controller.signal);
+      if (controller.signal.aborted) return;
       setGraphData(adaptKnowledgeGraph(data));
     } catch (err) {
+      if (controller.signal.aborted) return;
       setError('加载知识图谱失败，请稍后重试');
       console.error('[KG] Failed to load graph:', err);
     } finally {
-      setLoading(false);
+      if (graphAbortRef.current === controller) setLoading(false);
     }
-  }, [sessionId, activeSubject]);
+  }, [sessionId, subjectId, canonicalStatus]);
+
+  useEffect(() => {
+    if (subjectId && canonicalStatus === 'unresolved') void resolveCanonicalSession();
+  }, [subjectId, canonicalStatus, resolveCanonicalSession]);
 
   useEffect(() => {
     fetchGraph();
+    return () => graphAbortRef.current?.abort();
   }, [fetchGraph]);
 
   // ── Initial nodeId handling ──
@@ -130,7 +145,7 @@ export default function KnowledgeGraphPage() {
     setDetailLoading(true);
     try {
       const params: { sessionId: string; subjectId?: string } = { sessionId };
-      if (activeSubject) params.subjectId = activeSubject.id;
+      if (subjectId) params.subjectId = subjectId;
       const detail = await getNodeDetail(nodeId, params);
       setSelectedNodeDetail(detail);
     } catch (err) {
@@ -138,7 +153,7 @@ export default function KnowledgeGraphPage() {
     } finally {
       setDetailLoading(false);
     }
-  }, [sessionId, activeSubject]);
+  }, [sessionId, subjectId]);
 
   // ── Click "去学习" ──
   const handleLearn = useCallback((nodeId: string) => {
@@ -152,15 +167,27 @@ export default function KnowledgeGraphPage() {
   }, []);
 
   // ── Render states ──
-  if (!sessionId) {
+  if (!subjectId) {
     return (
       <div className="flex items-center justify-center h-full min-h-[400px] text-surface-500">
-        <p className="text-sm">请先开始一个学习会话</p>
+        <p className="text-sm">请先选择一个学习科目</p>
       </div>
     );
   }
 
-  if (loading) {
+  if (canonicalStatus === 'failed') {
+    return (
+      <div className="flex items-center justify-center h-full min-h-[400px]">
+        <div className="flex flex-col items-center gap-3">
+          <AlertCircle size={28} className="text-error-500" />
+          <p className="text-sm text-surface-600">学习会话加载失败</p>
+          <button onClick={() => resolveCanonicalSession()} className="px-4 py-2 bg-primary-600 text-white rounded-xl text-sm font-medium">重新加载</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (loading || !canLoadCanonicalData(canonicalStatus, sessionId)) {
     return (
       <div className="flex items-center justify-center h-full min-h-[400px]">
         <div className="flex flex-col items-center gap-3">

@@ -5,8 +5,8 @@ export async function getKnowledgeGraph(params: {
   sessionId: string;
   subjectId?: string;
   chapter?: string;
-}): Promise<KnowledgeGraphData> {
-  const { data } = await client.get('/api/knowledge-graph', { params });
+}, signal?: AbortSignal): Promise<KnowledgeGraphData> {
+  const { data } = await client.get('/api/knowledge-graph', { params, signal });
   return data;
 }
 
