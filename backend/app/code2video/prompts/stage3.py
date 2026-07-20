@@ -1,10 +1,18 @@
-def get_prompt3_code(regenerate_note, section, base_class):
+def get_prompt3_code(regenerate_note, section, base_class, user_requirements=""):
+    req_block = f"""
+## 用户特殊要求（必须严格遵循，优先级高于以下所有约束）
+{user_requirements}
+""" if user_requirements else ""
     section_id = section.id.replace('_', '').title()
     return f"""你是 Manim Community Edition v0.19.0 专家。请根据以下教学脚本生成高质量的 Manim 动画代码。
 {regenerate_note}
+{req_block}
+
+重要：TeachingScene 基类已在另一个文件定义好（含 setup_layout、place_at_grid、place_in_area 方法），
+你只需要输出继承 TeachingScene 的 Scene 子类。不要重复输出 TeachingScene 基类代码。
 
 1. 基本要求：
-- 使用提供的 TeachingScene 基类，不要修改
+- 继承 TeachingScene 基类，不要重新定义基类
 - 每条讲解要点在对应动画出现时改变颜色
 - 不要在讲解文字上施加缩放、平移或 Transform 动画
 
@@ -18,12 +26,10 @@ def get_prompt3_code(regenerate_note, section, base_class):
 - 讲解要点：{section.lecture_lines}
 - 动画描述：{'; '.join(section.animations)}
 
-4. 代码结构（使用注释标记所属讲解要点）：
+4. 请只输出如下结构的 Python 代码（不要包含 TeachingScene 基类）：
 ```python
 from manim import *
 import numpy as np
-
-{base_class}
 
 class {section_id}Scene(TeachingScene):
     def construct(self):
@@ -38,11 +44,15 @@ class {section_id}Scene(TeachingScene):
 
 5. 强制约束：
 - 颜色：使用浅色十六进制颜色，确保可读性
+- 【致命错误】MathTex() 只能包含 LaTeX 公式，绝对禁止包含任何中文字符。中文必须用 Text()！
+  正确：MathTex(r"x^2 + y^2 = 1")  Text("导数定义")
+  错误：MathTex(r"斜率 = 2")  ← 这会导致 LaTeX 编译失败，整个视频无法渲染！
 - 禁止使用 Tex()，全部用 MathTex() 写 LaTeX 公式
 - 禁止使用 SVGMobject、ImageMobject
 - 确保导入 numpy
 - Scene 类名为 {section_id}Scene
-- 【关键】所有 MathTex 都必须使用 raw string，如 MathTex(r"x^2 + y^2 = 1")，禁止在公式内使用 $$ 符号
+- 所有 MathTex 都必须使用 raw string，如 MathTex(r"x^2 + y^2 = 1")，禁止在公式内使用 $$ 符号
+- 【关键】不要输出 TeachingScene 基类定义，它已经在另一个文件中
 """
     return prompt
 

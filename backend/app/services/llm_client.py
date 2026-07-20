@@ -247,7 +247,7 @@ class DeepSeekLLMClient(BaseLLMClient):
 
         model = kwargs.get("model", self.model)
         if use_reasoning:
-            model = getattr(settings, "llm_reasoner_model", "deepseek-reasoner")
+            model = getattr(settings, "llm_reasoner_model", "deepseek-v4-pro")
 
         payload: dict[str, Any] = {
             "model": model,
@@ -276,7 +276,7 @@ class DeepSeekLLMClient(BaseLLMClient):
             body = json.loads(response.read().decode("utf-8"))
 
         content = body["choices"][0]["message"]["content"]
-        # deepseek-reasoner 的 reasoning_content 转为 <thinking> 标签
+        # deepseek-v4-pro 的 reasoning_content 转为 <thinking> 标签
         reasoning = body["choices"][0]["message"].get("reasoning_content", "")
         if reasoning:
             content = f"<thinking>{reasoning}</thinking>\n\n{content}"
@@ -289,7 +289,7 @@ class DeepSeekLLMClient(BaseLLMClient):
 
         model = kwargs.get("model", self.model)
         if use_reasoning:
-            model = getattr(settings, "llm_reasoner_model", "deepseek-reasoner")
+            model = getattr(settings, "llm_reasoner_model", "deepseek-v4-pro")
 
         payload = {"model": model, "messages": messages, "stream": True, "temperature": kwargs.get("temperature", 0.7)}
         if use_search and settings.llm_enable_search:

@@ -2,12 +2,12 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   AlertCircle, ArrowLeft, ArrowRight, BarChart3, BookOpen,
-  Check, ChevronRight, ClipboardList, GraduationCap, Play,
+  Check, ChevronLeft, ClipboardList, GraduationCap, Play,
   Settings, Target, X, Loader2, RefreshCw
 } from 'lucide-react';
 import Markdown from '../utils/markdown';
 import { listQuestions, gradeAnswer, getWeakQuestions, getAnswerHistory, getQuestionSets } from '../api/chat';
-import { generateQuestions } from '../api/questions';
+import { generateQuestions, listQuestions as fetchQuestions } from '../api/questions';
 import { getAnalytics } from '../api/analytics';
 import { listExamSets, getExamSetResults, startExamSetAttempt, submitExamSet, listExamSetAttempts, updateAttempt } from '../api/assessment';
 import type { ExamSet, Attempt, QuizResult } from '../types/assessment';
@@ -15,6 +15,8 @@ import { getPushedQuestions } from '../api/classSubjects';
 import { getCurrentLearner } from '../store/authStore';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
+import CustomPracticeModal, { type PracticeConfig } from '../components/practice/CustomPracticeModal';
+import DiagnosisSummary from '../components/practice/DiagnosisSummary';
 
 interface Question { question_id: string; type: string; stem: string; options?: string[]; difficulty?: string; knowledge_points?: string[]; correct?: string; explanation?: string; }
 type ViewKey = 'home' | 'quiz' | 'exam' | 'history';
@@ -52,6 +54,115 @@ export default function PracticePage() {
   const [examSetTotalScore, setExamSetTotalScore] = useState<number | null>(null);
   const [examSetWeakPoints, setExamSetWeakPoints] = useState<any[]>([]);
 
+  const promptHandledRef = useRef(false);
+  const [showCustomModal, setShowCustomModal] = useState(false);
+  const [customGenerating, setCustomGenerating] = useState(false);
+  const diagnosisModeRef = useRef(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  // 题目集详情
+  const [activeQuestionSet, setActiveQuestionSet] = useState<any>(null);
+  const [qsQuestions, setQsQuestions] = useState<Question[]>([]);
+  const [qsGrades, setQsGrades] = useState<Record<string, any>>({});
+  const [qsLoading, setQsLoading] = useState(false);
+  const [refreshStamp, setRefreshStamp] = useState(0);
+
+  // ── 答题进度持久化：离开页面再回来不丢进度 ──
+  const storageKey = `practice_progress_${sessionId}`;
+
+  // 恢复进度（仅首次加载时）
+  useEffect(() => {
+    if (loading || questions.length > 0) return; // 已有题目就不恢复
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (!raw) return;
+      const saved = JSON.parse(raw);
+      if (saved.questions?.length > 0) {
+        setQuestions(saved.questions);
+        setAnswers(saved.answers || {});
+        setGrades(saved.grades || {});
+        setCurrentIdx(saved.currentIdx || 0);
+        if (saved.diagnosisMode) diagnosisModeRef.current = true;
+        if (saved.examSetId && examSets.length > 0) {
+          const es = examSets.find((e: any) => e.id === saved.examSetId);
+          if (es) { setActiveExamSet(es); setExamSetAttemptId(saved.examSetAttemptId || ''); }
+        }
+      }
+    } catch {}
+  }, [loading]);
+
+  // 自动保存进度
+  useEffect(() => {
+    if (questions.length === 0) return;
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({
+        questions, answers, grades, currentIdx,
+        diagnosisMode: diagnosisModeRef.current,
+        examSetId: activeExamSet?.id || '',
+        examSetAttemptId,
+      }));
+    } catch {}
+  }, [questions, answers, grades, currentIdx]);
+
+  // 清除进度（做完/放弃时）
+  const clearProgress = () => { try { localStorage.removeItem(storageKey); } catch {} };
+
+  const refreshSets = () => setRefreshStamp(s => s + 1);
+
+  const loadQuestionSetDetail = async (set: any) => {
+    if (!sessionId) return;
+    setActiveQuestionSet(set); setQsLoading(true); setQsQuestions([]); setQsGrades({});
+    try {
+      const [qRes, hRes]: any[] = await Promise.all([
+        fetchQuestions({ sessionId, questionSetId: set.questionSetId }),
+        getAnswerHistory(sessionId),
+      ]);
+      const qs = qRes?.questions || [];
+      const histMap: Record<string, any> = {};
+      (hRes?.records || []).forEach((r: any) => { histMap[r.question_id] = r.grading_result; });
+      setQsQuestions(qs); setQsGrades(histMap);
+      setActiveView('exam');
+    } catch {} finally { setQsLoading(false); }
+  };
+
+  // 收集所有可用知识点供自定义练习面板选择
+  const availableKnowledgePoints = (() => {
+    const kps = new Set<string>();
+    (sets || []).forEach((s: any) => (s.knowledgePoints || []).forEach((kp: string) => kps.add(kp)));
+    (weakData?.records || []).forEach((r: any) => (r.question?.knowledge_points || []).forEach((kp: string) => kps.add(kp)));
+    return [...kps];
+  })();
+
+  const handleCustomGenerate = async (config: PracticeConfig) => {
+    if (!sessionId) { alert('请先开始一个学习会话后再使用此功能。'); return; }
+    setCustomGenerating(true);
+    try {
+      const parts: string[] = [];
+      if (config.knowledgePoints.length > 0) parts.push(`关于${config.knowledgePoints.join('、')}`);
+      const typeNames: Record<string, string> = { choice: '选择题', fill: '填空题', truefalse: '判断题', shortanswer: '简答题' };
+      parts.push(`出${config.count}道${config.types.map((t: string) => typeNames[t] || t).join('和')}`);
+      const diffNames: Record<string, string> = { easy: '简单', medium: '中等', hard: '困难', mixed: '混合' };
+      parts.push(`${diffNames[config.difficulty] || '中等'}难度`);
+      if (config.extraDesc) parts.push(config.extraDesc);
+      const message = parts.join('，') + '。';
+
+      const res: any = await generateQuestions({
+        sessionId,
+        message,
+        knowledgePoints: config.knowledgePoints.length > 0 ? config.knowledgePoints : undefined,
+      });
+      const qs = res?.questions || (Array.isArray(res) ? res : []);
+      if (qs.length > 0) {
+        diagnosisModeRef.current = false; setQuestions(qs); setCurrentIdx(0); setAnswers({}); setGrades({});
+        setActiveView('quiz'); setShowCustomModal(false);
+      } else {
+        alert('AI 出题未返回题目，请确保已在聊天页面有过对话，AI 会根据上下文出题。');
+      }
+    } catch (e: any) {
+      alert('出题失败: ' + (e?.response?.data?.detail || e?.message || '请重试'));
+    }
+    setCustomGenerating(false);
+  };
+
   useEffect(() => {
     const csid = searchParams.get('classSubjectId') || useSubjectStore.getState().activeClassSubject?.id || '';
     Promise.all([
@@ -62,7 +173,23 @@ export default function PracticePage() {
       csid ? getPushedQuestions(csid).then(setPushedGroups).catch(() => {}) : Promise.resolve(),
       listExamSets({ sessionId }).then((d: any) => { if (d?.examSets) setExamSets(d.examSets); }).catch(() => {}),
     ]).finally(() => setLoading(false));
-  }, []);
+  }, [refreshStamp]);
+
+  // 处理来自其他页面的 ?prompt= 参数：自动出题
+  useEffect(() => {
+    if (loading || promptHandledRef.current) return;
+    const prompt = searchParams.get('prompt');
+    if (prompt && sessionId) {
+      promptHandledRef.current = true;
+      generateQuestions({ sessionId, message: prompt })
+        .then((res: any) => {
+          const qs = res?.questions || (Array.isArray(res) ? res : []);
+          if (qs.length > 0) { setQuestions(qs); setCurrentIdx(0); setAnswers({}); setGrades({}); setActiveView('quiz'); }
+          else alert('AI 出题未返回题目，请确保已在聊天页面有过对话，AI 会根据上下文出题。');
+        })
+        .catch((e: any) => { alert('出题失败: ' + (e?.message || '请重试')); });
+    }
+  }, [loading, sessionId]);
 
   useEffect(() => {
     const eid = searchParams.get('examSetId');
@@ -104,7 +231,7 @@ export default function PracticePage() {
     } catch (e: any) { alert('提交失败: ' + (e?.message || '请重试')); } setGrading(false);
   };
   const handleAnswer = (val: string) => { const q = questions[currentIdx]; if (!q || grades[q.question_id]) return; setAnswers(a => ({ ...a, [q.question_id]: val })); };
-  const handleSubmit = async () => { const q = questions[currentIdx]; if (!q || grades[q.question_id]) return; setGrading(true); try { const r: any = await gradeAnswer(q.question_id, answers[q.question_id] || '', sessionId); setGrades(g => ({ ...g, [q.question_id]: r })); } catch { alert('批改失败'); } setGrading(false); };
+  const handleSubmit = async () => { const q = questions[currentIdx]; if (!q || grades[q.question_id]) return; setGrading(true); try { const r: any = await gradeAnswer(q.question_id, answers[q.question_id] || '', sessionId); const gr = r?.gradingResult || r; setGrades(g => ({ ...g, [q.question_id]: gr })); } catch { alert('批改失败'); } setGrading(false); };
 
   // ── Derived stats ──
   const a = analytics || {};
@@ -120,13 +247,13 @@ export default function PracticePage() {
 
   /* ══════════════════════════════════════════════════════════════ RENDER ══════════════════════════════════════════════════════════════ */
   return (
-    <div className="space-y-6 animate-fade-in">
+    <>
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div><h2 className="font-display text-2xl font-bold text-surface-800 dark:text-gray-100">练习中心</h2><p className="text-surface-500 dark:text-gray-400 mt-1">巩固知识 · 查漏补缺 · 稳步提升</p></div>
         <nav className="flex rounded-xl bg-surface-100 dark:bg-surface-700 p-1 gap-0.5">
-          {(['home', 'quiz', 'exam', 'history'] as const).map(key => (
-            <button key={key} onClick={() => setActiveView(key)} className={`rounded-lg px-3.5 py-1.5 text-xs font-medium transition-all ${activeView === key ? 'bg-white dark:bg-surface-600 text-primary-600 dark:text-primary-400 shadow-soft' : 'text-surface-500 dark:text-gray-400 hover:text-surface-700 dark:hover:text-gray-200'}`}>
-              {key === 'home' ? '首页' : key === 'quiz' ? '题目练习' : key === 'exam' ? '题集详情' : '错题与历史'}
+          {(['home', 'history'] as const).map(key => (
+            <button key={key} onClick={() => { setActiveView(key); if (key === 'home') refreshSets(); }} className={`rounded-lg px-3.5 py-1.5 text-xs font-medium transition-all ${activeView === key ? 'bg-white dark:bg-surface-600 text-primary-600 dark:text-primary-400 shadow-soft' : 'text-surface-500 dark:text-gray-400 hover:text-surface-700 dark:hover:text-gray-200'}`}>
+              {key === 'home' ? '首页' : '错题与历史'}
             </button>
           ))}
         </nav>
@@ -169,26 +296,24 @@ export default function PracticePage() {
               <div className="grid gap-6 xl:grid-cols-[1.65fr_0.9fr]">
                 <div className="grid gap-4 sm:grid-cols-2">
                   <HomeCard icon={Target} title="快速诊断" desc="自适应出题，找到薄弱点" action="开始诊断 →" color="primary" onClick={async () => {
-                    if (!sessionId) { alert('请先开始一个学习会话（在聊天页面发送消息）后再使用此功能。'); return; }
-                    try {
-                      const res: any = await generateQuestions({ sessionId, message: '帮我诊断薄弱点' });
-                      console.log('[诊断] 后端返回:', res);
-                      const qs = res?.questions || (Array.isArray(res) ? res : []);
-                      if (qs.length > 0) { setQuestions(qs); setCurrentIdx(0); setAnswers({}); setGrades({}); setActiveView('quiz'); }
-                      else alert('AI 出题未返回题目，可能原因：1) AI 服务未就绪 2) 当前会话无法生成题目。请先确保在聊天页面已有对话记录。');
-                    } catch (e: any) { alert('出题失败: ' + (e?.response?.data?.detail || e?.message || '请检查后端 AI 服务是否运行')); }
-                  }} />
-                  <HomeCard icon={BookOpen} title="自定义练习" desc="自选知识点、数量、题型" action="创建练习 →" color="accent" onClick={async () => {
                     if (!sessionId) { alert('请先开始一个学习会话后再使用此功能。'); return; }
+                    diagnosisModeRef.current = true;
                     try {
-                      const res: any = await generateQuestions({ sessionId, message: '给我出几道题' });
-                      console.log('[自定义] 后端返回:', res);
+                      // 兜底：收集薄弱知识点或已有知识点传给后端
+                      const kps = (weakData?.records || []).flatMap((r: any) => r.question?.knowledge_points || []).filter(Boolean) as string[];
+                      const uniqueKps = [...new Set(kps)].slice(0, 10);
+                      const res: any = await generateQuestions({
+                        sessionId,
+                        message: '帮我诊断薄弱点',
+                        knowledgePoints: uniqueKps.length > 0 ? uniqueKps : undefined,
+                      });
                       const qs = res?.questions || (Array.isArray(res) ? res : []);
                       if (qs.length > 0) { setQuestions(qs); setCurrentIdx(0); setAnswers({}); setGrades({}); setActiveView('quiz'); }
                       else alert('AI 出题未返回题目，请确保已在聊天页面有过对话，AI 会根据上下文出题。');
-                    } catch (e: any) { alert('出题失败: ' + (e?.response?.data?.detail || e?.message || '')); }
+                    } catch (e: any) { alert('出题失败: ' + (e?.response?.data?.detail || e?.message || '请重试')); }
                   }} />
-                  <HomeCard icon={AlertCircle} title="错题重练" desc={weakCount > 0 ? `${weakCount}道错题待完成` : '暂无错题'} action={weakCount > 0 ? '开始重练 →' : '去诊断 →'} color="error" badge={weakCount > 0 ? weakCount : undefined} onClick={() => { if (weakCount > 0) { const wqs = (weakData?.records || []).map((r: any) => r.question).filter(Boolean); if (wqs.length > 0) { setQuestions(wqs); setCurrentIdx(0); setAnswers({}); setGrades({}); setActiveView('quiz'); } } }} />
+                  <HomeCard icon={BookOpen} title="自定义练习" desc="自选知识点、数量、题型" action="创建练习 →" color="accent" onClick={() => setShowCustomModal(true)} />
+                  <HomeCard icon={AlertCircle} title="错题重练" desc={weakCount > 0 ? `${weakCount}道错题待完成` : '暂无错题'} action={weakCount > 0 ? '开始重练 →' : '去诊断 →'} color="error" badge={weakCount > 0 ? weakCount : undefined} onClick={async () => { diagnosisModeRef.current = false; if (weakCount > 0) { const wqs = (weakData?.records || []).map((r: any) => r.question).filter(Boolean); if (wqs.length > 0) { setQuestions(wqs); setCurrentIdx(0); setAnswers({}); setGrades({}); setActiveView('quiz'); } } else { if (!sessionId) { alert('请先开始一个学习会话后再使用此功能。'); return; } try { const res: any = await generateQuestions({ sessionId, message: '帮我诊断薄弱点' }); const qs = res?.questions || (Array.isArray(res) ? res : []); if (qs.length > 0) { setQuestions(qs); setCurrentIdx(0); setAnswers({}); setGrades({}); setActiveView('quiz'); } else alert('AI 出题未返回题目，请确保已在聊天页面有过对话。'); } catch (e: any) { alert('出题失败: ' + (e?.message || '请重试')); } } }} />
                   <HomeCard icon={BarChart3} title="答题历史" desc={totalAttempted > 0 ? `${totalAttempted}题 · ${accuracy ?? '-'}%正确率` : '暂无记录'} action="查看记录 →" color="success" onClick={() => setActiveView('history')} />
                 </div>
                 {/* Analytics sidebar */}
@@ -251,14 +376,14 @@ export default function PracticePage() {
                 )}
               </div>
 
-              {/* ── 题目集 (display only) ── */}
+              {/* ── 题目集 ── */}
               <div>
-                <div className="mb-4 flex items-center gap-2"><span className="text-[11px] font-semibold uppercase tracking-[0.24em] text-surface-400">题目集</span><span className="rounded-full bg-primary-50 dark:bg-primary-500/20 px-2 py-0.5 text-[11px] text-primary-600 dark:text-primary-300">{sets.length}</span></div>
+                <div className="mb-4 flex items-center gap-2"><span className="text-[11px] font-semibold uppercase tracking-[0.24em] text-surface-400">题目集</span></div>
                 {sets.length > 0 ? (
                 <div className="space-y-2">
                   {sets.slice(0, 6).map((topic: any) => {
                     const pct = topic.count > 0 ? Math.round((topic.completed / topic.count) * 100) : 0;
-                    return (<div key={topic.questionSetId} className="flex items-center gap-4 rounded-2xl bg-white dark:bg-surface-700 p-4 shadow-soft"><div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary-50 dark:bg-primary-500/20 text-primary-500"><Play size={17} fill="currentColor" /></div><div className="min-w-[160px] flex-1"><h4 className="text-sm font-medium text-surface-800 dark:text-gray-100 truncate">{topic.title}</h4><div className="mt-1.5 flex gap-1.5">{(topic.knowledgePoints || []).slice(0, 3).map((chip: string) => (<span key={chip} className="rounded-md bg-surface-100 dark:bg-surface-600 px-2 py-0.5 text-[10px] text-surface-500">{chip}</span>))}</div></div><div className="flex shrink-0 items-center gap-3"><div className="h-1.5 w-20 rounded-full bg-surface-100 dark:bg-surface-600 overflow-hidden"><div className="h-full rounded-full bg-gradient-to-r from-primary-400 to-accent-400" style={{ width: `${pct}%` }} /></div><span className="text-xs tabular-nums text-surface-600 dark:text-gray-300 w-8 text-right">{pct}%</span><ChevronRight size={16} className="text-surface-400" /></div></div>);
+                    return (<div key={topic.questionSetId} className="flex items-center gap-4 rounded-2xl bg-white dark:bg-surface-700 p-4 shadow-soft group hover:shadow-elevated hover:-translate-y-0.5 transition-all"><div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary-50 dark:bg-primary-500/20 text-primary-500"><Play size={17} fill="currentColor" /></div><div className="min-w-[160px] flex-1"><h4 className="text-sm font-medium text-surface-800 dark:text-gray-100 truncate">{topic.title}</h4><p className="mt-0.5 text-xs text-surface-400 truncate">{topic.description || topic.knowledgePoints?.join('、') || `${topic.count}道题`}</p><div className="mt-1.5 flex gap-1.5">{(topic.knowledgePoints || []).slice(0, 3).map((chip: string) => (<span key={chip} className="rounded-md bg-surface-100 dark:bg-surface-600 px-2 py-0.5 text-[10px] text-surface-500">{chip}</span>))}</div></div><div className="flex shrink-0 items-center gap-3"><div className="h-1.5 w-20 rounded-full bg-surface-100 dark:bg-surface-600 overflow-hidden"><div className="h-full rounded-full bg-gradient-to-r from-primary-400 to-accent-400" style={{ width: `${pct}%` }} /></div><span className="text-xs tabular-nums text-surface-600 dark:text-gray-300 w-8 text-right">{pct}%</span></div><div className="flex shrink-0 flex-col gap-1.5"><button onClick={(e) => { e.stopPropagation(); diagnosisModeRef.current = false; fetchQuestions({ sessionId, questionSetId: topic.questionSetId }).then((res: any) => { const qs = res?.questions || []; if (qs.length > 0) { setQuestions(qs); setCurrentIdx(0); setAnswers({}); setGrades({}); setActiveView('quiz'); } }).catch(() => {}); }} className="rounded-lg bg-primary-500 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-primary-600 transition-colors">练习</button><button onClick={(e) => { e.stopPropagation(); loadQuestionSetDetail(topic); }} className="rounded-lg bg-surface-100 dark:bg-surface-600 px-3 py-1.5 text-xs text-surface-600 dark:text-gray-300 hover:bg-primary-50 dark:hover:bg-primary-500/20 hover:text-primary-600 dark:hover:text-primary-300 transition-colors">详情</button></div></div>);
                   })}
                 </div>
                 ) : (
@@ -278,8 +403,13 @@ export default function PracticePage() {
         const i = currentIdx; const q = questions[i]; const a = q ? answers[q.question_id] || '' : ''; const g = q ? grades[q.question_id] : undefined;
         return (<div className="space-y-5">
           <div className="flex items-center justify-between"><div><p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-surface-400">{(activeExamSet ? 'Exam Set' : 'Quiz') + ' View'}</p><h2 className="text-xl font-semibold text-surface-800 dark:text-gray-100">题目练习 <span className="text-sm font-normal text-surface-500">/ {activeExamSet ? '题集训练' : '自适应训练'}</span></h2></div>{q && !g && a && <button onClick={handleSubmit} disabled={grading} className="rounded-lg bg-primary-500 px-3.5 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-primary-600 transition-colors">{grading ? '批改中...' : '提交批改'}</button>}</div>
-          <div className="grid gap-5 lg:grid-cols-[160px_1fr]">
-            <aside className="bg-white dark:bg-surface-700 rounded-2xl p-4 shadow-soft"><p className="mb-3 text-[10px] uppercase tracking-widest text-surface-400 font-semibold">题目列表</p><div className="space-y-0.5">{questions.map((qq, j) => { const gg = grades[qq.question_id]; const cur = j === i; let s = 'todo'; if (gg) s = gg.total_score != null && gg.total_score >= 60 ? 'correct' : 'wrong'; else if (cur) s = 'current'; return (<button key={qq.question_id} onClick={() => setCurrentIdx(j)} className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition ${s === 'current' ? 'bg-primary-50 dark:bg-primary-500/20 font-semibold text-primary-600 dark:text-primary-300' : 'text-surface-500 dark:text-gray-400 hover:bg-surface-50 dark:hover:bg-surface-600'}`}><span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${s === 'correct' ? 'bg-success-500 text-white' : s === 'wrong' ? 'bg-error-500 text-white' : s === 'current' ? 'bg-primary-500 text-white' : 'bg-surface-200 dark:bg-surface-600 text-surface-500'}`}>{s === 'correct' ? <Check size={10} /> : s === 'wrong' ? <X size={10} /> : j + 1}</span>第 {j + 1} 题</button>); })}</div></aside>
+          <div className={`grid gap-5 ${sidebarOpen ? 'lg:grid-cols-[180px_1fr]' : 'lg:grid-cols-[1fr]'}`}>
+            {sidebarOpen && (
+            <aside className="bg-white dark:bg-surface-700 rounded-2xl p-4 shadow-soft"><div className="mb-3 flex items-center justify-between"><p className="text-[10px] uppercase tracking-widest text-surface-400 font-semibold">题目列表</p><button onClick={() => setSidebarOpen(false)} className="rounded p-0.5 text-surface-400 hover:text-surface-600 dark:hover:text-gray-300 transition-colors"><ChevronLeft size={14} /></button></div><div className="space-y-0.5">{questions.map((qq, j) => { const gg = grades[qq.question_id]; const cur = j === i; let s = 'todo'; if (gg) s = gg.total_score != null && gg.total_score >= 60 ? 'correct' : 'wrong'; else if (cur) s = 'current'; return (<button key={qq.question_id} onClick={() => setCurrentIdx(j)} className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition ${s === 'current' ? 'bg-primary-50 dark:bg-primary-500/20 font-semibold text-primary-600 dark:text-primary-300' : 'text-surface-500 dark:text-gray-400 hover:bg-surface-50 dark:hover:bg-surface-600'}`}><span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${s === 'correct' ? 'bg-success-500 text-white' : s === 'wrong' ? 'bg-error-500 text-white' : s === 'current' ? 'bg-primary-500 text-white' : 'bg-surface-200 dark:bg-surface-600 text-surface-500'}`}>{s === 'correct' ? <Check size={10} /> : s === 'wrong' ? <X size={10} /> : j + 1}</span>第 {j + 1} 题</button>); })}</div></aside>
+            )}
+            {!sidebarOpen && (
+            <button onClick={() => setSidebarOpen(true)} className="hidden lg:flex items-center justify-center rounded-2xl bg-white dark:bg-surface-700 p-2 shadow-soft text-surface-400 hover:text-primary-500 transition-colors" title="展开题目列表"><ChevronLeft size={16} className="rotate-180" /></button>
+            )}
             <div className="space-y-4">
               <div className="flex flex-wrap items-center gap-3">
                 <span className="text-sm font-medium text-surface-700 dark:text-gray-200">#{i + 1} / {questions.length} 题</span>
@@ -300,16 +430,83 @@ export default function PracticePage() {
                 {q?.type === 'truefalse' && (<div className="mt-6 flex gap-3">{['true', 'false'].map(v => { const sel = a === v; const done = !!g; const ok = done && v === q.correct; let cls = 'border-surface-200 dark:border-surface-600 hover:border-primary-300 dark:hover:border-primary-500/50 bg-white dark:bg-surface-800'; if (done && sel && ok) cls = 'border-success-400 bg-success-50/70 dark:bg-success-500/10'; else if (done && sel) cls = 'border-error-400 bg-error-50/70 dark:bg-error-500/10'; else if (sel) cls = 'border-primary-400 bg-primary-50/70 dark:bg-primary-500/10'; return <button key={v} disabled={done} onClick={() => handleAnswer(v)} className={`flex-1 rounded-xl border-2 px-6 py-5 text-center text-base font-medium transition-all ${cls} text-surface-700 dark:text-gray-200`}>{v === 'true' ? '✓ 正确' : '✗ 错误'}</button>; })}</div>)}
                 {(q?.type === 'fill' || q?.type === 'shortanswer') && (<div className="mt-6"><label className="block text-xs font-medium text-surface-400 mb-1.5" htmlFor="ans">解题过程</label><textarea id="ans" value={a} onChange={e => handleAnswer(e.target.value)} disabled={!!g} rows={q?.type === 'shortanswer' ? 8 : 3} placeholder="输入你的解题过程…" className="w-full resize-none rounded-xl border-2 border-surface-200 dark:border-surface-600 bg-surface-50 dark:bg-surface-800 p-4 text-sm leading-6 text-surface-700 dark:text-gray-200 outline-none placeholder:text-surface-400 focus:border-primary-400 dark:focus:border-primary-500/50 disabled:opacity-60 transition-colors" /></div>)}
               </div>
-              {g && (<div className={`rounded-2xl border-2 p-5 ${g.total_score != null && g.total_score >= 60 ? 'border-success-200 dark:border-success-500/30 bg-success-50/50 dark:bg-success-500/10' : 'border-error-200 dark:border-error-500/30 bg-error-50/50 dark:bg-error-500/10'}`}><div className="flex items-center gap-3"><strong className={`text-3xl ${g.total_score != null && g.total_score >= 60 ? 'text-success-600' : 'text-error-600'}`}>{g.total_score != null ? `${g.total_score} 分` : '已批改'}</strong><span className={`text-sm ${g.total_score != null && g.total_score >= 60 ? 'text-success-500' : 'text-error-500'}`}>{g.total_score != null && g.total_score >= 60 ? '正确' : '有误'}</span></div>{g.error_type !== 'null' && <p className="mt-2 text-xs text-surface-500">错误类型：<span className="font-medium text-error-600">{g.error_label}</span></p>}{g.error_explanation && <p className="mt-2 text-sm text-surface-600 dark:text-gray-300">{g.error_explanation}</p>}{g.suggestions?.[0] && <p className="mt-2 text-sm text-primary-600">💡 {g.suggestions[0]}</p>}</div>)}
+              {g && (() => { const typeLabels: Record<string, string> = { concept: '概念错误', calculation: '计算错误', misreading: '审题不清', method: '方法错误', forgetting: '知识点遗忘' }; const errorLabel = g.error_label || typeLabels[g.error_type] || ''; const correctStr = q?.correct != null ? String(q.correct) : ''; const fallbackExpl = correctStr ? `正确答案：${correctStr}\n\n你的答案：${a || '(空)'}` : ''; const expl = q?.explanation || g.error_explanation || fallbackExpl; return (<div className={`rounded-2xl border-2 p-5 ${g.total_score != null && g.total_score >= 60 ? 'border-success-200 dark:border-success-500/30 bg-success-50/50 dark:bg-success-500/10' : 'border-error-200 dark:border-error-500/30 bg-error-50/50 dark:bg-error-500/10'}`}><div className="flex items-center gap-3"><strong className={`text-3xl ${g.total_score != null && g.total_score >= 60 ? 'text-success-600' : 'text-error-600'}`}>{g.total_score != null ? `${g.total_score} 分` : '已批改'}</strong><span className={`text-sm ${g.total_score != null && g.total_score >= 60 ? 'text-success-500' : 'text-error-500'}`}>{g.total_score != null && g.total_score >= 60 ? '正确' : '有误'}</span></div>{g.total_score != null && g.total_score < 60 && correctStr && <p className="mt-2 text-xs text-surface-500">正确答案：<span className="font-medium text-success-600">{correctStr}</span></p>}{errorLabel && <p className="mt-2 text-xs text-surface-500">错误类型：<span className="font-medium text-error-600">{errorLabel}</span></p>}<div className="mt-3 rounded-xl border border-surface-200 dark:border-surface-600 bg-surface-50 dark:bg-surface-800 p-3.5"><p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-surface-400">题目解析</p><div className="text-sm leading-6 text-surface-600 dark:text-gray-300">{expl ? <Markdown content={expl} /> : <span className="text-surface-400 italic">暂无详细解析</span>}</div></div>{g.suggestions?.[0] && <p className="mt-2 text-sm text-primary-600">💡 {g.suggestions[0]}</p>}</div>); })()}
               <div className="flex items-center justify-between rounded-2xl bg-white dark:bg-surface-700 px-4 py-3 shadow-soft"><button onClick={() => i > 0 && setCurrentIdx(j => j - 1)} disabled={i === 0} className="flex items-center gap-1 rounded-lg px-3 py-1.5 text-sm text-surface-500 hover:text-surface-700 dark:hover:text-gray-200 disabled:opacity-30 transition-colors"><ArrowLeft size={16} /> 上一题</button><div className="flex items-center gap-2">{activeExamSet && <button onClick={async () => { if (!examSetAttemptId) return; try { await updateAttempt(examSetAttemptId, { answers: examSetQuestions.map(qq => ({ questionId: qq.question_id, answer: answers[qq.question_id] || '' })), status: 'in_progress' }); } catch {} } } className="rounded-lg bg-surface-100 dark:bg-surface-600 px-3 py-1.5 text-xs text-surface-600 dark:text-gray-300 hover:bg-surface-200 dark:hover:bg-surface-500 transition-colors">保存进度</button>}{!activeExamSet && !g && a && <button onClick={handleSubmit} disabled={grading} className="rounded-lg bg-primary-500 px-4 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-primary-600 transition-colors">{grading ? '批改中…' : '提交批改'}</button>}{!activeExamSet && g && <button onClick={() => { if (q) { setGrades(gg => { const n = { ...gg }; delete n[q.question_id]; return n; }); setAnswers(aa => { const n = { ...aa }; delete n[q.question_id]; return n; }); } } } className="flex items-center gap-1 rounded-lg bg-surface-100 dark:bg-surface-600 px-3 py-1.5 text-xs text-surface-600 dark:text-gray-300 hover:bg-surface-200 dark:hover:bg-surface-500 transition-colors"><RefreshCw size={14} /> 重做</button>}{activeExamSet && <button onClick={submitExamSetAnswers} disabled={grading} className="rounded-lg bg-gradient-to-r from-primary-500 to-accent-500 px-4 py-1.5 text-sm font-medium text-white shadow-sm hover:from-primary-600 hover:to-accent-600 transition-all">{grading ? '批改中…' : '提交全部'}</button>}</div><button onClick={() => i < questions.length - 1 && setCurrentIdx(j => j + 1)} disabled={i >= questions.length - 1} className="flex items-center gap-1 rounded-lg px-3 py-1.5 text-sm text-surface-500 hover:text-surface-700 dark:hover:text-gray-200 disabled:opacity-30 transition-colors">下一题 <ArrowRight size={16} /></button></div>
             </div>
           </div>
         </div>);
       })()}
+      {/* ── 诊断总结（仅非 examSet 的诊断模式）── */}
+      {activeView === 'quiz' && diagnosisModeRef.current && !activeExamSet && Object.keys(grades).length > 0 && (
+        <DiagnosisSummary
+          questions={questions}
+          grades={grades}
+          onRetarget={async (kps) => {
+            if (!sessionId) return;
+            try {
+              const res: any = await generateQuestions({ sessionId, message: `针对${kps.join('、')}出几道变式练习题`, knowledgePoints: kps });
+              const qs = res?.questions || (Array.isArray(res) ? res : []);
+              if (qs.length > 0) { setQuestions(qs); setCurrentIdx(0); setAnswers({}); setGrades({}); setActiveView('quiz'); }
+              else alert('出题失败，请重试。');
+            } catch { alert('出题失败'); }
+          }}
+          onRediagnose={async () => {
+            if (!sessionId) return;
+            try {
+              const kps = (weakData?.records || []).flatMap((r: any) => r.question?.knowledge_points || []).filter(Boolean) as string[];
+              const uniqueKps = [...new Set(kps)].slice(0, 10);
+              const res: any = await generateQuestions({ sessionId, message: '帮我诊断薄弱点', knowledgePoints: uniqueKps.length > 0 ? uniqueKps : undefined });
+              const qs = res?.questions || (Array.isArray(res) ? res : []);
+              if (qs.length > 0) { setQuestions(qs); setCurrentIdx(0); setAnswers({}); setGrades({}); setActiveView('quiz'); }
+              else alert('出题失败，请重试。');
+            } catch { alert('出题失败'); }
+          }}
+        />
+      )}
 
       {/* ═══════════ EXAM ═══════════ */}
-      {activeView === 'exam' && !activeExamSet && (
+      {activeView === 'exam' && !activeExamSet && !activeQuestionSet && (
         <div className="flex flex-col items-center justify-center py-20 text-center"><ClipboardList size={48} className="text-surface-300 dark:text-surface-600 mb-4" /><h3 className="text-lg font-semibold text-surface-800 dark:text-gray-100 mb-1">未选择题集</h3><p className="text-sm text-surface-500 max-w-xs">请先在首页点击一个题集，详情将在这里展示。</p><button onClick={() => setActiveView('home')} className="mt-4 rounded-lg bg-primary-500 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600 transition-colors">返回首页</button></div>
+      )}
+      {/* ── Question Set 详情 ── */}
+      {activeView === 'exam' && activeQuestionSet && !activeExamSet && (
+        <div className="space-y-6">
+          <button onClick={() => { setActiveQuestionSet(null); setActiveView('home'); }} className="flex items-center gap-1.5 text-sm text-surface-500 hover:text-surface-700 dark:hover:text-gray-200 transition-colors"><ArrowLeft size={16} /> 返回首页</button>
+          {qsLoading ? (
+            <div className="flex items-center justify-center py-16"><Loader2 className="h-5 w-5 animate-spin text-primary-500" /><span className="ml-2 text-sm text-surface-400">加载中...</span></div>
+          ) : (
+            <>
+              <div className="bg-white dark:bg-surface-700 rounded-2xl p-6 shadow-soft">
+                <div className="flex flex-wrap items-start gap-4"><div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-primary-50 dark:bg-primary-500/20 text-primary-500"><Play size={24} fill="currentColor" /></div><div className="flex-1"><h3 className="text-xl font-semibold text-surface-800 dark:text-gray-100">{activeQuestionSet.title}</h3><p className="mt-1 text-xs text-surface-400">{activeQuestionSet.description || activeQuestionSet.knowledgePoints?.join('、') || `${activeQuestionSet.count}道题`}</p><div className="mt-1.5 flex flex-wrap gap-1.5">{(activeQuestionSet.knowledgePoints || []).slice(0, 5).map((kp: string) => (<span key={kp} className="rounded-md bg-primary-50 dark:bg-primary-500/20 px-2 py-0.5 text-xs text-primary-600 dark:text-primary-300">{kp}</span>))}</div></div></div>
+                <div className="mt-5 grid grid-cols-4 gap-2">{[ [String(activeQuestionSet.count), '题'], [String(activeQuestionSet.count * 2), '分钟'], [String(activeQuestionSet.count * 10), '分'], [(() => { const diffs = qsQuestions.map((q: any) => q.difficulty).filter(Boolean); const c: Record<string, number> = {}; diffs.forEach((d: string) => { c[d] = (c[d] || 0) + 1; }); const top = Object.entries(c).sort((a, b) => b[1] - a[1])[0]; return top ? (top[0] === 'easy' ? '简单' : top[0] === 'hard' ? '困难' : '中等') : '中等'; })(), '难度'] ].map(([v, l]) => (<div key={l} className="rounded-lg bg-surface-50 dark:bg-surface-800 px-3 py-2 text-center"><strong className="block text-sm text-surface-700 dark:text-gray-200">{v}</strong><span className="text-[10px] text-surface-400">{l}</span></div>))}</div>
+                <div className="my-5 flex gap-3 border-t border-surface-100 dark:border-surface-600 pt-5">
+                  <button onClick={() => { diagnosisModeRef.current = false; setQuestions(qsQuestions); setCurrentIdx(0); setAnswers({}); setGrades({}); setActiveView('quiz'); }} className="rounded-lg bg-primary-500 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-primary-600 transition-colors">全部练习</button>
+                  <button onClick={() => { const wrong = qsQuestions.filter((q: any) => { const g = qsGrades[q.question_id]; return g && g.total_score != null && g.total_score < 60; }); if (wrong.length > 0) { diagnosisModeRef.current = false; setQuestions(wrong); setCurrentIdx(0); setAnswers({}); setGrades({}); setActiveView('quiz'); } else alert('没有错题，全部已掌握！'); }} className="rounded-lg bg-surface-100 dark:bg-surface-600 px-4 py-2 text-sm text-surface-600 dark:text-gray-300 hover:bg-surface-200 dark:hover:bg-surface-500 transition-colors">只做错题</button>
+                </div>
+              </div>
+              {(() => { const graded = Object.values(qsGrades).filter((g: any) => g.total_score != null); if (graded.length === 0) return null; const avg = Math.round(graded.reduce((s: number, g: any) => s + (g.total_score || 0), 0) / graded.length); const wrongKps = new Set<string>(); qsQuestions.filter((q: any) => { const g = qsGrades[q.question_id]; return g && g.total_score != null && g.total_score < 60; }).forEach((q: any) => (q.knowledge_points || []).forEach((kp: string) => wrongKps.add(kp))); return (<div className="grid gap-6 lg:grid-cols-[0.75fr_1.25fr]"><div className="bg-white dark:bg-surface-700 rounded-2xl p-6 shadow-soft"><p className="mb-4 text-[11px] font-semibold uppercase tracking-[0.24em] text-surface-400">答题结果</p><div className="flex items-center gap-6"><div className={`flex h-24 w-24 shrink-0 items-center justify-center rounded-full border-8 text-3xl font-bold ${avg >= 60 ? 'border-success-200 dark:border-success-500/30 text-success-600' : 'border-error-200 dark:border-error-500/30 text-error-600'}`}>{avg}</div><div><p className="text-sm font-medium text-surface-800 dark:text-gray-100">{avg >= 60 ? '表现不错' : '需要加强'}</p><p className="mt-1 text-xs text-surface-500">{graded.length}/{qsQuestions.length}题已批改</p></div></div>{wrongKps.size > 0 && (<div className="mt-5 space-y-2 border-t border-surface-100 dark:border-surface-600 pt-4"><p className="text-xs font-medium text-surface-500">薄弱知识点</p>{[...wrongKps].map(kp => (<div key={kp} className="flex items-center gap-2 text-sm"><span className="h-2 w-2 shrink-0 rounded-full bg-error-400" /><span className="text-surface-600 dark:text-gray-300">{kp}</span></div>))}</div>)}</div><div className="bg-white dark:bg-surface-700 rounded-2xl p-6 shadow-soft"><p className="mb-4 text-[11px] font-semibold uppercase tracking-[0.24em] text-surface-400">作答记录</p>{(historyData?.records || []).filter((r: any) => qsQuestions.some((q: any) => q.question_id === r.question_id)).slice(0, 20).length === 0 ? <p className="py-6 text-center text-sm text-surface-400">暂无作答记录</p> : <div className="space-y-1">{(historyData?.records || []).filter((r: any) => qsQuestions.some((q: any) => q.question_id === r.question_id)).slice(0, 20).map((r: any, i: number) => { const ok = r.grading_result?.total_score != null && r.grading_result.total_score >= 60; return (<div key={i} className={`flex items-center gap-3 rounded-lg px-3 py-2 ${i % 2 ? 'bg-surface-50 dark:bg-surface-800' : ''}`}><span className={`h-2 w-2 shrink-0 rounded-full ${ok ? 'bg-success-400' : 'bg-error-400'}`} /><p className="min-w-0 flex-1 truncate text-xs text-surface-500">{r.question?.stem?.slice(0, 40) || '题目'}</p><span className={`shrink-0 text-xs ${ok ? 'text-success-600' : 'text-error-600'}`}>{r.grading_result?.total_score != null ? `${r.grading_result.total_score}分` : '-'}</span></div>); })}</div>}</div></div>); })()}
+              <div className="bg-white dark:bg-surface-700 rounded-2xl p-6 shadow-soft">
+                <p className="mb-4 text-[11px] font-semibold uppercase tracking-[0.24em] text-surface-400">题目列表</p>
+                <div className="space-y-1">
+                  {qsQuestions.map((qq, j) => {
+                    const g = qsGrades[qq.question_id];
+                    const ok = g && g.total_score != null && g.total_score >= 60;
+                    const wrong = g && g.total_score != null && g.total_score < 60;
+                    return (
+                      <div key={qq.question_id} className="flex items-center gap-3 rounded-lg px-3 py-2.5 hover:bg-surface-50 dark:hover:bg-surface-800 transition-colors">
+                        <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${ok ? 'bg-success-500 text-white' : wrong ? 'bg-error-500 text-white' : 'bg-surface-200 dark:bg-surface-600 text-surface-500'}`}>{ok ? <Check size={11} /> : wrong ? <X size={11} /> : j + 1}</span>
+                        <span className="min-w-0 flex-1 truncate text-sm text-surface-600 dark:text-gray-300">{qq.stem?.slice(0, 60) || `第 ${j + 1} 题`}</span>
+                        <span className="shrink-0 text-xs text-surface-400">{qq.type === 'choice' ? '选择' : qq.type === 'truefalse' ? '判断' : qq.type === 'fill' ? '填空' : '解答'}</span>
+                        {g?.total_score != null && <span className={`shrink-0 text-xs font-medium ${ok ? 'text-success-600' : 'text-error-600'}`}>{g.total_score}分</span>}
+                        {!g && <span className="shrink-0 text-xs text-surface-400">未做</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
       )}
       {activeView === 'exam' && activeExamSet && (
         <div className="space-y-6">
@@ -328,12 +525,73 @@ export default function PracticePage() {
         <div className="space-y-5">
           <div><p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-surface-400">Weak Points & History View</p><h2 className="text-xl font-semibold text-surface-800 dark:text-gray-100">错题与历史</h2></div>
           <div className="grid gap-6 lg:grid-cols-2">
-            <div className="bg-white dark:bg-surface-700 rounded-2xl p-6 shadow-soft border-l-[3px] border-error-300 dark:border-error-500/50"><div className="mb-4 flex items-center justify-between"><h3 className="text-lg font-semibold text-surface-800 dark:text-gray-100">错题本</h3><span className="rounded-full bg-error-50 dark:bg-error-500/20 px-2.5 py-0.5 text-xs text-error-600 dark:text-error-300">{weakCount}</span></div>{!weakData?.records?.length ? <p className="py-6 text-center text-sm text-surface-400">暂无错题 👍</p> : (<div className="space-y-3">{(weakData.records as any[]).slice(0, 8).map((r: any, i: number) => (<div key={i} className="rounded-xl border border-error-100 dark:border-error-500/20 bg-error-50/30 dark:bg-error-500/5 p-4"><p className="truncate text-sm text-surface-700 dark:text-gray-200"><Markdown content={r.question?.stem || '题目'} /></p><div className="mt-2.5 flex flex-wrap items-center gap-3 text-xs"><span className="text-error-600 dark:text-error-400">你的答案: {r.last_answer || '-'}</span>{r.question?.correct && <span className="text-success-600 dark:text-success-400">正确答案: {r.question.correct}</span>}{r.grading_result?.error_label && <span className="rounded-md bg-error-50 dark:bg-error-500/20 px-2 py-0.5 text-error-600">{r.grading_result.error_label}</span>}</div>{r.grading_result?.error_explanation && <p className="mt-2 text-xs leading-5 text-surface-500">{r.grading_result.error_explanation}</p>}</div>))}</div>)}</div>
+            <div className="bg-white dark:bg-surface-700 rounded-2xl p-6 shadow-soft border-l-[3px] border-error-300 dark:border-error-500/50">
+              <div className="mb-4 flex items-center justify-between"><h3 className="text-lg font-semibold text-surface-800 dark:text-gray-100">错题本</h3><span className="rounded-full bg-error-50 dark:bg-error-500/20 px-2.5 py-0.5 text-xs text-error-600 dark:text-error-300">{weakCount}</span></div>
+              {!weakData?.records?.length ? <p className="py-6 text-center text-sm text-surface-400">暂无错题 👍</p> : (
+                <div className="space-y-4">
+                  {/* 错误分类概览 */}
+                  {(() => {
+                    const tMap: Record<string, { count: number; kps: Set<string> }> = {};
+                    (weakData.records as any[]).forEach((r: any) => {
+                      const lb = r.grading_result?.error_label || '未分类';
+                      if (!tMap[lb]) tMap[lb] = { count: 0, kps: new Set() };
+                      tMap[lb].count++;
+                      (r.question?.knowledge_points || []).forEach((kp: string) => tMap[lb].kps.add(kp));
+                    });
+                    return (
+                      <div className="flex flex-wrap gap-2">
+                        {Object.entries(tMap).map(([lb, info]) => (
+                          <span key={lb} className="inline-flex items-center gap-1.5 rounded-lg bg-error-50 dark:bg-error-500/10 px-2.5 py-1 text-xs">
+                            <span className="font-medium text-error-700 dark:text-error-300">{lb}</span>
+                            <span className="text-error-500">x{info.count}</span>
+                            <button onClick={async () => {
+                              if (!sessionId) return;
+                              try {
+                                const arr = [...info.kps];
+                                const res: any = await generateQuestions({ sessionId, message: `针对${lb}错误出${Math.min(info.count + 2, 10)}道变式题`, knowledgePoints: arr.length > 0 ? arr : undefined });
+                                const qs = res?.questions || (Array.isArray(res) ? res : []);
+                                if (qs.length > 0) { diagnosisModeRef.current = false; setQuestions(qs); setCurrentIdx(0); setAnswers({}); setGrades({}); setActiveView('quiz'); }
+                                else alert('出题失败，请重试。');
+                              } catch { alert('出题失败'); }
+                            }} className="ml-1 rounded px-1.5 py-0.5 text-[10px] text-error-500 hover:bg-error-100 dark:hover:bg-error-500/20 transition-colors">针对练习 →</button>
+                          </span>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                  {/* 错题列表 */}
+                  <div className="space-y-3">
+                    {(weakData.records as any[]).slice(0, 15).map((r: any, i: number) => (
+                      <div key={i} className="rounded-xl border border-error-100 dark:border-error-500/20 bg-error-50/30 dark:bg-error-500/5 p-4">
+                        <p className="text-sm text-surface-700 dark:text-gray-200 line-clamp-2"><Markdown content={r.question?.stem || '题目'} /></p>
+                        <div className="mt-2.5 flex flex-wrap items-center gap-3 text-xs">
+                          <span className="text-error-600 dark:text-error-400">你的答案: {r.last_answer || '-'}</span>
+                          {r.question?.correct && <span className="text-success-600 dark:text-success-400">正确答案: {r.question.correct}</span>}
+                          {r.grading_result?.error_label && <span className="rounded-md bg-error-50 dark:bg-error-500/20 px-2 py-0.5 text-error-600">{r.grading_result.error_label}</span>}
+                          <button onClick={() => {
+                            if (r.question) { diagnosisModeRef.current = false; setQuestions([r.question]); setCurrentIdx(0); setAnswers({}); setGrades({}); setActiveView('quiz'); }
+                          }} className="ml-auto rounded-md bg-primary-50 dark:bg-primary-500/20 px-2 py-0.5 text-xs text-primary-600 dark:text-primary-300 hover:bg-primary-100 dark:hover:bg-primary-500/30 transition-colors">重做</button>
+                        </div>
+                        {r.grading_result?.error_explanation && <p className="mt-2 text-xs leading-5 text-surface-500">{r.grading_result.error_explanation}</p>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
             <div className="bg-white dark:bg-surface-700 rounded-2xl p-6 shadow-soft"><div className="mb-4"><h3 className="text-lg font-semibold text-surface-800 dark:text-gray-100">答题历史</h3><p className="mt-1.5 text-sm text-surface-500">{totalAttempted}题 · 正确{totalCorrect}题 · 错误{totalAttempted - totalCorrect}题</p></div>{!historyData?.records?.length ? <p className="py-6 text-center text-sm text-surface-400">暂无记录</p> : (<div className="max-h-[360px] overflow-auto space-y-0.5">{(historyData.records as any[]).map((r: any, i: number) => { const ok = r.grading_result?.total_score != null && r.grading_result.total_score >= 60; return (<div key={i} className={`flex items-center gap-3 rounded-lg p-3 ${i % 2 ? 'bg-surface-50 dark:bg-surface-800' : ''}`}><span className={`h-2 w-2 shrink-0 rounded-full ${ok ? 'bg-success-400' : 'bg-error-400'}`} /><p className="min-w-0 flex-1 truncate text-sm text-surface-600 dark:text-gray-300">{r.question?.stem?.slice(0, 60) || '题目'}</p><span className={`shrink-0 rounded-md px-2 py-0.5 text-xs font-medium ${ok ? 'bg-success-50 dark:bg-success-500/20 text-success-600' : 'bg-error-50 dark:bg-error-500/20 text-error-600'}`}>{r.grading_result?.total_score != null ? `${r.grading_result.total_score}分` : '-'}</span><time className="hidden shrink-0 text-xs text-surface-400 sm:block">{r.created_at ? new Date(r.created_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit' }) : ''}</time></div>); })}</div>)}</div>
           </div>
         </div>
       )}
-    </div>
+      {/* ── 自定义练习面板 ── */}
+      <CustomPracticeModal
+        open={showCustomModal}
+        onClose={() => setShowCustomModal(false)}
+        onGenerate={handleCustomGenerate}
+        availableKnowledgePoints={availableKnowledgePoints}
+        loading={customGenerating}
+      />
+    </>
   );
 }
 

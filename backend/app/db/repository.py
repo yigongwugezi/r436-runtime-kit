@@ -768,13 +768,14 @@ def upsert_resource(
     return res
 
 
-def get_resources(db: Session, session_id: str) -> list[ResourceModel]:
-    return (
-        db.query(ResourceModel)
-        .filter(ResourceModel.session_id == session_id)
-        .order_by(desc(ResourceModel.created_at))
-        .all()
-    )
+def get_resources(db: Session, session_id: str, subject_id: str | None = None) -> list[ResourceModel]:
+    q = db.query(ResourceModel).filter(ResourceModel.session_id == session_id)
+    if subject_id:
+        # Include resources with no subject_id (legacy) OR matching subject_id
+        q = q.filter(
+            (ResourceModel.subject_id == subject_id) | (ResourceModel.subject_id.is_(None))
+        )
+    return q.order_by(desc(ResourceModel.created_at)).all()
 
 
 def get_resource(db: Session, resource_id: str, session_id: str) -> ResourceModel | None:
@@ -1877,6 +1878,7 @@ def upsert_questions(db: Session, session_id: str, questions: list[dict]) -> int
 
 def get_questions(db: Session, session_id: str,
                   knowledge_point: str = "", difficulty: str = "", qtype: str = "",
+                  question_set_id: str = "",
                   limit: int = 50) -> list[PracticeQuestionModel]:
     """查询题目列表，支持过滤。"""
     q = db.query(PracticeQuestionModel).filter(PracticeQuestionModel.session_id == session_id)
@@ -1884,6 +1886,8 @@ def get_questions(db: Session, session_id: str,
         q = q.filter(PracticeQuestionModel.type == qtype)
     if difficulty:
         q = q.filter(PracticeQuestionModel.difficulty == difficulty)
+    if question_set_id:
+        q = q.filter(PracticeQuestionModel.question_set_id == question_set_id)
     rows = q.order_by(PracticeQuestionModel.created_at.desc()).limit(limit).all()
     if knowledge_point:
         rows = [r for r in rows if isinstance(r.knowledge_points, (list, dict))
@@ -1931,11 +1935,29 @@ def get_answer_history(db: Session, session_id: str, limit: int = 50) -> list[An
 
 def get_weak_records(db: Session, session_id: str, error_type: str = "",
                      limit: int = 20) -> list[AnswerRecordModel]:
-    q = db.query(AnswerRecordModel).filter(
+    """返回当前仍为错题的记录：每道题只取最新作答，若最新得分>=60则不再计入。"""
+    from sqlalchemy import and_, or_
+
+    # 子查询：每道题的最新作答时间
+    subq = db.query(
+        AnswerRecordModel.question_id,
+        func.max(AnswerRecordModel.created_at).label('max_created')
+    ).filter(
         AnswerRecordModel.session_id == session_id,
+    ).group_by(AnswerRecordModel.question_id).subquery()
+
+    # 只取最新记录，且 error_type 存在 + 最新得分 < 60
+    q = db.query(AnswerRecordModel).join(
+        subq,
+        and_(
+            AnswerRecordModel.question_id == subq.c.question_id,
+            AnswerRecordModel.created_at == subq.c.max_created
+        )
+    ).filter(
         AnswerRecordModel.error_type.isnot(None),
         AnswerRecordModel.error_type != "null",
         AnswerRecordModel.error_type != "",
+        or_(AnswerRecordModel.total_score == None, AnswerRecordModel.total_score < 60)
     )
     if error_type:
         q = q.filter(AnswerRecordModel.error_type == error_type)

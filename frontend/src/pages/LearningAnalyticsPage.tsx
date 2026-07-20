@@ -1,647 +1,615 @@
-// @ts-nocheck
-import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
-import { useLearningPath } from '../hooks/useLearningPath';
+import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { TrendingUp, TrendingDown, Zap, Target, BookOpen, Clock, Brain, AlertCircle, Star, RefreshCw, BarChart3, Activity, CheckCircle2, Flame, MessageSquareText } from 'lucide-react';
+import { PageLoading, PageEmpty, PageError, RefreshOverlay } from '../components/common/PageState';
+import { formatDuration } from '../utils/format';
+import { useLearningAnalytics } from '../hooks/useLearningAnalytics';
+import { useNotificationPoller } from '../hooks/useNotificationPoller';
 import { useChatStore } from '../store/chatStore';
-import { enableProfileExtraction, listPlanningDrafts, getWorkflowTask } from '../api/learningPath';
-import { useProfile } from '../hooks/useProfile';
-import PlanningWizard from '../components/learning/PlanningWizard';
-import RevisionProposalCard from '../components/learning/RevisionProposalCard';
-import { PageLoading, PageError } from '../components/common/PageState';
-import { getCurrentLearner } from '../store/authStore';
+import type { RecommendationItem } from '../types/analytics';
+import type { AssessmentResult } from '../api/learningAssessment';
+import { useSubjectStore } from '../store/subjectStore';
 import { learningTaskRoute } from '../utils/learningTaskRoute';
-import {
-  ArrowRight, BookOpen, Check, CircleDot, Clock3,
-  FileText, FlaskConical, Lightbulb, PenLine, Plus, Sparkles, Target, Zap,
-  Loader2, ChevronRight, Lock, ChevronDown
-} from 'lucide-react';
 
-/* ── 任务类型图标与标签 ──────────────────── */
-const KIND_CFG: Record<string, { label: string; icon: React.ReactNode }> = {
-  read_doc:   { label: '阅读', icon: <BookOpen className="h-3.5 w-3.5" /> },
-  write_code: { label: '推演', icon: <PenLine className="h-3.5 w-3.5" /> },
-  do_quiz:    { label: '小测', icon: <FlaskConical className="h-3.5 w-3.5" /> },
-  practice:   { label: '专项', icon: <Target className="h-3.5 w-3.5" /> },
-  method:     { label: '方法', icon: <Lightbulb className="h-3.5 w-3.5" /> },
-  mock:       { label: '模拟', icon: <FileText className="h-3.5 w-3.5" /> },
-  review:     { label: '复盘', icon: <Sparkles className="h-3.5 w-3.5" /> },
-};
-function kindMeta(k: string) { return KIND_CFG[k] || KIND_CFG.read_doc; }
-
-/* ── Chapters/sections 兜底渲染 ──────────── */
-function renderChapters(chapters: any[], nav: any) {
-  return chapters.map((ch: any, ci: number) => (
-    <div key={ch.id || ci} className="space-y-2">
-      <h4 className="text-sm font-semibold text-surface-700">{ch.title}</h4>
-      {(ch.sections || []).map((sec: any, si: number) => {
-        const done = sec.status === 'mastered' || sec.status === 'completed';
-        return (
-          <div key={sec.id || si} onClick={() => nav(`/lecture/section/${encodeURIComponent(sec.id)}`)}
-            className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
-              done ? 'border-success-200 bg-success-50/50' : 'border-surface-200 bg-white hover:border-primary-200 hover:shadow-sm'
-            }`}>
-            <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[10px] ${
-              done ? 'bg-success-100 text-success-600' : 'bg-surface-100 text-surface-400'
-            }`}>{done ? <Check size={12} /> : <Target size={12} />}</span>
-            <span className="flex-1 text-sm text-surface-600 truncate">{sec.title}</span>
-            {sec.estimatedMinutes && <span className="text-xs text-surface-300">{sec.estimatedMinutes}′</span>}
-          </div>
-        );
-      })}
+function Ring({ pct }: { pct: number }) {
+  const size = 72; const sw = 5; const r = (size - sw) / 2; const c = r * 2 * Math.PI; const o = c - (pct / 100) * c;
+  const color = pct >= 80 ? '#16A34A' : pct >= 50 ? '#D97706' : '#DC2626';
+  return (
+    <div className="relative inline-flex items-center justify-center">
+      <svg width={size} height={size}><circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#E4E4E7" strokeWidth={sw} /><circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth={sw} strokeLinecap="round" strokeDasharray={c} strokeDashoffset={o} transform={`rotate(-90 ${size / 2} ${size / 2})`} className="transition-all duration-700" /></svg>
+      <span className="absolute text-sm font-bold" style={{ color }}>{pct}%</span>
     </div>
-  ));
-}
-
-/* ── 将任务按天分组 ── */
-function groupTasksByDay(stages: any[]) {
-  const result: { stageId: string; stageTitle: string; days: { dayIndex: number; tasks: any[]; stageIdx: number }[]; stageIdx: number }[] = [];
-  stages.forEach((stage: any, si: number) => {
-    const tasks: any[] = stage.tasks || [];
-    const days: { dayIndex: number; tasks: any[]; stageIdx: number }[] = [];
-    const dayMap = new Map<number, any[]>();
-    tasks.forEach((t: any) => {
-      const d = Number(t.day ?? t.day_index ?? t.dayIndex) || 0;
-      if (!dayMap.has(d)) dayMap.set(d, []);
-      dayMap.get(d)!.push(t);
-    });
-    if (dayMap.size > 1 || (dayMap.size === 1 && dayMap.get(0)!.length > 0)) {
-      Array.from(dayMap.entries()).sort((a, b) => a[0] - b[0]).forEach(([d, ts]) => {
-        days.push({ dayIndex: d || days.length + 1, tasks: ts, stageIdx: si });
-      });
-    } else if (tasks.length > 0) {
-      for (let i = 0; i < tasks.length; i += 3) {
-        days.push({ dayIndex: Math.floor(i / 3) + 1, tasks: tasks.slice(i, i + 3), stageIdx: si });
-      }
-    }
-    result.push({ stageId: stage.id, stageTitle: stage.title, days, stageIdx: si });
-  });
-  return result;
-}
-
-export default function LearningPathPage() {
-  const nav = useNavigate();
-  const location = useLocation();
-  const { path, loading, error, clearError, fetchPath, generatePath } = useLearningPath();
-  const { profileV2 } = useProfile();
-  const subject = profileV2?.subject_context || {};
-  const [existingDraft, setExistingDraft] = useState<any>(null);
-  const [draftLoading, setDraftLoading] = useState(true);
-  const [pathGenerating, setPathGenerating] = useState(false);
-  const [generatingStatus, setGeneratingStatus] = useState<string>('');
-
-  const [generatingTaskId] = useState<string>(() => {
-    const tid = sessionStorage.getItem('_pending_gen_task_id') || '';
-    return tid;
-  });
-  const [generatingSessionId] = useState<string>(() => {
-    const sid = sessionStorage.getItem('_pending_gen_session_id') || '';
-    if (sid) sessionStorage.removeItem('_pending_gen_session_id');
-    return sid;
-  });
-
-  const [expandedStageId, setExpandedStageId] = useState<string | null>(null);
-  const [activeDayKey, setActiveDayKey] = useState<string | null>(null);
-  const [middleTab, setMiddleTab] = useState<'tasks' | 'recommendations'>('tasks');
-  const [recommendLoading, setRecommendLoading] = useState(false);
-  const [recommendedResources, setRecommendedResources] = useState<any[]>([]);
-  const stageRef = useRef<HTMLDivElement | null>(null);
-  const sessionId = useChatStore((s) => s.dataSessionId);
-  const isParent = getCurrentLearner()?.role === 'parent';
-
-  const stages = path?.stages || [];
-  const allNodes = stages.flatMap(s => s.nodes || []);
-  const totalNodes = allNodes.length;
-  const masteredNodes = allNodes.filter(n => n.status === 'mastered' || n.status === 'completed').length;
-  const progress = path?.overallProgress ?? (totalNodes > 0 ? Math.round((masteredNodes / totalNodes) * 100) : 0);
-  const estimatedDays = path?.estimatedDays ?? 14;
-  const hasProfile = stages.length > 0 && stages.some(s =>
-    (s.tasks || []).length > 0 || (s.nodes || []).length > 0 || (s.chapters || []).length > 0 || (s.sections || []).length > 0
   );
+}
 
-  const allTasks = stages.flatMap(s => (s.tasks || []).map(t => ({ ...t, stageTitle: s.title, stageId: s.id })));
-  const totalTasks = allTasks.length;
-  const doneTasks = allTasks.filter(t => t.status === 'completed' || t.status === 'mastered').length;
-  const nextTask = allTasks.find(t => t.status !== 'completed' && t.status !== 'mastered');
-  const hasInj = stages.some(s => (s.tasks || []).some((t: any) =>
-    t.source === 'remedial' || t._adjustment === 'remedial' || t._adjustment === 'strengthened'
-  ));
-  const circumference = 100.53;
+export default function LearningAnalyticsPage() {
+  const nav = useNavigate();
+  const subjectId = useSubjectStore(s => s.activeSubject?.id ?? s.activeClassSubject?.subject);
+  const sessionId = useChatStore(s => s.dataSessionId);
+  const { analytics, loading, error, refetch } = useLearningAnalytics();
+  const [aiAssessment, setAiAssessment] = useState<AssessmentResult | null>(null);
+  // Poll for closed-loop assessment notifications
+  useNotificationPoller(sessionId || '');
+  if (!subjectId) return <PageEmpty icon={<TrendingUp className="w-8 h-8" />} title="请先选择科目" description="在左侧边栏选择一个科目后查看学习分析" />;
+  if (loading && !analytics) return <PageLoading text="正在分析学习数据…" />;
+  if (error && !analytics) return <PageError title="加载分析数据失败" description={error} onRetry={refetch} />;
+  if (!analytics) return <PageEmpty icon={<TrendingUp className="w-8 h-8" />} title="暂无学习数据" description="开始学习后这里会显示学习分析报告" />;
 
-  const dayGroups = useMemo(() => groupTasksByDay(stages), [stages]);
-
-  const { currentStageIdx, currentTaskIdx } = useMemo(() => {
-    for (let si = 0; si < stages.length; si++) {
-      const tasks = stages[si].tasks || [];
-      for (let ti = 0; ti < tasks.length; ti++) {
-        if (tasks[ti].status !== 'completed' && tasks[ti].status !== 'mastered')
-          return { currentStageIdx: si, currentTaskIdx: ti };
-      }
-    }
-    return { currentStageIdx: stages.length, currentTaskIdx: -1 };
-  }, [stages]);
-
-  const firstIncompleteIdx = stages.findIndex(s => (s.tasks || []).some(t => t.status !== 'completed' && t.status !== 'mastered'));
-  const completedStages = stages.filter(s => (s.tasks || []).length > 0 && (s.tasks || []).every((t: any) => t.status === 'completed' || t.status === 'mastered')).length;
-
-  const activeDayTasks = useMemo(() => {
-    if (!activeDayKey) return [];
-    for (const g of dayGroups) {
-      for (const d of g.days) {
-        if (`${g.stageId}_day${d.dayIndex}` === activeDayKey) return d.tasks;
-      }
-    }
-    return [];
-  }, [activeDayKey, dayGroups]);
-
-  const activeDayStage = useMemo(() => {
-    if (!activeDayKey) return null;
-    for (const g of dayGroups) {
-      for (const d of g.days) {
-        if (`${g.stageId}_day${d.dayIndex}` === activeDayKey) {
-          return { stageId: g.stageId, stageTitle: g.stageTitle, stageIdx: g.stageIdx, dayIndex: d.dayIndex };
-        }
-      }
-    }
-    return null;
-  }, [activeDayKey, dayGroups]);
-
-  useEffect(() => {
-    if (!sessionId) { setDraftLoading(false); return; }
-    (async () => {
-      try { const r = await listPlanningDrafts({ sessionId }); if (r.ok && r.draft && r.draft.status !== 'expired') setExistingDraft(r.draft); } catch {}
-      setDraftLoading(false);
-    })();
-  }, [sessionId]);
-
-  useEffect(() => {
-    if (expandedStageId || dayGroups.length === 0) return;
-    const firstIncomplete = dayGroups.find(g => g.days.some(d => d.tasks.some(t => t.status !== 'completed' && t.status !== 'mastered')));
-    const target = firstIncomplete || dayGroups[0];
-    setExpandedStageId(target.stageId);
-    if (target.days.length > 0) {
-      setActiveDayKey(`${target.stageId}_day${target.days[0].dayIndex}`);
-    }
-  }, [dayGroups.length]);
-
-  useEffect(() => { if (path && path.stages?.length && hasProfile) { setPathGenerating(false); setGeneratingStatus(''); } }, [path, hasProfile]);
-
-  useEffect(() => {
-    if (!generatingTaskId) return;
-    setPathGenerating(true);
-    setGeneratingStatus('正在创建学习路径…');
-    let cancelled = false;
-    const poll = async () => {
-      try {
-        const task: any = await getWorkflowTask(generatingTaskId);
-        if (cancelled) return;
-        if (task && task.task_id) {
-          setGeneratingStatus(task.current_stage || task.status || '生成中…');
-          if (task.status === 'completed') {
-            sessionStorage.removeItem('_pending_gen_task_id');
-            sessionStorage.removeItem('_pending_gen_session_id');
-            const persisted = task.result?.data;
-            if (!persisted?.persisted || !persisted.pathId) throw new Error('路径未成功保存');
-            fetchPath(true, generatingSessionId || undefined, persisted.pathId);
-            return;
-          }
-          if (task.status === 'failed' || task.status === 'cancelled' || task.status === 'expired') {
-            sessionStorage.removeItem('_pending_gen_task_id');
-            sessionStorage.removeItem('_pending_gen_session_id');
-            setPathGenerating(false);
-            setGeneratingStatus('');
-            return;
-          }
-          setTimeout(() => { if (!cancelled) poll(); }, 2000);
-        }
-      } catch {
-        if (!cancelled) setTimeout(() => poll(), 3000);
-      }
-    };
-    poll();
-    return () => { cancelled = true; };
-  }, [generatingTaskId]);
-
-  const toggleStage = (stageId: string) => {
-    setExpandedStageId(prev => prev === stageId ? null : stageId);
+  const eb = analytics.eventBreakdown ?? {};
+  const rv = analytics.resourceViewCount ?? eb['resource_view'] ?? 0;
+  const rc = analytics.resourceCompleteCount ?? eb['resource_complete'] ?? 0;
+  const pathProgress = analytics.pathProgress;
+  const continuePath = () => {
+    const task = pathProgress?.nextTask;
+    if (!task?.accessible) return;
+    const supported = ['reading', 'document', 'lecture', 'read_doc', 'quiz', 'practice', 'exam', 'do_quiz', 'mindmap', 'resource'];
+    if (!supported.includes(task.taskType)) return window.alert('当前任务类型暂不支持直接进入，请从学习路径查看。');
+    nav(learningTaskRoute(task.taskType, { ...task.routeContext, returnTo: '/analytics' }));
   };
-
-  const selectDay = (stageId: string, dayIndex: number) => {
-    const key = `${stageId}_day${dayIndex}`;
-    setActiveDayKey(key);
-    setMiddleTab('tasks');
-    setRecommendedResources([]);
-    requestAnimationFrame(() => stageRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
-  };
-
-  const fetchRecommendations = useCallback(async () => {
-    if (!sessionId || !activeDayStage) return;
-    setRecommendLoading(true);
-    try {
-      const r = await fetch('/api/resources/recommendations/for-learning', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId, stageId: activeDayStage.stageId }),
-      }).then(res => res.json());
-      setRecommendedResources(r?.recommendations?.resources || r?.resources || []);
-    } catch { setRecommendedResources([]); }
-    finally { setRecommendLoading(false); }
-  }, [sessionId, activeDayStage]);
-
-  useEffect(() => {
-    if (middleTab === 'recommendations') fetchRecommendations();
-  }, [middleTab, fetchRecommendations]);
-
-  if (loading) return <PageLoading text="加载学习路径中…" />;
-  if (error === 'CURRENT_PATH_UNRESOLVED') return <div className="flex flex-col items-center py-20 text-center"><h3 className="text-lg font-bold text-surface-700 mb-2">当前学习路径尚未确定</h3><p className="text-sm text-surface-400 mb-6">请返回对话确认学习目标，或重新生成学习路径。</p><div className="flex gap-3"><button onClick={() => nav('/chat')} className="px-5 py-2.5 bg-surface-100 rounded-xl text-sm font-semibold">返回对话</button><button onClick={() => { setExistingDraft({}); clearError(); }} className="px-5 py-2.5 bg-accent-600 text-white rounded-xl text-sm font-semibold">重新生成学习路径</button></div></div>;
-  if (error && stages.length === 0) return <PageError title="加载失败" description={error} onRetry={fetchPath} />;
-
-  if (!path || stages.length === 0 || !hasProfile) {
-    if (existingDraft && !draftLoading)
-      return <PlanningWizard sessionId={useChatStore.getState().dataSessionId || sessionId || ''}
-        subjectId={subject.subject_id || ''} subjectName={subject.subject_name || ''}
-        profileV2={profileV2} onPathGenerated={(id: string) => { setExistingDraft(null); fetchPath(); }} />;
-    if (draftLoading || pathGenerating) return (
-      <div className="flex-1 flex flex-col items-center justify-center gap-4">
-        <Loader2 size={32} className="animate-spin text-primary-500" />
-        <p className="text-sm text-surface-500">{generatingStatus || '正在准备…'}</p>
-      </div>
-    );
-    return (
-      <div className="flex-1 flex items-center justify-center bg-surface-50">
-        <div className="relative text-center max-w-sm px-6">
-          <div className="w-16 h-16 mx-auto mb-6 rounded-[20px] bg-gradient-to-br from-primary-500 to-accent-500 flex items-center justify-center shadow-lg">
-            <Target size={32} className="text-white" />
-          </div>
-          <h2 className="text-2xl font-bold text-surface-800 mb-3">开始你的学习路径</h2>
-          <p className="text-surface-400 mb-8 leading-relaxed text-sm">
-            先通过对话了解你的学习目标、基础和时间安排，AI 将为你量身定制专属学习计划。
-          </p>
-          <button onClick={() => { useChatStore.getState().setChatMode('planning');
-            const sid = useChatStore.getState().currentSessionId; nav('/chat', { state: { chatMode: 'planning' } });
-            if (sid) enableProfileExtraction(sid).catch(() => {}); }}
-            className="inline-flex items-center gap-2 px-8 py-3 bg-primary-500 text-white rounded-[14px] text-sm font-medium hover:bg-primary-600 transition-all shadow-md">
-            <Zap size={18} />开始规划学习路径
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  const openTask = (task: any, stage: any) => nav(learningTaskRoute(task.type || 'read_doc', {
-    sessionId, subjectId: subject.subject_id, pathId: path?.id, stageId: stage.stageId || stage.id,
-    taskId: task.task_id || task.id, sectionId: task.section_id || task.task_id,
-  }));
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto bg-surface-50 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
-      <div className="mx-auto w-full max-w-[1440px] flex flex-col gap-8">
-        {/* ── Header ── */}
-        <header className="flex flex-col gap-6">
-          <div className="flex items-center justify-between gap-4">
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-surface-400">学习路径</p>
-            {!isParent && (
-              <button onClick={() => nav('/chat', { state: { initialMessage: '调整一下我的学习路径' } })}
-                className="rounded-full border border-surface-200 bg-white px-4 py-2 text-xs font-semibold text-surface-600 hover:border-primary-300 hover:bg-primary-50 transition-colors">
-                调整路径
-              </button>
-            )}
-          </div>
-          <section className="max-w-3xl">
-            <p className="mb-3 text-xs font-semibold uppercase tracking-[0.24em] text-primary-500">个性化学习计划</p>
-            <h1 className="text-[32px] font-bold leading-[1.05] tracking-[-0.045em] text-surface-800 sm:text-[36px]">{path?.title || '学习路径'}</h1>
-            <p className="mt-4 text-sm leading-7 text-surface-400">{path?.description || 'AI 根据你的学习表现持续优化这条路径'}</p>
-          </section>
-        </header>
+    <div className="space-y-6 animate-fade-in relative">
+      {loading && analytics && <RefreshOverlay />}
+      {error && <div className="px-4 py-3 bg-error-50 border border-error-200 rounded-xl text-sm text-error-600 flex items-center gap-2"><AlertCircle className="w-4 h-4" />{error}<button onClick={refetch} className="ml-auto px-3 py-1.5 bg-white rounded-lg text-xs font-medium">重试</button></div>}
 
-        {path?.id && sessionId && subject.subject_id && <RevisionProposalCard sessionId={sessionId} subjectId={subject.subject_id} pathId={path.id} />}
+      <div className="flex items-center justify-between">
+        <div><h2 className="font-display text-2xl font-bold text-surface-800">学习分析</h2><p className="text-surface-500 mt-1">{analytics.summary || '基于你的学习行为自动生成'}</p></div>
+        <button onClick={refetch} disabled={loading} className="flex items-center gap-2 px-4 py-2.5 bg-surface-50 text-surface-600 rounded-xl font-medium hover:bg-surface-100 transition-colors"><RefreshCw size={16} className={loading ? 'animate-spin' : ''} />刷新</button>
+      </div>
 
-        {/* ── 进度概览 ── */}
-        <section className="rounded-[20px] border border-surface-200 bg-white/80 backdrop-blur-sm p-5 sm:p-6 shadow-sm">
-          <div className="grid gap-6 xl:grid-cols-[1fr_300px] xl:items-center">
-            <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4 lg:gap-0">
-              <div className="lg:border-r lg:border-surface-200 lg:pr-6">
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-surface-400">总进度</p>
-                <strong className="mt-2 block text-[32px] leading-none tracking-[-0.04em] text-primary-500">{progress}%</strong>
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
+        {[
+          { icon: <Clock className="w-5 h-5 text-primary-600" />, label: '已追踪时长', value: formatDuration(analytics.trackedStudyDuration ?? 0), color: 'primary' },
+          { icon: <Flame className="w-5 h-5 text-error-600" />, label: '连续学习', value: `${analytics.streak ?? 0} 天`, color: 'error' },
+          { icon: <BookOpen className="w-5 h-5 text-accent-600" />, label: '已评分测验', value: analytics.assessmentCount ?? 0, color: 'accent' },
+          { icon: <CheckCircle2 className="w-5 h-5 text-success-600" />, label: '已答题目', value: analytics.questionAnsweredCount ?? 0, sub: analytics.correctQuestionCount != null ? `正确 ${analytics.correctQuestionCount}` : undefined, color: 'success' },
+          { icon: <Target className="w-5 h-5 text-warning-600" />, label: '正确率', value: analytics.quizAccuracy != null ? `${analytics.quizAccuracy}%` : '暂无数据', color: 'warning' },
+          { icon: <Clock className="w-5 h-5 text-surface-600" />, label: '最近学习', value: analytics.lastStudyTime ? (() => { const diff = Date.now() - analytics.lastStudyTime; const h = Math.floor(diff / 3600000); return h < 1 ? '不到1小时前' : h < 24 ? `${h}小时前` : `${Math.floor(h / 24)}天前`; })() : '暂无记录', color: 'surface' },
+        ].map(s => {
+          const cls: Record<string, string> = { primary: 'bg-primary-50 ring-1 ring-primary-100', accent: 'bg-accent-50 ring-1 ring-accent-100', warning: 'bg-warning-50 ring-1 ring-warning-100', success: 'bg-success-50 ring-1 ring-success-100', error: 'bg-error-50 ring-1 ring-error-100', surface: 'bg-surface-100 ring-1 ring-surface-200' };
+          return (
+            <div key={s.label} className="bg-white rounded-2xl p-4 shadow-soft hover:shadow-elevated transition-shadow">
+              <div className="flex items-center justify-between mb-2">
+                <div className={`w-9 h-9 rounded-xl ${cls[s.color]} flex items-center justify-center`}>{s.icon}</div>
               </div>
-              <div className="lg:border-r lg:border-surface-200 lg:px-6">
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-surface-400">已完成</p>
-                <strong className="mt-2 block text-xl leading-tight tracking-[-0.03em] text-success-500">{doneTasks}/{totalTasks || totalNodes} 项</strong>
-              </div>
-              <div className="lg:border-r lg:border-surface-200 lg:px-6">
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-surface-400">预计剩余</p>
-                <strong className="mt-2 block text-xl leading-tight tracking-[-0.03em] text-surface-800">{estimatedDays} 天</strong>
-              </div>
-              <div className="lg:pl-6">
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-surface-400">阶段进度</p>
-                <strong className="mt-2 block text-xl leading-tight tracking-[-0.03em] text-accent-500">{completedStages}/{stages.length} 完成</strong>
-              </div>
+              <p className="text-xs text-surface-500 mb-0.5">{s.label}</p>
+              <p className="text-xl font-bold text-surface-800">{typeof s.value === 'number' ? s.value : s.value}</p>
+              {'sub' in s && s.sub && <p className="text-[10px] text-surface-400 mt-0.5">{s.sub}</p>}
             </div>
-            <div className="rounded-2xl border border-surface-200 bg-surface-50/50 p-4">
-              <div className="mb-3 flex items-center justify-between">
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-surface-400">路径阶段</p>
-                <p className="text-xs font-semibold text-surface-800">{progress}%</p>
-              </div>
-              <div className="flex gap-2">
-                {stages.map((_, i) => (
-                  <span key={i}
-                    className={`h-2.5 flex-1 rounded-full transition-all duration-500 ${
-                      i / Math.max(stages.length - 1, 1) < progress / 100
-                        ? 'bg-gradient-to-r from-primary-500 to-accent-500'
-                        : 'bg-surface-200'
-                    }`} />
-                ))}
-              </div>
-            </div>
+          );
+        })}
+      </div>
+
+      {pathProgress && (
+        <section className="bg-white rounded-2xl p-6 shadow-soft flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h3 className="font-display text-lg font-semibold text-surface-800">学习路径进度</h3>
+            {pathProgress.pathCompleted ? <p className="mt-1 text-sm text-success-600">已完成全部 {pathProgress.totalStageCount} 个阶段</p> : <p className="mt-1 text-sm text-surface-500">{pathProgress.currentStageTitle || '当前阶段'} · 必需任务 {pathProgress.completedRequiredTaskCount}/{pathProgress.totalRequiredTaskCount} · 阶段 {pathProgress.completedStageCount}/{pathProgress.totalStageCount}</p>}
+            <div className="mt-3 h-2 w-full max-w-md overflow-hidden rounded-full bg-surface-100"><div className="h-full bg-primary-500" style={{ width: `${pathProgress.taskProgressPercent}%` }} /></div>
           </div>
+          {!pathProgress.pathCompleted && pathProgress.nextTask && <button onClick={continuePath} className="rounded-xl bg-primary-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-primary-700">继续当前阶段</button>}
         </section>
+      )}
 
-        {/* ── 三栏布局 ── */}
-        <div className="grid gap-8 xl:h-[calc(100vh-16rem)] xl:min-h-0 xl:grid-cols-[minmax(200px,0.9fr)_minmax(0,1.55fr)_minmax(260px,0.82fr)] xl:items-stretch">
-          
-          {/* ═══ 左栏：恢复原始大卡片样式，增加天粒度 ═══ */}
-          <aside className="min-w-0 flex flex-col xl:h-full xl:min-h-0">
-            <div className="flex-1 min-h-0 flex flex-col rounded-[20px] border border-surface-200 bg-white/80 backdrop-blur-sm shadow-sm overflow-hidden">
-              <div className="shrink-0 px-5 pt-5 pb-3 sm:px-6 sm:pt-6 border-b border-surface-100">
-                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-surface-400">阶段导航</p>
-              </div>
-              <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 pb-5 pt-3 sm:px-6 sm:pb-6 space-y-2">
-                {dayGroups.map((group: any) => {
-                  const stage = stages[group.stageIdx];
-                  const tasks = stage?.tasks || [];
-                  const tDone = tasks.filter((t: any) => t.status === 'completed' || t.status === 'mastered').length;
-                  const tTotal = tasks.length;
-                  const allDone = tTotal > 0 && tasks.every((t: any) => t.status === 'completed' || t.status === 'mastered');
-                  const locked = stage?.progressStatus === 'locked';
-                  const isExpanded = expandedStageId === group.stageId;
-                  return (
-                    <div key={group.stageId}>
-                      <button type="button" disabled={locked}
-                        onClick={() => toggleStage(group.stageId)}
-                        className={`group flex w-full items-center gap-3 rounded-2xl border px-3 py-3 text-left transition-all duration-300 ${
-                          isExpanded ? 'border-primary-200 bg-primary-50/50 shadow-[inset_3px_0_0_#3478f6]' :
-                          allDone ? 'border-transparent bg-transparent opacity-60' :
-                          locked ? 'border-transparent bg-surface-50 opacity-50 cursor-not-allowed' : 'border-transparent bg-transparent hover:border-surface-200 hover:bg-surface-50'
-                        }`}>
-                        <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold ${
-                          isExpanded ? 'bg-primary-500 text-white shadow-[0_0_12px_rgba(52,120,246,0.35)]' :
-                          allDone ? 'bg-success-100 text-success-600' :
-                          'border border-surface-300 text-surface-400'
-                        }`}>{locked ? <Lock size={12} /> : allDone ? <Check size={12} /> : group.stageIdx + 1}</span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-sm font-semibold text-surface-800">{group.stageTitle}</span>
-                        </span>
-                        <span className="flex items-center gap-2">
-                          <span className="text-xs font-semibold text-surface-400">{tDone}/{tTotal}</span>
-                          <ChevronDown size={14} className={`text-surface-400 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`} />
-                        </span>
-                      </button>
-                      {isExpanded && group.days.length > 0 && (
-                        <div className="ml-4 mt-1 space-y-1 border-l-2 border-surface-100 pl-4 py-1">
-                          {group.days.map((day: any) => {
-                            const dayTasks = day.tasks;
-                            const dDone = dayTasks.filter((t: any) => t.status === 'completed' || t.status === 'mastered').length;
-                            const dTotal = dayTasks.length;
-                            const isActiveDay = activeDayKey === `${group.stageId}_day${day.dayIndex}`;
-                            const firstTaskGlobalIdx = allTasks.findIndex(t => 
-                              (t.task_id || t.id) === (dayTasks[0]?.task_id || dayTasks[0]?.id)
-                            );
-                            const dayLocked = firstTaskGlobalIdx >= 0 && 
-                              (group.stageIdx > currentStageIdx || 
-                               (group.stageIdx === currentStageIdx && firstTaskGlobalIdx > currentTaskIdx));
-                            return (
-                              <button key={`${group.stageId}_day${day.dayIndex}`}
-                                onClick={() => selectDay(group.stageId, day.dayIndex)}
-                                className={`flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left transition-all ${
-                                  isActiveDay ? 'bg-primary-100/60 text-primary-700' :
-                                  'hover:bg-surface-50 text-surface-600'
-                                }`}>
-                                <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${
-                                  isActiveDay ? 'bg-primary-500 text-white' : 'bg-surface-100 text-surface-500'
-                                }`}>
-                                  {day.dayIndex}
-                                </span>
-                                <span className="min-w-0 flex-1 text-xs font-medium truncate">第 {day.dayIndex} 天</span>
-                                <span className="text-[10px] text-surface-400">{dDone}/{dTotal}</span>
-                                {dayLocked && <Lock size={10} className="text-surface-300" />}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+      {pathProgress === null && (
+        <section className="bg-white rounded-2xl p-6 shadow-soft text-sm text-surface-500">暂无可分析的学习路径。</section>
+      )}
+
+      <div className="grid grid-cols-2 gap-6">
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <div className="flex items-center justify-between mb-5"><h3 className="font-display text-lg font-semibold text-surface-800">练习正确率</h3></div>
+          <div className="flex items-center gap-5">{analytics.quizAccuracy == null ? <span className="text-sm text-surface-400">暂无足够作答数据</span> : <Ring pct={analytics.quizAccuracy} />}<div className="text-sm text-surface-500">{analytics.quizAccuracy == null ? '完成练习后统计' : analytics.quizAccuracy >= 80 ? '优秀，继续保持' : analytics.quizAccuracy >= 60 ? '不错，有进步空间' : '需要更多练习'}<p className="text-surface-400 mt-1 text-xs">基于 {analytics.questionAnsweredCount ?? 0} 道已作答题目</p><p className="text-surface-400 mt-1 text-xs">最近 {analytics.latestQuizScore?.accuracy ?? '--'}% · 最佳 {analytics.bestQuizScore?.accuracy ?? '--'}%</p></div></div>
+        </div>
+
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <div className="flex items-center justify-between mb-5"><h3 className="font-display text-lg font-semibold text-surface-800">学习行为分布</h3></div>
+          {Object.entries(analytics.eventBreakdown || {}).length === 0 ? <p className="text-surface-400 text-sm py-8 text-center">暂无数据</p> : (
+            <div className="space-y-3">
+              {Object.entries(analytics.eventBreakdown).sort(([, a], [, b]) => b - a).slice(0, 5).map(([k, v]) => {
+                const max = Math.max(...Object.values(analytics.eventBreakdown));
+                return <div key={k} className="space-y-1.5"><div className="flex items-center justify-between text-sm"><span className="text-surface-600">{({resource_view:'查看资源',resource_complete:'完成资源',quiz_result:'练习结果',feedback:'评价',practice_result:'实操'} as Record<string, string>)[k] || k}</span><span className="text-surface-500">{v}</span></div><div className="h-2 bg-surface-100 rounded-full overflow-hidden"><div className="h-full bg-primary-500 rounded-full transition-all duration-700" style={{ width: `${Math.max((v / max) * 100, 4)}%` }} /></div></div>;
+              })}
             </div>
-            {hasInj && (
-              <section className="shrink-0 mt-4 rounded-[20px] border border-warning-200/60 bg-warning-50/50 p-5">
-                <div className="mb-3 flex items-center gap-2 text-warning-600"><Sparkles size={16} /><p className="text-xs font-semibold uppercase tracking-[0.18em]">AI 调整提示</p></div>
-                <p className="text-sm leading-6 text-surface-600">路径已根据你的学习表现动态优化</p>
-              </section>
-            )}
-          </aside>
-
-          {/* ═══ 中栏 ═══ */}
-          <section className="min-w-0 flex flex-col xl:h-full xl:min-h-0" ref={stageRef}>
-            {activeDayStage && (() => {
-              const stageInfo = activeDayStage;
-              const tasks = activeDayTasks;
-              const tTotal = tasks.length;
-              const tDone = tasks.filter((t: any) => t.status === 'completed' || t.status === 'mastered').length;
-              const pct = tTotal > 0 ? Math.round((tDone / tTotal) * 100) : 0;
-              const allDone = tTotal > 0 && tasks.every((t: any) => t.status === 'completed' || t.status === 'mastered');
-              const dashOffset = circumference - (circumference * pct) / 100;
-              return (
-                <article className="flex flex-col xl:h-full xl:min-h-0 overflow-hidden rounded-[20px] border bg-white/80 backdrop-blur-sm shadow-sm"
-                  style={{ borderColor: allDone ? '#31b16f' : '#3478f6', boxShadow: allDone ? 'none' : '0 0 0 1px rgba(52,120,246,0.3), 0 8px 32px rgba(52,120,246,0.08)' }}>
-                  
-                  {/* ── 天头：固定 ── */}
-                  <div className="shrink-0 flex w-full items-center gap-4 p-5 text-left sm:p-6">
-                    <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
-                      allDone ? 'bg-success-100 text-success-600' : 'bg-gradient-to-br from-primary-500 to-accent-500 text-white shadow-[0_0_20px_rgba(52,120,246,0.3)]'
-                    }`}>{allDone ? <Check size={16} /> : stageInfo.dayIndex}</span>
-                    <span className="min-w-0 flex-1">
-                      <h2 className="text-base font-semibold leading-tight tracking-[-0.02em] text-surface-800">
-                        {stageInfo.stageTitle} · 第 {stageInfo.dayIndex} 天
-                      </h2>
-                    </span>
-                    <span className="hidden items-center gap-3 sm:flex">
-                      {tTotal > 0 && (
-                        <span className="relative flex h-10 w-10 items-center justify-center">
-                          <svg className="h-10 w-10 -rotate-90" viewBox="0 0 40 40">
-                            <circle cx="20" cy="20" r="16" fill="none" stroke="#e9ecf0" strokeWidth="3" />
-                            <circle cx="20" cy="20" r="16" fill="none" stroke={allDone ? '#31b16f' : '#3478f6'} strokeLinecap="round" strokeWidth="3" strokeDasharray={circumference} strokeDashoffset={dashOffset} className="transition-all duration-500" />
-                          </svg>
-                          <span className="absolute text-[10px] font-bold text-surface-700">{pct}%</span>
-                        </span>
-                      )}
-                      <span className="w-10 text-right text-xs font-semibold text-surface-400">{tDone}/{tTotal}</span>
-                    </span>
-                  </div>
-
-                  {/* ── 小标签 ── */}
-                  <div className="shrink-0 flex gap-1 mx-5 sm:mx-6 bg-surface-100 rounded-md p-0.5 w-fit">
-                    <button type="button" onClick={() => setMiddleTab('tasks')}
-                      className={`rounded px-2.5 py-1 text-[10px] font-semibold transition-all ${
-                        middleTab === 'tasks' ? 'bg-white text-surface-800 shadow-sm' : 'text-surface-400 hover:text-surface-600'
-                      }`}>任务</button>
-                    <button type="button" onClick={() => setMiddleTab('recommendations')}
-                      className={`rounded px-2.5 py-1 text-[10px] font-semibold transition-all ${
-                        middleTab === 'recommendations' ? 'bg-white text-surface-800 shadow-sm' : 'text-surface-400 hover:text-surface-600'
-                      }`}>推荐资源</button>
-                  </div>
-
-                  {/* ── 内容区：可滚动 ── */}
-                  <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 pb-5 pt-4 sm:px-6 sm:pb-6">
-                    {middleTab === 'tasks' ? (
-                      <div className="space-y-3">
-                        {tasks.length > 0 ? tasks.map((task: any, ti: number) => {
-                          const done = task.status === 'completed' || task.status === 'mastered';
-                          const prog = task.status === 'in_progress';
-                          const inj = task.source === 'remedial' || task._adjustment === 'remedial' || task._adjustment === 'strengthened';
-                          const kind = task.type || 'read_doc';
-                          const meta = kindMeta(kind);
-                          const isLocked = stageInfo.stageIdx > currentStageIdx || 
-                            (stageInfo.stageIdx === currentStageIdx && 
-                             allTasks.findIndex(t => (t.task_id || t.id) === (task.task_id || task.id)) > currentTaskIdx);
-                          return (
-                            <article key={task.task_id || ti}
-                              className={`rounded-2xl border p-4 transition-all duration-300 ${
-                                done ? 'bg-surface-50/50 border-surface-200' :
-                                prog ? 'bg-primary-50/30 border-primary-200' :
-                                inj ? 'bg-warning-50/30 border-warning-200' :
-                                'bg-white border-surface-200 hover:border-primary-200 hover:shadow-sm'
-                              }`}>
-                              <div className="flex flex-col gap-4 md:flex-row md:items-center">
-                                <div className="flex min-w-0 flex-1 gap-4">
-                                  <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full ${
-                                    done ? 'bg-success-100 text-success-600' : 
-                                    prog ? 'bg-primary-100 text-primary-500 animate-pulse' : 
-                                    isLocked ? 'bg-surface-100 text-surface-300' : 'bg-surface-100 text-surface-400'
-                                  }`}>{done ? <Check size={18} /> : prog ? <CircleDot size={18} /> : isLocked ? <Lock size={18} /> : <Target size={18} />}</span>
-                                  <span className="min-w-0 flex-1">
-                                    <span className="flex flex-wrap items-center gap-2">
-                                      <h3 className="text-sm font-semibold leading-6 text-surface-800">{task.title}</h3>
-                                      {inj && <span className="rounded-full border border-warning-200/50 bg-warning-50 px-2 py-0.5 text-[11px] font-semibold text-warning-600">⚡ AI 注入</span>}
-                                      {isLocked && !done && !prog && <span className="rounded-full border border-surface-200 bg-surface-100 px-2 py-0.5 text-[11px] font-semibold text-surface-400">🔒 未解锁</span>}
-                                    </span>
-                                    {task.goal && <p className="mt-1 text-xs leading-6 text-surface-400">{task.goal}</p>}
-                                    <span className="mt-3 flex flex-wrap items-center gap-2">
-                                      <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${
-                                        inj ? 'border-warning-200/40 bg-warning-50/50 text-warning-600' :
-                                        `border-surface-200 bg-surface-50 text-surface-500`
-                                      }`}>
-                                        {meta.icon} {meta.label}
-                                      </span>
-                                      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-surface-400"><Clock3 size={13} />{task.estimated_minutes}分钟</span>
-                                      {inj && task._adjustment_reason && <span className="text-[11px] text-warning-500">⚡ {task._adjustment_reason}</span>}
-                                    </span>
-                                  </span>
-                                </div>
-                                <button type="button" 
-                                  disabled={done || isLocked}
-                                  onClick={(e) => { e.stopPropagation(); openTask(task, stageInfo); }}
-                                  className={`h-10 shrink-0 rounded-xl px-4 text-xs font-bold transition-all duration-300 ${
-                                    done ? 'border border-success-200 bg-success-50 text-success-500 cursor-default' :
-                                    isLocked ? 'border border-surface-200 bg-surface-50 text-surface-300 cursor-not-allowed' :
-                                    prog ? 'bg-gradient-to-r from-primary-500 to-accent-500 text-white shadow-[0_0_20px_rgba(52,120,246,0.3)]' :
-                                    'border border-surface-200 bg-white text-surface-600 hover:border-primary-300 hover:bg-primary-50 hover:text-primary-600'
-                                  }`}>
-                                  {done ? '✓ 完成' : isLocked ? '🔒 锁定' : prog ? '继续 →' : '开始'}
-                                </button>
-                              </div>
-                            </article>
-                          );
-                        }) : (
-                          <div className="text-center py-10 text-sm text-surface-400">该天暂无任务</div>
-                        )}
-                        {allDone && tTotal > 0 && <div className="text-center py-3 text-sm text-success-500 font-medium">🎉 本天任务已全部完成</div>}
-                      </div>
-                    ) : (
-                      <>
-                        {recommendLoading ? (
-                          <div className="flex items-center justify-center py-16"><Loader2 size={24} className="animate-spin text-primary-400" /></div>
-                        ) : recommendedResources.length > 0 ? (
-                          <div className="space-y-3">
-                            {recommendedResources.map((res: any, ri: number) => {
-                              const rtype = res.type || res.resource_type || '';
-                              const icon = rtype === 'video' ? '🎬' : rtype === 'quiz' ? '✏️' : rtype === 'mindmap' ? '🧠' : rtype === 'practice' || rtype === 'lab' ? '💻' : '📖';
-                              return (
-                                <a key={ri} href={res.url || res.link || '#'} target="_blank" rel="noopener noreferrer"
-                                  className="flex items-start gap-3 rounded-xl border border-surface-200 bg-white p-3.5 hover:border-primary-200 hover:shadow-sm transition-all">
-                                  <span className="mt-0.5 text-lg shrink-0">{icon}</span>
-                                  <span className="min-w-0 flex-1">
-                                    <span className="block text-sm font-semibold text-surface-800 truncate">{res.title || res.name || '推荐资源'}</span>
-                                    {res.description && <span className="mt-1 block text-xs text-surface-400 line-clamp-2">{res.description}</span>}
-                                    <span className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-medium text-surface-400">
-                                      <span className="uppercase tracking-wide">{rtype || 'resource'}</span>
-                                      {res.duration && <span> · {res.duration}min</span>}
-                                    </span>
-                                  </span>
-                                </a>
-                              );
-                            })}
-                          </div>
-                        ) : (
-                          <div className="text-center py-16">
-                            <p className="text-sm text-surface-400">暂无推荐资源</p>
-                            <button type="button" onClick={fetchRecommendations}
-                              className="mt-3 text-xs font-semibold text-primary-500 hover:text-primary-600">重新加载</button>
-                          </div>
-                        )}
-                      </>
-                    )}
-                  </div>
-                </article>
-              );
-            })()}
-            {!activeDayStage && (
-              <div className="flex items-center justify-center h-full text-sm text-surface-400">
-                请从左侧选择一个天查看任务
-              </div>
-            )}
-          </section>
-
-          {/* ═══ 右栏：完全静止 ─── */}
-          <aside className="min-w-0 space-y-5">
-            {nextTask && (
-              <section className="overflow-hidden rounded-[20px] border border-surface-200 bg-white/80 backdrop-blur-sm shadow-sm">
-                <div className="h-20 bg-gradient-to-r from-primary-500 to-accent-500" />
-                <div className="p-5">
-                  <p className="mb-3 text-xs font-semibold uppercase tracking-[0.22em] text-surface-400">立即开始</p>
-                  <h2 className="text-sm font-bold leading-6 text-surface-800">{nextTask.title}</h2>
-                  <p className="mt-2 text-xs leading-6 text-surface-400">{nextTask.goal || '优先处理最新学习任务'}</p>
-                  <p className="mt-3 text-xs font-semibold text-surface-400"><span className="text-primary-500">{kindMeta(nextTask.type || 'read_doc').label}</span> · {nextTask.estimated_minutes}分钟</p>
-                  <button type="button" onClick={() => openTask(nextTask, { stageId: nextTask.stageId })}
-                    className="mt-5 flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-primary-500 to-accent-500 text-sm font-bold text-white shadow-[0_0_24px_rgba(52,120,246,0.3)] hover:shadow-[0_0_32px_rgba(167,139,250,0.3)] transition-all">
-                    开始学习 <ArrowRight size={16} />
-                  </button>
-                </div>
-              </section>
-            )}
-            <section className="rounded-[20px] border border-surface-200 bg-white/80 backdrop-blur-sm p-5 shadow-sm">
-              <p className="mb-4 text-xs font-semibold uppercase tracking-[0.24em] text-surface-400">学习分析</p>
-              <ul className="space-y-4 text-sm leading-6 text-surface-600">
-                <li className="flex gap-3"><span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-primary-500 shadow-[0_0_12px_rgba(52,120,246,0.45)]" />已完成 {doneTasks}/{totalTasks || totalNodes} 项学习任务</li>
-                <li className="flex gap-3"><span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-warning-400 shadow-[0_0_12px_rgba(251,191,36,0.4)]" />共 {stages.length} 个阶段，{completedStages} 个已完成</li>
-                {nextTask?.stageTitle && <li className="flex gap-3"><span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-accent-500 shadow-[0_0_12px_rgba(141,107,255,0.45)]" />当前阶段：{nextTask.stageTitle}</li>}
-              </ul>
-            </section>
-            <section className="rounded-[20px] border border-surface-200 bg-white/80 backdrop-blur-sm p-5 shadow-sm">
-              <p className="mb-4 text-xs font-semibold uppercase tracking-[0.24em] text-surface-400">练习</p>
-              <button type="button" onClick={() => nav('/practice')}
-                className="flex w-full items-center gap-3 rounded-2xl border border-transparent p-3 text-left transition-all duration-300 hover:border-surface-200 hover:bg-surface-50">
-                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary-50 text-primary-500 border border-primary-100"><FileText size={16} /></span>
-                <span className="min-w-0 flex-1"><strong className="block truncate text-sm font-semibold text-surface-800">前往练习中心</strong><span className="mt-0.5 block text-xs text-surface-400">做题巩固知识点</span></span>
-                <ChevronRight size={16} className="text-surface-300" />
-              </button>
-              <button type="button" onClick={() => nav('/practice?prompt=出题')}
-                className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-dashed border-primary-300/50 bg-primary-50/30 text-sm font-bold text-primary-500 transition-all duration-300 hover:border-primary-400/70 hover:bg-primary-50/60 hover:text-primary-600">
-                <Plus size={16} />生成题集
-              </button>
-            </section>
-          </aside>
+          )}
         </div>
       </div>
+
+      {/* ── 反馈评分 ── */}
+      {analytics.feedbackStats && (
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <div className="flex items-center gap-2 mb-4">
+            <MessageSquareText size={18} className="text-accent-500" />
+            <h3 className="font-display text-lg font-semibold text-surface-800">反馈评分</h3>
+          </div>
+          <div className="flex items-center gap-6">
+            <div className="text-center">
+              <p className="text-3xl font-bold text-surface-800">{analytics.feedbackStats.averageRating ?? '--'}</p>
+              <p className="text-xs text-surface-400 mt-1">平均评分</p>
+            </div>
+            <div className="w-px h-10 bg-surface-200" />
+            <div className="text-center">
+              <p className="text-3xl font-bold text-surface-800">{analytics.feedbackStats.count}</p>
+              <p className="text-xs text-surface-400 mt-1">评价次数</p>
+            </div>
+            <div className="flex-1 text-sm text-surface-500 pl-4">
+              {analytics.feedbackStats.averageRating != null
+                ? (analytics.feedbackStats.averageRating >= 4 ? '学习体验优秀，继续保持！' : analytics.feedbackStats.averageRating >= 3 ? '整体满意，仍有优化空间' : '建议关注学习体验，及时调整难度')
+                : '暂无评分数据'}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {analytics.completionTrend && analytics.completionTrend.some((d: any) => d.count > 0) && (
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <h3 className="font-display text-lg font-semibold text-surface-800 mb-4">资源完成趋势</h3>
+          <div className="flex items-end gap-1 h-32">
+            {analytics.completionTrend.slice(-7).map((d: any) => { const max = Math.max(...analytics.completionTrend.map((x: any) => x.count), 1); const h = Math.max((d.count/max)*100, d.count>0?6:2); return <div key={d.date} className="flex-1 flex flex-col items-center gap-1"><div className="w-full rounded-t-sm bg-success-500 transition-all hover:opacity-80" style={{height:`${h}%`,minHeight:d.count>0?'4px':'2px'}} /><span className="text-[8px] text-surface-400">{d.date.slice(5)}</span></div>; })}
+          </div>
+          <p className="text-[10px] text-surface-400 text-center mt-2">累计完成 <span className="font-semibold text-surface-600">{analytics.completionTrend.reduce((s: number, d: any) => s + d.count, 0)}</span> 个资源</p>
+        </div>
+      )}
+
+      {analytics.recentEvents && analytics.recentEvents.length > 0 && (
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <h3 className="font-display text-lg font-semibold text-surface-800 mb-4">最近学习行为</h3>
+          <div className="space-y-0">
+            {analytics.recentEvents.slice(-6).reverse().map((evt, i: number) => (
+              <div key={i} className={`flex items-center gap-3 py-2.5 ${i < 5 ? 'border-b border-surface-100' : ''}`}>
+                <span className="text-xs flex-shrink-0">{({resource_view:'👁',resource_complete:'✅',task_complete:'✅',quiz_result:'📝',practice_result:'💻',feedback:'💬'} as Record<string, string>)[evt.event] || '📌'}</span>
+                <div className="flex-1 min-w-0"><p className="text-xs text-surface-700 truncate">{evt.event==='task_complete'?`完成任务「${evt.metadata?.title||''}」`:evt.event==='resource_view'?`查看了资源「${evt.metadata?.title||''}」`:evt.event==='resource_complete'?`完成了资源「${evt.metadata?.title||''}」`:evt.event==='quiz_result'?`练习正确 ${evt.metadata?.correct}/${evt.metadata?.total}`:evt.event}</p></div>
+                <span className="text-[10px] text-surface-400 flex-shrink-0">{(()=>{try{const d=new Date(evt.timestamp ?? 0);const diff=Date.now()-d.getTime();const m=Math.floor(diff/60000);return m<1?'刚刚':m<60?`${m}分钟前`:`${Math.floor(m/1440)}天前`}catch{return''}})()}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {(analytics.weakTopics ?? []).length > 0 && (
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <h3 className="font-display text-lg font-semibold text-surface-800 mb-4">薄弱知识点</h3>
+          <div className="space-y-3">
+            {analytics.weakTopics.slice(0, 5).map((t, i) => (
+              <div key={i} className="flex items-center justify-between p-3 rounded-xl bg-surface-50">
+                <div className="flex items-center gap-3"><span className="text-sm font-medium text-surface-700">{t.topic}</span>{t.priority === 'high' && <span className="px-2 py-0.5 bg-error-100 text-error-600 text-[10px] font-bold rounded-full">高优</span>}</div>
+                <div className="flex items-center gap-3"><span className="text-xs text-surface-500">{t.wrongCount}/{t.totalCount}</span><button onClick={() => nav(`/resources?knowledgePoint=${encodeURIComponent(t.topic)}`)} className="text-xs text-primary-600 hover:text-primary-700 font-medium">查看资源 →</button></div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {analytics.recommendations && analytics.recommendations.length > 0 && (
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <h3 className="font-display text-lg font-semibold text-surface-800 mb-4 flex items-center gap-2"><Zap size={18} className="text-warning-500" />学习建议</h3>
+          <div className="space-y-3">
+            {analytics.recommendations.slice(0, 5).map((rec: RecommendationItem, i: number) => (
+              <div key={i} className="flex items-start gap-3 p-3 rounded-xl bg-warning-50/50 border border-warning-100/50">
+                <span className={`mt-0.5 w-2 h-2 rounded-full flex-shrink-0 ${rec.priority === 'high' ? 'bg-error-500' : rec.priority === 'medium' ? 'bg-warning-500' : 'bg-surface-400'}`} />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-surface-700">{rec.title}</p>
+                  <p className="text-xs text-surface-500 mt-0.5">{rec.reason}</p>
+                </div>
+                {rec.target_resource_id && (
+                  <button onClick={() => nav(`/resources/${rec.target_resource_id}`)} className="text-xs text-primary-600 hover:text-primary-700 font-medium flex-shrink-0">查看 →</button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {analytics.topResources && analytics.topResources.length > 0 && (
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <h3 className="font-display text-lg font-semibold text-surface-800 mb-4 flex items-center gap-2"><Star size={18} className="text-accent-500" />常用资源</h3>
+          <div className="space-y-2.5">
+            {analytics.topResources.slice(0, 5).map((r, i) => (
+              <div key={i} className="flex items-center justify-between py-2">
+                <div className="flex items-center gap-3">
+                  <span className="text-xs font-bold text-surface-400 w-5">{i + 1}</span>
+                  <span className="text-sm text-surface-700 truncate max-w-[320px]">{r.title || r.resourceId}</span>
+                </div>
+                <span className="text-xs text-surface-500">访问 {r.count} 次</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {analytics.resourceTypeBreakdown && Object.keys(analytics.resourceTypeBreakdown).length > 0 && (
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <h3 className="font-display text-lg font-semibold text-surface-800 mb-4 flex items-center gap-2"><BarChart3 size={18} className="text-primary-500" />资源类型分布</h3>
+          <div className="space-y-3">
+            {Object.entries(analytics.resourceTypeBreakdown).sort(([, a], [, b]) => (b as number) - (a as number)).slice(0, 6).map(([k, v]) => {
+              const max = Math.max(...Object.values(analytics.resourceTypeBreakdown).map(Number));
+              const typeLabels: Record<string, string> = { lecture: '文档', mindmap: '思维导图', quiz: '练习', reading: '阅读', case_study: '案例', video: '视频', ppt: 'PPT' };
+              return (
+                <div key={k} className="space-y-1.5">
+                  <div className="flex items-center justify-between text-sm"><span className="text-surface-600">{typeLabels[k] || k}</span><span className="text-surface-500">{v as number}</span></div>
+                  <div className="h-2 bg-surface-100 rounded-full overflow-hidden"><div className="h-full bg-accent-500 rounded-full transition-all duration-700" style={{ width: `${Math.max(((v as number) / max) * 100, 4)}%` }} /></div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* M6: 进步曲线 — 近30天正确率+做题量双轴图 */}
+      {analytics.progressCurve && analytics.progressCurve.length > 0 && (
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <div className="flex items-center justify-between mb-5">
+            <h3 className="font-display text-lg font-semibold text-surface-800 flex items-center gap-2">
+              <TrendingUp size={18} className="text-primary-500" />进步曲线（近30天）
+            </h3>
+            <div className="flex items-center gap-4 text-xs">
+              <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 rounded-full bg-primary-500 inline-block" style={{ borderTop: '2.5px solid #3b82f6' }} />正确率</span>
+              <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-accent-200 inline-block" />做题量</span>
+            </div>
+          </div>
+          <DualAxisChart data={analytics.progressCurve} />
+          <div className="flex justify-between mt-3 text-xs text-surface-400">
+            <span>{analytics.progressCurve[0]?.date}</span>
+            <span>{analytics.progressCurve[analytics.progressCurve.length - 1]?.date}</span>
+          </div>
+        </div>
+      )}
+
+      {analytics.quizTrend && analytics.quizTrend.length > 0 && !analytics.progressCurve && (
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <h3 className="font-display text-lg font-semibold text-surface-800 mb-4">练习正确率趋势</h3>
+          <div className="h-32 flex items-end gap-1">
+            {analytics.quizTrend.slice(-15).map((p: any, i: number) => { const h = Math.max((p.accuracy/100)*100, 4); return <div key={i} className="flex-1 flex flex-col items-center gap-1"><div className="w-full rounded-t-sm bg-primary-500 transition-all hover:opacity-80" style={{ height: `${h}%`, minHeight: '4px' }} title={`${p.topic||''}: ${p.accuracy}%`} /></div>; })}
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════════ M6: 仪表盘新增面板 ══════════════════════════════════════════════ */}
+
+      {/* M6: 今日学习卡片 */}
+      {analytics.todayCard && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {[
+            { label: '今日答题', value: analytics.todayCard.questionsAnswered ?? 0, unit: '题', icon: BookOpen, color: 'text-primary-500', trend: undefined },
+            { label: '平均得分', value: analytics.todayCard.averageScore ?? '--', unit: '分', icon: Target,
+              color: (analytics.todayCard.averageScore ?? 0) >= 60 ? 'text-success-500' : 'text-warning-500',
+              trend: analytics.todayCard.rankChange as number | undefined },
+            { label: '薄弱点', value: analytics.todayCard.weakPointsCount ?? 0, unit: '个', icon: AlertCircle, color: 'text-error-500', trend: undefined },
+            { label: '学习时长', value: analytics.todayCard.studyMinutes ?? 0, unit: '分钟', icon: Clock, color: 'text-accent-500', trend: undefined },
+          ].map((card, i) => (
+            <div key={i} className="bg-white rounded-xl p-4 shadow-soft relative">
+              <div className="flex items-center justify-between mb-2">
+                <card.icon className={`w-5 h-5 ${card.color}`} />
+                {card.trend !== undefined && card.trend !== 0 && (
+                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full flex items-center gap-0.5 ${card.trend > 0 ? 'bg-success-50 text-success-600' : 'bg-error-50 text-error-600'}`}>
+                    {card.trend > 0 ? '↑' : '↓'} 趋势
+                  </span>
+                )}
+              </div>
+              <p className="text-2xl font-bold text-surface-800">{card.value}<span className="text-sm text-surface-400 ml-0.5">{card.unit}</span></p>
+              <p className="text-xs text-surface-500">{card.label}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* M6: 能力热力图（含置信度+趋势）*/}
+      {analytics.heatmap && analytics.heatmap.length > 0 && (
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <h3 className="font-display text-lg font-semibold text-surface-800 mb-4 flex items-center gap-2"><Brain size={18} className="text-primary-500" />能力热力图</h3>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+            {analytics.heatmap.map((item: any, i: number) => {
+              const s = item.mastery || 50;
+              const conf = item.confidence ?? 0.5;
+              const trend = item.trend;
+              const bg = s >= 80 ? 'bg-success-100 border-success-300' : s >= 50 ? 'bg-primary-50 border-primary-200' : 'bg-error-50 border-error-200';
+              const text = s >= 80 ? 'text-success-700' : s >= 50 ? 'text-primary-700' : 'text-error-700';
+              return (
+                <div key={i} className={`rounded-xl p-3 border ${bg} relative`} style={{ opacity: 0.4 + conf * 0.6 }}>
+                  <div className="flex items-center gap-1.5">
+                    <p className={`text-xs font-semibold ${text} truncate`}>{item.knowledgePoint}</p>
+                    {trend === 'improving' && <TrendingUp size={12} className="text-success-500 flex-shrink-0" />}
+                    {trend === 'declining' && <TrendingDown size={12} className="text-error-500 flex-shrink-0" />}
+                  </div>
+                  <div className="flex items-center justify-between mt-1">
+                    <div className="flex items-baseline gap-1">
+                      <span className="text-lg font-bold text-surface-700">{s}</span>
+                      {conf < 0.4 && <span className="text-[9px] text-surface-400" title="置信度低">低置信</span>}
+                    </div>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${bg} ${text}`}>{item.level}</span>
+                  </div>
+                  {item.evidenceCount > 0 && (
+                    <p className="text-[9px] text-surface-400 mt-1">基于 {item.evidenceCount} 次作答</p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* M6: 薄弱榜单 Top 5（含建议措施）*/}
+      {analytics.weaknessRanking && analytics.weaknessRanking.length > 0 && (
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <h3 className="font-display text-lg font-semibold text-surface-800 mb-4 flex items-center gap-2"><AlertCircle size={18} className="text-error-500" />薄弱知识点 Top 5</h3>
+          <div className="space-y-2">
+            {analytics.weaknessRanking.map((item: any, i: number) => (
+              <div key={i} className="p-3 bg-surface-50 rounded-xl">
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-bold text-surface-400 w-5">{i + 1}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-surface-700 truncate">{item.name}</p>
+                    <p className="text-xs text-surface-400">{item.reason}</p>
+                  </div>
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium flex-shrink-0 ${item.priority === 'high' ? 'bg-error-50 text-error-600' : 'bg-warning-50 text-warning-600'}`}>{item.priority === 'high' ? '高优' : '中'}</span>
+                </div>
+                <div className="flex items-center gap-2 mt-2 pl-8">
+                  <Zap size={12} className="text-warning-500 flex-shrink-0" />
+                  <p className="text-xs text-surface-500 flex-1">{item.suggested_action || '建议针对性练习'}</p>
+                  {item.resourceIds?.length > 0 && (
+                    <button onClick={() => nav(`/resources?knowledgePoint=${encodeURIComponent(item.name)}`)}
+                      className="text-[10px] text-primary-600 hover:text-primary-700 font-medium flex-shrink-0">查看资源 →</button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── 综合评估摘要 ── */}
+      {analytics.assessmentSummary && (
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <div className="flex items-center gap-2 mb-4"><Brain size={18} className="text-primary-500" /><h3 className="font-display text-lg font-semibold text-surface-800">综合评估</h3></div>
+          <p className="text-sm text-surface-600 leading-relaxed">{analytics.assessmentSummary}</p>
+        </div>
+      )}
+
+      {/* ── 学习规律评分 ── */}
+      {analytics.regularityMetric && (
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <div className="flex items-center gap-2 mb-4"><Activity size={18} className="text-accent-500" /><h3 className="font-display text-lg font-semibold text-surface-800">学习规律</h3></div>
+          <div className="flex items-center gap-5">
+            {analytics.regularityScore == null ? <span className="text-sm text-surface-400">数据不足</span> : <Ring pct={analytics.regularityScore} />}
+            <div className="text-sm text-surface-500">
+              {analytics.regularityScore == null ? '至少需要 3 个真实学习日期后才能计算规律性。' : analytics.regularityScore >= 70 ? '学习规律性强，建议继续保持' :
+               analytics.regularityScore >= 40 ? '学习有一定规律，可以尝试固定时间' :
+               '学习间隔不规律，建议每天固定时间学习'}
+              <p className="text-xs text-surface-400 mt-1">基于学习日期间隔的规律性计算</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── 知识点掌握趋势 ── */}
+      {analytics.topicMasteryTrend && analytics.topicMasteryTrend.length > 0 && (
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <h3 className="font-display text-lg font-semibold text-surface-800 mb-4">知识点掌握趋势</h3>
+          <div className="space-y-4">
+            {analytics.topicMasteryTrend.slice(0, 5).map((item: any, i: number) => (
+              <div key={i}>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm font-medium text-surface-700">{item.topic}</span>
+                  <span className="text-xs text-surface-400">{item.points.length} 次记录</span>
+                </div>
+                <div className="flex items-end gap-0.5 h-12">
+                  {item.points.slice(-10).map((pt: any, pi: number) => {
+                    const h = Math.max((pt.accuracy / 100) * 100, 4);
+                    return <div key={pi} className="flex-1 rounded-t-sm bg-primary-500 transition-all" style={{ height: `${h}%` }} title={`${pt.date}: ${pt.accuracy}%`} />;
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* M6: 目标追踪 */}
+      {analytics.goalTracking && (
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <h3 className="font-display text-lg font-semibold text-surface-800 mb-4 flex items-center gap-2"><Target size={18} className="text-accent-500" />学习目标追踪</h3>
+
+          {/* 进度条 */}
+          <div className="mb-5">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm text-surface-600">总体进度</span>
+              <span className="text-sm font-semibold text-surface-800">{analytics.goalTracking.progressPercent ?? analytics.goalTracking.masteryPercentage ?? 0}%</span>
+            </div>
+            <div className="h-3 bg-surface-100 rounded-full overflow-hidden">
+              <div className="h-full rounded-full bg-gradient-to-r from-primary-500 to-accent-500 transition-all duration-1000 ease-out"
+                style={{ width: `${Math.min(100, analytics.goalTracking.progressPercent ?? analytics.goalTracking.masteryPercentage ?? 0)}%` }} />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-4">
+            {/* 距考试天数 */}
+            <div className="text-center p-3 bg-surface-50 rounded-xl">
+              <p className="text-2xl font-bold text-surface-800">
+                {analytics.goalTracking.daysUntilExam != null
+                  ? (analytics.goalTracking.daysUntilExam > 0 ? analytics.goalTracking.daysUntilExam : '今天')
+                  : '--'}
+              </p>
+              <p className="text-xs text-surface-500">距考试天数</p>
+              {analytics.goalTracking.examDate && (
+                <p className="text-[10px] text-surface-400 mt-0.5">{analytics.goalTracking.examDate}</p>
+              )}
+            </div>
+            {/* 已完成题目 */}
+            <div className="text-center p-3 bg-surface-50 rounded-xl">
+              <p className="text-2xl font-bold text-surface-800">{analytics.goalTracking.questionsCompleted ?? 0}<span className="text-sm text-surface-400">题</span></p>
+              <p className="text-xs text-surface-500">累计做题</p>
+            </div>
+            {/* 平均掌握度 */}
+            <div className="text-center p-3 bg-surface-50 rounded-xl">
+              <p className="text-2xl font-bold text-primary-600">{analytics.goalTracking.masteryPercentage ?? 0}%</p>
+              <p className="text-xs text-surface-500">平均掌握度</p>
+            </div>
+            {/* 预估总天数 */}
+            <div className="text-center p-3 bg-surface-50 rounded-xl">
+              <p className="text-2xl font-bold text-surface-800">{analytics.goalTracking.estimatedDays ?? 14}<span className="text-sm text-surface-400">天</span></p>
+              <p className="text-xs text-surface-500">预估学习周期</p>
+            </div>
+            {/* 阶段进度 */}
+            <div className="text-center p-3 bg-surface-50 rounded-xl">
+              <p className="text-2xl font-bold text-surface-800">{analytics.goalTracking.stagesCompleted ?? 0}/{analytics.goalTracking.stagesTotal ?? 0}</p>
+              <p className="text-xs text-surface-500">阶段进度</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* M6: 学习日历（近30天，表现等级着色）*/}
+      {analytics.studyCalendar && analytics.studyCalendar.length > 0 && (
+        <div className="bg-white rounded-2xl p-6 shadow-soft">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-display text-lg font-semibold text-surface-800 flex items-center gap-2"><Activity size={18} className="text-primary-500" />学习日历（近30天）</h3>
+            <div className="flex items-center gap-3 text-[10px] text-surface-400">
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-success-400" />优秀</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-primary-300" />良好</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-warning-300" />需加强</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-surface-200" />浏览</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-surface-100" />无</span>
+            </div>
+          </div>
+          <div className="grid grid-cols-7 gap-1.5">
+            {['一','二','三','四','五','六','日'].map(d => <div key={d} className="text-center text-[10px] text-surface-400 py-1 font-medium">{d}</div>)}
+            {analytics.studyCalendar.map((day, i) => {
+              const lv = (day as any).performanceLevel ?? (day.active ? 1 : 0);
+              const bg = lv === 4 ? 'bg-success-400 text-white' :
+                         lv === 3 ? 'bg-primary-300 text-white' :
+                         lv === 2 ? 'bg-warning-300 text-white' :
+                         lv === 1 ? 'bg-surface-200 text-surface-600' :
+                         'bg-surface-50 text-surface-400';
+              const d = new Date(day.date);
+              return (
+                <div key={i} title={`${day.date} · ${day.questionCount ?? 0}题 · ${['无','浏览','需加强','良好','优秀'][lv]}`}
+                  className={`aspect-square rounded-lg flex items-center justify-center text-xs font-medium transition-all hover:scale-110 cursor-default ${bg}`}>
+                  {d.getDate()}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── AI 多维度学习评估 ── */}
+      <div className="bg-white rounded-2xl p-6 shadow-soft">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2"><Brain size={18} className="text-primary-500" /><h3 className="font-display text-lg font-semibold text-surface-800">AI 学习评估</h3></div>
+          <button onClick={async () => {
+            try {
+              const { generateAssessment } = await import('../api/learningAssessment');
+              const result = await generateAssessment({ sessionId: sessionId || '', subjectId });
+              if (result?.data) setAiAssessment(result.data);
+            } catch {
+              setAiAssessment({ status: 'failed', errorCode: 'generation_failed', summary: '评估生成失败，请重试。' });
+            }
+          }} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-brand-500 bg-brand-50 hover:bg-brand-100 transition-colors">
+            <Zap size={14} />生成评估
+          </button>
+        </div>
+        {(() => {
+          if (!aiAssessment) return <p className="text-sm text-surface-400 text-center py-6">点击「生成评估」获取 AI 多维度分析报告</p>;
+          if (aiAssessment.status === 'insufficient_data') return <p className="text-sm text-surface-400 text-center py-6">数据不足，完成已评分练习后再生成。</p>;
+          if (aiAssessment.status === 'failed') return <p className="text-sm text-error-500 text-center py-6">{aiAssessment.summary || '评估生成失败，请重试。'}</p>;
+          const scores = aiAssessment.scores || {};
+          const dimLabels: Record<string, string> = {
+            knowledge_mastery: '知识掌握', learning_progress: '学习进度', learning_efficiency: '学习效率',
+            learning_regularity: '学习规律', engagement_level: '投入度', weakness_awareness: '薄弱认知', improvement_trend: '进步趋势',
+          };
+          return (
+            <div className="space-y-4">
+              {/* 雷达/环形图：各维度评分 */}
+              <div className="grid grid-cols-4 gap-3">
+                {Object.entries(dimLabels).map(([key, label]) => (
+                  <div key={key} className="text-center">
+                    <Ring pct={scores[key] ?? 50} />
+                    <p className="text-[10px] text-surface-500 mt-1">{label}</p>
+                  </div>
+                ))}
+              </div>
+              {/* 综合分析 */}
+              {aiAssessment.summary && (
+                <div className="p-3 bg-surface-50 rounded-xl">
+                  <p className="text-sm text-surface-600 leading-relaxed">{aiAssessment.summary}</p>
+                </div>
+              )}
+              {/* 推荐行动 */}
+              {aiAssessment.recommended_actions && (
+                <div className="p-3 bg-primary-50/50 rounded-xl">
+                  <p className="text-xs font-semibold text-primary-700 mb-1">💡 推荐行动</p>
+                  <p className="text-sm text-surface-600 whitespace-pre-line">{aiAssessment.recommended_actions}</p>
+                </div>
+              )}
+            </div>
+          );
+        })()}
+      </div>
+
+      <div className="text-center text-xs text-surface-400 pt-4 border-t border-surface-200">累计追踪 {analytics.eventCount} 条学习事件 · 数据驱动个性化学习</div>
     </div>
+  );
+}
+
+/** M6: 双轴折线+柱状混合图 — 正确率折线（左轴）+ 做题量柱（右轴） */
+function DualAxisChart({ data }: { data: { date: string; accuracy: number | null; questionCount: number }[] }) {
+  const W = 720; const H = 220; const PAD_L = 42; const PAD_R = 48; const PAD_T = 16; const PAD_B = 20;
+  const plotW = W - PAD_L - PAD_R;
+  const plotH = H - PAD_T - PAD_B;
+
+  const maxQ = Math.max(...data.map(d => d.questionCount), 5);
+  const accPoints = data.filter(d => d.accuracy != null);
+  const hasAcc = accPoints.length >= 2;
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" preserveAspectRatio="xMidYMid meet">
+      {/* 网格线 */}
+      {[0, 0.25, 0.5, 0.75, 1].map(r => {
+        const y = PAD_T + plotH * (1 - r);
+        return <line key={r} x1={PAD_L} y1={y} x2={W - PAD_R} y2={y} stroke="#f1f5f9" strokeWidth="1" />;
+      })}
+      {/* 左轴标签 */}
+      {[0, 25, 50, 75, 100].map(v => (
+        <text key={`la${v}`} x={PAD_L - 6} y={PAD_T + plotH * (1 - v / 100) + 4} textAnchor="end" fill="#94a3b8" fontSize="10">{v}%</text>
+      ))}
+      <text x={12} y={PAD_T + plotH / 2} textAnchor="middle" fill="#94a3b8" fontSize="9" transform={`rotate(-90 12 ${PAD_T + plotH / 2})`}>正确率</text>
+
+      {/* 右轴标签 */}
+      {[0, Math.round(maxQ / 2), maxQ].map((v, i) => (
+        <text key={`ra${v}`} x={W - PAD_R + 6} y={PAD_T + plotH * (1 - i / 2) + 4} textAnchor="start" fill="#94a3b8" fontSize="10">{v}</text>
+      ))}
+      <text x={W - 8} y={PAD_T + plotH / 2} textAnchor="middle" fill="#94a3b8" fontSize="9" transform={`rotate(90 ${W - 8} ${PAD_T + plotH / 2})`}>题数</text>
+
+      {/* 柱状图 — 做题量 */}
+      {data.map((d, i) => {
+        const x = PAD_L + (i / Math.max(data.length - 1, 1)) * plotW;
+        const barW = Math.max(3, plotW / data.length * 0.55);
+        const barH = (d.questionCount / maxQ) * plotH;
+        return <rect key={`bar${i}`} x={x - barW / 2} y={PAD_T + plotH - barH} width={barW} height={barH} rx="2" fill="#c7d2fe" opacity="0.7" />;
+      })}
+
+      {/* 折线 — 正确率 */}
+      {hasAcc && (() => {
+        const linePath = accPoints.map((d, i) => {
+          const dataIdx = data.indexOf(d);
+          const x = PAD_L + (dataIdx / Math.max(data.length - 1, 1)) * plotW;
+          const y = PAD_T + plotH * (1 - (d.accuracy ?? 0) / 100);
+          return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
+        }).join(' ');
+        const areaPath = linePath + ` L${PAD_L + plotW},${PAD_T + plotH} L${PAD_L},${PAD_T + plotH} Z`;
+        return (
+          <>
+            <defs><linearGradient id="accGrad" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stopColor="#3b82f6" stopOpacity="0.25" /><stop offset="100%" stopColor="#3b82f6" stopOpacity="0.02" /></linearGradient></defs>
+            <path d={areaPath} fill="url(#accGrad)" />
+            <path d={linePath} fill="none" stroke="#3b82f6" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+            {accPoints.map((d) => {
+              const dataIdx = data.indexOf(d);
+              const x = PAD_L + (dataIdx / Math.max(data.length - 1, 1)) * plotW;
+              const y = PAD_T + plotH * (1 - (d.accuracy ?? 0) / 100);
+              return <circle key={`dot${dataIdx}`} cx={x} cy={y} r="3.5" fill="#fff" stroke="#3b82f6" strokeWidth="2" />;
+            })}
+          </>
+        );
+      })()}
+    </svg>
   );
 }

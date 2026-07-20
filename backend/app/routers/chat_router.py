@@ -509,14 +509,14 @@ async def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_a
                 client = get_chat_client(config=ai_config)
                 deep_think = bool(payload.get("deep_think_enabled", False))
                 # ── 统一使用流式调用 ──
-                # deep_think → 推理模型（如 deepseek-reasoner），实时流式输出思考过程和结果
+                # deep_think → 推理模型（如 deepseek-v4-pro），实时流式输出思考过程和结果
                 # 普通模式 → 默认对话模型，同样流式输出
                 token_buf = ""
                 full_reply = ""
                 stream_model = None
                 if deep_think:
                     from app.config import settings as _st
-                    stream_model = getattr(_st, "llm_reasoner_model", "deepseek-reasoner")
+                    stream_model = getattr(_st, "llm_reasoner_model", "deepseek-v4-pro")
                 try:
                     for token in client.stream_chat([{"role": "user", "content": message}], model=stream_model):
                         # stream_chat 对推理模型每个 token 是自包含的 <thinking>chunk</thinking>
@@ -571,7 +571,7 @@ async def stream_chat(payload: dict[str, Any], auth: AuthContext = Depends(get_a
                 stream_model = None
                 if deep_think:
                     from app.config import settings as _st
-                    stream_model = getattr(_st, "llm_reasoner_model", "deepseek-reasoner")
+                    stream_model = getattr(_st, "llm_reasoner_model", "deepseek-v4-pro")
                 try:
                     for token in client.stream_chat([{"role": "user", "content": message}], model=stream_model):
                         if token.startswith("<thinking>"):

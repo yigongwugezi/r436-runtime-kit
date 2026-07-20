@@ -44,10 +44,10 @@ class Settings(BaseSettings):
     # live in the user_ai_config table (系统设置 → AI 模型配置).  They are
     # intentionally absent from Settings — only technical tuning stays here.
     llm_provider: str = "mock"  # "mock" = test escape hatch; anything else defers to per-user config
-    llm_model: str = "deepseek-chat"  # display/tuning only — actual model comes from the user's provider
+    llm_model: str = "deepseek-v4-pro"  # display/tuning only — actual model comes from the user's provider
     llm_temperature: float = 0.2
     llm_enable_search: bool = True
-    llm_reasoner_model: str = "deepseek-reasoner"
+    llm_reasoner_model: str = "deepseek-v4-pro"
 
     database_url: str = "sqlite:///./data/r436_runtime.db"
 

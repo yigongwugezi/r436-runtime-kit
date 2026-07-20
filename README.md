@@ -205,7 +205,7 @@ unavailable/provider-not-configured 状态，不会创建空资源或伪造搜�
 
 | 名称 | 来源 | 说明 |
 |------|------|------|
-| DeepSeek | https://www.deepseek.com | 默认 LLM Provider（deepseek-chat）|
+| DeepSeek | https://www.deepseek.com | 默认 LLM Provider（deepseek-v4-pro）|
 | 科大讯飞 星火 | https://www.xfyun.cn | 图像/语音多模态 Provider（可选）|
 | 阿里云 DashScope / Qwen | https://dashscope.aliyun.com | 多模态生成与 VLM 评审（可选）|
 | Wan Video | https://github.com/Wan-Video/Wan2.1 | 视频生成 Provider（可选）|

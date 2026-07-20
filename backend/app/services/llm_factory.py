@@ -2,7 +2,7 @@
 
 凭据来自**每用户配置**（系统设置 → AI 模型配置，见 user_ai_config.py），
 .env 只保留技术项（角色模型微调、温度等）。支持：
-  - DeepSeek (deepseek-chat)
+  - DeepSeek (deepseek-v4-pro)
   - Qwen / Qwen-Coder / Qwen-VL (DashScope)
   - GLM 5.2 (智谱)
   - GPT-4o (OpenAI 原生)
@@ -141,8 +141,8 @@ role_defaults = {
     "planner": "deepseek",
     # Auxiliary roles must follow the configured main provider unless an
     # operator explicitly overrides them in the environment.
-    "coder": "deepseek",
-    "critic": "deepseek",
+    "coder": "qwen",
+    "critic": "qwen",
 }
 
 
@@ -259,7 +259,7 @@ class UnifiedChatClient:
         _is_reasoner = "reasoner" in model
 
         if _is_reasoner:
-            # deepseek-reasoner: 绕过 OpenAI 库，用 httpx 流式读原始 SSE
+            # deepseek-v4-pro: 绕过 OpenAI 库，用 httpx 流式读原始 SSE
             import httpx
             payload = {
                 "model": model, "messages": messages,

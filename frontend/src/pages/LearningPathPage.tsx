@@ -45,6 +45,8 @@ export default function LearningPathPage() {
 
   const [generatingTaskId] = useState<string>(() => {
     const tid = sessionStorage.getItem('_pending_gen_task_id') || '';
+    // Auto-clean stale task IDs on mount — the real one will be re-set by generatePath if needed
+    if (tid) sessionStorage.removeItem('_pending_gen_task_id');
     return tid;
   });
   const [generatingSessionId] = useState<string>(() => {
@@ -124,10 +126,10 @@ export default function LearningPathPage() {
   useEffect(() => {
     if (!sessionId) { setDraftLoading(false); return; }
     (async () => {
-      try { const r = await listPlanningDrafts({ sessionId }); if (r.ok && r.draft && r.draft.status !== 'expired') setExistingDraft(r.draft); } catch {}
+      try { const r = await listPlanningDrafts({ sessionId, subjectId: subject.subject_id }); if (r.ok && r.draft && r.draft.status !== 'expired') setExistingDraft(r.draft); } catch {}
       setDraftLoading(false);
     })();
-  }, [sessionId]);
+  }, [sessionId, subject.subject_id]);
 
   useEffect(() => {
     const requestedDay = Number(searchParams.get('day'));
@@ -172,7 +174,15 @@ export default function LearningPathPage() {
           }
           setTimeout(() => { if (!cancelled) poll(); }, 2000);
         }
-      } catch {
+      } catch (e: any) {
+        // Stop polling for 404 (task expired / cleaned up)
+        if (e?.response?.status === 404) {
+          sessionStorage.removeItem('_pending_gen_task_id');
+          sessionStorage.removeItem('_pending_gen_session_id');
+          setPathGenerating(false);
+          setGeneratingStatus('');
+          return;
+        }
         if (!cancelled) setTimeout(() => poll(), 3000);
       }
     };
@@ -205,7 +215,7 @@ export default function LearningPathPage() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId, subjectId: subject.subject_id, pathId: path?.id, stageId: activeDayStage.stageId, taskId: activeDayTasks.find((task: any) => task.status !== 'completed' && task.status !== 'mastered')?.id || activeDayTasks[0]?.id }),
       }).then(res => res.json());
-      setRecommendedResources(r?.recommendations?.resources || r?.resources || []);
+      setRecommendedResources(r?.data?.recommendations?.resources || r?.resources || []);
     } catch { setRecommendedResources([]); }
     finally { setRecommendLoading(false); }
   }, [sessionId, activeDayStage]);
@@ -217,7 +227,7 @@ export default function LearningPathPage() {
   if (loading) return <PageLoading text="加载学习路径中…" />;
   if (error === 'CURRENT_PATH_UNRESOLVED') return <div className="flex flex-col items-center py-20 text-center"><h3 className="text-lg font-bold text-surface-700 mb-2">当前学习路径尚未确定</h3><p className="text-sm text-surface-400 mb-6">请返回对话确认学习目标，或重新生成学习路径。</p><div className="flex gap-3"><button onClick={() => nav('/chat')} className="px-5 py-2.5 bg-surface-100 rounded-xl text-sm font-semibold">返回对话</button><button onClick={() => { setExistingDraft({}); clearError(); }} className="px-5 py-2.5 bg-accent-600 text-white rounded-xl text-sm font-semibold">重新生成学习路径</button></div></div>;
   if (error && stages.length === 0) return <PageError title="加载失败" description={error} onRetry={fetchPath} />;
-  if (path && stages.length === 0 && !draftLoading && !pathGenerating) return <PageError title={displayPath.formatInvalid ? "路径数据格式异常，请刷新重试" : "路径暂无阶段"} description={displayPath.formatInvalid ? "学习路径返回了非数组字段。" : "当前学习路径尚未包含可展示的阶段。"} onRetry={fetchPath} />;
+  if (path && stages.length === 0 && !draftLoading && !pathGenerating && (path.source && path.source !== 'none')) return <PageError title={displayPath.formatInvalid ? "路径数据格式异常，请刷新重试" : "路径暂无阶段"} description={displayPath.formatInvalid ? "学习路径返回了非数组字段。" : "当前学习路径尚未包含可展示的阶段。"} onRetry={fetchPath} />;
 
   if (!path || stages.length === 0 || !hasProfile) {
     if (existingDraft && !draftLoading)
@@ -240,7 +250,7 @@ export default function LearningPathPage() {
           <p className="text-surface-400 mb-8 leading-relaxed text-sm">
             先通过对话了解你的学习目标、基础和时间安排，AI 将为你量身定制专属学习计划。
           </p>
-          <button onClick={() => { useChatStore.getState().setChatMode('planning');
+          <button onClick={async () => { useChatStore.getState().setChatMode('planning');
             const subId = subject.subject_id;
             const subName = subject.subject_name;
             if (subId) {
@@ -253,6 +263,8 @@ export default function LearningPathPage() {
                 updatedAt: Date.now(),
               });
             }
+            // 确保 canonical session 已就绪，否则 ChatPage 的 send 和输入框会被禁用
+            await useChatStore.getState().resolveCanonicalSession();
             const sid = useChatStore.getState().currentSessionId; nav('/chat', { state: { chatMode: 'planning' } });
             if (sid) enableProfileExtraction(sid).catch(() => {}); }}
             className="inline-flex items-center gap-2 px-8 py-3 bg-primary-500 text-white rounded-[14px] text-sm font-medium hover:bg-primary-600 transition-all shadow-md">

@@ -3333,7 +3333,7 @@ def get_resources(
         }
 
     # Merge DB resources with in-memory resources
-    db_resources = ag_get_resources(session_id)
+    db_resources = ag_get_resources(session_id, subject_id=subjectId)
     db_map: dict[str, dict[str, Any]] = {}
     if db_resources:
         bookmarks = _get_bookmarks(session_id)
@@ -3694,7 +3694,7 @@ def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "", aut
     scope = resolve_resource_scope(auth, session_id=sessionId, subject_id=subjectId, resource_id=resource_id)
     session_id = scope.session_id
 
-    db_resources = ag_get_resources(session_id)
+    db_resources = ag_get_resources(session_id, subject_id=subjectId)
     db_match = next((r for r in db_resources if r["id"] == resource_id), None)
     if db_match:
         bookmarks = _get_bookmarks(session_id)
@@ -3964,7 +3964,7 @@ def batch_export_resources(payload: dict[str, Any], auth: AuthContext = Depends(
         for resource_id in resource_ids:
             resolve_resource_scope(auth, session_id=session_id, subject_id=scope.subject_id, resource_id=str(resource_id))
 
-    db_resources = ag_get_resources(session_id)
+    db_resources = ag_get_resources(session_id, subject_id=subjectId)
     db_map: dict[str, dict[str, Any]] = {r["id"]: r for r in db_resources}
 
     state = conversation_store.get(session_id)
@@ -4127,7 +4127,7 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
         try:
             mm = generate_mindmap(topic)
             if mm and len(mm) > 50:
-                resource["content"] = f"## {topic} 知识结构\n\n{mm}"
+                resource["content"] = f"## {topic} 知识结构\n\n```mermaid\n{mm}\n```"
                 resource["mermaid_def"] = sanitize_mermaid(mm)
                 resource["content_format"] = "mermaid"
                 resource["resource_metadata"]["generation_source"] = "deeptutor"
@@ -4142,14 +4142,23 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
     elif resource_type == "quiz":
         _emit("正在生成练习题库…")
         try:
-            quiz_content = generate_quiz(topic, count=5)
+            quiz_result = generate_quiz(topic, count=5)
+            if isinstance(quiz_result, dict):
+                quiz_content = str(quiz_result.get("content") or "")
+                quiz_questions = quiz_result.get("questions") or []
+            else:
+                # Backward compat: old string-only return
+                quiz_content = str(quiz_result or "")
+                quiz_questions = []
             if quiz_content and len(quiz_content) > 50:
                 resource["content"] = f"## {topic} 自测题\n\n{quiz_content}"
                 resource["resource_metadata"]["generation_source"] = "deeptutor"
+            if quiz_questions:
+                resource["questions"] = quiz_questions
         except Exception:
             pass
         if not resource["content"] or resource["content"] == f"## {topic} 自测题\n\n完成每题后查看解析。":
-            resource["content"] = f"## {topic} 自测题\n\n完成每题后查看解析。"
+            resource["content"] = f"## {topic} 自测题\n\n> ⚠️ AI 生成超时，以下为基础模板题目。\n\n完成每题后查看解析。\n\n> 💡 点击「重试」按钮可重新生成更贴合主题的题目。"
             resource["questions"] = [
                 {"id": "q1", "type": "choice", "stem": f"学习 {topic} 时，第一步应优先确认什么？", "options": ["核心定义和边界", "跳过定义直接记结论", "只记术语", "忽略示例"], "answer": "A", "explanation": "先明确概念边界，后续步骤才有可靠依据。", "knowledgePoint": topic, "difficulty": request["difficulty"]},
                 {"id": "q2", "type": "choice", "stem": f"下列哪种做法最适合检验对 {topic} 的理解？", "options": ["复述并完成一个小例子", "只浏览标题", "只看答案", "跳过练习"], "answer": "A", "explanation": "复述和小例子能同时检查概念与应用。", "knowledgePoint": topic, "difficulty": request["difficulty"]},
@@ -4165,7 +4174,7 @@ def _general_resource_payload(request: dict[str, Any], workflow_task: Any = None
         except Exception:
             pass
         if not resource["content"]:
-            resource["content"] = f"# {topic} 拓展阅读\n\n先阅读定义与背景，再将关键术语整理为自己的笔记，最后用一个例子验证理解。"
+            resource["content"] = f"# {topic} 拓展阅读\n\n> ⚠️ 内容生成超时，以下为基本学习指引。\n\n## 核心概念\n{topic} 是相关领域的重要知识点，建议从以下方面入手：\n\n1. **定义与背景**：理解 {topic} 的基本定义和产生的背景\n2. **关键术语**：整理与该主题相关的核心术语及其含义\n3. **应用实例**：找一个具体的例子来验证和加深理解\n\n## 建议学习步骤\n- 先阅读相关教材或文档中的定义部分\n- 将关键术语整理成自己的笔记\n- 通过一个实际例子来检验理解程度\n\n> 💡 点击「重试」按钮可以重新生成更详细的内容。"
 
     elif resource_type == "practice":
         _emit("正在生成实操案例…")
@@ -5419,7 +5428,7 @@ def get_learning_path(sessionId: str = "", subjectId: str = "", pathId: str = ""
             stage_resource_stats: dict[str, dict[str, int]] = {}
             stage_ids = [s.get("id", "") for s in stages]
             try:
-                db_res = ag_get_resources(session_id)
+                db_res = ag_get_resources(session_id, subject_id=subject_id)
                 for r in db_res:
                     sid = r.get("related_stage_id", "") or r.get("relatedStageId", "")
                     if not sid:
@@ -5505,6 +5514,12 @@ def get_learning_path(sessionId: str = "", subjectId: str = "", pathId: str = ""
             )
 
         state = conversation_store.get(session_id)
+        # Only use conversation_store path if it belongs to the requested subject
+        if state.last_result and subject_id:
+            last_path = _to_learning_path(state.last_result)
+            path_subject = (last_path.get("courseId") or "") if isinstance(last_path, dict) else ""
+            if path_subject and path_subject != subject_id:
+                state.last_result = None  # don't leak cross-subject
         if state.last_result:
             path = _to_learning_path(state.last_result)
             if not path.get("stages"):
@@ -5613,12 +5628,13 @@ def _generate_learning_path(payload: dict[str, Any], auth: AuthContext, workflow
                 for k in ["knowledge_base", "weak_points", "target_course", "learning_goal"]:
                     state.facts.pop(k, None)
     message = user_message or conversation_store.profile_prompt(state, latest_message="请生成学习路径")
-    result = _run_agents(
-        message,
+    result = ag_run_agents(
         session_id=session_id,
-        agents_filter=["profile_agent", "planner_agent"],
+        user_message=message,
         progress_callback=progress_callback,
+        agents_filter=["profile_agent", "planner_agent"],
         max_tasks=2,
+        is_workflow=True,
     )
     result["session_id"] = session_id
     path = _to_learning_path(result)
@@ -7047,7 +7063,7 @@ def learning_timeline(
         cutoff = time.time() - range * 86400
         raw_events = [e for e in raw_events if e.created_at and e.created_at.timestamp() >= cutoff]
 
-    db_resources = ag_get_resources(session_id)
+    db_resources = ag_get_resources(session_id, subject_id=subjectId)
     resource_titles: dict[str, str] = {}
     resource_types: dict[str, str] = {}
     resource_stages: dict[str, str] = {}
@@ -9331,6 +9347,7 @@ def tutor_video(section_id: str, payload: dict[str, Any], auth: AuthContext = De
                 "knowledgePoints": kp_text,
                 "sessionId": session_id,
                 "subjectId": subject_id,
+                "requirements": requirements,
             }, auth)
             base = f"/api/workflows/{task.task_id}"
             return _product_response({
@@ -9397,7 +9414,8 @@ def normalize_resource_search_request(payload: dict[str, Any]) -> dict[str, Any]
     return request
 def _generate_video_sync(
     section_id: str, section_title: str, course_name: str, kp_text: str,
-    session_id: str, progress_callback: Callable | None = None,
+    session_id: str, requirements: str = "",
+    progress_callback: Callable | None = None,
     cancel_event: Event | None = None,
 ) -> dict[str, Any]:
     """Synchronous video generation with progress events (called by workflow runner)."""
@@ -9416,6 +9434,7 @@ def _generate_video_sync(
             "user_message": f"为「{course_name}——{section_title}」生成微课讲解视频",
             "subject_name": course_name, "topic": section_title,
             "knowledge_points": kp_text,
+            "requirements": requirements,
             "progress_callback": progress_callback,
             "cancel_event": cancel_event,
         })

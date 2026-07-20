@@ -34,7 +34,7 @@ def _raw_call(capability: str, message: str, history: list | None = None, timeou
     """Thin synchronous wrapper — kept private.  Prefer the facade methods below."""
     from app.services.deeptutor_client import deeptutor_call
 
-    return deeptutor_call(capability, message, history, profile_context, persona_context, config_overrides)
+    return deeptutor_call(capability, message, history, profile_context, persona_context, config_overrides, timeout=timeout)
 
 
 async def _raw_call_async(
@@ -120,7 +120,7 @@ class DeepTutorFacade:
     def generate_reading(self, topic: str) -> str:
         """Generate extended reading material for *topic* via DeepTutor deep_research capability."""
         try:
-            return _raw_call("deep_research", topic, config_overrides={"mode": "report", "depth": "standard"})
+            return _raw_call("deep_research", topic, config_overrides={"mode": "report", "depth": "standard"}, timeout=300)
         except Exception as e:
             logger.warning("DeepTutor reading generation failed: %s", e)
             return ""
@@ -151,7 +151,7 @@ class DeepTutorFacade:
                 "mode": "custom",
                 "topic": topic,
                 "num_questions": count,
-            })
+            }, timeout=300)
         except Exception as e:
             logger.warning("DeepTutor quiz generation failed: %s", e)
             return ""

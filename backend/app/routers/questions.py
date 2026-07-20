@@ -34,6 +34,7 @@ class GenerateRequest(BaseModel):
     session_id: str = Field(..., alias="sessionId")
     learner_id: str = Field("", alias="learnerId")
     message: str = ""
+    knowledge_points: list[str] = Field(default_factory=list, alias="knowledgePoints")
 
 
 class GradeRequest(BaseModel):
@@ -108,6 +109,7 @@ def generate_questions(body: GenerateRequest, auth: AuthContext = Depends(get_au
         session_id=body.session_id,
         user_message=body.message,
         agents_filter=get_agent_ids("generate_questions"),
+        knowledge_points=body.knowledge_points,
     )
     questions = result.get("questions", []) if isinstance(result, dict) else []
     question_set_id = str(result.get("question_set_id", "")) if isinstance(result, dict) else ""
@@ -120,7 +122,8 @@ def generate_questions(body: GenerateRequest, auth: AuthContext = Depends(get_au
             upsert_questions(db, body.session_id, questions)
         finally:
             db.close()
-    return _response({"questionSetId": question_set_id, "questions": questions, "count": len(questions)})
+    set_description = str(result.get("set_description", "")) if isinstance(result, dict) else ""
+    return _response({"questionSetId": question_set_id, "questions": questions, "count": len(questions), "setDescription": set_description})
 
 
 @router.get("/questions")
@@ -130,13 +133,14 @@ def list_questions(
     knowledge_point: str = Query("", alias="knowledgePoint"),
     difficulty: str = Query(""),
     qtype: str = Query(""),
+    question_set_id: str = Query("", alias="questionSetId"),
     auth: AuthContext = Depends(get_auth),
 ) -> dict[str, Any]:
     current_learner = resolve_question_learner(auth, learner_id)
     db = SessionLocal()
     try:
         require_owned_session(db, session_id, current_learner)
-        rows = get_questions(db, session_id, knowledge_point=knowledge_point, difficulty=difficulty, qtype=qtype)
+        rows = get_questions(db, session_id, knowledge_point=knowledge_point, difficulty=difficulty, qtype=qtype, question_set_id=question_set_id)
         return _response({"questions": [_practice_question_dict(row) for row in rows], "count": len(rows)})
     finally:
         db.close()

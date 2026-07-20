@@ -119,11 +119,11 @@ def copy_context_wrap(fn: Callable[..., Any]) -> Callable[..., Any]:
 PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = {
     "deepseek": {
         "default_url": "https://api.deepseek.com",
-        "models": {"text": "deepseek-chat", "vision": None},
+        "models": {"text": "deepseek-v4-pro", "vision": None},
     },
     "qwen": {
         "default_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "models": {"text": "qwen-coder-plus", "vision": "qwen-vl-max"},
+        "models": {"text": "qwen-max", "vision": "qwen-vl-max"},
     },
     "glm": {
         "default_url": "https://open.bigmodel.cn/api/paas/v4/",

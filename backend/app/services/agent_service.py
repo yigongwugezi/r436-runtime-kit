@@ -40,6 +40,7 @@ def run_agents(
     progress_callback: Callable | None = None,
     agents_filter: list[str] | None = None,
     max_tasks: int = 0,
+    **extra_context: Any,
 ) -> dict[str, Any]:
     """Run the multi-agent pipeline, persist results, and return them.
 
@@ -110,6 +111,7 @@ def run_agents(
         agents_filter=agents_filter,
         progress_callback=progress_callback,
         max_tasks=max_tasks,
+        **extra_context,
     ))
 
     # Attach course metadata
@@ -254,11 +256,11 @@ def get_learning_path(session_id: str, subject_id: str = "", path_id: str = "", 
 # ── Read: get resources from DB ───────────────────────────────────────
 
 
-def get_resources(session_id: str) -> list[dict[str, Any]]:
+def get_resources(session_id: str, subject_id: str | None = None) -> list[dict[str, Any]]:
     """Read all resources for a session from the database with full metadata."""
     try:
         db = SessionLocal()
-        rows = repo_get_resources(db, session_id)
+        rows = repo_get_resources(db, session_id, subject_id=subject_id)
         return [
             {
                 "id": r.id,

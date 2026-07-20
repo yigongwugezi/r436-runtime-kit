@@ -1245,14 +1245,14 @@ async def run_pipeline(**kwargs) -> dict[str, Any]:
                 logger.info("path_planning_info_mode=True, overriding plan intent to chat for session=%s",
                             state.get("session_id", ""))
                 return await _run_chat_only(state, factory)
-            elif True:
-                            pass
             elif kwargs.get("chat_mode") == "planning":
                 # 规划模式对话走画像收集，不阻塞
                 pass
-            else:
+            elif not kwargs.get("is_workflow"):
+                logger.info("Planner blocked in chat mode (is_workflow=False), redirecting to path page. kwargs_keys=%s",
+                            [k for k in kwargs if not k.startswith('_')])
                 # 普通对话：规划器不通过对话触发，一律引导到路径页面
-                # 规划模式对话仅用于画像构建，不具备调用功能
+                # 但 workflow 触发的路径生成（如路径页确认生成按钮）正常执行
                 state["final_reply"] = (
                     "好的！请到「学习路径」页面进行设置和生成，那里可以：\n"
                     "• 选择规划模式（教材式/日课式/精进式）\n"
