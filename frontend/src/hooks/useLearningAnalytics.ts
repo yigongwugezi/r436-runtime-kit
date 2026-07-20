@@ -54,7 +54,7 @@ export function useLearningAnalytics() {
   useEffect(() => {
     const key = subjectId ? `${sessionId}:${subjectId}` : 'none';
     if (canonicalStatus === 'resolved' && subjectId) {
-      if (lastKeyRef.current !== key) {
+      if (lastKeyRef.current !== key || !analytics) {
         lastKeyRef.current = key;
         fetchAnalytics();
       }
