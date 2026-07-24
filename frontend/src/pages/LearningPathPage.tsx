@@ -43,6 +43,7 @@ export default function LearningPathPage() {
   const [draftLoading, setDraftLoading] = useState(true);
   const [pathGenerating, setPathGenerating] = useState(false);
   const [generatingStatus, setGeneratingStatus] = useState<string>('');
+  const [generationError, setGenerationError] = useState<string | null>(null);
 
   const [generatingTaskId] = useState<string>(() => {
     const tid = sessionStorage.getItem('_pending_gen_task_id') || '';
@@ -126,8 +127,7 @@ export default function LearningPathPage() {
   useEffect(() => {
     if (!sessionId) { setDraftLoading(false); return; }
     (async () => {
-      try { const r = await listPlanningDrafts({ sessionId, subjectId: subject.subject_id }); if (r.ok && r.draft && r.draft.status !== 'expired') setExistingDraft(r.draft); } catch {}
-      setDraftLoading(false);
+      try { const r = await listPlanningDrafts({ sessionId, subjectId: subject.subject_id }); if (r.ok && r.draft && r.draft.status !== 'expired') setExistingDraft(r.draft); } catch {} finally { setDraftLoading(false); }
     })();
   }, [sessionId, subject.subject_id]);
 
@@ -145,7 +145,7 @@ export default function LearningPathPage() {
     setActiveDayKey(restored.activeDayKey);
   }, [dayGroups, searchParams]);
 
-  useEffect(() => { if (path && stages.length && hasProfile) { setPathGenerating(false); setGeneratingStatus(''); } }, [path, stages.length, hasProfile]);
+  useEffect(() => { if (path?.id) { setPathGenerating(false); setGeneratingStatus(''); setGenerationError(null); } }, [path?.id]);
 
   useEffect(() => {
     if (!generatingTaskId) return;
@@ -157,24 +157,34 @@ export default function LearningPathPage() {
         const task: any = await getWorkflowTask(generatingTaskId);
         if (cancelled) return;
         if (task && task.task_id) {
-          setGeneratingStatus(task.current_stage || task.status || '生成中…');
-          if (task.status === 'completed') {
+          const status = String(task.status || '').toLowerCase();
+          setGeneratingStatus(task.current_stage || status || '生成中…');
+          if (['completed', 'succeeded', 'success', 'done'].includes(status)) {
             sessionStorage.removeItem('_pending_gen_task_id');
             sessionStorage.removeItem('_pending_gen_session_id');
             const persisted = task.result?.data;
             if (!persisted?.persisted || !persisted.pathId) throw new Error('路径未成功保存');
-            fetchPath(true, generatingSessionId || undefined, persisted.pathId);
-            return;
-          }
-          if (task.status === 'failed' || task.status === 'cancelled' || task.status === 'expired') {
-            sessionStorage.removeItem('_pending_gen_task_id');
-            sessionStorage.removeItem('_pending_gen_session_id');
+            const loadedPath = await fetchPath(true, generatingSessionId || undefined, persisted.pathId);
+            if (!loadedPath) throw new Error('路径已生成，但加载失败，请刷新重试');
             setPathGenerating(false);
             setGeneratingStatus('');
             return;
           }
-          setTimeout(() => { if (!cancelled) poll(); }, 2000);
+          if (['failed', 'cancelled', 'canceled', 'expired', 'error'].includes(status)) {
+            sessionStorage.removeItem('_pending_gen_task_id');
+            sessionStorage.removeItem('_pending_gen_session_id');
+            setPathGenerating(false);
+            setGeneratingStatus('');
+            setGenerationError(task.safe_error_message || '学习路径生成失败，请重试');
+            return;
+          }
+          if (['queued', 'pending', 'running', 'processing', 'in_progress'].includes(status)) {
+            setTimeout(() => { if (!cancelled) poll(); }, 2000);
+            return;
+          }
+          throw new Error(`无法识别的路径生成状态：${task.status || 'empty'}`);
         }
+        throw new Error('路径生成任务响应无效');
       } catch (e: any) {
         // Stop polling for 404 (task expired / cleaned up)
         if (e?.response?.status === 404) {
@@ -184,7 +194,13 @@ export default function LearningPathPage() {
           setGeneratingStatus('');
           return;
         }
-        if (!cancelled) setTimeout(() => poll(), 3000);
+        if (!cancelled) {
+          sessionStorage.removeItem('_pending_gen_task_id');
+          sessionStorage.removeItem('_pending_gen_session_id');
+          setPathGenerating(false);
+          setGeneratingStatus('');
+          setGenerationError(e instanceof Error ? e.message : '路径生成状态查询失败，请刷新重试');
+        }
       }
     };
     poll();
@@ -232,6 +248,7 @@ export default function LearningPathPage() {
   if (loading) return <PageLoading text="加载学习路径中…" />;
   if (error === 'CURRENT_PATH_UNRESOLVED') return <div className="flex flex-col items-center py-20 text-center"><h3 className="text-lg font-bold text-surface-700 mb-2">当前学习路径尚未确定</h3><p className="text-sm text-surface-400 mb-6">请返回对话确认学习目标，或重新生成学习路径。</p><div className="flex gap-3"><button onClick={() => nav('/chat')} className="px-5 py-2.5 bg-surface-100 rounded-xl text-sm font-semibold">返回对话</button><button onClick={() => { setExistingDraft({}); clearError(); }} className="px-5 py-2.5 bg-accent-600 text-white rounded-xl text-sm font-semibold">重新生成学习路径</button></div></div>;
   if (error && stages.length === 0) return <PageError title="加载失败" description={error} onRetry={fetchPath} />;
+  if (generationError && stages.length === 0) return <PageError title="路径生成状态异常" description={generationError} onRetry={fetchPath} />;
   if (path && stages.length === 0 && !draftLoading && !pathGenerating && (path.source && path.source !== 'none')) return <PageError title={displayPath.formatInvalid ? "路径数据格式异常，请刷新重试" : "路径暂无阶段"} description={displayPath.formatInvalid ? "学习路径返回了非数组字段。" : "当前学习路径尚未包含可展示的阶段。"} onRetry={fetchPath} />;
 
   if (!path || stages.length === 0 || !hasProfile) {

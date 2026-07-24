@@ -88,7 +88,9 @@ export function useLearningPath() {
     try {
       const pathId = overridePathId || new URLSearchParams(location.search).get('pathId') || undefined;
       const res = await learningPathApi.getLearningPath({ sessionId: effectiveSessionId, subjectId: overrideSubjectId || subjectId, pathId }, controller.signal);
-      const p = normalizeLearningPathForClient(res?.path ?? null);
+      // The shared Axios client normally unwraps { status, data }, but keep
+      // this boundary tolerant of callers that pass through the envelope.
+      const p = normalizeLearningPathForClient(res?.path ?? (res as any)?.data?.path ?? null);
       const finalPath = p;
       if (requestId !== requestIdRef.current) return null;
       // Merge path: only update if pathVersion changed (structural change)
@@ -111,7 +113,8 @@ export function useLearningPath() {
       return null;
     } finally {
       if (requestId !== requestIdRef.current) return;
-      if (force || !hasDataRef.current) setLoading(false);
+      // A request that has settled must never leave the page-level loader on.
+      setLoading(false);
       initialLoadRef.current = false;
     }
   }, [canonicalStatus, sessionId, subjectId, location.search]);
