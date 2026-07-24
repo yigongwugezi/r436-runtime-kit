@@ -334,6 +334,8 @@ export default function LecturePage() {
   const [quizQuestions, setQuizQuestions] = useState<LinkedQuestion[]>(cachedQuiz?.questions || []);
   const [quizId, setQuizId] = useState(cachedQuiz?.quizId || '');
   const quizSubmitIdempotencyKeyRef = useRef('');
+  const quizClientAttemptIdRef = useRef('');
+  const quizSubmittingRef = useRef(false);
   const quizScopeRetryRef = useRef('');
   const [quizAnswers, setQuizAnswers] = useState<Record<string, string>>(cachedQuiz?.answers || {});
   const [quizResults, setQuizResults] = useState<QuizResult[]>(cachedQuiz?.results || []);
@@ -358,6 +360,7 @@ export default function LecturePage() {
   const [textbookLectureContent, setTextbookLectureContent] = useState('');
 
   const [quizState, setQuizState] = useState<'idle' | 'generating' | 'answering' | 'submitted' | 'failed'>('idle');
+  const [quizSubmitting, setQuizSubmitting] = useState(false);
   const [quizError, setQuizError] = useState('');
   const [quizRetry, setQuizRetry] = useState(0);
   const [quizSuggestion, setQuizSuggestion] = useState('');
@@ -924,7 +927,8 @@ export default function LecturePage() {
         setQuizResults([]);
         setQuizTotalScore(null);
         setQuizState('answering');
-        quizSubmitIdempotencyKeyRef.current = '';  // reset for new quiz
+        quizClientAttemptIdRef.current = crypto.randomUUID();
+        quizSubmitIdempotencyKeyRef.current = crypto.randomUUID();
         // 保存到 store 以便跨页面恢复
         store.setQuiz(cacheKey, { questions: data.questions, quizId: data.quiz.id, answers: {}, results: [], totalScore: null, submitted: false, suggestion: '', weakPoints: [] });
         generatePanelRef.current?.updateRecord(cid, {
@@ -960,18 +964,20 @@ export default function LecturePage() {
   const allAnswered = quizQuestions.every(q => quizAnswers[q.questionId]?.trim());
 
   const handleQuizSubmit = async () => {
-    if (!allAnswered || quizState !== 'answering' || (executionMode === 'quiz' && (!canonicalTaskScope || workspaceScopeInvalid))) return;
+    if (!allAnswered || quizSubmittingRef.current || quizState !== 'answering' || (executionMode === 'quiz' && (!canonicalTaskScope || workspaceScopeInvalid))) return;
+    quizSubmittingRef.current = true;
+    setQuizSubmitting(true);
     const answers = quizQuestions.map(q => ({
       questionId: q.questionId,
       answer: quizAnswers[q.questionId] || '',
     }));
     try {
-      if (!quizSubmitIdempotencyKeyRef.current) {
-        quizSubmitIdempotencyKeyRef.current = crypto.randomUUID();
-      }
+      if (!quizClientAttemptIdRef.current) quizClientAttemptIdRef.current = crypto.randomUUID();
+      if (!quizSubmitIdempotencyKeyRef.current) quizSubmitIdempotencyKeyRef.current = crypto.randomUUID();
       const payload = {
         ...(executionMode === 'quiz' ? canonicalRequestScope! : { sessionId: sessionId || `lecture_${activeSectionId}`, pathId: focusedPathId || path?.id || '', stageId: focusedStageId || chapterCtx?.stage.id || '', taskId: resourceTaskId, subjectId: focusedSubjectId || workflowSubjectId, dayId: resourceDayScope.dayId, globalDayIndex: resourceDayScope.globalDayIndex }),
         answers,
+        clientAttemptId: quizClientAttemptIdRef.current,
         idempotencyKey: quizSubmitIdempotencyKeyRef.current,
       };
       const res = (executionMode === 'quiz'
@@ -991,6 +997,9 @@ export default function LecturePage() {
     } catch (e: any) {
       if (e?.response?.status === 409) setTaskScopeRejected(true);
       else alert('提交失败: ' + (e?.message || '请重试'));
+    } finally {
+      quizSubmittingRef.current = false;
+      setQuizSubmitting(false);
     }
   };
 
@@ -1476,7 +1485,7 @@ export default function LecturePage() {
                   <span className="text-xs text-surface-400">
                     {allAnswered ? `已完成全部 ${quizQuestions.length} 题` : `共 ${quizQuestions.length} 题，已答 ${Object.keys(quizAnswers).filter(k => quizAnswers[k]?.trim()).length} / ${quizQuestions.length} 题`}
                   </span>
-                  <button onClick={handleQuizSubmit} disabled={!allAnswered}
+                  <button onClick={handleQuizSubmit} disabled={!allAnswered || quizSubmitting}
                     className="px-6 py-2.5 bg-accent-500 text-white rounded-xl text-sm font-medium hover:bg-accent-600 disabled:opacity-40 transition-colors shadow-sm"
                     style={{ backgroundColor: allAnswered ? '#14b8a6' : undefined }}>提交批改</button>
                 </div>
@@ -1491,6 +1500,8 @@ export default function LecturePage() {
                     setQuizTotalScore(null);
                     setQuizSuggestion('');
                     setQuizWeakPoints([]);
+                    quizClientAttemptIdRef.current = crypto.randomUUID();
+                    quizSubmitIdempotencyKeyRef.current = crypto.randomUUID();
                     setQuizState('answering');
                     store.setQuiz(cacheKey, { questions: quizQuestions, quizId, answers: resetAnswers, results: [], totalScore: null, submitted: false, suggestion: '', weakPoints: [] });
                   }}

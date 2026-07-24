@@ -11,6 +11,7 @@ import tempfile
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ["EDUAGENT_SKIP_ENV_FILE"] = "1"
 _handle, _db_path = tempfile.mkstemp(prefix="edu-assessment-idem-", suffix=".db")
@@ -33,6 +34,7 @@ from app.db.models import (
     SessionModel,
 )
 from app.main import app
+from app.routers import assessment
 from app.utils.auth import create_token
 
 _LEARNER_A = "learner_idem_a"
@@ -122,11 +124,15 @@ def _submit(
     }
     if answers_revealed:
         body["answersRevealed"] = True
-    resp = client.post(
-        f"/api/quizzes/{quiz_id}/submit",
-        json=body,
-        headers=_headers(learner_id),
-    )
+    # Idempotency owns this test; background assessment has dedicated coverage.
+    with patch.object(assessment, "_create_assessment_processing_task", return_value=None), \
+         patch.object(assessment, "_create_diagnosis_refresh_task", return_value=None), \
+         patch.object(assessment, "_trigger_post_submit_assessment"):
+        resp = client.post(
+            f"/api/quizzes/{quiz_id}/submit",
+            json=body,
+            headers=_headers(learner_id),
+        )
     return resp.status_code, resp.json()
 
 

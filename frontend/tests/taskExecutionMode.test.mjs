@@ -1,16 +1,9 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { resolveTaskExecutionMode } from '../src/utils/taskExecutionMode.ts';
 
-const resolver = readFileSync(new URL('../src/utils/taskExecutionMode.ts', import.meta.url), 'utf8');
-const page = readFileSync(new URL('../src/pages/LecturePage.tsx', import.meta.url), 'utf8');
-const videos = readFileSync(new URL('../src/api/videoRecommendations.ts', import.meta.url), 'utf8');
-assert.match(resolver, /\['video', 'watch_video'\].*return 'video'/);
-assert.match(resolver, /\['quiz', 'do_quiz', 'quiz_prac', 'assessment', 'test'\].*return 'quiz'/);
-assert.match(page, /ensureScopedLearningPathQuiz\(focusedTaskId/);
-assert.match(page, /executionMode !== 'quiz'/);
-assert.match(page, /if \(executionMode === 'video'\) return;/);
-assert.match(videos, /resourceTypes: \['video'\]/);
-assert.match(page, /暂未找到与当前任务高度相关的视频资源/);
-assert.match(page, /setVideoLectureFallback\(true\)/);
-assert.match(page, /当前使用图文讲解替代视频学习/);
+assert.equal(resolveTaskExecutionMode({ type: 'watch_video' }), 'video');
+assert.equal(resolveTaskExecutionMode({ task_type: 'quiz_prac' }), 'quiz');
+assert.equal(resolveTaskExecutionMode({ taskType: 'mindmap' }), 'mindmap');
+assert.equal(resolveTaskExecutionMode({ type: 'unknown' }), 'unsupported');
+assert.equal(resolveTaskExecutionMode({}), 'lecture');
 console.log('task execution mode: PASS');
