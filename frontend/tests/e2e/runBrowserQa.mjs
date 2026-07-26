@@ -28,7 +28,21 @@ async function main() {
   const storage = resolve(root, 'frontend/.qa-auth/browser-qa-storage-state.json');
   await mkdir(evidence, { recursive: true });
   await mkdir(resolve(root, 'frontend/.qa-auth'), { recursive: true });
-  const events = { console: [], pageErrors: [], network: [], profile: [] };
+  const events = { console: [], pageErrors: [], network: [], profile: [], reactWarnings: [] };
+  const consoleRecordings = [];
+  let currentAction = 'initial load';
+  const recordConsole = (page, message) => {
+    if (message.type() !== 'error' && message.type() !== 'warning') return;
+    const recording = (async () => {
+      const text = message.text();
+      const args = await Promise.all(message.args().map((arg) => arg.jsonValue().catch(() => arg.toString())));
+      events.console.push(`${message.type()}: ${text}`);
+      if (!/Cannot update a component/.test(text)) return;
+      events.reactWarnings.push({ type: message.type(), text, args, atMs: Date.now(), url: page.url(), action: currentAction, location: message.location(), componentStack: args.filter((arg) => typeof arg === 'string' && /LecturePage|at /.test(arg)) });
+      if (events.reactWarnings.length === 1) await writeFile(resolve(evidence, 'react-warning-dom.html'), await page.content());
+    })();
+    consoleRecordings.push(recording);
+  };
   const profileStartedAt = new WeakMap();
   const profileRecordings = [];
   const recordProfileRequest = (request) => {
@@ -51,7 +65,7 @@ async function main() {
     context = await browser.newContext({ baseURL: execution.frontendBaseUrl });
     await context.tracing.start({ screenshots: true, snapshots: true });
     let page = await context.newPage();
-    page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') events.console.push(`${m.type()}: ${m.text()}`); });
+    page.on('console', (m) => recordConsole(page, m));
     page.on('pageerror', (e) => events.pageErrors.push(e.message));
     page.on('request', recordProfileRequest);
     page.on('response', (r) => { if (r.status() >= 400) events.network.push({ path: safePath(r.url()), status: r.status() }); });
@@ -62,7 +76,7 @@ async function main() {
     context = await browser.newContext({ baseURL: execution.frontendBaseUrl, storageState: storage });
     await context.tracing.start({ screenshots: true, snapshots: true });
     page = await context.newPage();
-    page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') events.console.push(`${m.type()}: ${m.text()}`); });
+    page.on('console', (m) => recordConsole(page, m));
     page.on('pageerror', (e) => events.pageErrors.push(e.message));
     page.on('request', recordProfileRequest);
     page.on('response', (r) => { if (r.status() >= 400) events.network.push({ path: safePath(r.url()), status: r.status() }); });
@@ -136,6 +150,7 @@ async function main() {
       const actions = page.getByRole('button', { name: /确认调整|拒绝调整/ });
       if (await actions.count()) throw new Error('ZERO_DIFF_ACTIONS_VISIBLE');
     } else if (scenario === 'quiz-retake') {
+      currentAction = 'open quiz task';
       await openTask(page, 2, 'Quiz');
       await page.screenshot({ path: resolve(evidence, 'quiz-before-action.png'), fullPage: true });
       const submitStatuses = [];
@@ -153,11 +168,12 @@ async function main() {
           mark('submit-response', { status: response.status() });
         }
       });
-      const answer = async (fixture) => { for (const [questionId, option] of Object.entries(fixture)) await page.getByTestId(`quiz-option-${questionId}-${option}`).click(); };
+      const answer = async (fixture, action) => { currentAction = action; for (const [questionId, option] of Object.entries(fixture)) await page.getByTestId(`quiz-option-${questionId}-${option}`).click(); };
       let navigated = false;
       page.on('framenavigated', (frame) => { if (frame === page.mainFrame()) navigated = true; });
       const submitAndRecord = async (round) => {
         const responsePromise = page.waitForResponse((response) => safePath(response.url()).endsWith(submitPath));
+        currentAction = `${round} submit`;
         mark(`${round}-submit-click`);
         await page.getByTestId('quiz-submit').click();
         const response = await responsePromise;
@@ -172,13 +188,14 @@ async function main() {
         return data;
       };
       await page.getByTestId(`quiz-question-${Object.keys(meta.quizAnswers.correct)[0]}`).waitFor({ timeout: 15000 });
-      await answer(meta.quizAnswers.firstRound);
+      await answer(meta.quizAnswers.firstRound, 'answer first quiz round');
       await submitAndRecord('first');
       await page.waitForFunction(() => document.querySelector('[data-testid="quiz-score"]')?.textContent?.trim() === '40');
       mark('first-score-visible');
       if (submitStatuses.length !== 1 || submitStatuses[0] !== 200) throw new Error(`QUIZ_FIRST_SUBMIT: ${submitStatuses.join(',')}`);
+      currentAction = 'retake quiz';
       await page.getByTestId('quiz-retake').click();
-      await answer(meta.quizAnswers.correct);
+      await answer(meta.quizAnswers.correct, 'answer second quiz round');
       await page.screenshot({ path: resolve(evidence, 'quiz-second-before-submit.png'), fullPage: true });
       try {
         const second = await submitAndRecord('second');
@@ -225,9 +242,12 @@ async function main() {
       await page.getByRole('button', { name: '返回视频学习' }).click();
       await page.getByRole('button', { name: '切换为图文讲解' }).click();
     }
+    await Promise.all(consoleRecordings);
     await page.screenshot({ path: resolve(evidence, 'screenshots.png'), fullPage: true });
     await writeFile(resolve(evidence, 'network-summary.json'), JSON.stringify(events.network, null, 2));
     await writeFile(resolve(evidence, 'console-summary.txt'), [...events.console, ...events.pageErrors].join('\n'));
+    await writeFile(resolve(evidence, 'react-warning-summary.json'), JSON.stringify(events.reactWarnings, null, 2));
+    if (scenario === 'quiz-retake' && events.reactWarnings.length) throw new Error(`REACT_RENDER_WARNING: ${events.reactWarnings.length}`);
     await writeFile(resolve(evidence, 'summary.json'), JSON.stringify({ scenario, learnerId, authMe: me, scope, status: 'PASS', evidence: relative(root, evidence) }, null, 2));
     await writeFile(resolve(evidence, 'result.md'), `# ${scenario}\n\nPASS\n`);
     console.log(`QA_${scenario.toUpperCase().replace(/-/g, '_')}=PASS`);

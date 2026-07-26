@@ -954,11 +954,9 @@ export default function LecturePage() {
   };
 
   const handleQuizAnswer = (questionId: string, value: string) => {
-    setQuizAnswers(a => {
-      const updated = { ...a, [questionId]: value };
-      store.updateQuizAnswers(cacheKey, updated);
-      return updated;
-    });
+    const updated = { ...quizAnswers, [questionId]: value };
+    setQuizAnswers(updated);
+    store.updateQuizAnswers(cacheKey, updated);
   };
 
   const allAnswered = quizQuestions.every(q => quizAnswers[q.questionId]?.trim());
