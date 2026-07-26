@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import sys
 from pathlib import Path
 
@@ -38,6 +39,7 @@ def seed(db_path: Path) -> dict[str, object]:
     from app.db.models import (CurrentLearningPathModel, LearnerModel, PersonalSubjectModel,
                                PracticeQuestionModel, QuizModel, ResourceModel)
     from app.db.repository import get_or_create_session, upsert_learning_path
+    from app.utils.auth import hash_password
 
     init_db()
     days = [
@@ -53,7 +55,8 @@ def seed(db_path: Path) -> dict[str, object]:
     }
     db = SessionLocal()
     try:
-        db.add(LearnerModel(id=IDS["learner"], nickname="Browser QA", role="student"))
+        password = secrets.token_urlsafe(24)
+        db.add(LearnerModel(id=IDS["learner"], nickname="Browser QA", phone="13900000000", password_hash=hash_password(password), role="student"))
         db.commit()
         db.add(PersonalSubjectModel(id=IDS["subject"], learner_id=IDS["learner"], name="Data Structures"))
         db.commit()
@@ -82,6 +85,7 @@ def seed(db_path: Path) -> dict[str, object]:
     }
     metadata_path = db_path.parent / "seed-metadata.json"
     metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    (db_path.parent / "auth-runtime.json").write_text(json.dumps({"phone": "13900000000", "password": password}), encoding="utf-8")
     return {"database": str(db_path), "metadata": str(metadata_path), "ids": IDS, "scenarios": metadata["scenarios"]}
 
 

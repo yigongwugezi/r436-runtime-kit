@@ -17,6 +17,8 @@ Choose one data mode in every charter. `EXISTING_LOCAL_DATA` is read-only and is
 
 For `ISOLATED_QA_SANDBOX`, prepare, authenticate, read `seed-metadata.json`, then invoke `frontend/tests/e2e/helpers/bootstrapQaSubject.mjs`. It discovers the seeded subject through the authenticated API, ensures its canonical session, applies the verified subject-store persistence contract, reloads, and verifies the exact path before the charter. Do not hand-click setup or hard-code fixture IDs outside metadata.
 
+Load `.qa/runtime/.../auth-runtime.json` only at runtime and use `authenticateQaUser.mjs` to call the real login contract, save ignored storageState under `frontend/.qa-auth/`, reload it in a fresh context, and verify `/api/auth/me` before bootstrap. Never print credentials, tokens, cookies, or headers. Retry a stale state through one fresh login; then report `AUTH_ERROR`.
+
 Modes:
 - `READ_ONLY`: navigation, rendering, refresh, existing-state checks, performance, console/network inspection only.
 - `SAFE_MUTATION`: explicitly authorized, isolated test-data writes; record request/response status and verify persistence after reload.
