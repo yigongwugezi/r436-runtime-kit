@@ -28,7 +28,23 @@ async function main() {
   const storage = resolve(root, 'frontend/.qa-auth/browser-qa-storage-state.json');
   await mkdir(evidence, { recursive: true });
   await mkdir(resolve(root, 'frontend/.qa-auth'), { recursive: true });
-  const events = { console: [], pageErrors: [], network: [] };
+  const events = { console: [], pageErrors: [], network: [], profile: [] };
+  const profileStartedAt = new WeakMap();
+  const profileRecordings = [];
+  const recordProfileRequest = (request) => {
+    if (safePath(request.url()) === '/api/profile') profileStartedAt.set(request, Date.now());
+  };
+  const recordProfileResponse = (response) => {
+    if (safePath(response.url()) !== '/api/profile') return;
+    const recording = (async () => {
+      const request = response.request();
+      const finishedAtMs = Date.now();
+      const url = new URL(response.url());
+      const body = await response.json().catch(() => ({}));
+      events.profile.push({ method: request.method(), path: url.pathname, query: [...url.searchParams].map(([name, value]) => ({ name, empty: !value })), status: response.status(), detail: body?.detail || body?.message || null, startedAtMs: profileStartedAt.get(request) ?? finishedAtMs, finishedAtMs, durationMs: finishedAtMs - (profileStartedAt.get(request) ?? finishedAtMs), initiator: 'useProfile -> profileApi.getProfile' });
+    })();
+    profileRecordings.push(recording);
+  };
   const browser = await chromium.launch({ headless: !headed });
   let context;
   try {
@@ -37,7 +53,9 @@ async function main() {
     let page = await context.newPage();
     page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') events.console.push(`${m.type()}: ${m.text()}`); });
     page.on('pageerror', (e) => events.pageErrors.push(e.message));
+    page.on('request', recordProfileRequest);
     page.on('response', (r) => { if (r.status() >= 400) events.network.push({ path: safePath(r.url()), status: r.status() }); });
+    page.on('response', recordProfileResponse);
     await page.goto('/login');
     const learnerId = await authenticateQaUser(page, { credentialsPath: resolve(runtime, 'auth-runtime.json'), storageStatePath: storage, expectedLearnerId: meta.learnerId });
     await context.close();
@@ -46,10 +64,14 @@ async function main() {
     page = await context.newPage();
     page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') events.console.push(`${m.type()}: ${m.text()}`); });
     page.on('pageerror', (e) => events.pageErrors.push(e.message));
+    page.on('request', recordProfileRequest);
     page.on('response', (r) => { if (r.status() >= 400) events.network.push({ path: safePath(r.url()), status: r.status() }); });
+    page.on('response', recordProfileResponse);
     await page.goto('/path');
     const me = await page.evaluate(async () => (await fetch('/api/auth/me', { headers: { Authorization: `Bearer ${localStorage.edu_token}` } })).status);
     if (me !== 200) throw new Error(`AUTH_ME_VERIFY: ${me}`);
+    const primaryContentStartedAt = Date.now();
+    const initialProfile = scenario === 'profile-load' ? page.waitForResponse((response) => safePath(response.url()) === '/api/profile') : null;
     const scope = await bootstrapQaSubject(page, resolve(runtime, 'seed-metadata.json'));
     if (scope.pathId !== meta.pathId) throw new Error('PATH_LOAD: unexpected path');
     await page.waitForFunction((title) => document.body.innerText.includes(title), 'Data Structures');
@@ -57,6 +79,21 @@ async function main() {
       const timings = [];
       for (let i = 0; i < 3; i += 1) { const start = Date.now(); await page.reload(); await page.waitForFunction((title) => document.body.innerText.includes(title), 'Data Structures'); timings.push(Date.now() - start); }
       await writeFile(resolve(evidence, 'performance.json'), JSON.stringify({ pathVisibleMs: timings }, null, 2));
+    } else if (scenario === 'profile-load') {
+      await initialProfile;
+      await Promise.all(profileRecordings);
+      const firstPageRequests = [...events.profile];
+      await page.screenshot({ path: resolve(evidence, 'profile-load.png'), fullPage: true });
+      const refreshedProfile = page.waitForResponse((response) => safePath(response.url()) === '/api/profile');
+      await page.reload();
+      await Promise.all([refreshedProfile, page.waitForFunction((title) => document.body.innerText.includes(title), 'Data Structures')]);
+      await Promise.all(profileRecordings);
+      await page.screenshot({ path: resolve(evidence, 'profile-load-refresh.png'), fullPage: true });
+      const scopeSummary = { learnerId: meta.learnerId, subjectId: scope.subjectId, sessionId: scope.sessionId, pathId: scope.pathId };
+      await writeFile(resolve(evidence, 'profile-summary.json'), JSON.stringify({ scope: scopeSummary, primaryContentMs: Date.now() - primaryContentStartedAt, requestCounts: { initial: firstPageRequests.length, refresh: events.profile.length - firstPageRequests.length }, requests: events.profile }, null, 2));
+      await writeFile(resolve(evidence, 'network-summary.json'), JSON.stringify(events.network, null, 2));
+      await writeFile(resolve(evidence, 'console-summary.txt'), [...events.console, ...events.pageErrors].join('\n'));
+      if (firstPageRequests.length !== 1 || events.profile.length !== 2 || events.profile.some((request) => request.status !== 200 || request.query.some((item) => item.empty) || !request.query.some((item) => item.name === 'sessionId') || !request.query.some((item) => item.name === 'subjectId'))) throw new Error(`PROFILE_SCOPE_ERROR: ${JSON.stringify(events.profile)}`);
     } else if (scenario === 'mindmap') {
       const openedAt = Date.now();
       await openTask(page, 4, 'Mind map');

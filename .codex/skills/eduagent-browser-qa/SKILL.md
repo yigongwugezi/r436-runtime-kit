@@ -52,6 +52,12 @@ If a product issue is found, preserve evidence and report the minimal reproducti
 
 For isolated quiz retakes, use `quiz-question-<questionId>`, `quiz-option-<questionId>-<option>`, `quiz-submit`, `quiz-retake`, `quiz-result`, and `quiz-score`. Read answer fixtures from sandbox metadata; never infer answers from visible option order or result text. Pair the submit response with a freshly resolved `quiz-score` update (within 5 seconds), save the response/5-second/30-second evidence, then reload and verify attempts, best score, and task completion from the persisted APIs—not by expecting the transient result card to survive a fresh Quiz initialization. Charter example: submit a 40-point attempt once, retake once, submit a 100-point attempt once, verify its result card, then reload and verify both attempts and completion.
 
+## Profile scope rule
+
+Profile reads are canonical subject reads: wait for resolved `sessionId` and `subjectId`, then call `GET /api/profile` with both non-empty query parameters. Key in-flight de-duplication and stale-result checks by the `sessionId|subjectId` pair; a page without a resolved subject must not issue a profile request. For the `profile-load` charter, record only query parameter names and empty flags, status, start/finish/duration, initiator, and learner/subject/session/path scope (never values from credentials). Expect exactly one 200 profile request for the initial page and one after refresh, with no 422 retry, no 4xx/5xx network summary entries, and no console/page errors.
+
+When `/api/profile` is 422, first distinguish FastAPI/Pydantic validation from router/service failures using the structured error code and a backend trace. Do not loosen the public parameters, use a latest-subject fallback, or return a fake empty 200. A common service-boundary case is a persisted/in-memory result that lacks `session_id`: pass the already validated route session explicitly into profile conversion and downstream tracker reads. Charter example: load an isolated seeded path, verify one scoped profile read, refresh, verify one second scoped read and the same primary content.
+
 ## User invocation
 
 `Use EduAgent Browser QA Skill to test <feature>. Check <expectations>. Allow/do not allow <data writes>. Test only; do not modify code.`

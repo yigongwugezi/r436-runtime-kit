@@ -7,11 +7,12 @@ import { canLoadCanonicalData } from '../utils/canonicalSessionState';
 
 const profileRequests = new Map<string, Promise<StudentProfile | null>>();
 
-function readProfile(sessionId: string): Promise<StudentProfile | null> {
-  let request = profileRequests.get(sessionId);
+function readProfile(sessionId: string, subjectId: string): Promise<StudentProfile | null> {
+  const requestKey = `${sessionId}|${subjectId}`;
+  let request = profileRequests.get(requestKey);
   if (!request) {
-    request = profileApi.getProfile({ sessionId }).then((result) => result?.profile ?? null).finally(() => profileRequests.delete(sessionId));
-    profileRequests.set(sessionId, request);
+    request = profileApi.getProfile({ sessionId, subjectId }).then((result) => result?.profile ?? null).finally(() => profileRequests.delete(requestKey));
+    profileRequests.set(requestKey, request);
   }
   return request;
 }
@@ -19,6 +20,7 @@ function readProfile(sessionId: string): Promise<StudentProfile | null> {
 export function useProfile() {
   const sessionId = useChatStore((state) => state.dataSessionId);
   const canonicalStatus = useChatStore((state) => state.canonicalSession.status);
+  const subjectId = useChatStore((state) => state.canonicalSession.subjectId);
   const dataVersion = useChatStore((state) => state.dataVersion);
   const profile = useProfileStore((state) => sessionId ? state.profiles[sessionId] ?? null : null);
   const profileError = useProfileStore((state) => sessionId ? state.errorMap[sessionId] ?? null : null);
@@ -34,7 +36,8 @@ export function useProfile() {
 
   const fetchProfile = useCallback(async () => {
     const currentSessionId = sessionId;
-    if (!canLoadCanonicalData(canonicalStatus, currentSessionId)) {
+    const currentSubjectId = subjectId;
+    if (!canLoadCanonicalData(canonicalStatus, currentSessionId) || !currentSubjectId) {
       fetchGenRef.current += 1;
       setLoading(false);
       return;
@@ -42,21 +45,23 @@ export function useProfile() {
     const generation = ++fetchGenRef.current;
     setLoading(true); setEmpty(false); setError(null); setStoreLoading(currentSessionId, true);
     try {
-      const nextProfile = await readProfile(currentSessionId);
-      if (generation !== fetchGenRef.current || useChatStore.getState().dataSessionId !== currentSessionId) return;
+      const nextProfile = await readProfile(currentSessionId, currentSubjectId);
+      const currentCanonical = useChatStore.getState().canonicalSession;
+      if (generation !== fetchGenRef.current || useChatStore.getState().dataSessionId !== currentSessionId || currentCanonical.subjectId !== currentSubjectId) return;
       if (nextProfile) {
         setProfile(currentSessionId, nextProfile);
         setEmpty(!nextProfile.profileV2);
       } else setEmpty(true);
     } catch (cause) {
-      if (generation !== fetchGenRef.current || useChatStore.getState().dataSessionId !== currentSessionId) return;
+      const currentCanonical = useChatStore.getState().canonicalSession;
+      if (generation !== fetchGenRef.current || useChatStore.getState().dataSessionId !== currentSessionId || currentCanonical.subjectId !== currentSubjectId) return;
       const message = cause instanceof Error ? cause.message : '加载画像失败';
       const displayMessage = message.includes('sessionId') ? '会话尚未就绪，请稍后重试' : message;
       setStoreError(currentSessionId, displayMessage); setError(displayMessage);
     } finally {
       if (generation === fetchGenRef.current) { setLoading(false); setStoreLoading(currentSessionId, false); }
     }
-  }, [canonicalStatus, sessionId, setProfile, setStoreError, setStoreLoading]);
+  }, [canonicalStatus, sessionId, subjectId, setProfile, setStoreError, setStoreLoading]);
 
   const buildProfile = useCallback(async (message: string): Promise<StudentProfile | null> => {
     if (!sessionId) return null;
@@ -71,15 +76,15 @@ export function useProfile() {
   }, [sessionId, setProfile, setStoreError]);
 
   useEffect(() => {
-    const readKey = sessionId || undefined;
+    const readKey = sessionId && subjectId ? `${sessionId}|${subjectId}` : undefined;
     if (lastReadKeyRef.current !== readKey) { lastReadKeyRef.current = readKey; void fetchProfile(); }
-  }, [canonicalStatus, sessionId, fetchProfile]);
+  }, [canonicalStatus, sessionId, subjectId, fetchProfile]);
 
   useEffect(() => {
-    if (canonicalStatus === 'resolved' && sessionId && dataVersion > 0 && dataVersion !== lastVersionRef.current) {
+    if (canonicalStatus === 'resolved' && sessionId && subjectId && dataVersion > 0 && dataVersion !== lastVersionRef.current) {
       lastVersionRef.current = dataVersion; void fetchProfile();
     }
-  }, [canonicalStatus, dataVersion, fetchProfile, sessionId]);
+  }, [canonicalStatus, dataVersion, fetchProfile, sessionId, subjectId]);
 
   return { profile, profileV2: profile?.profileV2 ?? null, loading, empty, error: error || profileError, fetchProfile, buildProfile };
 }

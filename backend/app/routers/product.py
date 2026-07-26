@@ -391,7 +391,7 @@ _DIMENSION_LABELS: dict[str, str] = {
 }
 
 
-def _to_profile(result: dict[str, Any]) -> dict[str, Any]:
+def _to_profile(result: dict[str, Any], fallback_session_id: str = "") -> dict[str, Any]:
     """Convert raw orchestrator result to frontend-friendly profile dict."""
     raw_profile = result.get("profile") or {}
     if not isinstance(raw_profile, dict):
@@ -429,7 +429,7 @@ def _to_profile(result: dict[str, Any]) -> dict[str, Any]:
     # Look up learner info from DB if available
     learner_id = None
     nickname = "学习者"
-    session_id = result.get("session_id", "")
+    session_id = str(result.get("session_id") or fallback_session_id).strip()
     if session_id:
         try:
             db = SessionLocal()
@@ -444,10 +444,10 @@ def _to_profile(result: dict[str, Any]) -> dict[str, Any]:
         finally:
             db.close()
 
-    tracker_summary = learning_tracker.summary(result.get("session_id", ""))
+    tracker_summary = learning_tracker.summary(session_id)
 
     return {
-        "id": result.get("session_id", ""),
+        "id": session_id,
         "learnerId": learner_id,
         "nickname": nickname,
         "createdAt": int(time.time() * 1000) - 86400000,
@@ -1749,7 +1749,7 @@ def _profile_query_reply(session_id: str) -> str:
             return f"了解了一些，不过我还想知道{'和'.join(qs) if qs else '更多细节'}。能再聊聊吗？"
         return "跟我说说你想学什么、之前有没有基础？"
 
-    profile = _to_profile(state.last_result)
+    profile = _to_profile(state.last_result, session_id)
     descriptions = [
         f"{dimension['label']}：{dimension['description']}"
         for dimension in profile["dimensions"] if dimension.get("description")
@@ -2923,7 +2923,7 @@ def get_profile(sessionId: str = "", subjectId: str = "", learnerId: str = "", a
     # Fall back to in-memory last_result if available (transitional)
     state = conversation_store.get(session_id)
     if state.last_result:
-        profile = _to_profile(state.last_result)
+        profile = _to_profile(state.last_result, session_id)
         readiness = conversation_store.readiness(state)
         profile["source"] = "agent_generated"
         profile["readiness"] = readiness
@@ -2947,7 +2947,7 @@ def build_profile(payload: dict[str, Any], auth: AuthContext = Depends(reject_pa
 
     conversation_store.append_message(session_id, "user", message)
     result = _run_agents(message, session_id=session_id)
-    profile = _to_profile(result)
+    profile = _to_profile(result, session_id)
     profile["source"] = "agent_generated"
 
     state = conversation_store.get(session_id)
@@ -3070,7 +3070,7 @@ def update_profile(payload: dict[str, Any], auth: AuthContext = Depends(reject_p
 
     # Use existing data as base, merge payload
     if state.last_result:
-        profile = _to_profile(state.last_result)
+        profile = _to_profile(state.last_result, session_id)
     else:
         profile = _empty_profile(session_id)
 

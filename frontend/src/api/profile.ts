@@ -13,7 +13,7 @@ export async function buildProfile(params: BuildProfileParams): Promise<{ profil
   return { ...data, profile: { ...data.profile, profileV2: data.profileV2 } };
 }
 
-export async function getProfile(params: { sessionId: string; subjectId?: string }): Promise<{ profile: StudentProfile }> {
+export async function getProfile(params: { sessionId: string; subjectId: string }): Promise<{ profile: StudentProfile }> {
   const { data } = await client.get('/api/profile', { params });
   return { ...data, profile: { ...data.profile, profileV2: data.profileV2 } };
 }
