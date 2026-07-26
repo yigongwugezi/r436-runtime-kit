@@ -4,7 +4,9 @@ import test from 'node:test';
 
 test('video fallback uses one delivery mode and never exposes ordinary generation', () => {
   const page = readFileSync(new URL('../src/pages/LecturePage.tsx', import.meta.url), 'utf8');
+  const contentRouter = readFileSync(new URL('../src/components/learning/SectionContentRouter.tsx', import.meta.url), 'utf8');
   const api = readFileSync(new URL('../src/api/learningPath.ts', import.meta.url), 'utf8');
+  const client = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8');
   assert.match(api, /return data\?\.data \|\| data/);
   assert.match(api, /setVideoDeliveryMode/);
   assert.match(page, /const deliveryMode =/);
@@ -18,6 +20,9 @@ test('video fallback uses one delivery mode and never exposes ordinary generatio
   assert.match(page, /workflowType: 'video_fallback_lecture'/);
   assert.match(page, /evidenceType: 'video_fallback_lecture_completed'/);
   assert.match(page, /resourceId: fallbackResourceId/);
+  assert.match(page, /response\?\.id/);
+  assert.match(contentRouter, /data-testid="task-complete"/);
+  assert.match(client, /err\.code === 'ERR_CANCELED'/);
   assert.match(page, /await fetchPath\(true, canonicalTaskScope\.sessionId, canonicalTaskScope\.pathId, canonicalTaskScope\.subjectId\)/);
   assert.match(page, /nav\(returnToPath\)/);
   assert.match(page, /完成状态保存失败，请重试。/);

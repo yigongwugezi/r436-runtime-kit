@@ -166,6 +166,7 @@ client.interceptors.response.use(
     return res;
   },
   async (err) => {
+    if (err.code === 'ERR_CANCELED') return Promise.reject(err);
     const request = err.config as (typeof err.config & { _retry?: boolean }) | undefined;
     if (err.response?.status === 401 && request && !request._retry && !String(request.url || '').includes('/api/auth/refresh')) {
       request._retry = true;

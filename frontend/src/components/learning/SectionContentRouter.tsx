@@ -100,6 +100,7 @@ function CompletionFooter({ onComplete }: { onComplete?: () => void | boolean | 
   return (
     <div className="mt-8 flex justify-center">
       <button
+        data-testid="task-complete"
         onClick={() => void complete()}
         disabled={saving}
         className="inline-flex items-center gap-2.5 px-8 py-3.5 bg-gradient-to-r from-blue-500 to-violet-500 text-white rounded-2xl font-semibold text-sm shadow-lg shadow-blue-500/25 hover:shadow-xl hover:shadow-blue-500/30 hover:scale-[1.02] active:scale-[0.98] transition-all duration-200"

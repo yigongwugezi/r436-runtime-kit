@@ -64,7 +64,7 @@ function lectureContent(response: any): string {
 }
 
 function lectureId(response: any): string {
-  const value = response?.data?.lecture?.id ?? response?.lecture?.id ?? response?.data?.fallbackResource?.id ?? response?.fallbackResource?.id;
+  const value = response?.data?.lecture?.id ?? response?.lecture?.id ?? response?.data?.fallbackResource?.id ?? response?.fallbackResource?.id ?? response?.id;
   return typeof value === 'string' ? value : '';
 }
 

@@ -237,10 +237,88 @@ async function main() {
       if (submitStatuses.length !== 2 || submitStatuses.some((status) => status !== 200)) throw new Error(`QUIZ_SECOND_SUBMIT: ${submitStatuses.join(',')}`);
       await writeFile(resolve(evidence, 'quiz-summary.json'), JSON.stringify({ firstScore: 40, secondScore: 100, submitStatuses }, null, 2));
     } else if (scenario === 'video-fallback') {
+      const timeline = [];
+      const deliveryPath = `/api/learning-path/tasks/${meta.videoTaskId}/delivery-mode`;
+      const completionPath = `/api/learning-path/tasks/${meta.videoTaskId}/complete`;
+      const fallbackPath = `/api/learning-path/tasks/${meta.videoTaskId}/video-fallback/state`;
+      const mark = (event, extra = {}) => timeline.push({ atMs: Date.now(), event, ...extra });
+      const mutations = [];
+      page.on('request', (request) => {
+        const path = safePath(request.url());
+        if (path === deliveryPath || path === completionPath) mark('mutation-request', { path });
+      });
+      page.on('response', (response) => {
+        const path = safePath(response.url());
+        if (path === deliveryPath || path === completionPath) { mutations.push({ path, status: response.status() }); mark('mutation-response', { path, status: response.status() }); }
+      });
+      const readFallback = () => page.evaluate(async ({ path, scope }) => {
+        const query = new URLSearchParams(Object.entries(scope).map(([key, value]) => [key, String(value)]));
+        const response = await fetch(`${path}?${query}`, { headers: { Authorization: `Bearer ${localStorage.edu_token}` } });
+        return { status: response.status, body: await response.json() };
+      }, { path: fallbackPath, scope: { sessionId: meta.sessionId, subjectId: meta.subjectId, pathId: meta.pathId, ...meta.videoScope } });
+      const readTask = () => page.evaluate(async ({ sessionId, subjectId, pathId, taskId }) => {
+        const response = await fetch(`/api/learning-path?sessionId=${encodeURIComponent(sessionId)}&subjectId=${encodeURIComponent(subjectId)}&pathId=${encodeURIComponent(pathId)}`, { headers: { Authorization: `Bearer ${localStorage.edu_token}` } });
+        const body = await response.json();
+        const find = (value) => {
+          if (!value || typeof value !== 'object') return null;
+          if (value.id === taskId) return value;
+          for (const child of Array.isArray(value) ? value : Object.values(value)) { const found = find(child); if (found) return found; }
+          return null;
+        };
+        const task = find((body.data?.path ?? body.path)?.stages || body.data?.path || body.path);
+        return { status: response.status, taskStatus: task?.status || null };
+      }, { sessionId: meta.sessionId, subjectId: meta.subjectId, pathId: meta.pathId, taskId: meta.videoTaskId });
+      const setMode = async (buttonName, expectedButton) => {
+        const responsePromise = page.waitForResponse((response) => safePath(response.url()) === deliveryPath, { timeout: 15000 });
+        await page.getByRole('button', { name: buttonName }).click();
+        const response = await responsePromise;
+        if (response.status() !== 200) throw new Error(`VIDEO_DELIVERY_MODE: ${response.status()}`);
+        await page.getByRole('button', { name: expectedButton }).waitFor({ timeout: 15000 });
+      };
       await openTask(page, 3, 'Video');
-      await page.getByRole('button', { name: '切换为图文讲解' }).click();
-      await page.getByRole('button', { name: '返回视频学习' }).click();
-      await page.getByRole('button', { name: '切换为图文讲解' }).click();
+      const initialTask = await readTask();
+      if (initialTask.status !== 200 || initialTask.taskStatus === 'completed') throw new Error(`VIDEO_RESET_STATE: ${JSON.stringify(initialTask)}`);
+      await setMode('切换为图文讲解', '返回视频学习');
+      const firstFallback = await readFallback();
+      await setMode('返回视频学习', '切换为图文讲解');
+      await setMode('切换为图文讲解', '返回视频学习');
+      const secondFallback = await readFallback();
+      const complete = page.locator('button[data-testid="task-complete"]:visible');
+      const completionReady = await page.waitForFunction(() => [...document.querySelectorAll('[data-testid="task-complete"]')].some((button) => !button.disabled && !!button.getBoundingClientRect().width && !!button.getBoundingClientRect().height), { timeout: 10000 }).then(() => true, () => false);
+      const buttonStates = await page.getByTestId('task-complete').evaluateAll((buttons) => buttons.map((button) => { const box = button.getBoundingClientRect(); return { text: button.textContent?.trim(), disabled: button.disabled, ariaDisabled: button.getAttribute('aria-disabled'), visible: box.width > 0 && box.height > 0, box: { x: box.x, y: box.y, width: box.width, height: box.height } }; }));
+      await page.screenshot({ path: resolve(evidence, 'video-before-click.png'), fullPage: true });
+      await writeFile(resolve(evidence, 'video-before-click.html'), await page.content());
+      await writeFile(resolve(evidence, 'video-preclick-diagnostics.json'), JSON.stringify({ firstFallback, secondFallback, buttonStates }, null, 2));
+      if (!completionReady) throw new Error(`VIDEO_COMPLETE_UNREADY: ${JSON.stringify(buttonStates)}`);
+      if (await complete.count() !== 1) throw new Error(`VIDEO_COMPLETE_LOCATOR_COUNT: ${await complete.count()}`);
+      const button = await complete.evaluate((element) => { const box = element.getBoundingClientRect(); return { text: element.textContent?.trim(), role: element.getAttribute('role') || 'button', testId: element.getAttribute('data-testid'), disabled: element.disabled, ariaDisabled: element.getAttribute('aria-disabled'), visible: box.width > 0 && box.height > 0, box: { x: box.x, y: box.y, width: box.width, height: box.height } }; });
+      if (button.disabled || !button.visible) throw new Error(`VIDEO_COMPLETE_BUTTON: ${JSON.stringify(button)}`);
+      mark('completion-button-ready', button);
+      const completionResponse = page.waitForResponse((response) => safePath(response.url()) === completionPath, { timeout: 5000 }).catch(() => null);
+      await complete.click();
+      mark('completion-click-returned');
+      await page.screenshot({ path: resolve(evidence, 'video-after-click.png'), fullPage: true });
+      await page.waitForTimeout(1000);
+      await page.screenshot({ path: resolve(evidence, 'video-after-1s.png'), fullPage: true });
+      const completion = await completionResponse;
+      await page.waitForTimeout(4000);
+      await page.screenshot({ path: resolve(evidence, 'video-after-5s.png'), fullPage: true });
+      await writeFile(resolve(evidence, 'video-after-click.html'), await page.content());
+      if (!completion || completion.status() !== 200) throw new Error(`VIDEO_COMPLETION: ${completion?.status() || 'missing'}`);
+      await page.waitForURL(/\/path/, { timeout: 5000 });
+      await page.waitForFunction((title) => document.body.innerText.includes(title), 'Data Structures');
+      await page.reload();
+      await page.waitForFunction((title) => document.body.innerText.includes(title), 'Data Structures');
+      const persistedTask = await readTask();
+      const persistedFallback = await readFallback();
+      const resourceId = (state) => state?.body?.data?.lecture?.id || state?.body?.lecture?.id || null;
+      const deliveryMutations = mutations.filter((item) => item.path === deliveryPath);
+      const completionMutations = mutations.filter((item) => item.path === completionPath);
+      const persistedMode = persistedFallback.body?.data?.activeDeliveryMode || persistedFallback.body?.activeDeliveryMode;
+      if (deliveryMutations.length !== 3 || deliveryMutations.some((item) => item.status !== 200) || completionMutations.length !== 1 || completionMutations[0].status !== 200 || !resourceId(firstFallback) || resourceId(firstFallback) !== resourceId(secondFallback) || persistedTask.taskStatus !== 'completed' || persistedMode !== 'video_fallback_lecture') throw new Error(`VIDEO_PERSISTENCE: ${JSON.stringify({ deliveryMutations, completionMutations, firstResource: resourceId(firstFallback), secondResource: resourceId(secondFallback), persistedTask, persistedMode })}`);
+      mark('reload-persistence-verified', { task: persistedTask, mode: persistedMode });
+      await writeFile(resolve(evidence, 'video-timeline.json'), JSON.stringify(timeline, null, 2));
+      await writeFile(resolve(evidence, 'video-summary.json'), JSON.stringify({ initialTask, button, deliveryMutations, completionMutations, fallbackResourceId: resourceId(secondFallback), persistedTask, persistedMode }, null, 2));
     }
     await Promise.all(consoleRecordings);
     await page.screenshot({ path: resolve(evidence, 'screenshots.png'), fullPage: true });

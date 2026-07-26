@@ -99,6 +99,7 @@ def seed(db_path: Path) -> dict[str, object]:
         "databasePath": str(db_path), "learnerId": IDS["learner"], "subjectId": IDS["subject"],
         "sessionId": IDS["session"], "pathId": IDS["path"], "readDocTaskId": "qa-stage_d1_a",
         "quizTaskId": "qa-stage_d2_a", "videoTaskId": "qa-stage_d3_a", "mindMapTaskId": "qa-stage_d4_a",
+        "videoScope": {"stageId": "qa-stage", "dayId": "qa-day-video", "globalDayIndex": 3},
         "quizAnswers": {"correct": task_answer_fixture, "firstRound": {question_id: (answer if index < 2 else next(option for option in "ABCD" if option != answer)) for index, (question_id, answer) in enumerate(task_answer_fixture.items())}},
         "zeroDiffRevisionId": "qa-zero-diff", "scenarios": ["path", "quiz", "video", "mindmap", "zero-diff-revision"],
     }
