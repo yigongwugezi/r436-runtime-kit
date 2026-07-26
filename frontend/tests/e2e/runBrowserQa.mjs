@@ -89,15 +89,10 @@ async function main() {
     const scope = await bootstrapQaSubject(page, resolve(runtime, 'seed-metadata.json'));
     if (scope.pathId !== meta.pathId) throw new Error('PATH_LOAD: unexpected path');
     await page.waitForFunction((title) => document.body.innerText.includes(title), 'Data Structures');
-    const scriptResources = () => page.evaluate(() => performance.getEntriesByType('resource')
-      .filter((entry) => entry.initiatorType === 'script')
-      .map((entry) => ({ path: new URL(entry.name).pathname, transferBytes: entry.transferSize, decodedBytes: entry.decodedBodySize })));
-    const firstScreenScripts = await scriptResources();
-    const addedScripts = (before, after) => after.filter((entry) => !before.some((previous) => previous.path === entry.path));
     if (scenario === 'path-performance') {
       const timings = [];
       for (let i = 0; i < 3; i += 1) { const start = Date.now(); await page.reload(); await page.waitForFunction((title) => document.body.innerText.includes(title), 'Data Structures'); timings.push(Date.now() - start); }
-      await writeFile(resolve(evidence, 'performance.json'), JSON.stringify({ pathVisibleMs: timings, firstScreenScripts }, null, 2));
+      await writeFile(resolve(evidence, 'performance.json'), JSON.stringify({ pathVisibleMs: timings }, null, 2));
     } else if (scenario === 'profile-load') {
       await initialProfile;
       await Promise.all(profileRecordings);
@@ -120,7 +115,6 @@ async function main() {
       const svg = page.getByTestId('mindmap-svg');
       await svg.waitFor({ timeout: 15000 });
       await page.waitForFunction(() => document.querySelector('[data-testid="mindmap-svg"]')?.dataset.mindmapReady === 'true');
-      const mindmapScripts = await scriptResources();
       const diagnostics = await svg.evaluate((element, start) => {
         const box = element.getBoundingClientRect();
         const content = element.querySelector(':scope > g');
@@ -147,7 +141,6 @@ async function main() {
       await writeFile(resolve(evidence, 'mindmap-host.html'), await host.evaluate((element) => element.outerHTML));
       await writeFile(resolve(evidence, 'mindmap-svg.svg'), await svg.evaluate((element) => element.outerHTML));
       await writeFile(resolve(evidence, 'mindmap-diagnostics.json'), JSON.stringify(diagnostics, null, 2));
-      await writeFile(resolve(evidence, 'script-resources.json'), JSON.stringify({ firstScreen: firstScreenScripts, addedOnMindmap: addedScripts(firstScreenScripts, mindmapScripts) }, null, 2));
       await writeFile(resolve(evidence, 'console-summary.txt'), [...events.console, ...events.pageErrors].join('\n'));
       await writeFile(resolve(evidence, 'network-summary.json'), JSON.stringify(events.network, null, 2));
       if (diagnostics.container.width < 100 || diagnostics.container.height < 100 || !diagnostics.content || diagnostics.content.width < 100 || diagnostics.content.height < 100 || diagnostics.nodeCount < 2 || diagnostics.ySpread < 20 || diagnostics.overlapCount) throw new Error(`VISUAL_LAYOUT_ERROR: ${JSON.stringify(diagnostics)}`);
@@ -195,7 +188,6 @@ async function main() {
         return data;
       };
       await page.getByTestId(`quiz-question-${Object.keys(meta.quizAnswers.correct)[0]}`).waitFor({ timeout: 15000 });
-      const quizScripts = await scriptResources();
       await answer(meta.quizAnswers.firstRound, 'answer first quiz round');
       await submitAndRecord('first');
       await page.waitForFunction(() => document.querySelector('[data-testid="quiz-score"]')?.textContent?.trim() === '40');
@@ -243,7 +235,7 @@ async function main() {
         await writeFile(resolve(evidence, 'quiz-dom-snapshot.html'), await page.locator('[data-testid="quiz-result"], [data-testid^="quiz-question-"]').evaluateAll((nodes) => nodes.map((node) => node.outerHTML).join('\n')));
       }
       if (submitStatuses.length !== 2 || submitStatuses.some((status) => status !== 200)) throw new Error(`QUIZ_SECOND_SUBMIT: ${submitStatuses.join(',')}`);
-      await writeFile(resolve(evidence, 'quiz-summary.json'), JSON.stringify({ firstScore: 40, secondScore: 100, submitStatuses, firstScreenScripts, addedOnQuiz: addedScripts(firstScreenScripts, quizScripts) }, null, 2));
+      await writeFile(resolve(evidence, 'quiz-summary.json'), JSON.stringify({ firstScore: 40, secondScore: 100, submitStatuses }, null, 2));
     } else if (scenario === 'video-fallback') {
       await openTask(page, 3, 'Video');
       await page.getByRole('button', { name: '切换为图文讲解' }).click();
