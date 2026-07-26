@@ -69,20 +69,85 @@ async function main() {
       await openTask(page, 2, 'Quiz');
       await page.screenshot({ path: resolve(evidence, 'quiz-before-action.png'), fullPage: true });
       const submitStatuses = [];
-      page.on('response', (response) => { if (safePath(response.url()).endsWith(`/tasks/${meta.quizTaskId}/quiz/submit`)) submitStatuses.push(response.status()); });
+      const timeline = [];
+      const submitPath = `/tasks/${meta.quizTaskId}/quiz/submit`;
+      const mark = (event, extra = {}) => timeline.push({ atMs: Date.now(), event, ...extra });
+      page.on('request', (request) => {
+        const path = safePath(request.url());
+        if (path.endsWith(submitPath)) mark('submit-request-start');
+        else if (/learning-path|quiz|attempt/.test(path)) mark('state-request-start', { path });
+      });
+      page.on('response', (response) => {
+        if (safePath(response.url()).endsWith(submitPath)) {
+          submitStatuses.push(response.status());
+          mark('submit-response', { status: response.status() });
+        }
+      });
       const answer = async (fixture) => { for (const [questionId, option] of Object.entries(fixture)) await page.getByTestId(`quiz-option-${questionId}-${option}`).click(); };
+      let navigated = false;
+      page.on('framenavigated', (frame) => { if (frame === page.mainFrame()) navigated = true; });
+      const submitAndRecord = async (round) => {
+        const responsePromise = page.waitForResponse((response) => safePath(response.url()).endsWith(submitPath));
+        mark(`${round}-submit-click`);
+        await page.getByTestId('quiz-submit').click();
+        const response = await responsePromise;
+        const body = await response.json().catch(() => ({}));
+        const data = body?.data || body || {};
+        mark(`${round}-submit-finished`, {
+          status: response.status(), score: data.score ?? data.totalScore ?? null,
+          attemptPassed: data.attemptPassed ?? null, bestScore: data.bestScore ?? null,
+          everPassed: data.everPassed ?? null, completed: data.pathTaskCompleted ?? null,
+          hasAttempt: Boolean(data.attempt),
+        });
+        return data;
+      };
       await page.getByTestId(`quiz-question-${Object.keys(meta.quizAnswers.correct)[0]}`).waitFor({ timeout: 15000 });
       await answer(meta.quizAnswers.firstRound);
-      await page.getByTestId('quiz-submit').click();
+      await submitAndRecord('first');
       await page.waitForFunction(() => document.querySelector('[data-testid="quiz-score"]')?.textContent?.trim() === '40');
+      mark('first-score-visible');
       if (submitStatuses.length !== 1 || submitStatuses[0] !== 200) throw new Error(`QUIZ_FIRST_SUBMIT: ${submitStatuses.join(',')}`);
       await page.getByTestId('quiz-retake').click();
       await answer(meta.quizAnswers.correct);
-      await page.getByTestId('quiz-submit').click();
-      await page.waitForFunction(() => document.querySelector('[data-testid="quiz-score"]')?.textContent?.trim() === '100');
+      await page.screenshot({ path: resolve(evidence, 'quiz-second-before-submit.png'), fullPage: true });
+      try {
+        const second = await submitAndRecord('second');
+        await page.screenshot({ path: resolve(evidence, 'quiz-second-response.png'), fullPage: true });
+        await page.waitForFunction(() => document.querySelector('[data-testid="quiz-score"]')?.textContent?.trim() === '100', { timeout: 5000 });
+        mark('second-score-visible');
+        mark('second-result-state', { result: await page.getByTestId('quiz-result').innerText() });
+        await page.waitForTimeout(5000);
+        await page.screenshot({ path: resolve(evidence, 'quiz-second-5s.png'), fullPage: true });
+        await page.waitForTimeout(25000);
+        await page.screenshot({ path: resolve(evidence, 'quiz-second-30s.png'), fullPage: true });
+        await writeFile(resolve(evidence, 'quiz-30s-dom-snapshot.html'), await page.locator('[data-testid="quiz-result"], [data-testid^="quiz-question-"]').evaluateAll((nodes) => nodes.map((node) => node.outerHTML).join('\n')));
+        mark('second-30s-dom-captured', { navigated });
+        await page.reload();
+        const persisted = await page.evaluate(async ({ quizId, sessionId, subjectId, pathId, taskId }) => {
+          const headers = { Authorization: `Bearer ${localStorage.edu_token}` };
+          const [attemptResponse, pathResponse] = await Promise.all([
+            fetch(`/api/quizzes/${encodeURIComponent(quizId)}/attempts`, { headers }),
+            fetch(`/api/learning-path?sessionId=${encodeURIComponent(sessionId)}&subjectId=${encodeURIComponent(subjectId)}&pathId=${encodeURIComponent(pathId)}`, { headers }),
+          ]);
+          const attempts = ((await attemptResponse.json()).data?.attempts || []).map((attempt) => ({ score: attempt.totalScore, status: attempt.status }));
+          const path = (await pathResponse.json()).data?.path || {};
+          const findTask = (value) => {
+            if (!value || typeof value !== 'object') return null;
+            if (value.id === taskId) return value;
+            for (const child of Array.isArray(value) ? value : Object.values(value)) { const found = findTask(child); if (found) return found; }
+            return null;
+          };
+          const task = findTask(path.stages || path);
+          return { attempts, completed: ['completed', 'mastered'].includes(task?.status), taskFound: Boolean(task) };
+        }, { quizId: second.attempt?.quizId || second.attempt?.quiz_id || '', sessionId: meta.sessionId, subjectId: meta.subjectId, pathId: meta.pathId, taskId: meta.quizTaskId });
+        const scores = persisted.attempts.map((attempt) => attempt.score);
+        if (persisted.attempts.length < 2 || !scores.includes(40) || Math.max(...scores) !== 100 || !persisted.completed) throw new Error(`QUIZ_PERSISTENCE: ${JSON.stringify(persisted)}`);
+        mark('reload-persistence-verified', { attempts: persisted.attempts.length, bestScore: Math.max(...scores), completed: persisted.completed });
+      } finally {
+        await writeFile(resolve(evidence, 'quiz-timeline.json'), JSON.stringify(timeline, null, 2));
+        await writeFile(resolve(evidence, 'quiz-dom-snapshot.html'), await page.locator('[data-testid="quiz-result"], [data-testid^="quiz-question-"]').evaluateAll((nodes) => nodes.map((node) => node.outerHTML).join('\n')));
+      }
       if (submitStatuses.length !== 2 || submitStatuses.some((status) => status !== 200)) throw new Error(`QUIZ_SECOND_SUBMIT: ${submitStatuses.join(',')}`);
-      await page.reload();
-      await page.waitForFunction(() => document.querySelector('[data-testid="quiz-score"]')?.textContent?.trim() === '100');
       await writeFile(resolve(evidence, 'quiz-summary.json'), JSON.stringify({ firstScore: 40, secondScore: 100, submitStatuses }, null, 2));
     } else if (scenario === 'video-fallback') {
       await openTask(page, 3, 'Video');

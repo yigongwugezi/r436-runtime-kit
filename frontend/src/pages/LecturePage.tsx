@@ -1337,7 +1337,7 @@ export default function LecturePage() {
           {quizState !== 'idle' && (
             <div className="p-4 border-b border-gray-200 bg-gray-50/50">
               {quizState === 'submitted' && quizTotalScore !== null && (
-                <div className={`p-4 rounded-2xl mb-4 ${quizTotalScore >= 80 ? 'bg-success-50 border border-success-200' : quizTotalScore >= 50 ? 'bg-warning-50 border border-warning-200' : 'bg-error-50 border border-error-200'}`}>
+                <div data-testid="quiz-result" className={`p-4 rounded-2xl mb-4 ${quizTotalScore >= 80 ? 'bg-success-50 border border-success-200' : quizTotalScore >= 50 ? 'bg-warning-50 border border-warning-200' : 'bg-error-50 border border-error-200'}`}>
                   <div className="flex items-center gap-3">
                     <div data-testid="quiz-score" className={`w-12 h-12 rounded-full flex items-center justify-center text-xl font-bold ${quizTotalScore >= 80 ? 'bg-success-100 text-success-600' : quizTotalScore >= 50 ? 'bg-warning-100 text-warning-600' : 'bg-error-100 text-error-600'}`}>
                       {quizTotalScore}

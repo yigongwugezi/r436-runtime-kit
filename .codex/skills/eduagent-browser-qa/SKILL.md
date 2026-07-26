@@ -50,7 +50,7 @@ If a product issue is found, preserve evidence and report the minimal reproducti
 
 ## Quiz retake locator rule
 
-For isolated quiz retakes, use `quiz-question-<questionId>`, `quiz-option-<questionId>-<option>`, `quiz-submit`, `quiz-retake`, and `quiz-score`. Read answer fixtures from sandbox metadata; never infer answers from visible option order or result text. Charter example: submit a 40-point attempt once, retake once, submit a 100-point attempt once, then reload and verify the persisted score and completion state.
+For isolated quiz retakes, use `quiz-question-<questionId>`, `quiz-option-<questionId>-<option>`, `quiz-submit`, `quiz-retake`, `quiz-result`, and `quiz-score`. Read answer fixtures from sandbox metadata; never infer answers from visible option order or result text. Pair the submit response with a freshly resolved `quiz-score` update (within 5 seconds), save the response/5-second/30-second evidence, then reload and verify attempts, best score, and task completion from the persisted APIs—not by expecting the transient result card to survive a fresh Quiz initialization. Charter example: submit a 40-point attempt once, retake once, submit a 100-point attempt once, verify its result card, then reload and verify both attempts and completion.
 
 ## User invocation
 
