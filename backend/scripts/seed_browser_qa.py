@@ -39,6 +39,7 @@ def seed(db_path: Path) -> dict[str, object]:
     from app.db.models import (CurrentLearningPathModel, LearnerModel, PersonalSubjectModel,
                                PracticeQuestionModel, QuizModel, ResourceModel)
     from app.db.repository import get_or_create_session, upsert_learning_path
+    from app.routers.assessment import _semantic_question_id, _task_quiz_identity, _task_quiz_questions
     from app.utils.auth import hash_password
 
     init_db()
@@ -69,6 +70,16 @@ def seed(db_path: Path) -> dict[str, object]:
         db.commit()
         get_or_create_session(db, IDS["session"], learner_id=IDS["learner"], subject_id=IDS["subject"])
         path = upsert_learning_path(db, IDS["session"], path_data)
+        quiz_entry = {"task": days[1]["tasks"][0], "stage_id": "qa-stage", "day_id": "qa-day-quiz", "global_day_index": 2}
+        fingerprint, snapshot = _task_quiz_identity(path, quiz_entry, IDS["learner"], IDS["subject"])
+        task_quiz_id = f"quiz_{fingerprint[:48]}"
+        task_questions = _task_quiz_questions(quiz_entry["task"], quiz_entry["task"]["id"])
+        db.add(QuizModel(id=task_quiz_id, title="QA task quiz", session_id=IDS["session"], scope_type="section", scope_id=quiz_entry["task"]["id"], path_id=path.id, stage_id="qa-stage", section_id=quiz_entry["task"]["id"], question_count=5, questions={"semanticFingerprint": fingerprint, "generationVersion": 2, "taskSemanticSnapshot": snapshot, "passingScore": 60}, source="learning_path_task"))
+        task_answer_fixture = {}
+        for index, question in enumerate(task_questions, 1):
+            question_id = _semantic_question_id(fingerprint, index, question["stem"])
+            task_answer_fixture[question_id] = question["correct"]
+            db.add(PracticeQuestionModel(question_id=question_id, question_set_id=task_quiz_id, session_id=IDS["session"], stem=question["stem"], options=question["options"], correct=question["correct"], explanation=question["explanation"], type="choice"))
         db.add(CurrentLearningPathModel(learner_id=IDS["learner"], session_id=IDS["session"], subject_id=IDS["subject"], path_id=path.id))
         db.add_all([
             ResourceModel(id="qa-reading", session_id=IDS["session"], learner_id=IDS["learner"], subject_id=IDS["subject"], path_id=path.id, type="lecture", title="QA reading", content="# Reading\nFixture content", related_section_id="qa-stage_d1_a", task_id="qa-stage_d1_a"),
@@ -88,6 +99,7 @@ def seed(db_path: Path) -> dict[str, object]:
         "databasePath": str(db_path), "learnerId": IDS["learner"], "subjectId": IDS["subject"],
         "sessionId": IDS["session"], "pathId": IDS["path"], "readDocTaskId": "qa-stage_d1_a",
         "quizTaskId": "qa-stage_d2_a", "videoTaskId": "qa-stage_d3_a", "mindMapTaskId": "qa-stage_d4_a",
+        "quizAnswers": {"correct": task_answer_fixture, "firstRound": {question_id: (answer if index < 2 else next(option for option in "ABCD" if option != answer)) for index, (question_id, answer) in enumerate(task_answer_fixture.items())}},
         "zeroDiffRevisionId": "qa-zero-diff", "scenarios": ["path", "quiz", "video", "mindmap", "zero-diff-revision"],
     }
     metadata_path = db_path.parent / "seed-metadata.json"

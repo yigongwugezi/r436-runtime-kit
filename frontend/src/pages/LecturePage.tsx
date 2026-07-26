@@ -1339,7 +1339,7 @@ export default function LecturePage() {
               {quizState === 'submitted' && quizTotalScore !== null && (
                 <div className={`p-4 rounded-2xl mb-4 ${quizTotalScore >= 80 ? 'bg-success-50 border border-success-200' : quizTotalScore >= 50 ? 'bg-warning-50 border border-warning-200' : 'bg-error-50 border border-error-200'}`}>
                   <div className="flex items-center gap-3">
-                    <div className={`w-12 h-12 rounded-full flex items-center justify-center text-xl font-bold ${quizTotalScore >= 80 ? 'bg-success-100 text-success-600' : quizTotalScore >= 50 ? 'bg-warning-100 text-warning-600' : 'bg-error-100 text-error-600'}`}>
+                    <div data-testid="quiz-score" className={`w-12 h-12 rounded-full flex items-center justify-center text-xl font-bold ${quizTotalScore >= 80 ? 'bg-success-100 text-success-600' : quizTotalScore >= 50 ? 'bg-warning-100 text-warning-600' : 'bg-error-100 text-error-600'}`}>
                       {quizTotalScore}
                     </div>
                     <div>
@@ -1392,7 +1392,7 @@ export default function LecturePage() {
                 const isSubmitted = quizState === 'submitted';
 
                 return (
-                  <div key={q.questionId} className="bg-white rounded-2xl shadow-soft p-5 mb-4">
+                  <div key={q.questionId} data-testid={`quiz-question-${q.questionId}`} className="bg-white rounded-2xl shadow-soft p-5 mb-4">
                     <div className="flex items-center gap-2 mb-3">
                       <span className="text-sm font-bold text-primary-600">#{idx + 1}</span>
                       <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary-50 text-primary-600 font-medium">{typeLabel(q.type)}</span>
@@ -1419,7 +1419,7 @@ export default function LecturePage() {
                           else if (isSelected && !isSubmitted) cls += ' border-primary-400 bg-primary-50/70';
                           else cls += ' border-surface-200 hover:border-primary-300 bg-white';
                           return (
-                            <button key={letter} disabled={isSubmitted} onClick={() => handleQuizAnswer(q.questionId, letter)}
+                            <button key={letter} data-testid={`quiz-option-${q.questionId}-${letter}`} aria-label={`Question ${idx + 1}, option ${letter}`} disabled={isSubmitted} onClick={() => handleQuizAnswer(q.questionId, letter)}
                               className={`w-full text-left px-4 py-3 rounded-xl transition-all flex items-center gap-3 ${cls}`}>
                               <span className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 ${isSelected && !isSubmitted ? 'bg-primary-500 text-white' : isSubmitted && isCorrectAnswer ? 'bg-success-500 text-white' : isSubmitted && isSelected ? 'bg-error-500 text-white' : 'bg-surface-100 text-surface-500'}`}>{letter}</span>
                               <span className="text-sm"><Markdown content={opt} /></span>
@@ -1485,7 +1485,7 @@ export default function LecturePage() {
                   <span className="text-xs text-surface-400">
                     {allAnswered ? `已完成全部 ${quizQuestions.length} 题` : `共 ${quizQuestions.length} 题，已答 ${Object.keys(quizAnswers).filter(k => quizAnswers[k]?.trim()).length} / ${quizQuestions.length} 题`}
                   </span>
-                  <button onClick={handleQuizSubmit} disabled={!allAnswered || quizSubmitting}
+                  <button data-testid="quiz-submit" onClick={handleQuizSubmit} disabled={!allAnswered || quizSubmitting}
                     className="px-6 py-2.5 bg-accent-500 text-white rounded-xl text-sm font-medium hover:bg-accent-600 disabled:opacity-40 transition-colors shadow-sm"
                     style={{ backgroundColor: allAnswered ? '#14b8a6' : undefined }}>提交批改</button>
                 </div>
@@ -1493,7 +1493,7 @@ export default function LecturePage() {
 
               {quizState === 'submitted' && (
                 <div className="flex items-center justify-between pt-2">
-                  <button onClick={() => {
+                  <button data-testid="quiz-retake" onClick={() => {
                     const resetAnswers: Record<string, string> = {};
                     setQuizAnswers(resetAnswers);
                     setQuizResults([]);

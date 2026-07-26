@@ -48,6 +48,10 @@ Use only `PASS`, `PASS_WITH_WARNINGS`, `FAIL`, `BLOCKED`, or `INCONCLUSIVE`. Eac
 
 If a product issue is found, preserve evidence and report the minimal reproduction, likely frontend/backend area, risk and smallest proposed fix; do not change code unless the user explicitly authorizes testing and fixing. If regression authoring was requested, generate the test only after a stable live path exists; do not commit unless explicitly asked.
 
+## Quiz retake locator rule
+
+For isolated quiz retakes, use `quiz-question-<questionId>`, `quiz-option-<questionId>-<option>`, `quiz-submit`, `quiz-retake`, and `quiz-score`. Read answer fixtures from sandbox metadata; never infer answers from visible option order or result text. Charter example: submit a 40-point attempt once, retake once, submit a 100-point attempt once, then reload and verify the persisted score and completion state.
+
 ## User invocation
 
 `Use EduAgent Browser QA Skill to test <feature>. Check <expectations>. Allow/do not allow <data writes>. Test only; do not modify code.`

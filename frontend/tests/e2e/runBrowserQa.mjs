@@ -68,14 +68,22 @@ async function main() {
     } else if (scenario === 'quiz-retake') {
       await openTask(page, 2, 'Quiz');
       await page.screenshot({ path: resolve(evidence, 'quiz-before-action.png'), fullPage: true });
-      await page.getByRole('button', { name: '生成小测' }).click();
-      const answers = page.getByRole('button', { name: /^A/ });
-      await answers.first().waitFor({ timeout: 15000 });
-      for (let i = 0; i < await answers.count(); i += 1) await answers.nth(i).click();
-      await page.getByRole('button', { name: '提交批改' }).click();
-      await page.getByRole('button', { name: '重新答题' }).click();
-      for (let i = 0; i < await answers.count(); i += 1) await answers.nth(i).click();
-      await page.getByRole('button', { name: '提交批改' }).click();
+      const submitStatuses = [];
+      page.on('response', (response) => { if (safePath(response.url()).endsWith(`/tasks/${meta.quizTaskId}/quiz/submit`)) submitStatuses.push(response.status()); });
+      const answer = async (fixture) => { for (const [questionId, option] of Object.entries(fixture)) await page.getByTestId(`quiz-option-${questionId}-${option}`).click(); };
+      await page.getByTestId(`quiz-question-${Object.keys(meta.quizAnswers.correct)[0]}`).waitFor({ timeout: 15000 });
+      await answer(meta.quizAnswers.firstRound);
+      await page.getByTestId('quiz-submit').click();
+      await page.waitForFunction(() => document.querySelector('[data-testid="quiz-score"]')?.textContent?.trim() === '40');
+      if (submitStatuses.length !== 1 || submitStatuses[0] !== 200) throw new Error(`QUIZ_FIRST_SUBMIT: ${submitStatuses.join(',')}`);
+      await page.getByTestId('quiz-retake').click();
+      await answer(meta.quizAnswers.correct);
+      await page.getByTestId('quiz-submit').click();
+      await page.waitForFunction(() => document.querySelector('[data-testid="quiz-score"]')?.textContent?.trim() === '100');
+      if (submitStatuses.length !== 2 || submitStatuses.some((status) => status !== 200)) throw new Error(`QUIZ_SECOND_SUBMIT: ${submitStatuses.join(',')}`);
+      await page.reload();
+      await page.waitForFunction(() => document.querySelector('[data-testid="quiz-score"]')?.textContent?.trim() === '100');
+      await writeFile(resolve(evidence, 'quiz-summary.json'), JSON.stringify({ firstScore: 40, secondScore: 100, submitStatuses }, null, 2));
     } else if (scenario === 'video-fallback') {
       await openTask(page, 3, 'Video');
       await page.getByRole('button', { name: '切换为图文讲解' }).click();
