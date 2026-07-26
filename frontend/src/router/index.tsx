@@ -1,27 +1,38 @@
+import { lazy, Suspense, type ComponentType } from 'react';
 import { createBrowserRouter, Navigate } from 'react-router-dom';
 import AppLayout from '../components/layout/AppLayout';
-import Home from '../pages/Home';
-import ChatPage from '../pages/ChatPage';
-import ResourceLibrary from '../pages/ResourceLibrary';
-import LearningPathPage from '../pages/LearningPathPage';
-import ProfilePage from '../pages/ProfilePage';
-import LearningAnalyticsPage from '../pages/LearningAnalyticsPage';
-import LearningTimelinePage from '../pages/LearningTimelinePage';
-import KnowledgeGraphPage from '../pages/KnowledgeGraphPage';
-import PracticePage from '../pages/PracticePage';
-import ResourceGenerationPage from '../pages/ResourceGenerationPage';
-import ConversationHistoryPage from '../pages/ConversationHistoryPage';
-import SettingsPage from '../pages/SettingsPage';
-import AdminDashboard from '../pages/AdminDashboard';
-import ReviewQueuePage from '../pages/ReviewQueuePage';
-import TeacherHome from '../pages/TeacherHome';
-import TeacherClassDetail from '../pages/TeacherClassDetail';
-import LoginPage from '../pages/LoginPage';
-import LecturePage from '../pages/LecturePage';
-import TextbookViewPage from '../pages/TextbookViewPage';
-import TaskPage from '../pages/TaskPage';
-import NotFound from '../pages/NotFound';
+import ErrorBoundary from '../components/common/ErrorBoundary';
 import { useAuthStore } from '../store/authStore';
+
+const Home = lazy(() => import('../pages/Home'));
+const ChatPage = lazy(() => import('../pages/ChatPage'));
+const ResourceLibrary = lazy(() => import('../pages/ResourceLibrary'));
+const LearningPathPage = lazy(() => import('../pages/LearningPathPage'));
+const ProfilePage = lazy(() => import('../pages/ProfilePage'));
+const LearningAnalyticsPage = lazy(() => import('../pages/LearningAnalyticsPage'));
+const LearningTimelinePage = lazy(() => import('../pages/LearningTimelinePage'));
+const KnowledgeGraphPage = lazy(() => import('../pages/KnowledgeGraphPage'));
+const PracticePage = lazy(() => import('../pages/PracticePage'));
+const ResourceGenerationPage = lazy(() => import('../pages/ResourceGenerationPage'));
+const ConversationHistoryPage = lazy(() => import('../pages/ConversationHistoryPage'));
+const SettingsPage = lazy(() => import('../pages/SettingsPage'));
+const AdminDashboard = lazy(() => import('../pages/AdminDashboard'));
+const ReviewQueuePage = lazy(() => import('../pages/ReviewQueuePage'));
+const TeacherHome = lazy(() => import('../pages/TeacherHome'));
+const TeacherClassDetail = lazy(() => import('../pages/TeacherClassDetail'));
+const LoginPage = lazy(() => import('../pages/LoginPage'));
+const LecturePage = lazy(() => import('../pages/LecturePage'));
+const TextbookViewPage = lazy(() => import('../pages/TextbookViewPage'));
+const TaskPage = lazy(() => import('../pages/TaskPage'));
+const NotFound = lazy(() => import('../pages/NotFound'));
+
+function RouteLoading() {
+  return <div role="status" className="flex min-h-[40vh] items-center justify-center text-sm text-surface-400">Loading page…</div>;
+}
+
+function lazyRoute(Page: ComponentType) {
+  return <ErrorBoundary><Suspense fallback={<RouteLoading />}><Page /></Suspense></ErrorBoundary>;
+}
 
 /** 登录守卫：未登录跳转到 /login，加载中显示等待状态 */
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -58,7 +69,7 @@ function RequireStudent({ children }: { children: React.ReactNode }) {
 const router = createBrowserRouter([
   {
     path: '/login',
-    element: <LoginPage />,
+    element: lazyRoute(LoginPage),
   },
   {
     path: '/',
@@ -68,29 +79,29 @@ const router = createBrowserRouter([
       </RequireAuth>
     ),
     children: [
-      { index: true, element: <Home /> },
-      { path: 'chat', element: <RequireStudent><ChatPage /></RequireStudent> },
-      { path: 'lecture/:chapterId', element: <RequireStudent><LecturePage /></RequireStudent> },
-      { path: 'lecture/section/:sectionId', element: <RequireStudent><LecturePage /></RequireStudent> },
-      { path: 'textbook/:subjectId', element: <RequireStudent><TextbookViewPage /></RequireStudent> },
-      { path: 'resources', element: <RequireStudent><ResourceLibrary /></RequireStudent> },
-      { path: 'resources/:id', element: <RequireStudent><ResourceLibrary /></RequireStudent> },
-      { path: 'task/:taskId', element: <RequireStudent><TaskPage /></RequireStudent> },
-      { path: 'kg', element: <RequireStudent><KnowledgeGraphPage /></RequireStudent> },
-      { path: 'path', element: <RequireStudent><LearningPathPage /></RequireStudent> },
-      { path: 'learning-path', element: <RequireStudent><LearningPathPage /></RequireStudent> },
-      { path: 'profile', element: <RequireStudent><ProfilePage /></RequireStudent> },
-      { path: 'analytics', element: <RequireStudent><LearningAnalyticsPage /></RequireStudent> },
-      { path: 'timeline', element: <RequireStudent><LearningTimelinePage /></RequireStudent> },
-      { path: 'generate', element: <RequireStudent><ResourceGenerationPage /></RequireStudent> },
-      { path: 'practice', element: <RequireStudent><PracticePage /></RequireStudent> },
-      { path: 'history', element: <RequireStudent><ConversationHistoryPage /></RequireStudent> },
-      { path: 'settings', element: <SettingsPage /> },
-      { path: 'admin', element: <AdminDashboard /> },
-      { path: 'review-queue', element: <ReviewQueuePage /> },
-      { path: 'teacher', element: <TeacherHome /> },
-      { path: 'teacher/classes/:id', element: <TeacherClassDetail /> },
-      { path: '*', element: <NotFound /> },
+      { index: true, element: lazyRoute(Home) },
+      { path: 'chat', element: <RequireStudent>{lazyRoute(ChatPage)}</RequireStudent> },
+      { path: 'lecture/:chapterId', element: <RequireStudent>{lazyRoute(LecturePage)}</RequireStudent> },
+      { path: 'lecture/section/:sectionId', element: <RequireStudent>{lazyRoute(LecturePage)}</RequireStudent> },
+      { path: 'textbook/:subjectId', element: <RequireStudent>{lazyRoute(TextbookViewPage)}</RequireStudent> },
+      { path: 'resources', element: <RequireStudent>{lazyRoute(ResourceLibrary)}</RequireStudent> },
+      { path: 'resources/:id', element: <RequireStudent>{lazyRoute(ResourceLibrary)}</RequireStudent> },
+      { path: 'task/:taskId', element: <RequireStudent>{lazyRoute(TaskPage)}</RequireStudent> },
+      { path: 'kg', element: <RequireStudent>{lazyRoute(KnowledgeGraphPage)}</RequireStudent> },
+      { path: 'path', element: <RequireStudent>{lazyRoute(LearningPathPage)}</RequireStudent> },
+      { path: 'learning-path', element: <RequireStudent>{lazyRoute(LearningPathPage)}</RequireStudent> },
+      { path: 'profile', element: <RequireStudent>{lazyRoute(ProfilePage)}</RequireStudent> },
+      { path: 'analytics', element: <RequireStudent>{lazyRoute(LearningAnalyticsPage)}</RequireStudent> },
+      { path: 'timeline', element: <RequireStudent>{lazyRoute(LearningTimelinePage)}</RequireStudent> },
+      { path: 'generate', element: <RequireStudent>{lazyRoute(ResourceGenerationPage)}</RequireStudent> },
+      { path: 'practice', element: <RequireStudent>{lazyRoute(PracticePage)}</RequireStudent> },
+      { path: 'history', element: <RequireStudent>{lazyRoute(ConversationHistoryPage)}</RequireStudent> },
+      { path: 'settings', element: lazyRoute(SettingsPage) },
+      { path: 'admin', element: lazyRoute(AdminDashboard) },
+      { path: 'review-queue', element: lazyRoute(ReviewQueuePage) },
+      { path: 'teacher', element: lazyRoute(TeacherHome) },
+      { path: 'teacher/classes/:id', element: lazyRoute(TeacherClassDetail) },
+      { path: '*', element: lazyRoute(NotFound) },
     ],
   },
 ]);

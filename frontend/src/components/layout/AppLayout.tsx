@@ -1,10 +1,12 @@
-import { createContext, useContext, useState } from 'react';
+import { createContext, lazy, Suspense, useContext, useState } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import { MessageSquare } from 'lucide-react';
 import { ToastProvider } from '../common/Toast';
 import ConsoleSidebar from './ConsoleSidebar';
 import Header from './Header';
-import ChatPanel from '../chat/ChatPanel';
+import ErrorBoundary from '../common/ErrorBoundary';
+
+const ChatPanel = lazy(() => import('../chat/ChatPanel'));
 
 const ChatPanelCtx = createContext<{ open: boolean; setOpen: (v: boolean) => void; toggle: () => void }>({ open: false, setOpen: () => {}, toggle: () => {} });
 export const useChatPanel = () => useContext(ChatPanelCtx);
@@ -57,7 +59,7 @@ export default function AppLayout() {
           <MessageSquare size={22} />
         </button>
       )}
-      {showChat && <ChatPanel open={chatOpen} onClose={() => setChatOpen(false)} panelWidth={panelWidth} onWidthChange={setPanelWidth} />}
+      {showChat && chatOpen && <ErrorBoundary><Suspense fallback={<div data-testid="chat-loading" className="fixed bottom-6 right-6 z-50 rounded-xl bg-white px-4 py-3 text-sm text-surface-500 shadow-soft">正在加载对话…</div>}><ChatPanel open onClose={() => setChatOpen(false)} panelWidth={panelWidth} onWidthChange={setPanelWidth} /></Suspense></ErrorBoundary>}
     </ToastProvider>
     </ChatPanelCtx.Provider>
   );

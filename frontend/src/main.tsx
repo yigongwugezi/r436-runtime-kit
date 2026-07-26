@@ -6,6 +6,7 @@ import router from './router';
 import { setSessionIdProvider } from './api/client';
 import { useChatStore } from './store/chatStore';
 import { useAuthStore } from './store/authStore';
+import ErrorBoundary from './components/common/ErrorBoundary';
 
 // 注册 sessionId 提供者，使 API 层可以统一获取当前会话
 setSessionIdProvider(() => useChatStore.getState().dataSessionId || '');
@@ -15,6 +16,8 @@ useAuthStore.getState().restore();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <RouterProvider router={router} />
+    <ErrorBoundary>
+      <RouterProvider router={router} />
+    </ErrorBoundary>
   </StrictMode>,
 );
