@@ -9973,7 +9973,13 @@ def get_section_mindmap(section_id: str, sessionId: str = "") -> dict[str, Any]:
     from app.services.chapter_mindmap_resources import ChapterMindmapResourceService
     try:
         db = SessionLocal()
-        resource = ChapterMindmapResourceService().existing(db, session_id, section_id)
+        resource = db.query(ResourceModel).filter(
+            ResourceModel.session_id == session_id,
+            ResourceModel.type == "mindmap",
+            ResourceModel.related_section_id == section_id,
+        ).order_by(ResourceModel.updated_at.desc()).first()
+        if resource is None:
+            resource = ChapterMindmapResourceService().existing(db, session_id, section_id)
         return _product_response({"mindmap": ChapterMindmapResourceService.serialize(resource) if resource else None}, session_id=session_id, source="db")
     finally:
         db.close()

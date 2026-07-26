@@ -22,7 +22,7 @@ function cleanNodeLabel(value: string) {
   return cleaned.length > 34 ? `${cleaned.slice(0, 32)}…` : cleaned;
 }
 
-function mermaidMindmapToMarkdown(definition: string) {
+export function mermaidMindmapToMarkdown(definition: string) {
   const trimmed = definition.trim();
   if (trimmed.startsWith('#') || trimmed.startsWith('- ')) return definition;
 
@@ -47,26 +47,39 @@ export default function MarkmapDiagram({ definition, className }: MarkmapDiagram
   const markdown = useMemo(() => mermaidMindmapToMarkdown(definition), [definition]);
 
   useEffect(() => {
-    if (!svgRef.current) return;
+    const svg = svgRef.current;
+    if (!svg || !definition.trim()) return;
     const transformer = new Transformer();
     const { root } = transformer.transform(markdown);
+    const markmap = Markmap.create(svg, { autoFit: false, duration: 0, maxWidth: 200, paddingX: 12 });
+    markmapRef.current = markmap;
+    let active = true;
+    let frame = 0;
+    const fit = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const { width, height } = svg.getBoundingClientRect();
+        if (width && height) void markmap.fit();
+      });
+    };
+    void markmap.setData(root).then(() => { if (active) { svg.dataset.mindmapReady = 'true'; fit(); } });
+    const observer = new ResizeObserver(fit);
+    observer.observe(svg);
+    return () => {
+      active = false;
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      markmap.destroy();
+      delete svg.dataset.mindmapReady;
+      if (markmapRef.current === markmap) markmapRef.current = null;
+    };
+  }, [definition, markdown]);
 
-    if (!markmapRef.current) {
-      markmapRef.current = Markmap.create(svgRef.current, {
-        autoFit: true,
-        duration: 250,
-        maxWidth: 200,
-        paddingX: 12,
-      }, root);
-    } else {
-      markmapRef.current.setData(root);
-    }
-    markmapRef.current.fit();
-  }, [markdown]);
+  if (!definition.trim()) return <div data-testid="mindmap-empty-state" className={className}>暂无思维导图</div>;
 
   return (
-    <div className={`h-[480px] min-w-[560px] ${className || ''}`}>
-      <svg ref={svgRef} className="h-full w-full" />
+    <div data-testid="mindmap-container" className={`h-[480px] min-w-[560px] ${className || ''}`}>
+      <svg ref={svgRef} data-testid="mindmap-svg" className="h-full w-full" />
     </div>
   );
 }

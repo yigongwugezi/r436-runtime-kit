@@ -58,10 +58,43 @@ async function main() {
       for (let i = 0; i < 3; i += 1) { const start = Date.now(); await page.reload(); await page.waitForFunction((title) => document.body.innerText.includes(title), 'Data Structures'); timings.push(Date.now() - start); }
       await writeFile(resolve(evidence, 'performance.json'), JSON.stringify({ pathVisibleMs: timings }, null, 2));
     } else if (scenario === 'mindmap') {
+      const openedAt = Date.now();
       await openTask(page, 4, 'Mind map');
-      await page.waitForSelector('svg', { timeout: 15000 });
-      const box = await page.locator('svg').first().boundingBox();
-      if (!box || box.width < 100 || box.height < 100) throw new Error('VISUAL_LAYOUT_ERROR: invalid mindmap bounds');
+      const host = page.getByTestId('mindmap-container');
+      const svg = page.getByTestId('mindmap-svg');
+      await svg.waitFor({ timeout: 15000 });
+      await page.waitForFunction(() => document.querySelector('[data-testid="mindmap-svg"]')?.dataset.mindmapReady === 'true');
+      const diagnostics = await svg.evaluate((element, start) => {
+        const box = element.getBoundingClientRect();
+        const content = element.querySelector(':scope > g');
+        const contentBox = content?.getBoundingClientRect();
+        const nodes = [...element.querySelectorAll('g.markmap-node')].map((node) => {
+          const rect = node.getBoundingClientRect();
+          return { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) };
+        });
+        const ys = nodes.map((node) => node.y);
+        const overlapCount = nodes.reduce((count, node, index) => count + nodes.slice(index + 1).filter((other) => node.x < other.x + other.width && other.x < node.x + node.width && node.y < other.y + other.height && other.y < node.y + node.height).length, 0);
+        return {
+          container: { width: Math.round(box.width), height: Math.round(box.height) },
+          svg: { width: element.getAttribute('width'), height: element.getAttribute('height'), viewBox: element.getAttribute('viewBox') },
+          content: contentBox ? { width: Math.round(contentBox.width), height: Math.round(contentBox.height), transform: content?.getAttribute('transform') || '' } : null,
+          nodeCount: nodes.length,
+          nodes,
+          ySpread: ys.length ? Math.max(...ys) - Math.min(...ys) : 0,
+          overlapCount,
+          firstVisibleMs: Date.now() - start,
+        };
+      }, openedAt);
+      await page.screenshot({ path: resolve(evidence, 'mindmap-full.png'), fullPage: true });
+      await svg.screenshot({ path: resolve(evidence, 'mindmap-region.png') });
+      await writeFile(resolve(evidence, 'mindmap-host.html'), await host.evaluate((element) => element.outerHTML));
+      await writeFile(resolve(evidence, 'mindmap-svg.svg'), await svg.evaluate((element) => element.outerHTML));
+      await writeFile(resolve(evidence, 'mindmap-diagnostics.json'), JSON.stringify(diagnostics, null, 2));
+      await writeFile(resolve(evidence, 'console-summary.txt'), [...events.console, ...events.pageErrors].join('\n'));
+      await writeFile(resolve(evidence, 'network-summary.json'), JSON.stringify(events.network, null, 2));
+      if (diagnostics.container.width < 100 || diagnostics.container.height < 100 || !diagnostics.content || diagnostics.content.width < 100 || diagnostics.content.height < 100 || diagnostics.nodeCount < 2 || diagnostics.ySpread < 20 || diagnostics.overlapCount) throw new Error(`VISUAL_LAYOUT_ERROR: ${JSON.stringify(diagnostics)}`);
+      await page.reload();
+      await page.waitForFunction(() => document.querySelector('[data-testid="mindmap-svg"]')?.dataset.mindmapReady === 'true');
     } else if (scenario === 'zero-diff') {
       const actions = page.getByRole('button', { name: /确认调整|拒绝调整/ });
       if (await actions.count()) throw new Error('ZERO_DIFF_ACTIONS_VISIBLE');
