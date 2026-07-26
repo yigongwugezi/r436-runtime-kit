@@ -1,0 +1,87 @@
+"""Create a disposable, deterministic database for browser QA.
+
+Usage: python backend/scripts/seed_browser_qa.py --db .qa/runtime/run/qa.db
+The caller supplies a unique path; this script never discovers or touches a
+normal development database.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+
+IDS = {
+    "learner": "qa-learner", "subject": "qa-data-structures", "session": "qa-session",
+    "path": "qa-path", "quiz": "qa-quiz", "mindmap": "qa-mindmap", "video": "qa-video",
+}
+
+
+def seed(db_path: Path) -> dict[str, object]:
+    db_path = db_path.resolve()
+    if db_path.suffix != ".db" or ".qa" not in db_path.parts:
+        raise ValueError("QA database must be a .db file under .qa")
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    if db_path.exists():
+        db_path.unlink()
+    os.environ["EDUAGENT_SKIP_ENV_FILE"] = "1"
+    os.environ["DATABASE_URL"] = f"sqlite:///{db_path.as_posix()}"
+    os.environ.setdefault("LLM_PROVIDER", "mock")
+    os.environ.setdefault("RAG_ENABLED", "false")
+
+    from app.db import SessionLocal, init_db
+    from app.db.models import (CurrentLearningPathModel, LearnerModel, PersonalSubjectModel,
+                               PracticeQuestionModel, QuizModel, ResourceModel)
+    from app.db.repository import get_or_create_session, upsert_learning_path
+
+    init_db()
+    days = [
+        {"id": "qa-day-read", "globalDayIndex": 1, "tasks": [{"id": "qa-read", "type": "read_doc", "title": "Reading", "status": "available"}]},
+        {"id": "qa-day-quiz", "globalDayIndex": 2, "tasks": [{"id": "qa-quiz-task", "type": "quiz_prac", "title": "Quiz", "status": "available"}]},
+        {"id": "qa-day-video", "globalDayIndex": 3, "tasks": [{"id": "qa-video-task", "type": "video", "title": "Video", "status": "available"}]},
+        {"id": "qa-day-mindmap", "globalDayIndex": 4, "tasks": [{"id": "qa-mindmap-task", "type": "read_doc", "title": "Mind map", "status": "available"}]},
+    ]
+    path_data = {
+        "id": IDS["path"], "subject_id": IDS["subject"], "course_name": "Data Structures",
+        "estimatedDays": 4, "stages": [{"id": "qa-stage", "title": "QA fixtures", "days": days}],
+        "pending_revision": {"revision_id": "qa-zero-diff", "status": "ready_for_review", "path_id": IDS["path"], "subject_id": IDS["subject"], "diff": {"changed_stages": [], "changed_tasks": [], "total_duration_change": 0}},
+    }
+    db = SessionLocal()
+    try:
+        db.add(LearnerModel(id=IDS["learner"], nickname="Browser QA", role="student"))
+        db.commit()
+        db.add(PersonalSubjectModel(id=IDS["subject"], learner_id=IDS["learner"], name="Data Structures"))
+        db.commit()
+        get_or_create_session(db, IDS["session"], learner_id=IDS["learner"], subject_id=IDS["subject"])
+        path = upsert_learning_path(db, IDS["session"], path_data)
+        db.add(CurrentLearningPathModel(learner_id=IDS["learner"], session_id=IDS["session"], subject_id=IDS["subject"], path_id=path.id))
+        db.add_all([
+            ResourceModel(id="qa-reading", session_id=IDS["session"], learner_id=IDS["learner"], subject_id=IDS["subject"], path_id=path.id, type="lecture", title="QA reading", content="# Reading\nFixture content", related_section_id="qa-read", task_id="qa-read"),
+            ResourceModel(id=IDS["video"], session_id=IDS["session"], learner_id=IDS["learner"], subject_id=IDS["subject"], path_id=path.id, type="video", title="QA video", content="https://example.invalid/qa-video", related_section_id="qa-video-task", task_id="qa-video-task", resource_metadata={"deliveryMode": "video", "fallback": "qa-reading"}),
+            ResourceModel(id=IDS["mindmap"], session_id=IDS["session"], learner_id=IDS["learner"], subject_id=IDS["subject"], path_id=path.id, type="mindmap", title="QA mind map", format="graph_data", related_section_id="qa-mindmap-task", task_id="qa-mindmap-task", mermaid_def="mindmap\n  root((Data Structures))\n    Arrays\n      Search\n      Insert\n    Trees\n      Traverse\n      Balance"),
+        ])
+        questions = []
+        for index, correct in enumerate("ABCDE", 1):
+            qid = f"qa-q{index}"
+            questions.append({"question_id": qid, "type": "choice", "stem_abbr": f"Question {index}"})
+            db.add(PracticeQuestionModel(question_id=qid, question_set_id=IDS["quiz"], session_id=IDS["session"], stem=f"Question {index}", options={"A": "A", "B": "B", "C": "C", "D": "D", "E": "E"}, correct=correct, explanation="Deterministic QA fixture"))
+        db.add(QuizModel(id=IDS["quiz"], title="QA Quiz", session_id=IDS["session"], scope_type="path", scope_id=path.id, path_id=path.id, question_count=5, questions=questions, source="rule_based_fallback"))
+        db.commit()
+    finally:
+        db.close()
+    return {"database": str(db_path), "ids": IDS, "scenarios": ["path", "quiz", "video", "mindmap", "zero-diff-revision"]}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--db", required=True, type=Path)
+    print(json.dumps(seed(parser.parse_args().db), ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()

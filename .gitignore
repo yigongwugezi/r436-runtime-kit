@@ -57,5 +57,6 @@ screenshots/
 .claude/
 frontend/test-results/dynamic-qa/
 frontend/.qa-auth/
+.qa/runtime/
 .reasonix/
 backend/asset/

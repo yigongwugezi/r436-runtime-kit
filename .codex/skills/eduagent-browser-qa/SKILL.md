@@ -13,6 +13,8 @@ Before opening a browser, write `charter.md` in `frontend/test-results/dynamic-q
 
 Default to `READ_ONLY`: do not mutate data, complete tasks, generate resources, regenerate paths, delete resources, change code, commit, or push. If a flow needs a mutation, use `SAFE_MUTATION` only with explicit permission, test data or an isolated database/account, an idempotency key where supported, and a cleanup/isolation plan. Otherwise return `BLOCKED`; never touch formal production state. Never log cookies, authorization headers, or tokens.
 
+Choose one data mode in every charter. `EXISTING_LOCAL_DATA` is read-only and is only for an explicitly requested existing local state. `ISOLATED_QA_SANDBOX` is the default for mutations, retries, regression flows, and when no safe existing state exists: run `npm run qa:browser:prepare`, point the backend's `DATABASE_URL` at the emitted `.qa/runtime/.../qa.db`, and use its deterministic IDs. A sandbox failure—not missing manual preparation—is the only reason to report `BLOCKED` for test data.
+
 Modes:
 - `READ_ONLY`: navigation, rendering, refresh, existing-state checks, performance, console/network inspection only.
 - `SAFE_MUTATION`: explicitly authorized, isolated test-data writes; record request/response status and verify persistence after reload.

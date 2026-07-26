@@ -8,6 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "test:e2e": "node --test --test-concurrency=1 tests/e2e/*.test.mjs",
+    "qa:browser:prepare": "python ../backend/scripts/seed_browser_qa.py --db ../.qa/runtime/browser-qa/qa.db",
+    "qa:browser:reset": "npm run qa:browser:prepare",
     "preview": "vite preview"
   },
   "dependencies": {
