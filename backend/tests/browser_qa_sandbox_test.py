@@ -12,6 +12,8 @@ def main() -> None:
         db = Path(temp) / ".qa" / "qa.db"
         result = seed(db)
         assert db.exists() and result["ids"] == IDS
+        metadata = __import__("json").loads(Path(result["metadata"]).read_text(encoding="utf-8"))
+        assert metadata["pathId"] == IDS["path"] and not {"token", "password", "cookie", "authorization"} & set(metadata)
         from app.db import SessionLocal
         from app.db.models import LearningPathModel, PracticeQuestionModel
         session = SessionLocal()

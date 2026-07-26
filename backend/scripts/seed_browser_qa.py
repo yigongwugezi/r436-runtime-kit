@@ -74,7 +74,15 @@ def seed(db_path: Path) -> dict[str, object]:
         db.commit()
     finally:
         db.close()
-    return {"database": str(db_path), "ids": IDS, "scenarios": ["path", "quiz", "video", "mindmap", "zero-diff-revision"]}
+    metadata = {
+        "databasePath": str(db_path), "learnerId": IDS["learner"], "subjectId": IDS["subject"],
+        "sessionId": IDS["session"], "pathId": IDS["path"], "readDocTaskId": "qa-read",
+        "quizTaskId": "qa-quiz-task", "videoTaskId": "qa-video-task", "mindMapTaskId": "qa-mindmap-task",
+        "zeroDiffRevisionId": "qa-zero-diff", "scenarios": ["path", "quiz", "video", "mindmap", "zero-diff-revision"],
+    }
+    metadata_path = db_path.parent / "seed-metadata.json"
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"database": str(db_path), "metadata": str(metadata_path), "ids": IDS, "scenarios": metadata["scenarios"]}
 
 
 def main() -> None:
