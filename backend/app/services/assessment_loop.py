@@ -403,6 +403,7 @@ def run_post_quiz_assessment(
     path_id: str = "",
     task_id: str = "",
     attempt_id: str = "",
+    skip_revision: bool = False,
 ) -> dict[str, Any]:
     """Run the FULL closed-loop assessment after a quiz is submitted.
 
@@ -533,7 +534,7 @@ def run_post_quiz_assessment(
         new_weak_points = new_diagnosis.get("weak_knowledge_points", [])
         has_actionable_weakness = bool(new_weak_points or weak_points)
         should_adjust = (quiz_score is not None and quiz_score < 60) and (mastery_changed or has_actionable_weakness)
-        if should_adjust:
+        if should_adjust and not skip_revision:
             try:
                 planner_agent = factory.get("planner_agent")
                 if planner_agent is not None:

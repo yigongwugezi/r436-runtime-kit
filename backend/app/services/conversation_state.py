@@ -637,13 +637,19 @@ class ConversationStore:
         subject_id: str = "",
         trigger_source: str = "",
         trigger_id: str = "",
+        revision_id: str = "",
+        idempotency_key: str = "",
+        explainability: dict | None = None,
+        workflow_trace: list[dict] | None = None,
     ) -> dict:
         """存储候选路径供用户确认，不覆盖当前 active path。"""
         state = self.get(session_id)
         if state.pending_revision and state.pending_revision.get("status") == "ready_for_review":
+            if not idempotency_key or state.pending_revision.get("idempotency_key") == idempotency_key:
+                return state.pending_revision
             return state.pending_revision
         revision = {
-            "revision_id": f"rev_{int(time.time() * 1000)}",
+            "revision_id": revision_id or f"rev_{int(time.time() * 1000)}",
             "created_at": time.time(),
             "status": "ready_for_review",
             "reason": reason,
@@ -656,6 +662,9 @@ class ConversationStore:
             "subject_id": subject_id,
             "trigger_source": trigger_source,
             "trigger_id": trigger_id,
+            "idempotency_key": idempotency_key,
+            "explainability": explainability or {},
+            "workflow_trace": workflow_trace or [],
         }
         state.pending_revision = revision
         state.updated_at = time.time()
@@ -705,9 +714,23 @@ class ConversationStore:
         if not state.pending_revision:
             return None
         rev = state.pending_revision
+        canonical_path = None
+        if self._db_enabled and rev.get("path_id"):
+            db = None
+            try:
+                db = self._db_session()
+                from app.db.models import LearningPathModel
+                canonical_path = db.get(LearningPathModel, rev["path_id"])
+                if not canonical_path or canonical_path.session_id != session_id:
+                    canonical_path = None
+                elif isinstance(canonical_path.stages, list):
+                    canonical_path = list(canonical_path.stages)
+            finally:
+                if db is not None:
+                    db.close()
         # 当前路径入历史
         current = dict(state.last_result or {})
-        old_path = current.get("learning_path", [])
+        old_path = canonical_path or current.get("learning_path", [])
         if old_path:
             snapshot = {
                 "version": len(state.path_revisions) + 1,
@@ -719,6 +742,11 @@ class ConversationStore:
         # 应用候选路径
         rev["status"] = "applied"
         rev["decided_at"] = time.time()
+        rev.setdefault("workflow_trace", []).extend([
+            {"stage": "REVISION_ACCEPTED", "status": "completed", "durationMs": 0, "service": "ConversationStore", "inputSummary": "learner accepted", "outputSummary": "revision accepted", "fallbackUsed": False, "errorCode": ""},
+            {"stage": "REVISION_APPLIED", "status": "completed", "durationMs": 0, "service": "ConversationStore", "inputSummary": "canonical path", "outputSummary": "review task applied", "fallbackUsed": False, "errorCode": ""},
+        ])
+        state.path_revisions.append({"revision_id": rev.get("revision_id"), "status": "applied", "decided_at": rev["decided_at"], "explainability": rev.get("explainability", {}), "workflow_trace": rev.get("workflow_trace", [])})
         current["learning_path"] = _preserve_task_progress(old_path, rev["proposed_stages"])
         current["version"] = int(time.time() * 1000)
         state.last_result = current
@@ -731,7 +759,7 @@ class ConversationStore:
                 from app.db.models import LearningPathModel
                 existing = (
                     db.query(LearningPathModel)
-                    .filter(LearningPathModel.session_id == session_id)
+                    .filter(LearningPathModel.id == rev.get("path_id"), LearningPathModel.session_id == session_id)
                     .order_by(LearningPathModel.updated_at.desc())
                     .first()
                 )
@@ -752,8 +780,11 @@ class ConversationStore:
         """用户拒绝候选路径。"""
         state = self.get(session_id)
         if state.pending_revision:
-            state.pending_revision["status"] = "rejected"
-            state.pending_revision["decided_at"] = time.time()
+            revision = state.pending_revision
+            revision["status"] = "rejected"
+            revision["decided_at"] = time.time()
+            revision.setdefault("workflow_trace", []).append({"stage": "REVISION_REJECTED", "status": "completed", "durationMs": 0, "service": "ConversationStore", "inputSummary": "learner rejected", "outputSummary": "path unchanged", "fallbackUsed": False, "errorCode": ""})
+            state.path_revisions.append({"revision_id": revision.get("revision_id"), "status": "rejected", "decided_at": revision["decided_at"], "explainability": revision.get("explainability", {}), "workflow_trace": revision.get("workflow_trace", [])})
             state.pending_revision = None
             state.updated_at = time.time()
             if self._db_enabled:
@@ -763,12 +794,13 @@ class ConversationStore:
                     from app.db.models import LearningPathModel
                     path = (
                         db.query(LearningPathModel)
-                        .filter(LearningPathModel.session_id == session_id)
+                        .filter(LearningPathModel.id == revision.get("path_id"), LearningPathModel.session_id == session_id)
                         .order_by(LearningPathModel.updated_at.desc())
                         .first()
                     )
                     if path:
                         path.pending_revision = None
+                        path.path_revisions = state.path_revisions
                         db.commit()
                 finally:
                     if db is not None:
@@ -784,7 +816,10 @@ class ConversationStore:
             try:
                 db = self._db_session()
                 from app.db.models import LearningPathModel
-                existing = db.get(LearningPathModel, f"path_{session_id}")
+                existing = db.query(LearningPathModel).filter(
+                    LearningPathModel.session_id == session_id,
+                    LearningPathModel.pending_revision.isnot(None),
+                ).order_by(LearningPathModel.updated_at.desc()).first()
                 if existing and existing.pending_revision:
                     state.pending_revision = existing.pending_revision
                     return existing.pending_revision

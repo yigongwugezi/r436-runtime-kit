@@ -28,6 +28,7 @@ async function main() {
   const storage = resolve(root, 'frontend/.qa-auth/browser-qa-storage-state.json');
   await mkdir(evidence, { recursive: true });
   await mkdir(resolve(root, 'frontend/.qa-auth'), { recursive: true });
+  await writeFile(resolve(evidence, 'charter.md'), `# Browser QA charter\n\n- Request: explainable adaptive revision v1\n- Goal: verify one failed quiz creates one explainable pending review revision and that accept/reject persist correctly.\n- Mode: SAFE_MUTATION\n- Data: ISOLATED_QA_SANDBOX (${scenario})\n- Permissions: isolated quiz submit and revision decision only; no resource generation or external LLM required.\n- Entry: /path\n- Watched APIs: quiz submit, pending revision, accept/reject, learning path.\n- Expected: one 200 submit, one pending nonzero diff, stable refresh persistence, no duplicate mutation, no console/page/network errors.\n- Evidence: screenshots, trace, network/console summaries, revision summary.\n- Recovery: runner closes only its child processes; sandbox is disposable.\n- PASS: all stated assertions pass. FAIL: product assertion fails. BLOCKED: auth or sandbox cannot start.\n`);
   const events = { console: [], pageErrors: [], network: [], profile: [], reactWarnings: [] };
   const consoleRecordings = [];
   let currentAction = 'initial load';
@@ -149,6 +150,52 @@ async function main() {
     } else if (scenario === 'zero-diff') {
       const actions = page.getByRole('button', { name: /确认调整|拒绝调整/ });
       if (await actions.count()) throw new Error('ZERO_DIFF_ACTIONS_VISIBLE');
+    } else if (scenario === 'adaptive-revision' || scenario === 'adaptive-revision-reject') {
+      const submitPath = `/tasks/${meta.quizTaskId}/quiz/submit`;
+      const requests = [];
+      page.on('response', (response) => { if (safePath(response.url()).endsWith(submitPath)) requests.push(response.status()); });
+      await openTask(page, 2, 'Quiz');
+      await page.getByTestId(`quiz-question-${Object.keys(meta.quizAnswers.correct)[0]}`).waitFor({ timeout: 15000 });
+      for (const [questionId, option] of Object.entries(meta.quizAnswers.firstRound)) await page.getByTestId(`quiz-option-${questionId}-${option}`).click();
+      const submitted = page.waitForResponse((response) => safePath(response.url()).endsWith(submitPath));
+      await page.getByTestId('quiz-submit').click();
+      if ((await submitted).status() !== 200 || requests.length !== 1) throw new Error(`ADAPTIVE_SUBMIT: ${requests.join(',')}`);
+      await page.goto('/path');
+      await page.getByTestId('adaptive-revision-card').waitFor({ timeout: 30000 });
+      const before = await page.evaluate(async ({ sessionId, subjectId, pathId }) => {
+        const headers = { Authorization: `Bearer ${localStorage.edu_token}` };
+        const [revision, path] = await Promise.all([
+          fetch(`/api/learning-path/${encodeURIComponent(sessionId)}/pending-revision?subjectId=${encodeURIComponent(subjectId)}&pathId=${encodeURIComponent(pathId)}`, { headers }),
+          fetch(`/api/learning-path?sessionId=${encodeURIComponent(sessionId)}&subjectId=${encodeURIComponent(subjectId)}&pathId=${encodeURIComponent(pathId)}`, { headers }),
+        ]);
+        return { revision: await revision.json(), path: await path.json() };
+      }, meta);
+      const revision = before.revision.data?.pending_revision ?? before.revision.pending_revision;
+      const added = revision?.explainability?.addedTasks || [];
+      if (!revision || added.length !== 1 || !revision.workflow_trace?.some((item) => item.stage === 'REVISION_PENDING')) throw new Error(`ADAPTIVE_PENDING: ${JSON.stringify(revision)}`);
+      await page.screenshot({ path: resolve(evidence, 'adaptive-pending.png'), fullPage: true });
+      await writeFile(resolve(evidence, 'adaptive-pending.json'), JSON.stringify({ revision, added }, null, 2));
+      const reject = scenario === 'adaptive-revision-reject';
+      await page.getByTestId(reject ? 'adaptive-revision-reject' : 'adaptive-revision-accept').click();
+      await page.getByTestId('adaptive-revision-status').waitFor();
+      await page.reload();
+      await page.waitForFunction((title) => document.body.innerText.includes(title), 'Data Structures');
+      const after = await page.evaluate(async ({ sessionId, subjectId, pathId }) => {
+        const headers = { Authorization: `Bearer ${localStorage.edu_token}` };
+        const [revision, path] = await Promise.all([
+          fetch(`/api/learning-path/${encodeURIComponent(sessionId)}/pending-revision?subjectId=${encodeURIComponent(subjectId)}&pathId=${encodeURIComponent(pathId)}`, { headers }),
+          fetch(`/api/learning-path?sessionId=${encodeURIComponent(sessionId)}&subjectId=${encodeURIComponent(subjectId)}&pathId=${encodeURIComponent(pathId)}`, { headers }),
+        ]);
+        return { revision: await revision.json(), path: await path.json() };
+      }, meta);
+      const stages = (after.path.data?.path ?? after.path.path)?.stages || [];
+      const count = stages.reduce((total, stage) => total + (stage.days?.length
+        ? stage.days.flatMap((day) => day.tasks || [])
+        : stage.tasks || []).filter((task) => task?.task_id === added[0].task_id).length, 0);
+      const pending = after.revision.data?.pending_revision ?? after.revision.pending_revision;
+      if (pending || count !== (reject ? 0 : 1)) throw new Error(`ADAPTIVE_PERSISTENCE: ${JSON.stringify({ reject, count, pending })}`);
+      await page.screenshot({ path: resolve(evidence, 'adaptive-after-decision.png'), fullPage: true });
+      await writeFile(resolve(evidence, 'adaptive-summary.json'), JSON.stringify({ reject, requestStatuses: requests, revisionId: revision.revision_id, addedTaskId: added[0].task_id, count, pending }, null, 2));
     } else if (scenario === 'quiz-retake') {
       currentAction = 'open quiz task';
       await openTask(page, 2, 'Quiz');

@@ -5904,6 +5904,21 @@ def _revision_scope(
     return scope, revision
 
 
+def _revision_outcome(scope: AnalyticsScope, revision_id: str) -> str:
+    """Read a completed decision so repeated clicks remain idempotent."""
+    db = SessionLocal()
+    try:
+        path = db.query(LearningPathModel).filter(
+            LearningPathModel.id == scope.path_id, LearningPathModel.session_id == scope.session_id,
+        ).first()
+        for item in (path.path_revisions if path and isinstance(path.path_revisions, list) else []):
+            if isinstance(item, dict) and item.get("revision_id") == revision_id:
+                return str(item.get("status") or "")
+    finally:
+        db.close()
+    return ""
+
+
 @router.get("/learning-path/{session_id}/pending-revision")
 def get_pending_revision(session_id: str, subjectId: str = "", pathId: str = "", auth: AuthContext = Depends(require_auth)) -> dict[str, Any]:
     """获取待用户确认的路径调整候选。"""
@@ -5925,6 +5940,8 @@ def accept_pending_revision(session_id: str, subjectId: str = "", pathId: str = 
         raise HTTPException(status_code=400, detail="revisionId required")
     _scope, revision = _revision_scope(session_id, subjectId, pathId, revisionId, auth)
     if revision is None:
+        if _revision_outcome(_scope, revisionId) == "applied":
+            return _product_response({"ok": True, "idempotent": True}, session_id=session_id)
         raise HTTPException(status_code=404, detail="No pending revision found")
     if revision.get("status") != "ready_for_review":
         raise HTTPException(status_code=409, detail="revision is not pending")
@@ -6007,6 +6024,8 @@ def reject_pending_revision(session_id: str, subjectId: str = "", pathId: str = 
         raise HTTPException(status_code=400, detail="revisionId required")
     _scope, revision = _revision_scope(session_id, subjectId, pathId, revisionId, auth)
     if revision is None:
+        if _revision_outcome(_scope, revisionId) == "rejected":
+            return _product_response({"ok": True, "idempotent": True}, session_id=session_id)
         raise HTTPException(status_code=404, detail="No pending revision found")
     conversation_store.reject_pending_revision(session_id)
     return _product_response({"ok": True}, session_id=session_id)

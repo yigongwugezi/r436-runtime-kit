@@ -177,7 +177,14 @@ def _runner_assessment_processing(attempt_id: str, quiz_id: str, exam_set_id: st
                 quiz_title=quiz_title,
                 quiz_score=attempt.total_score,
                 weak_points=None,
+                skip_revision=True,
             )
+            from app.services.adaptive_revision import create_failed_quiz_revision
+            revision = create_failed_quiz_revision(db, attempt)
+            if revision:
+                wfm.emit(workflow_task, "stage_completed", "revision_pending", "completed",
+                         label="Review proposal is ready", used_fallback=True,
+                         safe_metadata={"revision_id": revision.get("revision_id", "")})
             wfm.check_cancelled(workflow_task)
             wfm.emit(workflow_task, "stage_completed", "diagnosis", "completed",
                      label="诊断已更新")

@@ -49,7 +49,7 @@ def seed(db_path: Path) -> dict[str, object]:
         {"id": "qa-day-video", "globalDayIndex": 3, "progressStatus": "current", "tasks": [{"id": "qa-stage_d3_a", "type": "video", "title": "Video", "status": "available"}]},
         {"id": "qa-day-mindmap", "globalDayIndex": 4, "progressStatus": "current", "tasks": [{"id": "qa-stage_d4_a", "type": "mindmap", "title": "Mind map", "status": "available"}]},
     ]
-    completed_before = {"quiz-retake": 1, "video-fallback": 2, "mindmap": 3}.get(os.getenv("EDUAGENT_QA_SCENARIO"), 0)
+    completed_before = {"quiz-retake": 1, "adaptive-revision": 1, "adaptive-revision-reject": 1, "video-fallback": 2, "mindmap": 3}.get(os.getenv("EDUAGENT_QA_SCENARIO"), 0)
     for index, day in enumerate(days, 1):
         if index <= completed_before:
             day["progressStatus"] = "completed"
