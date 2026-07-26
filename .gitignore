@@ -52,5 +52,10 @@ outputs/
 playwright-report/
 test-results/
 screenshots/
+.playwright-cli/
+.playwright/
+.claude/
+frontend/test-results/dynamic-qa/
+frontend/.qa-auth/
 .reasonix/
 backend/asset/
