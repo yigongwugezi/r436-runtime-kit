@@ -27,7 +27,7 @@ import { cancelWorkflow, consumeWorkflowEvents, ensureLecture, ensureVideoFallba
 import { createLectureEnsureGuard } from '../utils/lectureEnsureGuard';
 import { completeLearningPathTask, getVideoFallbackState, recordVideoFallbackLectureOpened, recordVideoTaskEvidence, setVideoDeliveryMode as persistVideoDeliveryMode } from '../api/learningPath';
 import { resolveTaskExecutionMode } from '../utils/taskExecutionMode';
-import { generateSectionMindmap, generateSectionResource, getGeneratedSectionResources, getSectionMindmap } from '../api/sectionResources';
+import { generateSectionMindmap, getSectionMindmap } from '../api/sectionResources';
 import type { ChapterMindmap } from '../types/sectionResources';
 import { requestVideoRecommendations, retryVideoRecommendations, videoRecommendationScope } from '../api/videoRecommendations';
 import { resolveCanonicalLearningTaskScope } from '../utils/learningTaskRoute';
@@ -1920,8 +1920,9 @@ function ResourceCardGenerator({ sessionId, section, pathId, stageId, chapterId,
     if (!sessionId || !section?.id || !pathId || !stageId || !taskId) { setGenerated([]); return; }
     let active = true;
     const controller = new AbortController();
-    getGeneratedSectionResources(section.id, sessionId, subjectId, { pathId, stageId, taskId, dayId, globalDayIndex }, controller.signal)
-      .then(items => active && setGenerated(items)).catch(() => active && setGenerated([]));
+    import('../api/sectionResources').then(({ getGeneratedSectionResources }) =>
+      getGeneratedSectionResources(section.id, sessionId, subjectId, { pathId, stageId, taskId, dayId, globalDayIndex }, controller.signal).then(items => active && setGenerated(items)).catch(() => active && setGenerated([]))
+    );
     return () => { active = false; controller.abort(); };
   }, [sessionId, section?.id, subjectId, pathId, stageId, taskId, dayId, globalDayIndex]);
 
@@ -1929,6 +1930,7 @@ function ResourceCardGenerator({ sessionId, section, pathId, stageId, chapterId,
     if (!sessionId || !section) return;
     setGenerating(resourceType);
     try {
+      const { generateSectionResource } = await import('../api/sectionResources');
       const result = await generateSectionResource(section.id, {
         sessionId, resourceType, pathId, stageId, chapterId, sectionTitle: section.title,
         subjectId, knowledgePoints: section.knowledgePoints, lectureContent,

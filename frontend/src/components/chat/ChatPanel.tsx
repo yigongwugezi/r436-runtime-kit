@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useChatStore, detectOrphanedStreaming } from '../../store/chatStore';
 import { useStreamChat } from '../../hooks/useStreamChat';
@@ -12,11 +12,10 @@ import {
   Bot, User, RefreshCw, ChevronDown, XCircle, PanelRightClose, PanelRightOpen, Plus, MessageCircle, History,
 } from 'lucide-react';
 import Markdown from '../../utils/markdown';
+import MarkmapDiagram from '../../utils/markmap';
 import ChatClarification from './ChatClarification';
 import PromptTemplates from './PromptTemplates';
 import VoiceInputButton from '../common/VoiceInputButton';
-
-const MarkmapDiagram = lazy(() => import('../../utils/markmap'));
 
 /* ===================================================================
  * 生成流程管线定义
@@ -130,9 +129,7 @@ function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onCla
               ) : null}
               {msg.multimodalResult?.result?.mermaid && (
                 <div className="mt-2 rounded-lg border border-gray-100 bg-white p-2 overflow-x-auto">
-                  <Suspense fallback={<div role="status" className="p-4 text-center text-[10px] text-gray-400">Loading diagram…</div>}>
-                    <MarkmapDiagram definition={msg.multimodalResult.result.mermaid} />
-                  </Suspense>
+                  <MarkmapDiagram definition={msg.multimodalResult.result.mermaid} />
                 </div>
               )}
               {msg.multimodalResult && msg.multimodalResult.status !== 'completed' && (
