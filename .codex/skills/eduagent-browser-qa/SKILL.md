@@ -5,7 +5,7 @@ description: Run evidence-backed, natural-language browser QA for EduAgent: page
 
 # EduAgent Browser QA
 
-Use this skill when asked to test, verify, inspect, diagnose, regression-test, or debug an EduAgent web flow. Use the installed `playwright-cli` skill and an isolated named session `eduagent-qa-<timestamp>`.
+Use this skill when asked to test, verify, inspect, diagnose, regression-test, or debug an EduAgent web flow. For isolated automation, use `npm --prefix frontend run qa:browser:run -- --scenario <name>`; it starts a normal Node Playwright runner with its own isolated backend/frontend and closes both afterward.
 
 ## Safety first
 
@@ -15,7 +15,7 @@ Default to `READ_ONLY`: do not mutate data, complete tasks, generate resources, 
 
 Choose one data mode in every charter. `EXISTING_LOCAL_DATA` is read-only and is only for an explicitly requested existing local state. `ISOLATED_QA_SANDBOX` is the default for mutations, retries, regression flows, and when no safe existing state exists: run `npm run qa:browser:prepare`, point the backend's `DATABASE_URL` at the emitted `.qa/runtime/.../qa.db`, and use its deterministic IDs. A sandbox failure—not missing manual preparation—is the only reason to report `BLOCKED` for test data.
 
-For `ISOLATED_QA_SANDBOX`, prepare, authenticate, read `seed-metadata.json`, then invoke `frontend/tests/e2e/helpers/bootstrapQaSubject.mjs`. It discovers the seeded subject through the authenticated API, ensures its canonical session, applies the verified subject-store persistence contract, reloads, and verifies the exact path before the charter. Do not hand-click setup or hard-code fixture IDs outside metadata.
+For `ISOLATED_QA_SANDBOX`, the Node runner prepares, authenticates, reads runtime metadata plus `seed-metadata.json`, then invokes `frontend/tests/e2e/helpers/bootstrapQaSubject.mjs`. Do not read credentials from a Playwright CLI `run-code` VM, use `import`/`require` in that VM, hand-click setup, or hard-code fixture IDs outside metadata.
 
 Load `.qa/runtime/.../auth-runtime.json` only at runtime and use `authenticateQaUser.mjs` to call the real login contract, save ignored storageState under `frontend/.qa-auth/`, reload it in a fresh context, and verify `/api/auth/me` before bootstrap. Never print credentials, tokens, cookies, or headers. Retry a stale state through one fresh login; then report `AUTH_ERROR`.
 
@@ -30,7 +30,7 @@ Modes:
 1. Read the relevant frontend route/page/API client and backend router/service without editing. Identify the canonical route, preconditions, safe visible text/role/label/testid locators, watched endpoints, and mutation risk.
 2. Reuse a healthy project service on `127.0.0.1:5173` and `:8000`; do not kill an unknown process. If absent, start only isolated child processes, without backend `--reload`, wait for `/api/health` rather than sleeping, and close only those children afterwards.
 3. Reuse an existing test login fixture or dedicated test account. Storage state belongs under `frontend/.qa-auth/` and is never committed. If authentication is unavailable or expired, report `AUTH_REQUIRED`/`BLOCKED`, not a product failure.
-4. Start `playwright-cli -s=<session> open <url>`, `tracing-start`, and snapshot. Locate via the accessibility snapshot; after every navigation or state change snapshot again. Do not rely on stale refs or a source-only claim.
+4. Let the Node runner collect trace, screenshots, console and network evidence. `playwright-cli` is optional for manual `show`, snapshot and screenshot debugging only; it is not the automation runner.
 5. Save full-page and relevant-region screenshots, trace, network summary, console summary, performance JSON, `summary.json`, and `result.md` in the evidence directory. Record method, path (redacted query), status, duration, initiator/step and count.
 6. Close the named session and only processes started by this run.
 

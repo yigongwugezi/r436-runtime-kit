@@ -43,11 +43,18 @@ def seed(db_path: Path) -> dict[str, object]:
 
     init_db()
     days = [
-        {"id": "qa-day-read", "globalDayIndex": 1, "tasks": [{"id": "qa-read", "type": "read_doc", "title": "Reading", "status": "available"}]},
-        {"id": "qa-day-quiz", "globalDayIndex": 2, "tasks": [{"id": "qa-quiz-task", "type": "quiz_prac", "title": "Quiz", "status": "available"}]},
-        {"id": "qa-day-video", "globalDayIndex": 3, "tasks": [{"id": "qa-video-task", "type": "video", "title": "Video", "status": "available"}]},
-        {"id": "qa-day-mindmap", "globalDayIndex": 4, "tasks": [{"id": "qa-mindmap-task", "type": "read_doc", "title": "Mind map", "status": "available"}]},
+        {"id": "qa-day-read", "globalDayIndex": 1, "progressStatus": "current", "tasks": [{"id": "qa-stage_d1_a", "type": "read_doc", "title": "Reading", "status": "available"}]},
+        {"id": "qa-day-quiz", "globalDayIndex": 2, "progressStatus": "current", "tasks": [{"id": "qa-stage_d2_a", "type": "quiz_prac", "title": "Quiz", "status": "available"}]},
+        {"id": "qa-day-video", "globalDayIndex": 3, "progressStatus": "current", "tasks": [{"id": "qa-stage_d3_a", "type": "video", "title": "Video", "status": "available"}]},
+        {"id": "qa-day-mindmap", "globalDayIndex": 4, "progressStatus": "current", "tasks": [{"id": "qa-stage_d4_a", "type": "mindmap", "title": "Mind map", "status": "available"}]},
     ]
+    completed_before = {"quiz-retake": 1, "video-fallback": 2, "mindmap": 3}.get(os.getenv("EDUAGENT_QA_SCENARIO"), 0)
+    for index, day in enumerate(days, 1):
+        if index <= completed_before:
+            day["progressStatus"] = "completed"
+            day["tasks"][0]["status"] = "completed"
+        elif index > completed_before + 1:
+            day["progressStatus"] = "locked"
     path_data = {
         "id": IDS["path"], "subject_id": IDS["subject"], "course_name": "Data Structures",
         "estimatedDays": 4, "stages": [{"id": "qa-stage", "title": "QA fixtures", "days": days}],
@@ -64,9 +71,9 @@ def seed(db_path: Path) -> dict[str, object]:
         path = upsert_learning_path(db, IDS["session"], path_data)
         db.add(CurrentLearningPathModel(learner_id=IDS["learner"], session_id=IDS["session"], subject_id=IDS["subject"], path_id=path.id))
         db.add_all([
-            ResourceModel(id="qa-reading", session_id=IDS["session"], learner_id=IDS["learner"], subject_id=IDS["subject"], path_id=path.id, type="lecture", title="QA reading", content="# Reading\nFixture content", related_section_id="qa-read", task_id="qa-read"),
-            ResourceModel(id=IDS["video"], session_id=IDS["session"], learner_id=IDS["learner"], subject_id=IDS["subject"], path_id=path.id, type="video", title="QA video", content="https://example.invalid/qa-video", related_section_id="qa-video-task", task_id="qa-video-task", resource_metadata={"deliveryMode": "video", "fallback": "qa-reading"}),
-            ResourceModel(id=IDS["mindmap"], session_id=IDS["session"], learner_id=IDS["learner"], subject_id=IDS["subject"], path_id=path.id, type="mindmap", title="QA mind map", format="graph_data", related_section_id="qa-mindmap-task", task_id="qa-mindmap-task", mermaid_def="mindmap\n  root((Data Structures))\n    Arrays\n      Search\n      Insert\n    Trees\n      Traverse\n      Balance"),
+            ResourceModel(id="qa-reading", session_id=IDS["session"], learner_id=IDS["learner"], subject_id=IDS["subject"], path_id=path.id, type="lecture", title="QA reading", content="# Reading\nFixture content", related_section_id="qa-stage_d1_a", task_id="qa-stage_d1_a"),
+            ResourceModel(id=IDS["video"], session_id=IDS["session"], learner_id=IDS["learner"], subject_id=IDS["subject"], path_id=path.id, type="video", title="QA video", content="https://example.invalid/qa-video", related_section_id="qa-stage_d3_a", task_id="qa-stage_d3_a", resource_metadata={"deliveryMode": "video", "fallback": "qa-reading"}),
+            ResourceModel(id=IDS["mindmap"], session_id=IDS["session"], learner_id=IDS["learner"], subject_id=IDS["subject"], path_id=path.id, type="mindmap", title="QA mind map", format="graph_data", related_section_id="qa-stage_d4_a", task_id="qa-stage_d4_a", mermaid_def="mindmap\n  root((Data Structures))\n    Arrays\n      Search\n      Insert\n    Trees\n      Traverse\n      Balance"),
         ])
         questions = []
         for index, correct in enumerate("ABCDE", 1):
@@ -79,8 +86,8 @@ def seed(db_path: Path) -> dict[str, object]:
         db.close()
     metadata = {
         "databasePath": str(db_path), "learnerId": IDS["learner"], "subjectId": IDS["subject"],
-        "sessionId": IDS["session"], "pathId": IDS["path"], "readDocTaskId": "qa-read",
-        "quizTaskId": "qa-quiz-task", "videoTaskId": "qa-video-task", "mindMapTaskId": "qa-mindmap-task",
+        "sessionId": IDS["session"], "pathId": IDS["path"], "readDocTaskId": "qa-stage_d1_a",
+        "quizTaskId": "qa-stage_d2_a", "videoTaskId": "qa-stage_d3_a", "mindMapTaskId": "qa-stage_d4_a",
         "zeroDiffRevisionId": "qa-zero-diff", "scenarios": ["path", "quiz", "video", "mindmap", "zero-diff-revision"],
     }
     metadata_path = db_path.parent / "seed-metadata.json"

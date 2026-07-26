@@ -4,16 +4,17 @@ import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
+  const proxyTarget = process.env.EDUAGENT_API_PROXY_TARGET || env.VITE_API_BASE_URL || 'http://127.0.0.1:8000'
   return {
     plugins: [react(), tailwindcss()],
     server: {
       proxy: {
         '/api': {
-          target: env.VITE_API_BASE_URL || 'http://127.0.0.1:8000',
+          target: proxyTarget,
           changeOrigin: true,
         },
         '/static': {
-          target: env.VITE_API_BASE_URL || 'http://127.0.0.1:8000',
+          target: proxyTarget,
           changeOrigin: true,
         },
       },

@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 
-export async function authenticateQaUser(page, credentialsPath, storageStatePath) {
+export async function authenticateQaUser(page, { credentialsPath, storageStatePath, expectedLearnerId }) {
   let credentials;
   try { credentials = JSON.parse(await readFile(credentialsPath, 'utf8')); }
   catch { throw new Error('QA_CREDENTIAL_LOAD: unavailable runtime credentials'); }
@@ -16,7 +16,7 @@ export async function authenticateQaUser(page, credentialsPath, storageStatePath
       if (!me.ok) throw new Error(`AUTH_ME_VERIFY: ${me.status}`);
       return (await me.json()).learner?.id || '';
     }, credentials);
-    if (!result) throw new Error('AUTH_ME_VERIFY: missing learner');
+    if (!result || (expectedLearnerId && result !== expectedLearnerId)) throw new Error('AUTH_ME_VERIFY: unexpected learner');
     await page.context().storageState({ path: storageStatePath });
     return result;
   } catch (error) {

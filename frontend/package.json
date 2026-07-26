@@ -9,7 +9,11 @@
     "lint": "eslint .",
     "test:e2e": "node --test --test-concurrency=1 tests/e2e/*.test.mjs",
     "qa:browser:prepare": "python ../backend/scripts/seed_browser_qa.py --db ../.qa/runtime/browser-qa/qa.db",
+    "qa:browser:start": "node tests/e2e/startBrowserQa.mjs",
+    "qa:browser:run": "node tests/e2e/runBrowserQa.mjs",
+    "qa:browser:run:headed": "node tests/e2e/runBrowserQa.mjs --headed",
     "qa:browser:reset": "npm run qa:browser:prepare",
+    "qa:browser:close": "node tests/e2e/closeBrowserQa.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -37,6 +41,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.62.0",
     "@types/node": "^24.12.3",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
